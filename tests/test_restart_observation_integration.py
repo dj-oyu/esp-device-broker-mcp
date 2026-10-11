@@ -1,0 +1,801 @@
+"""Exact restart approval and private report delivery across fake broker/MCP boundaries.
+
+Every port, inventory entry, clock and credential is synthetic. These tests never
+enumerate or open actual USB hardware and never send serial command bytes.
+"""
+
+import asyncio
+import hashlib
+import json
+import threading
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from types import SimpleNamespace
+
+import httpx2
+import pytest
+from test_device_observation_integration import (
+    LOCAL,
+    LOG_LINE,
+    PRINCIPAL,
+    REMOTE,
+    REMOTE_PRINCIPAL,
+    SECRETS,
+    WIRE,
+    Clock,
+    Grant,
+    assert_no_public_or_durable_logs,
+    create_work,
+    request_device,
+    rpc,
+    rpc_response,
+)
+from test_serial_restart import device, disconnect_to, identity, observed
+
+from cardputer_mcp import server as server_module
+from cardputer_mcp.auth import AuthState
+from cardputer_mcp.backend import BackendResult
+from cardputer_mcp.broker import Broker, BrokerError, digest_plan
+from cardputer_mcp.config import Settings
+from cardputer_mcp.device_observation import DeviceLogCollector
+from cardputer_mcp.key_registry import KeyRegistry
+from cardputer_mcp.models import (
+    AcquireRequest,
+    CancelRequest,
+    CloseWorkSessionRequest,
+    ExecuteRequest,
+    LeaseRequest,
+    Origin,
+    PrepareRequest,
+)
+from cardputer_mcp.models import TestName as Action
+from cardputer_mcp.operator import approve_plan
+from cardputer_mcp.operator_timeline import OperatorTimeline
+from cardputer_mcp.plan_approval import PlanApprovals
+from cardputer_mcp.server import create_app
+
+JOB = "restart-report"
+RESULT = "restart_observation_completed_unverified"
+
+
+@asynccontextmanager
+async def running(tmp_path, *, wire=WIRE, reconnect=False):
+    split = 80
+    chunks = [wire[:split], OSError("SYNTHETIC_PRIVATE_DISCONNECT")] if reconnect else [wire]
+    backend, ports, inventory, created = device(
+        chunks=chunks, second_chunks=[wire[split:]] if reconnect else []
+    )
+    if reconnect:
+        disconnect_to(ports, inventory)
+    clock, grant = Clock(), Grant()
+    settings = Settings(backend="serial", serial=backend.config, state_dir=tmp_path / "state")
+    broker = Broker(
+        settings,
+        backend=backend,
+        serial_enabled=True,
+        lock_path=tmp_path / "device.lockfile",
+        clock=clock,
+        principal_valid=grant,
+    )
+    await broker.start()
+    try:
+        yield SimpleNamespace(
+            broker=broker,
+            backend=backend,
+            ports=ports,
+            inventory=inventory,
+            created=created,
+            clock=clock,
+            grant=grant,
+            approvals=PlanApprovals(broker),
+        )
+    finally:
+        await broker.close()
+
+
+def prepare(env, job_id=JOB):
+    if env.broker.session is None:
+        env.broker.acquire(
+            AcquireRequest(owner=Origin.LOCAL, lease_seconds=300), principal_id=PRINCIPAL
+        )
+    return env.broker.prepare(
+        PrepareRequest(session=env.broker.session.capability, job_id=job_id, test=Action.RESTART)
+    )
+
+
+def approve(env, plan):
+    detail = env.approvals.detail(plan["plan_hash"])
+    assert detail["attestation"] == "none"
+    return env.approvals.approve(plan["plan_hash"], detail["review_revision"], "")
+
+
+async def execute(env, plan):
+    request = ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
+    env.broker.execute(request)
+    await asyncio.wait_for(env.broker.queue.join(), timeout=5)
+    return request
+
+
+def unavailable(env, job_id=JOB, principal=PRINCIPAL):
+    with pytest.raises(BrokerError, match="^device_logs_not_available$"):
+        env.broker.read_device_logs(job_id, principal)
+
+
+def reset_count(env):
+    # Both fake handles intentionally share the one ordered trace.
+    return sum(event[1:] == ("rts", True) for event in env.ports[0].trace)
+
+
+@pytest.mark.parametrize("reconnect", [False, True])
+async def test_one_exact_approval_resets_once_and_delivers_only_after_close(
+    tmp_path, caplog, reconnect
+):
+    async with running(tmp_path, reconnect=reconnect) as env:
+        plan = prepare(env)
+        assert plan["approval_required"] is True
+        assert plan["plan"]["log_delivery"] == {
+            "principal_id": PRINCIPAL,
+            "origin": "local_cli",
+            "retention_seconds": 300,
+            "max_received_bytes": 65536,
+            "max_lines": 256,
+            "max_line_bytes": 1024,
+            "max_rendered_bytes": 32768,
+        }
+        request = ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
+        with pytest.raises(BrokerError, match="^operator_approval_required$"):
+            env.broker.execute(request)
+        unavailable(env)
+        assert not env.created and env.broker.queue.empty() and reset_count(env) == 0
+        assert approve(env, plan)["approved"]
+        assert approve(env, plan)["already_approved"]
+        unavailable(env)
+        env.broker.execute(request)
+        assert env.broker.execute(request)["deduplicated"]
+        await asyncio.wait_for(env.broker.queue.join(), timeout=5)
+        expected = observed(WIRE)
+        if reconnect:
+            collector = DeviceLogCollector()
+            collector.feed(WIRE[:80])
+            collector.mark_gap()
+            collector.feed(WIRE[80:])
+            expected = replace(collector.finish(), reset_sequence_issued=True, capture_gap=True)
+        report = env.broker.read_device_logs(JOB, PRINCIPAL)
+        assert report == {
+            "job_id": JOB,
+            "sha256": expected.sha256,
+            "remaining_seconds": 300,
+            **expected.payload(),
+        }
+        assert report["reset_sequence_issued"] is True
+        assert report["capture_gap"] is reconnect
+        assert report["redacted_lines"] == 2 and LOG_LINE in report["logs"]
+        assert report["firmware"]["source_verified"] is False
+        assert report["firmware"]["binary_sha256_verified"] is False
+        for _ in range(3):
+            assert env.broker.read_device_logs(JOB, PRINCIPAL) == report
+            assert env.broker.execute(request)["deduplicated"]
+        await asyncio.wait_for(env.broker.queue.join(), timeout=5)
+        assert env.broker.job(JOB)["result"] == RESULT
+        assert env.broker.job(JOB)["state"] == "succeeded"
+        assert reset_count(env) == env.backend.calls == env.backend.max_active == 1
+        assert len(env.created) == 1 + int(reconnect)
+        assert all(port.opens == port.closes == 1 and not port.is_open for port in env.created)
+        assert env.ports[0].discards == 1 and env.ports[1].discards == 0
+        assert all(port.writes == [] for port in env.ports)
+        metadata = env.broker.operator_device_observation_metadata(JOB)
+        assert metadata["metadata"] == expected.metadata() and "logs" not in metadata
+        assert LOG_LINE not in json.dumps(OperatorTimeline(env.broker, env.approvals).snapshot())
+        assert LOG_LINE not in caplog.text and all(secret not in caplog.text for secret in SECRETS)
+        assert all(secret not in json.dumps(report) for secret in SECRETS)
+        assert_no_public_or_durable_logs(env.broker, request.session, LOCAL, REMOTE)
+
+
+async def test_anonymous_lease_and_capture_policy_cannot_authorize_restart(tmp_path):
+    async with running(tmp_path) as env:
+        anonymous = env.broker.acquire(AcquireRequest(owner=Origin.LOCAL))
+        with pytest.raises(BrokerError, match="^authentication_required$"):
+            env.broker.prepare(
+                PrepareRequest(session=anonymous["session"], job_id=JOB, test=Action.RESTART)
+            )
+        env.broker.release(LeaseRequest(session=anonymous["session"]))
+        calls = []
+        env.broker.capture_policies = SimpleNamespace(
+            authorize_capture=lambda *args, **kwargs: calls.append("authorize") or object(),
+            validate_capture=lambda *args, **kwargs: calls.append("validate") or True,
+            invalidate_session=lambda: None,
+            target=lambda: "synthetic-target",
+        )
+        plan = prepare(env)
+        assert plan["approval_required"] and "policy_permit_available" not in plan
+        with pytest.raises(BrokerError, match="^operator_approval_required$"):
+            env.broker.execute(
+                ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
+            )
+        detail = env.approvals.detail(plan["plan_hash"])
+        with pytest.raises(BrokerError, match="^stale_plan_review$"):
+            env.approvals.approve(plan["plan_hash"], "0" * 64, "")
+        with pytest.raises(BrokerError, match="^device_attestation_required$"):
+            env.approvals.approve(
+                plan["plan_hash"], detail["review_revision"], "DEVICE HOME AND FIRMWARE VERIFIED"
+            )
+        assert calls == [] and not env.created
+        approve(env, plan)
+        await execute(env, plan)
+        assert calls == [] and reset_count(env) == 1
+
+
+@pytest.mark.parametrize("rehash", [False, True])
+@pytest.mark.parametrize(
+    "section,field,value",
+    [
+        ("restart", "method", "generic_dtr_reset"),
+        ("restart", "attempts", 2),
+        ("restart", "attempts", True),
+        ("restart", "rts_hold_milliseconds", 101),
+        ("restart", "reconnect_seconds", 9),
+        ("restart", "max_reopens", 2),
+        ("restart", "buffer_policy", "keep_pre_reset_data"),
+        ("restart", "stable_usb_fingerprint", "0" * 64),
+        ("log_delivery", "principal_id", REMOTE_PRINCIPAL),
+        ("log_delivery", "origin", "remote_mcp"),
+        ("log_delivery", "retention_seconds", 301),
+        (None, "device_fingerprint", "0" * 64),
+        (None, "observe_seconds", 31),
+    ],
+)
+async def test_changed_reset_identity_recipient_or_bounds_cannot_reuse_approval(
+    tmp_path, rehash, section, field, value
+):
+    async with running(tmp_path) as env:
+        plan = prepare(env)
+        approve(env, plan)
+        changed = json.loads(json.dumps(plan["plan"]))
+        (changed if section is None else changed[section])[field] = value
+        digest = digest_plan(changed) if rehash else plan["plan_hash"]
+        if rehash:
+            env.broker._store().put_plan(digest, changed)
+        else:
+            env.broker._store().db.execute(
+                "UPDATE plans SET payload=? WHERE hash=?", (json.dumps(changed), digest)
+            )
+        with pytest.raises(BrokerError):
+            detail = env.approvals.detail(digest)
+            env.approvals.approve(digest, detail["review_revision"], "")
+        with pytest.raises(BrokerError):
+            env.broker.execute(
+                ExecuteRequest(session=env.broker.session.capability, plan_hash=digest)
+            )
+        assert not env.created and env.broker.queue.empty() and reset_count(env) == 0
+        unavailable(env)
+
+
+@pytest.mark.parametrize("change", ["before_approval", "after_approval"])
+async def test_changed_port_identity_fails_preflight_without_reset(tmp_path, change):
+    async with running(tmp_path) as env:
+        plan = prepare(env)
+        detail = env.approvals.detail(plan["plan_hash"])
+        if change == "after_approval":
+            approve(env, plan)
+        env.inventory[:] = [identity(port="SYNTHETIC_COM99")]
+        if change == "before_approval":
+            with pytest.raises(BrokerError, match="^plan_backend_mismatch$"):
+                env.approvals.approve(plan["plan_hash"], detail["review_revision"], "")
+            with pytest.raises(BrokerError, match="^operator_approval_required$"):
+                await execute(env, plan)
+        else:
+            await execute(env, plan)
+            assert env.broker.job(JOB)["state"] == "needs_review"
+            assert env.broker.job(JOB)["result"] == "device_or_plan_changed"
+        assert not env.created and reset_count(env) == 0
+        unavailable(env)
+
+
+@pytest.mark.parametrize("invalidate", ["revoke", "lease_expiry"])
+async def test_queued_restart_rechecks_authority_before_opening_usb(tmp_path, invalidate):
+    async with running(tmp_path) as env:
+        plan = prepare(env)
+        approve(env, plan)
+        env.broker.execute(
+            ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
+        )
+        if invalidate == "revoke":
+            env.grant.live = False
+        else:
+            env.clock.now += 301
+        await asyncio.wait_for(env.broker.queue.join(), timeout=5)
+        assert env.broker.job(JOB)["state"] == "cancelled"
+        assert env.backend.calls == 0 and not env.created and reset_count(env) == 0
+        unavailable(env)
+
+
+@pytest.mark.parametrize("phase", ["reset", "intermediate_close", "reopen", "final_close"])
+@pytest.mark.parametrize("cancel_worker", [False, True])
+async def test_no_second_owner_during_reset_reopen_or_close_even_after_cancellation(
+    tmp_path, phase, cancel_worker
+):
+    async with running(tmp_path, reconnect=True) as env:
+        local, remote = create_work(env), create_work(env, origin=Origin.REMOTE)
+        lease = request_device(env, local)["lease"]
+        plan = prepare(env)
+        approve(env, plan)
+        request_device(env, remote, origin=Origin.REMOTE)
+        entered, release = threading.Event(), threading.Event()
+
+        def block():
+            entered.set()
+            assert release.wait(timeout=5)
+
+        if phase == "reset":
+            pause = env.backend.pause
+
+            def blocked_pause(seconds):
+                block()
+                pause(seconds)
+
+            env.backend.pause = blocked_pause
+        elif phase == "reopen":
+            open_port = env.ports[1].open
+
+            def blocked_open():
+                block()
+                open_port()
+
+            env.ports[1].open = blocked_open
+        else:
+            env.ports[int(phase == "final_close")].close_hook = block
+        try:
+            env.broker.execute(
+                ExecuteRequest(session=lease["session"], plan_hash=plan["plan_hash"])
+            )
+            assert await asyncio.to_thread(entered.wait, 3)
+            for _ in range(2 if cancel_worker else 1):
+                if cancel_worker:
+                    env.broker.worker.cancel()
+                    await asyncio.sleep(0)
+                assert env.broker.job(JOB)["state"] == "running"
+                assert env.backend.active == 1 and env.broker.active_job == JOB
+                assert env.broker.session.principal_id == PRINCIPAL
+                assert len(env.broker.waiters) == 1 and env.broker._device_lock.is_locked
+                assert not env.broker.worker.done() and reset_count(env) == 1
+                with pytest.raises(BrokerError, match="^active_job_cannot_release$"):
+                    env.broker.release(LeaseRequest(session=lease["session"]))
+                with pytest.raises(BrokerError, match="^active_job_cannot_release$"):
+                    env.broker.close_work_session(
+                        CloseWorkSessionRequest(resume_token=local["resume_token"]),
+                        principal_id=PRINCIPAL,
+                        scopes=frozenset({"read", "control"}),
+                    )
+                with pytest.raises(BrokerError, match="^only_queued_jobs_can_be_cancelled$"):
+                    env.broker.cancel(CancelRequest(session=lease["session"], job_id=JOB))
+                with pytest.raises(BrokerError, match="^device_busy$"):
+                    env.broker.acquire(
+                        AcquireRequest(owner=Origin.REMOTE), principal_id=REMOTE_PRINCIPAL
+                    )
+                unavailable(env)
+                unavailable(env, principal=REMOTE_PRINCIPAL)
+                assert env.broker.operator_device_observation_metadata(JOB) is None
+        finally:
+            release.set()
+            await asyncio.wait_for(env.broker.queue.join(), timeout=5)
+        assert env.backend.active == 0 and env.backend.max_active == reset_count(env) == 1
+        assert all(not port.is_open and port.closes == 1 for port in env.created)
+        assert len(env.created) == 2 and all(port.writes == [] for port in env.ports)
+        assert len(env.ports[0].owner_threads | env.ports[1].owner_threads) == 1
+        if cancel_worker:
+            assert env.broker.job(JOB)["state"] == "needs_review"
+            assert env.broker.job(JOB)["result"] == "operation_interrupted_review_required"
+            unavailable(env)
+            assert env.broker.session.principal_id == PRINCIPAL
+        else:
+            assert env.broker.read_device_logs(JOB, PRINCIPAL)["capture_gap"] is True
+            env.broker.release(LeaseRequest(session=lease["session"]))
+            assert env.broker.session.principal_id == REMOTE_PRINCIPAL
+            unavailable(env, principal=REMOTE_PRINCIPAL)
+        assert_no_public_or_durable_logs(env.broker, lease["session"])
+
+
+@pytest.mark.parametrize("phase", ["intermediate_close", "final_close"])
+@pytest.mark.parametrize("failure", ["close_error", "still_open"])
+async def test_uncertain_close_withholds_restart_report_and_retains_owner_lock(
+    tmp_path, phase, failure
+):
+    async with running(tmp_path, reconnect=True) as env:
+        local, remote = create_work(env), create_work(env, origin=Origin.REMOTE)
+        lease = request_device(env, local)["lease"]
+        plan = prepare(env)
+        approve(env, plan)
+        request_device(env, remote, origin=Origin.REMOTE)
+        setattr(env.ports[int(phase == "final_close")], failure, True)
+        try:
+            await execute(env, plan)
+            assert env.broker.job(JOB)["state"] == "needs_review"
+            assert env.broker.job(JOB)["result"] == "serial_close_unconfirmed"
+            assert len(env.created) == (2 if phase == "final_close" else 1)
+            assert reset_count(env) == 1 and env.backend.active == 1
+            assert env.broker._device_lock.is_locked and env.backend.ownership_uncertain
+            assert env.broker.session.principal_id == PRINCIPAL
+            assert len(env.broker.waiters) == 1
+            unavailable(env)
+            unavailable(env, principal=REMOTE_PRINCIPAL)
+            assert env.broker.operator_device_observation_metadata(JOB) is None
+            assert not env.broker.device_observations
+            with pytest.raises(BrokerError, match="^active_job_cannot_release$"):
+                env.broker.release(LeaseRequest(session=lease["session"]))
+            with pytest.raises(BrokerError, match="^device_close_unconfirmed$"):
+                await env.broker.close()
+            assert env.broker._device_lock.is_locked and env.backend.active == 1
+            assert all(port.closes == 1 and port.writes == [] for port in env.created)
+            assert_no_public_or_durable_logs(env.broker, lease["session"])
+        finally:
+            # Clear synthetic state for fixture teardown; no hardware was opened.
+            env.backend.active = 0
+            env.backend.hardware_connected = False
+            env.backend.ownership_uncertain = False
+            env.broker.active_job = None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"reset_sequence_issued": False},
+        {"reset_sequence_issued": 1},
+        {"reset_sequence_issued": None},
+        {"capture_gap": 1},
+        {"capture_gap": "true"},
+    ],
+)
+async def test_malformed_restart_result_cannot_publish_logs(tmp_path, change):
+    async with running(tmp_path) as env:
+        plan = prepare(env)
+        approve(env, plan)
+
+        async def result_without_hardware(plan, stage):
+            return BackendResult(RESULT, observation=replace(observed(WIRE), **change))
+
+        env.backend.execute = result_without_hardware
+        await execute(env, plan)
+        assert env.broker.job(JOB)["state"] == "needs_review"
+        unavailable(env)
+        assert not env.broker.device_observations and not env.created
+        assert_no_public_or_durable_logs(env.broker)
+
+
+async def test_report_reads_never_reset_or_extend_ttl_and_broker_restart_drops_cache(tmp_path):
+    async with running(tmp_path) as env:
+        plan = prepare(env)
+        approve(env, plan)
+        request = await execute(env, plan)
+        epoch = env.broker.epoch
+        env.broker.release(LeaseRequest(session=request.session))
+        for now, remaining in ((100, 300), (250, 150), (399, 1)):
+            env.clock.now = now
+            assert env.broker.read_device_logs(JOB, PRINCIPAL)["remaining_seconds"] == remaining
+            assert reset_count(env) == 1 and env.backend.calls == 1
+        env.clock.now = 400
+        unavailable(env)
+        assert not env.broker.device_observations and env.backend.calls == 1
+    async with running(tmp_path) as fresh:
+        assert fresh.broker.epoch != epoch
+        unavailable(fresh)
+        assert fresh.broker.job(JOB)["state"] == "succeeded"
+        assert fresh.broker.queue.empty() and not fresh.created and reset_count(fresh) == 0
+
+
+async def test_broker_restart_erases_unexpired_report_without_replaying_reset(tmp_path):
+    async with running(tmp_path) as env:
+        plan = prepare(env)
+        approve(env, plan)
+        await execute(env, plan)
+        assert env.broker.read_device_logs(JOB, PRINCIPAL)["remaining_seconds"] == 300
+    async with running(tmp_path) as fresh:
+        unavailable(fresh)
+        assert fresh.broker.job(JOB)["result"] == RESULT
+        assert not fresh.broker.device_observations and not fresh.created
+        assert fresh.backend.calls == reset_count(fresh) == 0
+
+
+@pytest.mark.parametrize("failure", ["preflight", "discard", "control", "read"])
+async def test_private_exception_messages_are_never_returned_or_persisted(
+    tmp_path, caplog, failure
+):
+    async with running(tmp_path) as env:
+        plan = prepare(env)
+        private = LOG_LINE + SECRETS[0] + LOCAL + "/private/fake-port"
+        if failure == "preflight":
+
+            def fail_preflight(_test):
+                raise RuntimeError(private)
+
+            env.backend.prepare = fail_preflight
+            with pytest.raises(BrokerError, match="^backend_preflight_failed$"):
+                approve(env, plan)
+            assert not env.created
+        else:
+            approve(env, plan)
+            if failure == "discard":
+
+                def fail_discard():
+                    raise OSError(private)
+
+                env.ports[0].reset_input_buffer = fail_discard
+            elif failure == "control":
+                env.ports[0].control_error = 4
+            else:
+                env.ports[0].chunks.append(RuntimeError(private))
+            await execute(env, plan)
+            assert env.broker.job(JOB)["state"] == "needs_review"
+            assert reset_count(env) <= 1
+            assert env.ports[0].closes == 1 and env.ports[0].writes == []
+        unavailable(env)
+        assert all(value not in caplog.text for value in (LOG_LINE, *SECRETS, LOCAL))
+        assert_no_public_or_durable_logs(env.broker, LOCAL, "/private/fake-port")
+
+
+async def test_cli_single_exact_approval_discloses_reset_method_recipient_and_limits(tmp_path):
+    async with running(tmp_path) as env:
+        plan = prepare(env)
+        prompts = []
+
+        def confirm(prompt):
+            prompts.append(prompt)
+            return "APPROVE " + plan["plan_hash"]
+
+        assert approve_plan(env.broker.settings.state_dir, plan["plan_hash"], confirm) == {
+            "approved": True,
+            "plan_hash": plan["plan_hash"],
+        }
+        assert len(prompts) == 1 and not env.created
+        for phrase in (
+            "ONE hardware reset",
+            "ESP32-S3 native USB Serial/JTAG",
+            "unsaved work can be lost",
+            "Discard buffered input",
+            "within 8 seconds",
+            "No reset retry",
+            "30 seconds / 64 KiB",
+            "private data",
+            "redaction is not guaranteed complete",
+            "five minutes",
+            "do not prove the application restarted",
+            "esp32s3_usb_serial_jtag_rts_v1",
+            '"rts_hold_milliseconds": 100',
+            PRINCIPAL,
+            plan["plan"]["restart"]["stable_usb_fingerprint"],
+            plan["plan_hash"],
+        ):
+            assert phrase in prompts[0]
+
+
+@pytest.fixture
+async def http_restart(tmp_path, monkeypatch):
+    backend, ports, inventory, created = device(chunks=[WIRE])
+    clock, key_clock = Clock(), Clock()
+    path = tmp_path / "keys.sqlite3"
+    registry = KeyRegistry(path, clock=key_clock)
+    keys = {
+        "owner": registry.issue(
+            "Synthetic owner", Origin.REMOTE, scopes={"control"}, ttl_seconds=10
+        ),
+        "other": registry.issue("Synthetic other", Origin.REMOTE, scopes={"control"}),
+        "reader": registry.issue("Synthetic reader", Origin.REMOTE, scopes={"read"}),
+    }
+    monkeypatch.setattr(server_module, "time", key_clock)
+    monkeypatch.setattr(
+        server_module,
+        "KeyRegistry",
+        lambda path, *, create: KeyRegistry(path, clock=key_clock, create=create),
+    )
+    settings = Settings(backend="serial", serial=backend.config, state_dir=tmp_path / "state")
+    broker = Broker(
+        settings,
+        backend=backend,
+        serial_enabled=True,
+        clock=clock,
+        lock_path=tmp_path / "device.lockfile",
+    )
+    app = create_app(
+        settings,
+        broker,
+        serial_enabled=True,
+        auth=AuthState({Origin.LOCAL: LOCAL, Origin.REMOTE: REMOTE}),
+        key_registry_path=path,
+    )
+    inner = app
+    while not hasattr(inner, "router"):
+        inner = inner.app
+    ready, shutdown = asyncio.Event(), asyncio.Event()
+
+    async def lifespan():
+        async with inner.router.lifespan_context(inner):
+            ready.set()
+            await shutdown.wait()
+
+    task = asyncio.create_task(lifespan())
+    try:
+        async with asyncio.timeout(5):
+            while not ready.is_set():
+                if task.done():
+                    await task
+                await asyncio.sleep(0.001)
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app, client=("127.0.0.1", 12345)),
+            base_url=f"http://127.0.0.1:{settings.port}",
+            trust_env=False,
+            headers={"Authorization": f"Bearer {LOCAL}"},
+        ) as http:
+            yield SimpleNamespace(
+                http=http,
+                broker=broker,
+                backend=backend,
+                ports=ports,
+                inventory=inventory,
+                created=created,
+                registry=registry,
+                keys=keys,
+                clock=clock,
+                key_clock=key_clock,
+            )
+    finally:
+        shutdown.set()
+        await asyncio.wait_for(task, timeout=5)
+        registry.close()
+
+
+async def http_observe(env):
+    lease = (await rpc(env, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300}))[
+        "structuredContent"
+    ]
+    plan = (
+        await rpc(
+            env,
+            "prepare_test",
+            {"session": lease["session"], "job_id": JOB, "test": "restart_and_observe"},
+        )
+    )["structuredContent"]
+    assert plan["ok"] and plan["approval_required"]
+    request = {"session": lease["session"], "plan_hash": plan["plan_hash"]}
+    assert (await rpc(env, "execute_test", request))["structuredContent"] == {
+        "ok": False,
+        "error": "operator_approval_required",
+    }
+    assert not env.created and reset_count(env) == 0
+    detail = (await env.http.post("/operator/plan", json={"plan_hash": plan["plan_hash"]})).json()
+    denied = await env.http.post(
+        "/operator/approve-plan",
+        headers={"Authorization": f"Bearer {env.keys['owner'].token}"},
+        json={
+            "plan_hash": plan["plan_hash"],
+            "review_revision": detail["review_revision"],
+            "attestation": "",
+        },
+    )
+    assert denied.status_code == 403 and env.keys["owner"].token not in denied.text
+    assert env.broker._store().db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
+    assert not env.created
+    approved = await env.http.post(
+        "/operator/approve-plan",
+        json={
+            "plan_hash": plan["plan_hash"],
+            "review_revision": detail["review_revision"],
+            "attestation": "",
+        },
+    )
+    assert approved.status_code == 200 and approved.json()["ok"], approved.text
+    assert (await rpc(env, "execute_test", request))["structuredContent"]["ok"]
+    await asyncio.wait_for(env.broker.queue.join(), timeout=5)
+    return lease["session"], plan
+
+
+async def test_authenticated_mcp_restart_requires_local_approval_and_exact_report_recipient(
+    http_restart,
+):
+    env = http_restart
+    catalog = await rpc_response(env, "tools/list", {}, token=env.keys["owner"].token)
+    assert catalog.status_code == 200
+    tools = catalog.json()["result"]["tools"]
+    preparation = next(item for item in tools if item["name"] == "prepare_test")
+    assert "restart_and_observe" in json.dumps(preparation["inputSchema"])
+    reader = next(item for item in tools if item["name"] == "read_device_logs")
+    assert reader["annotations"]["readOnlyHint"] is True
+    assert not any("approv" in item["name"] or "operator" in item["name"] for item in tools)
+    session, plan = await http_observe(env)
+    report = (await rpc(env, "read_device_logs", {"job_id": JOB}))["structuredContent"]
+    assert report["ok"] and LOG_LINE in report["logs"]
+    assert report["reset_sequence_issued"] is True and report["capture_gap"] is False
+    payload = {
+        key: value
+        for key, value in report.items()
+        if key not in {"ok", "job_id", "sha256", "remaining_seconds"}
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
+    assert hashlib.sha256(canonical).hexdigest() == report["sha256"]
+    for token in (LOCAL, REMOTE, env.keys["other"].token, env.keys["reader"].token):
+        assert (await rpc(env, "read_device_logs", {"job_id": JOB}, token=token))[
+            "structuredContent"
+        ] == {"ok": False, "error": "device_logs_not_available"}
+    for _ in range(3):
+        assert (
+            await rpc(env, "execute_test", {"session": session, "plan_hash": plan["plan_hash"]})
+        )["structuredContent"]["deduplicated"]
+    assert (await rpc(env, "release_session", {"session": session}))["structuredContent"][
+        "released"
+    ]
+    for _ in range(3):
+        assert (await rpc(env, "read_device_logs", {"job_id": JOB}))["structuredContent"] == report
+    assert reset_count(env) == env.backend.calls == 1 and len(env.created) == 1
+    assert env.ports[0].opens == env.ports[0].closes == 1 and env.ports[0].writes == []
+    assert plan["plan"]["log_delivery"]["principal_id"] == env.keys["owner"].metadata.principal_id
+    timeline = await env.http.get("/operator/timeline")
+    assert timeline.status_code == 200 and LOG_LINE not in timeline.text
+    for tool, request in (
+        ("device_status", None),
+        ("read_logs", {}),
+        ("job_status", {"job_id": JOB}),
+    ):
+        public = await rpc(env, tool, request, token=env.keys["reader"].token)
+        assert LOG_LINE not in json.dumps(public)
+    assert_no_public_or_durable_logs(env.broker, session, *(key.token for key in env.keys.values()))
+
+
+@pytest.mark.parametrize("invalidate", ["revoke", "expire", "rotate"])
+async def test_mcp_revalidates_key_after_restart_completion(http_restart, invalidate):
+    env = http_restart
+    await http_observe(env)
+    key = env.keys["owner"]
+    assert (await rpc(env, "read_device_logs", {"job_id": JOB}))["structuredContent"]["ok"]
+    if invalidate == "revoke":
+        assert env.registry.revoke(key.metadata.key_id)
+    elif invalidate == "expire":
+        env.key_clock.now += 11
+    else:
+        replacement = env.registry.rotate(key.metadata.key_id)
+        assert (await rpc(env, "read_device_logs", {"job_id": JOB}, token=replacement.token))[
+            "structuredContent"
+        ] == {"ok": False, "error": "device_logs_not_available"}
+    response = await rpc_response(
+        env,
+        "tools/call",
+        {"name": "read_device_logs", "arguments": {"request": {"job_id": JOB}}},
+        token=key.token,
+    )
+    assert response.status_code == 401 and response.json() == {"error": "authentication_required"}
+    assert env.broker.operator_device_observation_metadata(JOB) is None
+    assert not env.broker.device_observations and env.broker.job(JOB)["state"] == "succeeded"
+    assert reset_count(env) == env.backend.calls == 1
+    assert_no_public_or_durable_logs(env.broker, key.token)
+
+
+async def test_mcp_unapproved_controls_and_read_arguments_are_rejected_without_usb(http_restart):
+    env = http_restart
+    response = await rpc_response(
+        env,
+        "tools/call",
+        {"name": "read_device_logs", "arguments": {"request": {"job_id": JOB}}},
+        token="invalid",
+    )
+    assert response.status_code == 401 and response.json() == {"error": "authentication_required"}
+    lease = (await rpc(env, "acquire_session", {"owner": "remote_mcp"}))["structuredContent"]
+    for extra in (
+        {"method": "generic_reset"},
+        {"attempts": 2},
+        {"port": "/private/fake-port"},
+        {"log_delivery": {"principal_id": PRINCIPAL}},
+    ):
+        result = await rpc(
+            env,
+            "prepare_test",
+            {"session": lease["session"], "job_id": JOB, "test": "restart_and_observe", **extra},
+        )
+        assert result["isError"] is True
+        assert "/private/fake-port" not in json.dumps(result)
+        assert lease["session"] not in json.dumps(result)
+    for request in (
+        {"job_id": JOB, "principal_id": PRINCIPAL},
+        {"job_id": LOG_LINE + "\n"},
+        {"job_id": JOB, "session": LOCAL},
+    ):
+        result = await rpc(env, "read_device_logs", request)
+        assert result["isError"] is True
+        assert LOG_LINE not in json.dumps(result) and LOCAL not in json.dumps(result)
+    assert not env.created and reset_count(env) == 0 and env.backend.calls == 0

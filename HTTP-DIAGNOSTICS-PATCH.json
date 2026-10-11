@@ -1,0 +1,72 @@
+{
+  "base_version": "0.5.0",
+  "version": "0.5.1",
+  "base_source_archive_sha256": "5ff3c63bd4b95d258dbc4b9ad02b2168f63e21235ed6cc7ac29ad561665e6b13",
+  "preserve": [
+    "*.local.toml",
+    ".state/",
+    "private configuration and runtime state"
+  ],
+  "files": [
+    {
+      "path": "HTTP-DIAGNOSTICS.md",
+      "previous_sha256": null,
+      "sha256": "44b1d8ff7a504866646e0003ec4d6e56878e935e451255f82ac420f4b4e8e729"
+    },
+    {
+      "path": "VERIFICATION.md",
+      "previous_sha256": "d4ccb51cec325ace0691148cda18378e5b6fcb239588493edf2d161b69f7dcf1",
+      "sha256": "549446c0827bb28559d4478ae41f84a3ef5e184e0f50b3407ec1c498084819d3"
+    },
+    {
+      "path": "pyproject.toml",
+      "previous_sha256": "fc32f569b4fe1ba0694915295c3301256e1f7cf14bf4a04e29ce66466ad88d9a",
+      "sha256": "02bcd521f4b3a0f6e0bb1121cd34b590ade4f91a41ab2fcc87b27a657aaf4de3"
+    },
+    {
+      "path": "src/cardputer_mcp/cli.py",
+      "previous_sha256": "f4c21fa7e3a0ff5e5ea94da910e8e26dd7015f229fa8b3242921833da577c907",
+      "sha256": "abe45546f522f753cd13a4df8fb6edadcd968ec4682fe3e993f14725ddc7aa7d"
+    },
+    {
+      "path": "src/cardputer_mcp/gui.py",
+      "previous_sha256": "3417fac492db2d999793284a65c44a90a4220005de4d47b8b7613c0ad76554f7",
+      "sha256": "8fb0a2b34bad193b37f20d2198f382da040d575cb1c54220f8335c511cf473c3"
+    },
+    {
+      "path": "src/cardputer_mcp/http_diagnostics.py",
+      "previous_sha256": null,
+      "sha256": "26857c7764cdc48487c45dd155e3df3cd27aaedf003a51c89e663e78057ebe2d"
+    },
+    {
+      "path": "src/cardputer_mcp/operator_api.py",
+      "previous_sha256": "3b74786858ee2555ea5cf20f4ac1fd7a0e259b4917b059d37465c228fbed4c71",
+      "sha256": "59a40debce1fc60e015d999b21050d749d05411d88c12385ba4f1ee269e34e3b"
+    },
+    {
+      "path": "src/cardputer_mcp/operator_client.py",
+      "previous_sha256": "7ef5f425cf398586dee85491f86f7b816544da4879e357d98869eff8dac3c8e0",
+      "sha256": "5eced943c3e694f85d1533217e76f41bccbc606883d60c4f062693ffbdfc180e"
+    },
+    {
+      "path": "src/cardputer_mcp/server.py",
+      "previous_sha256": "33ad8b6c8ddbfb93beae3b022ce7f1174ac167d9ed94ffa7f192a679154d9d16",
+      "sha256": "549c3be6d66085af2e7a5dba8ad60ae5ecefc7d9e779b8552fe6b7c02336503d"
+    },
+    {
+      "path": "tests/test_http_diagnostics.py",
+      "previous_sha256": null,
+      "sha256": "2ccff6385fd8fa69403175a6c3fa84a9787f27ea14d4ff4ac3cff8acd09d3efc"
+    },
+    {
+      "path": "tests/test_http_diagnostics_cli.py",
+      "previous_sha256": null,
+      "sha256": "2531f12e69408359f79cce4da78bb493977b93acd5d90f5f8460a474c2ef7ac3"
+    },
+    {
+      "path": "uv.lock",
+      "previous_sha256": "7bed25502d02a6a6bd2f257a69c6bdc074c7ab120f3ba65728e29903f1af0174",
+      "sha256": "ae93d860dfc061ebc934a2f55658e2fd2542cefdfa5ce0f6afea3f54ea64e052"
+    }
+  ]
+}
