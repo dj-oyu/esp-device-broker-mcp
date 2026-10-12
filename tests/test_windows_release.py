@@ -121,7 +121,9 @@ class WindowsReleaseTests(unittest.TestCase):
         def fixture_lstat(candidate):
             # Model a standalone installation. The cloud sandbox itself has Git
             # markers in /workspace and /tmp; fixture-owned markers remain real.
-            if candidate.name == ".git" and not candidate.is_relative_to(self.folder):
+            if sys.platform == "linux" and candidate in (
+                Path("/workspace/.git"), Path("/tmp/.git")
+            ):
                 raise FileNotFoundError
             return original_lstat(candidate)
 
