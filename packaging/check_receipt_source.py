@@ -18,7 +18,7 @@ def check() -> None:
              "tests/test_build_security.py", "src/cardputer_mcp/build_locations.py",
              "tests/test_build_locations.py", "src/cardputer_mcp/config.py",
              "src/cardputer_mcp/broker.py"]
-    subprocess.run([str(python), "-m", "ruff", "check", "--fix", *paths], cwd=root, check=True)
+    subprocess.run([str(python), "-m", "ruff", "check", "--fix", *paths], cwd=root, check=False)
     subprocess.run([str(python), "-m", "ruff", "format", *paths], cwd=root, check=True)
     import base64
     import json

@@ -16,6 +16,9 @@ expected_idf = '6.0.1'
 # Optional, only after explicit local authorization; default is inherit:
 # profile_execution_policy = 'RemoteSigned'
 target = 'esp32s3'
+# Optional dedicated short output root, registered locally:
+# build_root = 'C:\example\build-output'
+# build_min_free_bytes = 536870912
 ```
 
 The registered profile must support `-e`: output literal KEY=VALUE lines and
@@ -220,9 +223,8 @@ job/principal authority before offline flash admission.
 
 The producer was tested against flash contract a385bfd: its layout and generated-
 config receipts were accepted, while legacy v1 without the layout receipt was
-refused. No device, flash, eFuse or boot operation was performed. Short build_root,
-slot ownership and storage diagnostics are retained separately for a later PR;
-this receipt-only change does not modify output layout or storage policy.
+refused. No device, flash, eFuse or boot operation was performed. The optional
+short output root, slot ownership and storage diagnostics are described below.
 
 
 ### IDF 6.0.1 dependency-aware security interpretation
