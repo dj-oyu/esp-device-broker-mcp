@@ -33,7 +33,7 @@ the durable job rather than rebuilding. Changed inputs invalidate the prepared
 plan. Interrupted or failed jobs need review; restart never restores authority.
 
 The fixed build argument vector is external Python, external `tools/idf.py`, `-B`,
-the broker-generated directory, `build`. Source/profile hashes and external
+the broker-generated directory, `build`. Canonical registered project identity plus source/profile hashes and external
 Python/idf.py/compiler/environment fingerprints partition build directories. The
 expected target is fixed through IDF_TARGET and checked against the generated
 project description. Diagnostics require the actual `idf.py --version` to report
@@ -70,8 +70,11 @@ jobs are not marked recovered or successful.
 ## Validation in the delegated cloud environment
 
 - 2026-10-12: compileall succeeds.
-- Dependency-free unittest suite: 10 passed, one skipped because pyserial is not
-  installed. Includes mock profile/diagnostics/build/manifest/read traversal,
+- Dependency-free unittest suite: 16 passed, two skipped because pyserial/filelock
+  are not installed. With cloud-only lock/port dependency facades injected, all
+  18 tests pass. This exercises the actual Broker/SQLite/PlanApprovals/PlanReview
+  serial and mock prepare-submit-GUI-approve paths, principal mismatch, no replay
+  and cancellation to durable needs_review, but does not validate native locks. Includes mock profile/diagnostics/build/manifest/read traversal,
   output flood, multiple readers, unknown/stderr/context, expiry/epoch/gap,
   input fingerprints, POSIX interruption, and synthetic Windows owned-job exit
   and uncertain shutdown. No real hardware or actual IDF build was used.
@@ -82,3 +85,17 @@ jobs are not marked recovered or successful.
   Windows verification. Tunnel validation follows after those checks.
 - No AGENTS.md is present in the source commit tree. Distribution EXE/ZIP/Actions
   changes belong to the separate packaging task and are not included here.
+
+
+## Review lifecycle corrections
+
+Polling expired build output preserves the redaction set for later output from
+that live job. Before every launch (and before resuming a suspended Windows child)
+stop requests are checked. Post-build fingerprint/hash work checks cancellation;
+accepted cancellation is serialized against publishing the final manifest. A
+cancel after the final success commit is reported as not accepted rather than
+promising review after successful work. Source files called build or build-* are
+hashed normally; only repository metadata and explicitly identified broker state
+output roots are excluded. Different registered checkouts cannot share a builddir.
+The native GUI accepts serial build plans and displays code-execution/log-delivery
+warnings for both serial and mock builds, naming the actual recipient.

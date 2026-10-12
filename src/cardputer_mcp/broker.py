@@ -245,7 +245,7 @@ class Broker:
         if self.store is None:
             return
         self.closing = True
-        self.firmware_build.process.stop_requested.set()
+        self.firmware_build.request_stop()
         self._clear_local_home_diagnostic()
         self.captures.clear()
         self.device_observations.clear()
@@ -1174,8 +1174,8 @@ class Broker:
             self._cancel_execution_intent(intent, "client_cancelled_awaiting_approval")
             return self.job(request.job_id)
         if job["state"] == "running" and plan["test"] == TestName.BUILD.value:
-            self.firmware_build.process.stop_requested.set()
-            return {**job, "stop_requested": True, "requires_review": True}
+            accepted = self.firmware_build.request_stop(request.job_id)
+            return {**job, "stop_requested": accepted, "requires_review": accepted}
         if job["state"] != "queued":
             raise BrokerError("only_queued_jobs_can_be_cancelled")
         self._store().set_job(request.job_id, "cancelled", "client_cancelled_queued")
@@ -1688,6 +1688,8 @@ class Broker:
                         self.logs.append(Event.CANCELLED)
                     continue
                 self._execution_intents.pop(job_id, None)
+                if plan["test"] == TestName.BUILD.value:
+                    self.firmware_build.begin()
                 self.active_job = job_id
                 capture_principal = self.session.principal_id
                 store.set_job(job_id, "running")

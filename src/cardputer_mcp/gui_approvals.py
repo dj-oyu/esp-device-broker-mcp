@@ -267,6 +267,7 @@ class PlanReview:
         if row.backend == "serial":
             if row.test not in (
                 "passive_observe",
+                "firmware_build",
                 "firmware_observe",
                 "restart_and_observe",
                 "hello",
@@ -280,6 +281,16 @@ class PlanReview:
         if data["attestation"] != expected:
             raise ValueError("invalid_plan_response")
         log_recipient = None
+        if row.test == "firmware_build":
+            recipient = plan.get("build_principal")
+            if (not isinstance(recipient, str)
+                or re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", recipient) is None
+                or plan.get("expected_idf") != "6.0.1"
+                or plan.get("target") != "esp32s3"
+                or plan.get("stages") != ["idf_profile", "idf_diagnostics", "idf_build"]):
+                raise ValueError("invalid_plan_response")
+            _hex(plan.get("fingerprint"), 64)
+            log_recipient = recipient
         if row.test in ("firmware_observe", "restart_and_observe"):
             delivery = plan.get("log_delivery")
             limits = {
@@ -352,6 +363,16 @@ def review_warning(review: PlanReview) -> str:
             "No additional send approval is required. The bounded report is retained in RAM "
             "for at most five minutes. Firmware identity is device-reported and unverified; "
             "configured firmware hashes are not evidence of running firmware.\n\n" + notice
+        )
+    if review.test == "firmware_build":
+        return (
+            "BUILD executes the registered trusted PowerShell export profile and project "
+            "build scripts as your OS user. This exact approval permits bounded build log "
+            f"delivery to requesting principal: {review.log_recipient}. "
+            "Output may contain private data; redaction cannot recognize every secret. "
+            "Logs remain in RAM for five minutes after the latest output, capped at "
+            "256 KiB / 2,048 lines per job. External ESP-IDF must be exactly 6.0.1. "
+            "No flash, USB, reset, install or version fallback.\n\n" + notice
         )
     if review.test == "firmware_observe":
         return (
@@ -858,3 +879,4 @@ class PlanApprovalPanel:
             return False
         self.worker.stop()
         return True
+

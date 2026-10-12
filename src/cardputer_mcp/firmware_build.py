@@ -47,13 +47,16 @@ def parse_profile(text: str) -> dict[str, str]:
     return result
 
 
-def source_fingerprint(directory: Path) -> str:
+def source_fingerprint(directory: Path, *, excluded_roots: tuple[Path, ...] = ()) -> str:
     digest = hashlib.sha256()
     count = total = 0
     for path in sorted(directory.rglob("*")):
         relative = path.relative_to(directory)
-        if any(part in (".git", ".state", "__pycache__", "build") or part.startswith("build-")
-               for part in relative.parts):
+        # Only repository metadata and explicitly identified broker output roots
+        # are excluded. A source component named build-helper is still executable input.
+        if relative.parts[0] == ".git" or any(
+            path == output or path.is_relative_to(output) for output in excluded_roots
+        ):
             continue
         if path.is_symlink():
             raise ValueError("linked_project_not_supported")
@@ -85,15 +88,26 @@ class FirmwareBuild:
         self.logs: dict[str, BuildLogs] = {}
         self.manifests: dict[str, tuple[str, dict[str, Any]]] = {}
         self._lock = threading.RLock()
+        self._committed_job: str | None = None
 
     def prepare(self, project_id: str | None, principal: str) -> dict[str, Any]:
         project = self.settings.build_projects.get(project_id)
         if project is None or not principal:
             raise ValueError("registered_build_project_required")
+        if (hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
+            self.settings.state_dir.resolve()
+        )):
+            raise ValueError("project_must_not_be_inside_broker_state")
         if not (project.project_dir / "CMakeLists.txt").is_file():
             raise ValueError("idf_project_required")
         fingerprint = hashlib.sha256(json.dumps({
-            "source": source_fingerprint(project.project_dir),
+            "source": source_fingerprint(
+                project.project_dir,
+                excluded_roots=(self.settings.state_dir.resolve(),)
+                if hasattr(self.settings, "state_dir") else (),
+            ),
+            "project_id": project_id,
+            "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
             "profile": hash_file(project.trusted_profile),
             "version": project.expected_idf, "target": project.target,
         }, sort_keys=True).encode()).hexdigest()
@@ -107,14 +121,33 @@ class FirmwareBuild:
                     argv_template=["registered-python", "registered-idf.py", "-B",
                                    "fingerprint-build-directory", "build"])
 
+    def request_stop(self, job_id: str | None = None) -> bool:
+        """Serialize accepted cancellation against the final success commit."""
+        with self._lock:
+            if job_id is not None and self._committed_job == job_id:
+                return False
+            self.process.stop_requested.set()
+            return True
+
+    def _check_cancelled(self) -> None:
+        if self.process.stop_requested.is_set():
+            raise ValueError("build_interrupted_needs_review")
+
+    def begin(self) -> None:
+        """Only the broker's callback-free dispatch starts a fresh operation."""
+        with self._lock:
+            self._committed_job = None
+            self.process.stop_requested.clear()
+
     async def execute(self, plan: dict[str, Any], stage: Any) -> str:
-        self.process.stop_requested.clear()
+        self._check_cancelled()
         loop = asyncio.get_running_loop()
         return await asyncio.to_thread(
             self._execute, plan, lambda name: loop.call_soon_threadsafe(stage, name)
         )
 
     def _execute(self, plan: dict[str, Any], stage: Any) -> str:
+        self._check_cancelled()
         if os.name != "nt":
             raise ValueError("external_windows_idf_required")
         principal = plan["build_principal"]
@@ -201,16 +234,19 @@ class FirmwareBuild:
             raise ValueError("idf_build_failed_needs_review")
         if self.prepare(plan["project_id"], principal)["fingerprint"] != plan["fingerprint"]:
             raise ValueError("build_inputs_changed")
+        self._check_cancelled()
         description = json.loads((build_dir / "project_description.json").read_text())
         if description.get("target") != project.target:
             raise ValueError("build_target_mismatch")
         artifacts = []
         for path in sorted(build_dir.rglob("*")):
+            self._check_cancelled()
             if path.suffix in (".bin", ".elf") and path.is_file():
                 if len(artifacts) >= 32:
                     raise ValueError("artifact_count_limit")
                 artifacts.append(dict(name=path.relative_to(build_dir).as_posix(),
                                       bytes=path.stat().st_size, sha256=hash_file(path)))
+        self._check_cancelled()
         if not artifacts:
             raise ValueError("build_artifacts_missing")
         manifest = dict(schema_version=1, idf_version="6.0.1", target=project.target,
@@ -218,10 +254,19 @@ class FirmwareBuild:
                         environment_fingerprint=environment_fingerprint,
                         artifacts=artifacts,
                         flash_authorized=False)
-        with self._lock:
-            self.manifests[plan["job_id"]] = (principal, manifest)
-        (build_dir / "broker-manifest.json").write_text(json.dumps(manifest, indent=2))
-        logs.append("Build complete; artifact hashes recorded; flash requires separate approval")
+        # Write an inert candidate first. Accepted cancellation must never publish
+        # a success manifest, including cancellation during hashing or serialization.
+        candidate = build_dir / "broker-manifest.pending.json"
+        candidate.write_text(json.dumps(manifest, indent=2))
+        try:
+            with self._lock:
+                self._check_cancelled()
+                candidate.replace(build_dir / "broker-manifest.json")
+                self.manifests[plan["job_id"]] = (principal, manifest)
+                self._committed_job = plan["job_id"]
+                logs.append("Build complete; artifact hashes recorded; flash requires separate approval")
+        finally:
+            candidate.unlink(missing_ok=True)
         return "firmware_build_succeeded_no_flash"
 
     def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
@@ -232,7 +277,6 @@ class FirmwareBuild:
             result = logs.read(principal, request)
             if result["expired"]:
                 self.manifests.pop(request.job_id, None)
-                logs.redactions = ()
             manifest = self.manifests.get(request.job_id)
             if manifest and manifest[0] == principal and not result["expired"]:
                 result["manifest"] = manifest[1]

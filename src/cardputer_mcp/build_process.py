@@ -124,6 +124,8 @@ class BuildProcess:
             emit: Callable[[str, str], None], timeout: float = 1800) -> int:
         if self.active or self.uncertain:
             raise ValueError("build_process_busy")
+        if self.stop_requested.is_set():
+            raise ValueError("build_interrupted_needs_review")
         self.active = True
         readers: list[threading.Thread] = []
         pipes: list[BinaryIO] = []
@@ -142,10 +144,14 @@ class BuildProcess:
                     job = api.create_job()
                     self.owner = OwnedWindowsProcess(api, job)
                     api.configure_job(job)
+                    if self.stop_requested.is_set():
+                        raise ValueError("build_interrupted_needs_review")
                     api.create_suspended(job, args, env, str(cwd), self.owner._handles)
                     thread = self.owner._handles.thread
                     if self.owner._handles.process is None or thread is None:
                         raise WindowsProcessError("owned_process_handles_missing")
+                    if self.stop_requested.is_set():
+                        raise ValueError("build_interrupted_needs_review")
                     api.resume_thread(thread)
                     api.close_handle(thread)
                     self.owner._handles.thread = None
@@ -159,6 +165,8 @@ class BuildProcess:
                 pipes = [cast(BinaryIO, os.fdopen(stdout_read, "rb", buffering=0)),
                          cast(BinaryIO, os.fdopen(stderr_read, "rb", buffering=0))]
             else:
+                if self.stop_requested.is_set():
+                    raise ValueError("build_interrupted_needs_review")
                 process = subprocess.Popen(list(args), cwd=cwd, env=dict(env),
                                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                            stderr=subprocess.PIPE, start_new_session=True)

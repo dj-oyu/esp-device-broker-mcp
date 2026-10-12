@@ -76,6 +76,7 @@ async def test_real_mcp_http_disconnect_retry_handover(service):
             "job_status",
             "read_capture",
             "read_device_logs",
+            "read_build_logs",
             "cancel_job",
             "create_work_session",
             "resume_work_session",
@@ -83,6 +84,16 @@ async def test_real_mcp_http_disconnect_retry_handover(service):
             "cancel_device_request",
             "close_work_session",
         }
+        build_logs = next(tool for tool in advertised.tools if tool.name == "read_build_logs")
+        assert build_logs.annotations.read_only_hint is True
+        tool_data = build_logs.model_dump()
+        schema = tool_data.get("input_schema", tool_data.get("inputSchema"))
+        build_request = schema["$defs"]["BuildLogRequest"]
+        assert set(build_request["properties"]) == {"job_id", "cursor", "levels", "context", "limit"}
+        assert build_request["additionalProperties"] is False
+        # Even an unauthenticated mock demo must not expose build output.
+        private_logs = await call(first, "read_build_logs", {"job_id": "unstarted"})
+        assert private_logs["error"] == "authentication_required"
         acquired = await call(first, "acquire_session", {"owner": "local_cli"})
         token = acquired["session"]
         busy = await call(second, "acquire_session", {"owner": "remote_mcp"})

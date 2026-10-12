@@ -67,7 +67,7 @@ class BuildTests(unittest.TestCase):
             before = source_fingerprint(root)
             (root / 'build').mkdir()
             (root / 'build' / 'junk').write_text('ignored')
-            self.assertEqual(before, source_fingerprint(root))
+            self.assertEqual(before, source_fingerprint(root, excluded_roots=(root / 'build',)))
             (root / 'CMakeLists.txt').write_text('two')
             self.assertNotEqual(before, source_fingerprint(root))
 
@@ -200,7 +200,7 @@ class WindowsOwnedBuildTests(unittest.TestCase):
 
 class FirmwareVerticalTests(unittest.TestCase):
 
-    def test_profile_diagnostics_build_manifest_and_reader_boundary(self):
+    def _exercise_build(self, cancel_at=None):
         from unittest.mock import patch
         from cardputer_mcp import firmware_build as module
         with tempfile.TemporaryDirectory() as temp:
@@ -249,7 +249,28 @@ class FirmwareVerticalTests(unittest.TestCase):
                     return 0
             self_test = self
             builder.process = FakeProcess()
-            with patch.object(module, 'os', SimpleNamespace(name='nt', environ={'SYSTEMROOT': str(system), 'UNTRUSTED_TOKEN': 'secret'})), patch.object(module.shutil, 'which', return_value=str(compiler)):
+            original_prepare = builder.prepare
+            original_hash = module.hash_file
+            prepare_calls = 0
+            def prepare_hook(*args):
+                nonlocal prepare_calls
+                prepare_calls += 1
+                value = original_prepare(*args)
+                if cancel_at == 'fingerprint' and prepare_calls == 2:
+                    builder.request_stop('job')
+                return value
+            def hash_hook(path):
+                value = original_hash(path)
+                if cancel_at == 'artifact' and path.name == 'firmware.bin':
+                    builder.request_stop('job')
+                return value
+            with patch.object(module, 'os', SimpleNamespace(name='nt', environ={'SYSTEMROOT': str(system), 'UNTRUSTED_TOKEN': 'secret'})), patch.object(module.shutil, 'which', return_value=str(compiler)), patch.object(builder, 'prepare', side_effect=prepare_hook), patch.object(module, 'hash_file', side_effect=hash_hook):
+                if cancel_at:
+                    with self.assertRaisesRegex(ValueError, 'build_interrupted_needs_review'):
+                        builder._execute(plan, lambda _: None)
+                    self.assertNotIn('job', builder.manifests)
+                    self.assertEqual([], list(settings.state_dir.rglob('broker-manifest.json')))
+                    return
                 result = builder._execute(plan, lambda _: None)
             self.assertEqual(result, 'firmware_build_succeeded_no_flash')
             self.assertEqual(calls[0][1:3], ['-NoProfile', '-File'])
@@ -261,5 +282,77 @@ class FirmwareVerticalTests(unittest.TestCase):
             self.assertNotIn('hidden', str(report))
             with self.assertRaises(ValueError):
                 builder.read_logs(SimpleNamespace(job_id='job', **vars(request())), 'bob')
+    def test_profile_diagnostics_build_manifest_and_reader_boundary(self):
+        self._exercise_build()
+
+    def test_cancel_during_post_build_fingerprint(self):
+        self._exercise_build('fingerprint')
+
+    def test_cancel_during_artifact_hash(self):
+        self._exercise_build('artifact')
+
+
+class BuildLifecycleRegressionTests(unittest.TestCase):
+    def test_expired_poll_preserves_live_redaction(self):
+        builder = FirmwareBuild(SimpleNamespace())
+        logs = BuildLogs('alice')
+        logs.redactions = ('abcdefgh-secret',)
+        logs.deadline = 0
+        builder.logs['job'] = logs
+        req = SimpleNamespace(job_id='job', **vars(request()))
+        self.assertTrue(builder.read_logs(req, 'alice')['expired'])
+        logs.append('warning: abcdefgh-secret')
+        self.assertNotIn('abcdefgh-secret', str(builder.read_logs(req, 'alice')))
+
+    def test_preexisting_stop_never_launches(self):
+        from unittest.mock import patch
+        from cardputer_mcp import build_process as module
+        runner = BuildProcess()
+        runner.stop_requested.set()
+        with patch.object(module.subprocess, 'Popen') as launch, patch.object(module, 'PipeWindowsAPI') as win_api:
+            with self.assertRaisesRegex(ValueError, 'build_interrupted_needs_review'):
+                runner.run(['trusted'], {}, Path('/tmp'), lambda *_: None)
+        launch.assert_not_called()
+        win_api.assert_not_called()
+        self.assertFalse(runner.active)
+
+    def test_build_named_source_is_hashed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'CMakeLists.txt').write_text('include(build-helpers/config.cmake)')
+            helper = root / 'build-helpers/config.cmake'
+            helper.parent.mkdir()
+            helper.write_text('first code')
+            before = source_fingerprint(root)
+            helper.write_text('changed code')
+            self.assertNotEqual(before, source_fingerprint(root))
+            nested = root / 'components/build-helper/CMakeLists.txt'
+            nested.parent.mkdir(parents=True)
+            nested.write_text('nested code')
+            before = source_fingerprint(root)
+            nested.write_text('changed nested code')
+            self.assertNotEqual(before, source_fingerprint(root))
+
+    def test_identical_checkouts_have_distinct_build_fingerprints(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            profile = root / 'profile.ps1'
+            profile.write_text('return')
+            registrations = {}
+            for name in ('first', 'second'):
+                project = root / name
+                project.mkdir()
+                (project / 'CMakeLists.txt').write_text('identical bytes')
+                registrations[name] = SimpleNamespace(project_dir=project, trusted_profile=profile,
+                                                      expected_idf='6.0.1', target='esp32s3')
+            builder = FirmwareBuild(SimpleNamespace(build_projects=registrations))
+            first = builder.prepare('first', 'alice')['fingerprint']
+            second = builder.prepare('second', 'alice')['fingerprint']
+            self.assertNotEqual(first, second)
+            # Even the same registration ID in another broker config cannot alias roots.
+            other = FirmwareBuild(SimpleNamespace(build_projects={'first': registrations['second']}))
+            self.assertNotEqual(first, other.prepare('first', 'alice')['fingerprint'])
+
+
 if __name__ == '__main__':
     unittest.main()
