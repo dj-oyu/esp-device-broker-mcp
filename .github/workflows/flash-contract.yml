@@ -1,0 +1,74 @@
+name: Flash contract checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/flash-contract.yml'
+      - 'src/cardputer_mcp/flash*.py'
+      - 'src/cardputer_mcp/firmware_flash.py'
+      - 'tests/test_flash*.py'
+      - 'src/cardputer_mcp/broker.py'
+      - 'src/cardputer_mcp/models.py'
+      - 'src/cardputer_mcp/server.py'
+      - 'src/cardputer_mcp/config.py'
+      - 'src/cardputer_mcp/plan_approval.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flash-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.16'
+          architecture: x64
+      - name: Offline contract tests without hardware
+        run: |
+          python -m unittest discover -s tests -p 'test_flash*.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Locked verification dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-deps uv==0.12.19
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv sync --frozen --no-install-project --python python
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv/Scripts/python.exe --no-deps uv-build==0.12.19
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv/Scripts/python.exe --no-build-isolation --no-deps --editable .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Format public flash sources for review
+        run: |
+          $files = @(Get-ChildItem src/cardputer_mcp/flash*.py,tests/test_flash*.py | ForEach-Object { $_.FullName })
+          .venv/Scripts/ruff.exe format @files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "import json,pathlib; paths=sorted([*pathlib.Path('src/cardputer_mcp').glob('flash*.py'),*pathlib.Path('tests').glob('test_flash*.py')]); [print('FLASH_FORMATTED_FILE='+json.dumps({'path':p.as_posix(),'content':p.read_text(encoding='utf-8')})) for p in paths]"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Lint and type checks
+        run: |
+          $files = @(Get-ChildItem src/cardputer_mcp/flash*.py,tests/test_flash*.py | ForEach-Object { $_.FullName })
+          .venv/Scripts/ruff.exe check @files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $source = @(Get-ChildItem src/cardputer_mcp/flash*.py | ForEach-Object { $_.FullName })
+          .venv/Scripts/mypy.exe --follow-imports=silent @source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Contract tests with actual locked dependencies
+        run: |
+          .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_flash*.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
