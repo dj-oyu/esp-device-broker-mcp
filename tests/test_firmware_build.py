@@ -289,6 +289,8 @@ class FirmwareVerticalTests(unittest.TestCase):
                 def run(self, args, env, cwd, emit, timeout=1800):
                     calls.append(args)
                     environments.append(dict(env))
+                    self_test.assertEqual("AMD64", env["PROCESSOR_ARCHITECTURE"])
+                    self_test.assertEqual("AMD64", env["PROCESSOR_ARCHITEW6432"])
                     self_test.assertNotIn('UNTRUSTED_TOKEN', env)
                     if '-e' in args:
                         if profile_denied:
@@ -343,7 +345,8 @@ class FirmwareVerticalTests(unittest.TestCase):
                 return None
             with (
                 patch.object(module, 'os', SimpleNamespace(name='nt', environ={
-                    'SYSTEMROOT': str(system), 'UNTRUSTED_TOKEN': 'secret'
+                    'SYSTEMROOT': str(system), 'UNTRUSTED_TOKEN': 'secret',
+                    'PROCESSOR_ARCHITECTURE': 'AMD64', 'PROCESSOR_ARCHITEW6432': 'AMD64'
                 })),
                 patch.object(module.shutil, 'which', side_effect=which),
                 patch.object(builder, 'prepare', side_effect=prepare_hook),

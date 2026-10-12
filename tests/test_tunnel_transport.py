@@ -55,6 +55,7 @@ EXPECTED_TOOLS = {
     "job_status",
     "read_capture",
     "read_device_logs",
+    "read_build_logs",
     "cancel_job",
     "create_work_session",
     "resume_work_session",
@@ -461,3 +462,4 @@ async def test_remote_relay_cannot_supply_its_own_approval(tunnel_contract):
     assert service.backend.calls == 0
     assert service.broker.queue.empty()
     await service.tool("relay", "release_session", {"session": session})
+
