@@ -193,6 +193,8 @@ class Broker:
         self.maintenance: asyncio.Task[None] | None = None
         self.active_job: str | None = None
         self.logs = LogBook(settings.log_capacity)
+        from .firmware_build import FirmwareBuild
+        self.firmware_build = FirmwareBuild(settings)
         self.queue: asyncio.Queue[str | None] = asyncio.Queue(settings.max_queue)
         self.worker: asyncio.Task[None] | None = None
         self.store: Store | None = None
@@ -243,6 +245,7 @@ class Broker:
         if self.store is None:
             return
         self.closing = True
+        self.firmware_build.process.stop_requested.set()
         self._clear_local_home_diagnostic()
         self.captures.clear()
         self.device_observations.clear()
@@ -261,7 +264,7 @@ class Broker:
             # Never cancel the device task or release its lock during an active workflow.
             await self.queue.put(None)
             await asyncio.shield(self.worker)
-        if self._physical_busy():
+        if self._physical_busy() or self.firmware_build.process.uncertain:
             # An unconfirmed serial close must not advertise a free device or
             # release the broker lock. Only OS process teardown ends this hold.
             raise BrokerError("device_close_unconfirmed")
@@ -393,6 +396,8 @@ class Broker:
         return bool(
             self.active_job is not None
             or self.backend.active
+            or self.firmware_build.process.active
+            or self.firmware_build.process.uncertain
             or getattr(self.backend, "ownership_uncertain", False)
         )
 
@@ -945,14 +950,19 @@ class Broker:
         session = self._lease(request.session)
         store = self._store()
         if (
-            request.test in (TestName.CAPTURE, TestName.FIRMWARE, TestName.RESTART)
+            request.test in (TestName.CAPTURE, TestName.FIRMWARE, TestName.RESTART, TestName.BUILD)
             and session.principal_id is None
         ):
             raise BrokerError("authentication_required")
         if store.needs_review():
             raise BrokerError("recovery_review_required")
         try:
-            details = self.backend.prepare(request.test)
+            if request.test == TestName.BUILD:
+                details = self.firmware_build.prepare(request.project_id, session.principal_id or "")
+            else:
+                if request.project_id is not None:
+                    raise ValueError("project_only_for_build")
+                details = self.backend.prepare(request.test)
         except ValueError as exc:
             raise BrokerError("backend_preflight_failed") from exc
         payload = {
@@ -987,7 +997,9 @@ class Broker:
         result = {
             "plan_hash": digest,
             "plan": payload,
-            "approval_required": not self.settings.allow_mock_execution and not policy_available,
+            "approval_required": request.test == TestName.BUILD or (
+                not self.settings.allow_mock_execution and not policy_available
+            ),
         }
         if request.test == TestName.CAPTURE:
             result["policy_permit_available"] = policy_available
@@ -1058,7 +1070,8 @@ class Broker:
                 authorization, payload
             ):
                 raise BrokerError("capture_policy_no_longer_valid")
-        allow_mock = self.settings.backend == "mock" and self.settings.allow_mock_execution
+        allow_mock = (self.settings.backend == "mock" and self.settings.allow_mock_execution
+                      and payload["test"] != TestName.BUILD.value)
         if request.wait_for_approval and not approved and not allow_mock and authorization is None:
             # Policy callbacks must not extend the original request's lifetime
             # or register work under a replacement lease/principal.
@@ -1158,6 +1171,9 @@ class Broker:
                 raise BrokerError("execution_intent_not_available")
             self._cancel_execution_intent(intent, "client_cancelled_awaiting_approval")
             return self.job(request.job_id)
+        if job["state"] == "running" and plan["test"] == TestName.BUILD.value:
+            self.firmware_build.process.stop_requested.set()
+            return {**job, "stop_requested": True, "requires_review": True}
         if job["state"] != "queued":
             raise BrokerError("only_queued_jobs_can_be_cancelled")
         self._store().set_job(request.job_id, "cancelled", "client_cancelled_queued")
@@ -1680,7 +1696,11 @@ class Broker:
                         db.set_stage(job, name)
                         self.logs.append(Event.STAGE, stage=name)
 
-                    if local_home_probe is None:
+                    if plan["test"] == TestName.BUILD.value:
+                        if capture_principal != plan.get("build_principal"):
+                            raise BrokerError("build_principal_mismatch")
+                        result = await self.firmware_build.execute(plan, on_stage)
+                    elif local_home_probe is None:
                         result = await self.backend.execute(plan, on_stage)
                     else:
                         from .serial_backend import SerialBackend
@@ -1784,7 +1804,7 @@ class Broker:
                     # Do not keep the last image alive in this suspended worker frame
                     # after the bounded cache expires or is cleared.
                     result = ""
-                    if not self.backend.active:
+                    if not self.backend.active and not self.firmware_build.process.active and not self.firmware_build.process.uncertain:
                         self.active_job = None
                     self._expire()
             finally:

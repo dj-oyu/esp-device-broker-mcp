@@ -36,6 +36,22 @@ class TunnelMetadata(BaseModel):
         return value
 
 
+class BuildProject(BaseModel):
+    """Trusted local registration, never supplied as an MCP pathname."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    project_dir: Path
+    trusted_profile: Path
+    expected_idf: Literal["6.0.1"] = "6.0.1"
+    target: Literal["esp32s3"] = "esp32s3"
+
+    @field_validator("project_dir", "trusted_profile")
+    @classmethod
+    def absolute_path(cls, value: Path) -> Path:
+        if not value.is_absolute() or ".." in value.parts:
+            raise ValueError("absolute_registered_path_required")
+        return value
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     backend: Literal["mock", "serial"] = "mock"
@@ -48,6 +64,7 @@ class Settings(BaseModel):
     max_work_sessions: int = Field(default=128, ge=1, le=1024)
     max_waiters: int = Field(default=32, ge=1, le=256)
     log_capacity: int = Field(default=256, ge=4, le=10000)
+    build_projects: dict[str, BuildProject] = Field(default_factory=dict, max_length=16)
     serial: SerialSettings | None = None
     tunnel: TunnelMetadata | None = None
 

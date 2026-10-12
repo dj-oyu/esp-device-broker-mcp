@@ -31,7 +31,15 @@ def approve_plan(
             raise ValueError("submitted_plan_requires_gui_approval")
         if plan.get("backend") not in ("mock", "serial"):
             raise ValueError("unsupported_backend")
-        if plan.get("backend") == "serial":
+        if plan.get("test") == "firmware_build":
+            from .plan_approval import PlanApprovals
+            PlanApprovals._schema(plan)
+            disclosure = (
+                "Executes trusted local profile and project build scripts as your OS user. "
+                "Output is shared with the requesting principal; redaction is best effort. "
+                "External ESP-IDF must be exactly 6.0.1. No flash or USB operation.\n"
+            )
+        elif plan.get("backend") == "serial":
             if plan.get("test") not in (
                 "passive_observe",
                 "hello",

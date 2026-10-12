@@ -35,6 +35,7 @@ from .key_registry import KeyRegistry, KeyRegistryError
 from .key_registry import Scope as KeyScope
 from .models import (
     AcquireRequest,
+    BuildLogRequest,
     CancelDeviceRequest,
     CancelRequest,
     CloseWorkSessionRequest,
@@ -607,7 +608,7 @@ def create_server(
         """Prepare an immutable plan; serial preflight enumerates without opening USB."""
 
         def prepare() -> dict[str, Any]:
-            if request.test in (TestName.CAPTURE, TestName.FIRMWARE, TestName.RESTART):
+            if request.test in (TestName.CAPTURE, TestName.FIRMWARE, TestName.RESTART, TestName.BUILD):
                 owner = principal(ctx, "control")
                 resident.require_owner(
                     request.session, owner.origin.value, principal_id=owner.principal_id
@@ -633,6 +634,22 @@ def create_server(
     async def job_status(request: JobRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read persisted job state after reconnecting. Interrupted work is never replayed."""
         return _result(lambda: read(ctx, lambda: resident.job(request.job_id)))
+
+    @server.tool(annotations=read_only)
+    async def read_build_logs(request: BuildLogRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
+        """Read bounded shared build output by job and current authenticated principal.
+
+        Default warning/error plus progress, with diagnostic context; no path input.
+        Cursor reads do not consume output. Expiry, restart and eviction report gaps.
+        A successful build includes a hashed manifest; it grants no flash permission.
+        """
+        def get_logs() -> dict[str, Any]:
+            owner = principal(ctx, "read")
+            try:
+                return resident.firmware_build.read_logs(request, owner.principal_id)
+            except ValueError as exc:
+                raise BrokerError(str(exc)) from None
+        return _result(get_logs)
 
     @server.tool(annotations=read_only)
     async def read_device_logs(request: JobRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
