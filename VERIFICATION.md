@@ -457,3 +457,26 @@ process count was zero, and the Tunnel health listener / ownership lock were fre
 Only this test's processes were stopped; user config was unchanged. No new key,
 account permission, USB operation, firmware write or IDF build was performed.
 Cardputer remains on ESP-IDF 6.0.1; no 6.1 fallback or migration was performed.
+
+
+### Existing serial profile, parent read-only round-trip (2026-10-12 UTC)
+
+At the user's explicit request, the existing private broker TOML was used unchanged
+with serial runtime opt-in and the existing verified Tunnel client. Preflight found
+no competing broker/client listener or ownership lock. Only ephemeral process-only
+broker authentication was used; no persistent key or new permission was created.
+The client reported backend=serial, local_readiness=true and cloud_poll_observed=true.
+
+The parent reported its own actual connected MCP app calls all succeeded around
+17:51:15 UTC: device_status/client_identity/read_logs returned ok=true; backend was
+serial, hardware_connected=false, active_job=null, queue_depth=0, needs_review=false;
+identity was authenticated remote_mcp; logs showed broker_started around 17:50:32
+UTC and gap=false. Private identifiers, endpoints and credentials are omitted.
+This confirms parent-to-serial-configured MCP reachability through the real Tunnel;
+it does not confirm communication with physical hardware.
+
+No USB open, HELLO, capture, reset, flash, firmware write or IDF build was requested
+or performed. ESP-IDF remains 6.0.1. On parent completion, the harness exited 0,
+manager.close() returned true, and the owned serial broker stopped. Both listeners
+were free, and device/broker/Tunnel ownership locks were independently confirmed
+released. User config and pre-existing user processes were maintained.
