@@ -237,3 +237,51 @@ plan 承認が必要です。既存 needs_review を消去したり、失敗し�
 Tunnel client / クラウドの接続状態を管理していないため、未設定や接続成功とは断定しません。
 `tunnel_ingress_enabled` はその broker の専用入口の設定値だけを示します。
 接続状態は GUI の owned-client 表示と、実際のクラウド側での読み取り確認で別々に確認します。
+
+## Runtime API key を環境変数から渡す
+
+明示入力 → `CARDPUTER_TUNNEL_API_KEY` → `CONTROL_PLANE_API_KEY` の順で選びます。
+GUI の API key 欄は空欄のまま Connect を押すと環境変数を使用します。
+PowerShell ランチャーは `-Connect` 時だけ環境変数を読み、両方空なら従来の
+SecureString 入力に戻ります。`-PromptApiKey` は環境変数より明示入力を優先します。
+空白だけの値はキーとして無効です。`OPENAI_API_KEY` / admin key は使用しません。
+環境変数は起動元プロセスに利用者が設定してください。ここでは実キーを設定しません。
+
+既存の child environment allowlist を維持し、選んだ値を Tunnel 用子プロセスの
+`CARDPUTER_TUNNEL_API_KEY` にだけ渡します。native client は既存の
+`--control-plane.api-key=env:CARDPUTER_TUNNEL_API_KEY` で読みます。
+TOML、SQLite、引数、ログへ保存しません。GUI 欄には環境変数の値を表示しません。
+接続や再接続は利用者の明示操作が必要です。
+[公式 v0.0.15 設定仕様](https://github.com/openai/tunnel-client/blob/v0.0.15/docs/configuration.md)
+には native 変数 `CONTROL_PLANE_API_KEY` と env 参照が記載されています。
+
+## private broker TOML の保存先
+
+`%LOCALAPPDATA%\esp-device-broker-mcp\device.local.toml` を推奨します。
+clone や OneDrive の外で保持でき、更新時にもコピーを増やさずに済みます。
+自動移動・作成はしません。API key はこのファイルに書かないでください。
+既存ランチャーは絶対 `-Config`、CLI は絶対 `--config` を受け付けます。
+既定の探索先は clone 内のままなので、外部ファイルは毎回明示してください。
+
+```powershell
+cd C:\app\mcp\esp-device-broker-mcp
+$config = Join-Path $env:LOCALAPPDATA 'esp-device-broker-mcp\device.local.toml'
+# mock 設定を利用者が用意した後（backend = "mock"）:
+.\Start-CardputerGui.ps1 -Config $config
+# CLI GUI も同じファイルを参照:
+.\.venv\Scripts\python.exe -m cardputer_mcp.cli --auth-source environment gui --config $config
+```
+
+`state_dir` は TOML の親ではなくプロセスの cwd 基準です。ランチャーの broker cwd は
+clone になります。外部設定では `state_dir` を AppData 内の絶対パスにしてください
+（TOML の single-quoted literal string で Windows パスを記述できます）。
+Tunnel の相対 client_exe/client_archive は project 基準です。外部保管時は絶対パスが明確です。
+実機 serial 設定を使う場合だけ GUI に `-EnableSerial` を追加します。
+mock 検証に serial 設定を流用しないでください。
+
+ローカル Codex は [STDIO-CLIENTS.md](STDIO-CLIENTS.md) の stdio adapter で
+同じ broker に接続できます。API key / Tunnel はローカル stdio 接続に不要です。
+`examples/codex-project-config.toml` の Python と cwd をこの clone に合わせ、
+private env ファイルは AppData に置きます。発行済み local client key と registry が必要です。
+初回は mock で client_identity/device_status/read_logs を確認し、作業セッションと
+FIFO を試せます。実機 flash、USB、IDF ビルドの検証にはなりません。

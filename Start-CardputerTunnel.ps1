@@ -8,6 +8,7 @@ No download, installation, account creation, USB job, or firewall change is done
 [CmdletBinding()]
 param(
     [switch]$Connect,
+    [switch]$PromptApiKey,
     [string]$Config = '',
     [switch]$EnableSerial,
     [string]$KeyRegistry = '',
@@ -109,13 +110,23 @@ $secureMcp = $null
 $apiPointer = [IntPtr]::Zero
 $mcpPointer = [IntPtr]::Zero
 $process = $null
+$runtimeApi = $null
 try {
-    Write-Host 'Enter an existing runtime API key locally. It is never printed or saved.'
+    Write-Host 'Use a process runtime API key or enter it privately. It is never printed or saved.'
     Write-Host 'This starts outbound polling for your configured tunnel. Keep the new console open.'
-    $secureApi = Read-Host 'Tunnel runtime API key' -AsSecureString
-    $apiPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureApi)
-    $info.EnvironmentVariables['CARDPUTER_TUNNEL_API_KEY'] =
-        [Runtime.InteropServices.Marshal]::PtrToStringBSTR($apiPointer)
+    if (!$PromptApiKey) {
+        $runtimeApi = [Environment]::GetEnvironmentVariable('CARDPUTER_TUNNEL_API_KEY', 'Process')
+        if (!$runtimeApi) {
+            $runtimeApi = [Environment]::GetEnvironmentVariable('CONTROL_PLANE_API_KEY', 'Process')
+        }
+    }
+    if (!$runtimeApi) {
+        $secureApi = Read-Host 'Tunnel runtime API key' -AsSecureString
+        $apiPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureApi)
+        $runtimeApi = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($apiPointer)
+    }
+    $info.EnvironmentVariables['CARDPUTER_TUNNEL_API_KEY'] = $runtimeApi
+    $runtimeApi = $null
     if ($UseClientKey) {
         $secureMcp = Read-Host 'Previously issued Cardputer client key' -AsSecureString
         $mcpPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureMcp)
@@ -139,6 +150,7 @@ try {
     Write-Host 'Tunnel console opened. Its local readiness is not proof of cloud connectivity.'
     Write-Host 'Verify actual app discovery and a read-only device_status call before any device work.'
 } finally {
+    $runtimeApi = $null
     if ($apiPointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($apiPointer) }
     if ($mcpPointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($mcpPointer) }
     $info.EnvironmentVariables.Clear()
