@@ -92,6 +92,23 @@ def verify_bundle(root: Path, manifest: dict[str, Any], *, flash_bytes: int) -> 
     _digest(manifest.get("environment_fingerprint"))
     if type(flash_bytes) is not int or not 0 < flash_bytes <= 32 * 1024 * 1024:
         _fail("verified_flash_capacity_required")
+    security_receipt = manifest.get("flash_security")
+    if not isinstance(security_receipt, dict) or security_receipt.get("name") != "config/sdkconfig.json":
+        _fail("build_flash_security_receipt_required")
+    try:
+        security = json.loads(_file(root, security_receipt, 1048576), object_pairs_hook=_unique)
+    except (UnicodeError, json.JSONDecodeError):
+        _fail("invalid_build_flash_security")
+    if not isinstance(security, dict) or any(
+        security.get(key) is not False for key in
+        ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK")
+    ):
+        _fail("build_security_configuration_not_authorized")
+    if any(
+        value is True for key, value in security.items()
+        if key.startswith(("SECURE_BOOT", "SECURE_FLASH_ENC", "SECURE_SIGNED_APPS"))
+    ):
+        _fail("build_security_configuration_not_authorized")
     receipt = manifest.get("flash_layout")
     if not isinstance(receipt, dict) or receipt.get("name") != "flasher_args.json":
         _fail("build_flash_layout_receipt_required")

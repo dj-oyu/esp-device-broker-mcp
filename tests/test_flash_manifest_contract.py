@@ -46,6 +46,11 @@ class FlashManifestTests(unittest.TestCase):
             "flash_authorized": False,
             "artifacts": [],
         }
+        security = json.dumps({"SECURE_BOOT": False, "SECURE_FLASH_ENC_ENABLED": False,
+                               "BOOTLOADER_APP_ANTI_ROLLBACK": False}).encode()
+        (self.root / "config").mkdir()
+        (self.root / "config/sdkconfig.json").write_bytes(security)
+        self.manifest["flash_security"] = self.receipt("config/sdkconfig.json", security)
         for name in ("boot.bin", "app.bin"):
             data = b"synthetic-contract-only" * 8
             (self.root / name).write_bytes(data)
@@ -76,6 +81,17 @@ class FlashManifestTests(unittest.TestCase):
         del manifest["flash_layout"]
         with self.assertRaisesRegex(module.FlashAdmissionError, "layout_receipt_required"):
             self.verify(manifest)
+
+    def test_security_build_configuration_never_authorizes_first_boot_fuse_changes(self):
+        for key in ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK"):
+            security = {"SECURE_BOOT": False, "SECURE_FLASH_ENC_ENABLED": False,
+                        "BOOTLOADER_APP_ANTI_ROLLBACK": False}
+            security[key] = True
+            data = json.dumps(security).encode()
+            (self.root / "config/sdkconfig.json").write_bytes(data)
+            self.manifest["flash_security"] = self.receipt("config/sdkconfig.json", data)
+            with self.assertRaisesRegex(module.FlashAdmissionError, "security_configuration_not_authorized"):
+                self.verify()
 
     def test_changed_binary_and_layout_are_rejected(self):
         for name in ("app.bin", "flasher_args.json"):
