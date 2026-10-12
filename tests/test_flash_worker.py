@@ -72,11 +72,21 @@ class WorkerTests(unittest.TestCase):
             run_job(self.job, self.root, self.tool)
         self.assertEqual(self.writes, [])
 
+    def test_rom_crossing_read_and_write_rejected_before_device_open(self):
+        for job in (
+            dict(self.job, action="read", flash_bytes=16777216, offset=0xFFF000, size=8192),
+            dict(self.job, action="write", flash_bytes=16777216,
+                 segments=[{"offset": 0xFFF000, "bytes": 8192}]),
+        ):
+            with self.assertRaises(ValueError):
+                run_job(job, self.root, self.tool)
+        self.assertEqual(self.calls, [])
+
     def test_unknown_protected_or_encrypted_device_blocks_write(self):
         for field, value in (("SECURE_BOOT_EN", True), ("SECURE_DOWNLOAD_ENABLE", None)):
             self.setUp()
             self.chip.flags[field] = value
-            self.job["action"] = "write"
+            self.job["action"] = "probe"
             with self.assertRaisesRegex(ValueError, "security_not_verified"):
                 run_job(self.job, self.root, self.tool)
             self.assertEqual(self.writes, [])
@@ -114,7 +124,8 @@ class WorkerTests(unittest.TestCase):
                                            "encrypt": False, "force": False, "compress": False})
 
     def test_mismatched_device_and_non_s3_boot_image_never_write(self):
-        job = dict(self.job, action="write", expected_device_sha256="0" * 64)
+        job = dict(self.job, action="write", expected_device_sha256="0" * 64,
+                   segments=[{"offset": 4096, "name": "segment-0.bin", "bytes": 16, "sha256": "a" * 64}])
         with self.assertRaisesRegex(ValueError, "device_changed"):
             run_job(job, self.root, self.tool)
         self.assertEqual(self.writes, [])
