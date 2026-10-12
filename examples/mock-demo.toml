@@ -1,0 +1,8 @@
+# Public example: synthetic data only. No hardware ports, user paths or credentials.
+backend = "mock"
+host = "127.0.0.1"
+port = 8765
+state_dir = ".state/demo"
+# Explicit local operator opt-in to allowlisted SYNTHETIC actions only.
+allow_mock_execution = true
+mock_stage_seconds = 0.5

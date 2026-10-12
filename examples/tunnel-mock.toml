@@ -1,0 +1,15 @@
+# Authenticated local Tunnel preparation. No USB or automatic mock job execution.
+backend = "mock"
+host = "127.0.0.1"
+port = 8765
+state_dir = ".state/tunnel-mock"
+allow_mock_execution = false
+
+# Optional non-secret metadata shared by this broker, its GUI, and the launcher.
+# Leaving this unconfigured is valid and never starts an outbound connection.
+[tunnel]
+ingress_enabled = false
+tunnel_id = ""
+# client_exe = 'C:\Tools\tunnel-client-v0.0.15\tunnel-client.exe'
+# client_archive = 'C:\Downloads\tunnel-client-v0.0.15-windows-amd64.zip'
+# health_port = 8766

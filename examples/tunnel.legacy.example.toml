@@ -1,0 +1,11 @@
+# COMPATIBILITY ONLY: old flat tunnel.local.toml shape, no automatic migration.
+# New configurations should use broker.local.toml with one canonical [tunnel] table.
+# If both files refer to the same broker, conflicting metadata is rejected.
+# Never put API keys, client keys, bearer tokens, or autoconnect in either file.
+# ingress_enabled is optional here. If present it must match the canonical broker
+# [tunnel] setting (which defaults to false); this file cannot enable the HTTP route.
+client_exe = 'C:\Tools\tunnel-client-v0.0.15\tunnel-client.exe'
+client_archive = 'C:\Downloads\tunnel-client-v0.0.15-windows-amd64.zip'
+tunnel_id = "tunnel_00000000000000000000000000000000"
+broker_config = "examples/tunnel-mock.toml"
+health_port = 8766

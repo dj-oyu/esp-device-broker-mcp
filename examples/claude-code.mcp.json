@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "device-broker": {
+      "type": "stdio",
+      "command": "C:\\Tools\\cardputer-device-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "cardputer_mcp.cli",
+        "stdio",
+        "--env-file",
+        "C:\\Users\\YOUR_NAME\\AppData\\Local\\DeviceBroker\\local-client.env"
+      ]
+    }
+  }
+}
