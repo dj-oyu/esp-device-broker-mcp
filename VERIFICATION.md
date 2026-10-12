@@ -364,3 +364,119 @@ No real USB port, hardware action, user credential or Tunnel account was operate
 Native Windows rendering remains unverified for this change. The update provides
 local evidence for a separately approved diagnostic run; it does not establish
 the real wire-format cause or relax the strict HOME acknowledgement.
+
+
+## Windows runtime-key change: baseline comparison (2026-10-12 UTC)
+
+Compared tracked snapshots of main `71d3412` and runtime-key commit `f415967` in
+separate LocalAppData Temp directories, using the same clone `.venv` (CPython
+3.14.3, frozen uv.lock dependencies), pytest options, Windows environment, and
+separate test fixtures. PYTHONPATH selected each snapshot's own `src`; imports
+were verified. User device.local.toml and worktree were unchanged by comparison.
+
+- main: 2935 passed, 51 failed, 16 errors, 34 skipped.
+- change: 2948 passed, 45 failed, 16 errors, 34 skipped.
+- JUnit comparison: 53 shared failed/error testcase records match by testcase,
+  outcome and error message; zero change-only failures/errors. Six main-only
+  failures are all in unchanged client_environment tests. Counts vary between
+  runs; this does not establish a clean Windows suite. Pytest reports 16 errors
+  while its JUnit output has eight error testcase records.
+- Native Windows mypy outputs match exactly: 14 errors in four unchanged files.
+  `mypy --platform linux` passes; ruff and PowerShell parsing pass.
+- Shared failures include Windows environment-variable length limits in
+  parametrized tests, PermissionError in capture/observation tests, and Windows
+  path separator expectations. Access-denied paths were not bypassed.
+
+Basic local smoke from the specified clone used a temporary mock TOML with
+absolute state_dir, an unused loopback port, dummy process-only local/remote
+credentials and filtered environment. Authenticated MCP discovery returned 17
+tools; client_identity, device_status and read_logs succeeded. Native Tk manager
+started and refreshed, then closed; owned mock broker was terminated. The live
+GUI produced `TclError: invalid command name` in gui_timeline._canvas_size. The
+same callback error was reproduced on both snapshots with an authenticated mock
+broker, so it is pre-existing and remains unresolved in this PR.
+
+This execution process did not inherit CARDPUTER_TUNNEL_API_KEY or
+CONTROL_PLANE_API_KEY (presence booleans only). Real Tunnel/cloud connectivity
+was therefore not tested. Launch from the PowerShell process that has the key,
+or restart Codex after setting its inherited environment. No real key values,
+USB access, hardware writes or user config modifications were performed.
+
+
+### Authorized real Tunnel follow-up (2026-10-12 UTC)
+
+After Codex restart, CARDPUTER_TUNNEL_API_KEY was nonempty in both Process and
+User scopes (presence booleans only). Following explicit user authorization to
+use the real Tunnel, the existing official pinned EXE/ZIP passed verification.
+The existing Tunnel ID/client paths were used in memory; the user's broker TOML
+was unchanged. A separate Temp mock TOML contained no API key or real device
+metadata, used an unused loopback port and absolute state directory, and disabled
+mock execution. Its broker received only filtered OS variables and dummy local /
+remote MCP authentication; the real runtime key went only to the normal Tunnel
+client environment via the application's existing fallback.
+
+Local authenticated discovery exposed 17 tools, and client_identity/device_status/
+read_logs succeeded. Native Tunnel health reported local_readiness=true and
+cloud_poll_observed=true. While it was connected, this delegated task also called
+USB device connection's client_identity, device_status and read_logs through its
+connected MCP app tools: all returned ok=true, with device_status backend=mock.
+This validates that app tool route; a separate invocation by the parent cloud
+thread itself was not performed here. The manager's app_verified field remains
+false by design; it does not track these independently performed app calls.
+
+No new account links, permissions or credentials were created. No USB, capture,
+reset, flash or IDF build was performed. Native client output and response data
+were suppressed. A smoke harness cleanup print initially treated manager.close()
+(which returns bool) as a status dict. The Tunnel had closed, but broker cleanup
+was interrupted. The exact Temp mock command's two Python processes were verified
+as one launcher/broker parent-child tree and stopped. Afterwards the Tunnel health
+listener was free and ownership lock released. No user process was stopped.
+
+
+### Parent cloud thread round-trip confirmed (2026-10-12 UTC)
+
+A second coordinated live window used the same existing runtime key and verified
+Tunnel client, with a dedicated authenticated mock broker and execution disabled.
+Native health reported local_readiness=true and cloud_poll_observed=true. The
+parent cloud thread reported that its own connected MCP app tool calls completed
+at approximately 17:44:40 UTC:
+
+- device_status: ok=true, backend=mock, hardware_connected=false,
+  active_job=null, queue_depth=0.
+- client_identity: ok=true, authenticated=true, origin=remote_mcp.
+- read_logs: ok=true, broker_started around 17:43:22 UTC, gap=false.
+
+This supersedes the earlier parent-path limitation: the parent's actual connector
+read calls reached the running mock MCP through the real Tunnel. It does not
+validate hardware operations. Response identifiers, credentials and authenticated
+URLs are not recorded here.
+
+After the parent completion signal, the harness exited successfully:
+manager.close() returned true, the owned mock broker stopped, its remaining
+process count was zero, and the Tunnel health listener / ownership lock were free.
+Only this test's processes were stopped; user config was unchanged. No new key,
+account permission, USB operation, firmware write or IDF build was performed.
+Cardputer remains on ESP-IDF 6.0.1; no 6.1 fallback or migration was performed.
+
+
+### Existing serial profile, parent read-only round-trip (2026-10-12 UTC)
+
+At the user's explicit request, the existing private broker TOML was used unchanged
+with serial runtime opt-in and the existing verified Tunnel client. Preflight found
+no competing broker/client listener or ownership lock. Only ephemeral process-only
+broker authentication was used; no persistent key or new permission was created.
+The client reported backend=serial, local_readiness=true and cloud_poll_observed=true.
+
+The parent reported its own actual connected MCP app calls all succeeded around
+17:51:15 UTC: device_status/client_identity/read_logs returned ok=true; backend was
+serial, hardware_connected=false, active_job=null, queue_depth=0, needs_review=false;
+identity was authenticated remote_mcp; logs showed broker_started around 17:50:32
+UTC and gap=false. Private identifiers, endpoints and credentials are omitted.
+This confirms parent-to-serial-configured MCP reachability through the real Tunnel;
+it does not confirm communication with physical hardware.
+
+No USB open, HELLO, capture, reset, flash, firmware write or IDF build was requested
+or performed. ESP-IDF remains 6.0.1. On parent completion, the harness exited 0,
+manager.close() returned true, and the owned serial broker stopped. Both listeners
+were free, and device/broker/Tunnel ownership locks were independently confirmed
+released. User config and pre-existing user processes were maintained.

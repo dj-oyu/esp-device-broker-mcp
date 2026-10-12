@@ -16,6 +16,8 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from .tunnel import runtime_api_key
+
 if TYPE_CHECKING:
     import tkinter as tk
 
@@ -684,7 +686,9 @@ class TunnelPanel:
         box.pack(fill="both", expand=True)
         api = tk.StringVar()
         remote = tk.StringVar()
-        ttk.Label(box, text="Tunnel API key (used once)").grid(row=0, column=0, sticky="w")
+        ttk.Label(box, text="Tunnel API key (optional if environment is set)").grid(
+            row=0, column=0, sticky="w"
+        )
         api_entry = ttk.Entry(box, textvariable=api, show="*", width=58)
         api_entry.grid(row=1, column=0, pady=(4, 10))
         ttk.Label(box, text="Issued remote MCP key (optional if runtime remote key is set)").grid(
@@ -694,7 +698,7 @@ class TunnelPanel:
         ttk.Label(
             box,
             text="Blank uses CARDPUTER_REMOTE_TOKEN. Local operator keys are never used.\n"
-            "A manual restart requires a new Tunnel API key entry.",
+            "Blank API key uses CARDPUTER_TUNNEL_API_KEY, then CONTROL_PLANE_API_KEY.",
         ).grid(row=4, column=0, sticky="w", pady=8)
 
         def clear_and_close() -> None:
@@ -704,7 +708,7 @@ class TunnelPanel:
             prompt.destroy()
 
         def connect_once() -> None:
-            key = api.get()
+            key = runtime_api_key(api.get(), os.environ)
             remote_key = runtime_remote_key(remote.get(), os.environ)
             operation = self.controller.connect(key, remote_key)
             if operation is not None:
