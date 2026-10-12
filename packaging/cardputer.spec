@@ -13,7 +13,9 @@ analysis = Analysis(
     datas=datas,
     hiddenimports=[
         *collect_submodules("cardputer_mcp"),
-        *collect_submodules("mcp"),
+        # The SDK's optional standalone CLI imports typer and exits if absent.
+        # Our application supplies its own CLI and never uses that extra.
+        *collect_submodules("mcp", filter=lambda name: not name.startswith("mcp.cli")),
         *collect_submodules("uvicorn"),
         "tkinter",
         "tkinter.ttk",
