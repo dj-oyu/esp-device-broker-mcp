@@ -169,10 +169,14 @@ class ActualIDF601ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "config").mkdir()
-            config = {"IDF_TARGET": "esp32s3", "SECURE_BOOT": False,
-                      "SECURE_FLASH_ENC_ENABLED": False,
-                      "BOOTLOADER_APP_ROLLBACK_ENABLE": False,
-                      "SECURE_BOOT_V2_PREFERRED": True, "SECURE_BOOT_V2_RSA_SUPPORTED": True}
+            config = {
+                "IDF_TARGET": "esp32s3",
+                "SECURE_BOOT": False,
+                "SECURE_FLASH_ENC_ENABLED": False,
+                "BOOTLOADER_APP_ROLLBACK_ENABLE": False,
+                "SECURE_BOOT_V2_PREFERRED": True,
+                "SECURE_BOOT_V2_RSA_SUPPORTED": True,
+            }
             (root / "config/sdkconfig.json").write_text(json.dumps(config))
             _, summary = build_flash_security_receipt(root, "esp32s3")
             self.assertTrue(summary["anti_rollback_inferred_disabled"])
