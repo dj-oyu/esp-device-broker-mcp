@@ -60,12 +60,11 @@ jobs:
         run: |
           .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_flash*.py' -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Format public flash sources for review
+      - name: Verify checked-in formatting
         run: |
           $files = @(Get-ChildItem src/cardputer_mcp/flash*.py,src/cardputer_mcp/firmware_flash.py,src/cardputer_mcp/build_artifacts.py,tests/test_flash*.py | ForEach-Object { $_.FullName })
-          .venv/Scripts/ruff.exe format @files
+          .venv/Scripts/ruff.exe format --check @files
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -c "import json,pathlib; paths=sorted([*pathlib.Path('src/cardputer_mcp').glob('flash*.py'),pathlib.Path('src/cardputer_mcp/firmware_flash.py'),pathlib.Path('src/cardputer_mcp/build_artifacts.py'),*pathlib.Path('tests').glob('test_flash*.py')]); [print('FLASH_FORMATTED_FILE='+json.dumps({'path':p.as_posix(),'content':p.read_text(encoding='utf-8')})) for p in paths]"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Lint and type checks
         run: |
