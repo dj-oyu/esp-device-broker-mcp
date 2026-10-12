@@ -99,20 +99,12 @@ def verify_bundle(root: Path, manifest: dict[str, Any], *, flash_bytes: int) -> 
         security = json.loads(_file(root, security_receipt, 1048576), object_pairs_hook=_unique)
     except (UnicodeError, json.JSONDecodeError):
         _fail("invalid_build_flash_security")
-    if not isinstance(security, dict) or any(
-        security.get(key) is not False for key in
-        ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK")
-    ):
-        _fail("build_security_configuration_not_authorized")
-    if any(security.get(key) is True for key in (
-        "SECURE_DISABLE_ROM_DL_MODE", "SECURE_ENABLE_SECURE_ROM_DL_MODE",
-        "BOOT_ROM_LOG_ALWAYS_OFF", "BOOT_ROM_LOG_ON_GPIO_HIGH", "BOOT_ROM_LOG_ON_GPIO_LOW",
-    )):
-        _fail("build_security_configuration_not_authorized")
-    if any(
-        value is True for key, value in security.items()
-        if key.startswith(("SECURE_BOOT", "SECURE_FLASH_ENC", "SECURE_SIGNED_APPS"))
-    ):
+    if not isinstance(security, dict):
+        _fail("invalid_build_flash_security")
+    from .flash_security import validate_build_security
+    try:
+        validate_build_security(security)
+    except ValueError:
         _fail("build_security_configuration_not_authorized")
     receipt = manifest.get("flash_layout")
     if not isinstance(receipt, dict) or receipt.get("name") != "flasher_args.json":
