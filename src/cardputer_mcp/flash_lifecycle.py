@@ -3,8 +3,9 @@
 import hashlib
 import json
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from .flash_manifest import FlashBundle
 
@@ -143,8 +144,12 @@ class FlashLifecycle:
                 self._live(live)
                 if len(data) != plan.flash_bytes:
                     raise FlashFailure("flash_backup_incomplete_needs_review")
-                receipt = BackupReceipt(security.device_sha256, plan.device_fingerprint,
-                                        plan.flash_bytes, hashlib.sha256(data).hexdigest())
+                receipt = BackupReceipt(
+                    security.device_sha256,
+                    plan.device_fingerprint,
+                    plan.flash_bytes,
+                    hashlib.sha256(data).hexdigest(),
+                )
                 result = receipt, data, {"backup_verified": True, "hardware_write": False}
             else:
                 if (
@@ -157,10 +162,14 @@ class FlashLifecycle:
                     raise FlashFailure("verified_device_backup_required")
                 if plan.operation == "flash":
                     if (
-                        bundle is None or bundle.manifest_sha256 != plan.manifest_sha256
+                        bundle is None
+                        or bundle.manifest_sha256 != plan.manifest_sha256
                         or len(images) != len(bundle.segments)
-                        or any(len(data) != item.size or hashlib.sha256(data).hexdigest() != item.sha256
-                               for item, data in zip(bundle.segments, images, strict=True))
+                        or any(
+                            len(data) != item.size
+                            or hashlib.sha256(data).hexdigest() != item.sha256
+                            for item, data in zip(bundle.segments, images, strict=True)
+                        )
                     ):
                         raise FlashFailure("flash_manifest_changed_needs_review")
                     # Recheck every sector that will be erased, including padding.
@@ -170,9 +179,12 @@ class FlashLifecycle:
                         size = ((item.size + 4095) // 4096) * 4096
                         self._live(live)
                         current = self.driver.read(item.offset, size)
-                        if current != backup[item.offset:item.offset + size]:
+                        if current != backup[item.offset : item.offset + size]:
                             raise FlashFailure("flash_backup_stale_needs_review")
-                    segments = tuple((item.offset, data) for item, data in zip(bundle.segments, images, strict=True))
+                    segments = tuple(
+                        (item.offset, data)
+                        for item, data in zip(bundle.segments, images, strict=True)
+                    )
                 else:
                     segments = ((0, backup),)
                 self._live(live)
@@ -194,13 +206,23 @@ class FlashLifecycle:
                     summary.get("boot_observed") is not True
                     or summary.get("idf_version") != "6.0.1"
                     or summary.get("target") != "esp32s3"
-                    or (plan.expected_app_sha256 is not None and
-                        summary.get("app_sha256") != plan.expected_app_sha256)
+                    or (
+                        plan.expected_app_sha256 is not None
+                        and summary.get("app_sha256") != plan.expected_app_sha256
+                    )
                 ):
                     raise FlashFailure("flash_boot_unverified_needs_review")
                 # Accept only explicitly bounded public fields, never raw output.
-                result = None, None, {"boot_observed": True, "idf_version": "6.0.1",
-                                      "target": "esp32s3", "readback_verified": True}
+                result = (
+                    None,
+                    None,
+                    {
+                        "boot_observed": True,
+                        "idf_version": "6.0.1",
+                        "target": "esp32s3",
+                        "readback_verified": True,
+                    },
+                )
             self._live(live)
         except FlashFailure:
             raise

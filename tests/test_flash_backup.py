@@ -19,7 +19,9 @@ class BackupTests(unittest.TestCase):
         self.directory = Path(temporary.name) / "private"
         self.store = BackupStore(self.directory, windows_private_acl_confirmed=True)
         self.data = b"synthetic-backup-data"
-        self.receipt = BackupReceipt("a" * 64, "b" * 64, len(self.data), hashlib.sha256(self.data).hexdigest())
+        self.receipt = BackupReceipt(
+            "a" * 64, "b" * 64, len(self.data), hashlib.sha256(self.data).hexdigest()
+        )
 
     def test_private_receipt_roundtrip_and_principal_binding(self):
         saved = self.store.save("backup-job", "principal", self.receipt, self.data)

@@ -10,7 +10,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("flash_contract", ROOT / "src/cardputer_mcp/flash_manifest.py")
+spec = importlib.util.spec_from_file_location(
+    "flash_contract", ROOT / "src/cardputer_mcp/flash_manifest.py"
+)
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
@@ -22,16 +24,27 @@ class FlashManifestTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.layout = {
-            "write_flash_args": ["--flash-mode", "dio", "--flash-size", "8MB", "--flash-freq", "80m"],
+            "write_flash_args": [
+                "--flash-mode",
+                "dio",
+                "--flash-size",
+                "8MB",
+                "--flash-freq",
+                "80m",
+            ],
             "flash_settings": {"flash_mode": "dio", "flash_size": "8MB", "flash_freq": "80m"},
             "flash_files": {"0x0": "boot.bin", "0x10000": "app.bin"},
             "extra_esptool_args": {"chip": "esp32s3"},
             "app": {"offset": "0x10000", "file": "app.bin", "encrypted": "false"},
         }
         self.manifest = {
-            "schema_version": 1, "idf_version": "6.0.1", "target": "esp32s3",
-            "fingerprint": "a" * 64, "environment_fingerprint": "b" * 64,
-            "flash_authorized": False, "artifacts": [],
+            "schema_version": 1,
+            "idf_version": "6.0.1",
+            "target": "esp32s3",
+            "fingerprint": "a" * 64,
+            "environment_fingerprint": "b" * 64,
+            "flash_authorized": False,
+            "artifacts": [],
         }
         for name in ("boot.bin", "app.bin"):
             data = b"synthetic-contract-only" * 8
@@ -48,7 +61,9 @@ class FlashManifestTests(unittest.TestCase):
         self.manifest["flash_layout"] = self.receipt("flasher_args.json", data)
 
     def verify(self, manifest=None):
-        return module.verify_bundle(self.root, manifest or self.manifest, flash_bytes=8 * 1024 * 1024)
+        return module.verify_bundle(
+            self.root, manifest or self.manifest, flash_bytes=8 * 1024 * 1024
+        )
 
     def test_verified_layout_is_inert_and_manifest_bound(self):
         bundle = self.verify()

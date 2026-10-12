@@ -115,8 +115,14 @@ def verify_bundle(root: Path, manifest: dict[str, Any], *, flash_bytes: int) -> 
     if int(settings["flash_size"][:-2]) * 1024 * 1024 != flash_bytes:
         _fail("flash_capacity_mismatch")
     # Never replay generated argv; build a separate fixed command at dispatch.
-    expected_args = ["--flash-mode", settings["flash_mode"], "--flash-size",
-                     settings["flash_size"], "--flash-freq", settings["flash_freq"]]
+    expected_args = [
+        "--flash-mode",
+        settings["flash_mode"],
+        "--flash-size",
+        settings["flash_size"],
+        "--flash-freq",
+        settings["flash_freq"],
+    ]
     if layout.get("write_flash_args") != expected_args:
         _fail("unsupported_flash_arguments")
     files = layout.get("flash_files")
@@ -145,12 +151,22 @@ def verify_bundle(root: Path, manifest: dict[str, Any], *, flash_bytes: int) -> 
             _fail("unsafe_flash_range")
         segments.append(FlashSegment(start, name, len(data), artifact["sha256"]))
     segments.sort(key=lambda segment: segment.offset)
-    for left, right in zip(segments, segments[1:]):
+    for left, right in zip(segments, segments[1:], strict=False):
         if ((left.offset + left.size + 4095) // 4096) * 4096 > right.offset:
             _fail("overlapping_flash_erase_sectors")
     for value in layout.values():
-        if isinstance(value, dict) and "encrypted" in value and value["encrypted"] not in (False, "false"):
+        if (
+            isinstance(value, dict)
+            and "encrypted" in value
+            and value["encrypted"] not in (False, "false")
+        ):
             _fail("encrypted_flash_not_authorized")
     canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
-    return FlashBundle(hashlib.sha256(canonical).hexdigest(), receipt["sha256"], tuple(segments),
-                       settings["flash_mode"], settings["flash_size"], settings["flash_freq"])
+    return FlashBundle(
+        hashlib.sha256(canonical).hexdigest(),
+        receipt["sha256"],
+        tuple(segments),
+        settings["flash_mode"],
+        settings["flash_size"],
+        settings["flash_freq"],
+    )

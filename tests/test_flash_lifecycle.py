@@ -7,7 +7,12 @@ from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from cardputer_mcp.flash_lifecycle import FlashFailure, FlashLifecycle, OperationPlan, SecurityReceipt
+from cardputer_mcp.flash_lifecycle import (
+    FlashFailure,
+    FlashLifecycle,
+    OperationPlan,
+    SecurityReceipt,
+)
 from cardputer_mcp.flash_manifest import FlashBundle, FlashSegment
 
 
@@ -29,13 +34,13 @@ class FakeDriver:
 
     def read(self, offset, size):
         self.callback("read")
-        return bytes(self.data[offset:offset + size])
+        return bytes(self.data[offset : offset + size])
 
     def write(self, segments):
         self.callback("write")
         self.writes += 1
         for offset, data in segments:
-            self.data[offset:offset + len(data)] = data
+            self.data[offset : offset + len(data)] = data
 
     def boot(self):
         self.callback("boot")
@@ -58,20 +63,37 @@ class FlashLifecycleTests(unittest.TestCase):
         self.engine = FlashLifecycle(self.driver)
         self.backup = bytes(self.driver.data)
         self.image = b"new-image" * 20
-        segment = FlashSegment(4096, "app.bin", len(self.image), hashlib.sha256(self.image).hexdigest())
+        segment = FlashSegment(
+            4096, "app.bin", len(self.image), hashlib.sha256(self.image).hexdigest()
+        )
         self.bundle = FlashBundle("b" * 64, "c" * 64, (segment,), "dio", "8MB", "80m")
-        self.plan = OperationPlan("flash", "flash-job", "mock-principal", "d" * 32, "e" * 32,
-                                  "f" * 64, len(self.backup), "a" * 64,
-                                  hashlib.sha256(self.backup).hexdigest(), "b" * 64)
+        self.plan = OperationPlan(
+            "flash",
+            "flash-job",
+            "mock-principal",
+            "d" * 32,
+            "e" * 32,
+            "f" * 64,
+            len(self.backup),
+            "a" * 64,
+            hashlib.sha256(self.backup).hexdigest(),
+            "b" * 64,
+        )
         self.live = True
         self.stages = []
 
     def run_plan(self, plan=None, approved=None, closed=True, backup=None):
         plan = plan or self.plan
-        return self.engine.run(plan, approved or plan.digest, live=lambda: self.live,
-                               reader_closed=lambda: closed, stage=self.stages.append,
-                               bundle=self.bundle, images=(self.image,),
-                               backup=self.backup if backup is None else backup)
+        return self.engine.run(
+            plan,
+            approved or plan.digest,
+            live=lambda: self.live,
+            reader_closed=lambda: closed,
+            stage=self.stages.append,
+            bundle=self.bundle,
+            images=(self.image,),
+            backup=self.backup if backup is None else backup,
+        )
 
     def test_exact_approval_and_reader_closed_are_required(self):
         for approved, closed in (("0" * 64, True), (self.plan.digest, False)):
@@ -107,8 +129,13 @@ class FlashLifecycleTests(unittest.TestCase):
         self.assertFalse(self.engine.request_stop(self.plan.job_id))
 
     def test_backup_receipt_binds_exact_device_capacity_and_hash(self):
-        plan = replace(self.plan, operation="backup", expected_device_sha256=None,
-                       backup_sha256=None, manifest_sha256=None)
+        plan = replace(
+            self.plan,
+            operation="backup",
+            expected_device_sha256=None,
+            backup_sha256=None,
+            manifest_sha256=None,
+        )
         receipt, data, result = self.run_plan(plan)
         self.assertEqual(receipt.device_sha256, "a" * 64)
         self.assertEqual(receipt.sha256, hashlib.sha256(data).hexdigest())
@@ -130,15 +157,22 @@ class FlashLifecycleTests(unittest.TestCase):
     def test_cancel_at_each_stage_requires_review_and_closes(self):
         for phase in ("probe", "read", "write", "boot"):
             self.setUp()
-            self.driver.callback = lambda actual: self.engine.request_stop(self.plan.job_id) if actual == phase else None
-            with self.subTest(phase=phase), self.assertRaisesRegex(FlashFailure, "cancelled_needs_review"):
+            self.driver.callback = lambda actual, expected=phase: (
+                self.engine.request_stop(self.plan.job_id) if actual == expected else None
+            )
+            with (
+                self.subTest(phase=phase),
+                self.assertRaisesRegex(FlashFailure, "cancelled_needs_review"),
+            ):
                 self.run_plan()
             self.assertTrue(self.driver.closed)
             self.assertFalse(self.engine.active)
             self.assertLessEqual(self.driver.writes, 1)
 
     def test_revoked_authority_blocks_write(self):
-        self.driver.callback = lambda phase: setattr(self, "live", False) if phase == "read" else None
+        self.driver.callback = lambda phase: (
+            setattr(self, "live", False) if phase == "read" else None
+        )
         with self.assertRaisesRegex(FlashFailure, "authority_changed"):
             self.run_plan()
         self.assertEqual(self.driver.writes, 0)
@@ -147,6 +181,7 @@ class FlashLifecycleTests(unittest.TestCase):
         def timeout(phase):
             if phase == "write":
                 raise TimeoutError("synthetic private command")
+
         self.driver.callback = timeout
         with self.assertRaisesRegex(FlashFailure, "^flash_timeout_needs_review$"):
             self.run_plan()
@@ -158,7 +193,9 @@ class FlashLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(FlashFailure, "busy_or_uncertain"):
             self.run_plan()
         self.driver.uncertain = False
-        self.driver.callback = lambda phase: setattr(self.driver, "uncertain", True) if phase == "close" else None
+        self.driver.callback = lambda phase: (
+            setattr(self.driver, "uncertain", True) if phase == "close" else None
+        )
         with self.assertRaisesRegex(FlashFailure, "shutdown_uncertain"):
             self.run_plan()
         self.assertTrue(self.engine.active)
