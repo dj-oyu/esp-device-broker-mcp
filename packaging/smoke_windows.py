@@ -49,6 +49,64 @@ def invoke(exe: Path, args: list[str], cwd: Path, env: dict[str, str]) -> str:
     return stdout
 
 
+
+def frozen_build_api_smoke(url: str, cwd: Path, env: dict[str, str]) -> None:
+    """The official SDK client probes the running extracted EXE, never a Python broker."""
+    client_python = Path(__file__).resolve().parents[1] / ".venv/Scripts/python.exe"
+    if not client_python.is_file():
+        raise RuntimeError("packaged_sdk_probe_python_missing")
+    script = """
+import asyncio
+import json
+import os
+from cardputer_mcp.client import call, connect
+
+async def probe():
+    async with connect(os.environ['CARDPUTER_SMOKE_URL'],
+                       os.environ['CARDPUTER_REMOTE_TOKEN']) as client:
+        catalog = await client.list_tools()
+        names = {tool.name for tool in catalog.tools}
+        assert {'prepare_test', 'execute_test', 'read_build_logs'} <= names
+        prepared_tool = next(tool for tool in catalog.tools if tool.name == 'prepare_test')
+        assert 'firmware_build' in json.dumps(prepared_tool.model_dump())
+        logs_tool = next(tool for tool in catalog.tools if tool.name == 'read_build_logs')
+        assert logs_tool.annotations.read_only_hint is True
+        identity = await call(client, 'client_identity')
+        assert identity['ok'] is True and identity['authenticated'] is True
+        assert identity['origin'] == 'remote_mcp'
+        logs = await call(client, 'read_build_logs', {'job_id': 'unstarted-smoke'})
+        assert logs['ok'] is False and logs['error'] == 'build_log_not_available'
+        acquired = await call(client, 'acquire_session', {'owner': 'remote_mcp'})
+        assert acquired['ok'] is True
+        try:
+            result = await call(client, 'prepare_test', {
+                'session': acquired['session'], 'job_id': 'build-api-smoke',
+                'test': 'firmware_build', 'project_id': 'unregistered-smoke',
+            })
+            assert result['ok'] is False and result['error'] == 'backend_preflight_failed'
+        finally:
+            released = await call(client, 'release_session', {'session': acquired['session']})
+            assert released['ok'] is True
+
+async def main():
+    async with asyncio.timeout(30):
+        await probe()
+asyncio.run(main())
+"""
+    child_env = dict(env)
+    child_env["CARDPUTER_SMOKE_URL"] = url
+    try:
+        completed = subprocess.run(
+            [str(client_python), "-c", script], cwd=cwd, env=child_env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=45, check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("packaged_build_api_probe_failed")
+    finally:
+        child_env.clear()
+    print("PASS: extracted EXE authenticated catalog/build/log API boundaries; no build executed")
+
 def smoke(archive: Path, ref: str, commit: str) -> None:
     manifest = verify_archive(archive, ref, commit)
     with tempfile.TemporaryDirectory(prefix="cardputer-exe-smoke-") as temporary:
@@ -103,6 +161,7 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
             assert status["active_job"] is None
             logs = json.loads(invoke(exe, [*client, "logs"], folder, env))
             assert logs["ok"] is True and logs["gap"] is False
+            frozen_build_api_smoke(f"http://127.0.0.1:{port}/mcp", folder, env)
             # Authentication must remain enforced in the frozen broker.
             try:
                 invoke(exe, ["--url", f"http://127.0.0.1:{port}/mcp", "status"], folder, env)

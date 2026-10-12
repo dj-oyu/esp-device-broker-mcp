@@ -157,7 +157,44 @@ class PlanApprovals:
         backend, test = plan.get("backend"), plan.get("test")
         if type(test) is not str:
             raise ValueError
-        if backend == "mock":
+        if test == TestName.BUILD.value:
+            expected_keys = _BASE_KEYS | {
+                "project_id",
+                "fingerprint",
+                "expected_idf",
+                "target",
+                "build_principal",
+                "effects",
+                "argv_template",
+                "profile_execution_policy",
+            }
+            if (
+                backend not in ("mock", "serial")
+                or plan.get("device")
+                != ("mock-cardputer" if backend == "mock" else "configured-cardputer")
+                or not _hex(plan.get("fingerprint"), 64)
+                or type(plan.get("project_id")) is not str
+                or re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", plan["project_id"]) is None
+                or plan.get("profile_execution_policy") not in ("inherit", "RemoteSigned")
+                or plan.get("expected_idf") != "6.0.1"
+                or plan.get("target") != "esp32s3"
+                or type(plan.get("build_principal")) is not str
+                or not 1 <= len(plan["build_principal"]) <= 128
+                or plan.get("stages") != ["idf_profile", "idf_diagnostics", "idf_build"]
+                or type(plan.get("effects")) is not list
+                or len(plan["effects"]) != 3
+                or any(type(value) is not str or len(value) > 256 for value in plan["effects"])
+                or plan.get("argv_template")
+                != [
+                    "registered-python",
+                    "registered-idf.py",
+                    "-B",
+                    "fingerprint-build-directory",
+                    "build",
+                ]
+            ):
+                raise ValueError
+        elif backend == "mock":
             from .backend import MockBackend
 
             details = MockBackend().prepare(TestName(test))
@@ -296,7 +333,10 @@ class PlanApprovals:
             or plan["device"] != self.broker.backend.device
         ):
             raise BrokerError("plan_backend_mismatch")
-        if plan["backend"] == "serial":
+        if plan["test"] == TestName.BUILD.value:
+            if plan["build_principal"] != lease.principal_id:
+                raise BrokerError("plan_session_mismatch")
+        elif plan["backend"] == "serial":
             config = self.broker.settings.serial
             if config is None or (
                 plan["expected_firmware_sha256"] != config.expected_firmware_sha256
@@ -387,7 +427,11 @@ class PlanApprovals:
             allow_mock = (
                 self.broker.backend.name == "mock" and self.broker.settings.allow_mock_execution
             )
-            if allow_mock and not self.broker._execution_intents:
+            if (
+                allow_mock
+                and not self.broker._execution_intents
+                and not self.broker.settings.build_projects
+            ):
                 return {"broker_epoch": self.broker.epoch, "plans": [], "has_more": False}
             # CASE prevents SQLite evaluating json_extract against corrupt JSON.
             query = """FROM plans p WHERE CASE WHEN json_valid(p.payload)
@@ -432,7 +476,7 @@ class PlanApprovals:
                     except BrokerError:
                         continue
                     submitted = self.broker.pending_execution(plan_hash) is not None
-                    if allow_mock and not submitted:
+                    if allow_mock and not submitted and plan["test"] != TestName.BUILD.value:
                         continue
                     policies = self.broker.capture_policies
                     if plan["test"] == "capture_home" and not submitted:
@@ -590,7 +634,12 @@ class PlanApprovals:
             ):
                 raise BrokerError("device_attestation_required")
             try:
-                details = self.broker.backend.prepare(TestName(plan["test"]))
+                if plan["test"] == TestName.BUILD.value:
+                    details = self.broker.firmware_build.prepare(
+                        plan["project_id"], lease.principal_id or ""
+                    )
+                else:
+                    details = self.broker.backend.prepare(TestName(plan["test"]))
             except Exception:
                 raise BrokerError("backend_preflight_failed") from None
             expected = {key: plan[key] for key in _BASE_KEYS - {"stages"}} | details

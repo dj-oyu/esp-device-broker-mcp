@@ -55,6 +55,7 @@ EXPECTED_TOOLS = {
     "job_status",
     "read_capture",
     "read_device_logs",
+    "read_build_logs",
     "cancel_job",
     "create_work_session",
     "resume_work_session",
