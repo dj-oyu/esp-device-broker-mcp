@@ -201,6 +201,7 @@ def storage_snapshot(
                 break
     used = files = entries = 0
     complete = len(slots) < 256 and scan_complete
+
     def walk_failed(error: OSError) -> None:
         nonlocal complete
         complete = False
