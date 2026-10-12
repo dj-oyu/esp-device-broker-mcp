@@ -7,8 +7,8 @@ import os
 import shutil
 import tempfile
 import threading
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from .backend import BackendResult
@@ -92,14 +92,14 @@ class NativeFlashDriver:
 
     @property
     def active(self) -> bool:
-        hello_active = self._observation_backend is not None and (
+        observation_active = self._observation_backend is not None and (
             self._observation_backend.active or self._observation_backend.hardware_connected
         )
         return bool(
             self.process.active
             or self.backend.active
             or self.backend.hardware_connected
-            or hello_active
+            or observation_active
         )
 
     @property

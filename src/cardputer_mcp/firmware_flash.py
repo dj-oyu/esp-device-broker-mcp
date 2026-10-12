@@ -441,7 +441,7 @@ class FirmwareFlash:
                     log.append(line)
             self.results[self.job_id] = summary
             log.append("-- Flash operation completed; verified receipt/observations recorded")
-            return f"firmware_{plan["flash_operation"]}_completed"
+            return f"firmware_{plan['flash_operation']}_completed"
         except Exception:
             log.append("error: flash operation failed; needs review; no retry or automatic restore")
             raise

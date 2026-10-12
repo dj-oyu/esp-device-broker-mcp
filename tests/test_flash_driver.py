@@ -10,7 +10,7 @@ from test_serial_restart import STARTUP, FakePort, device
 
 from cardputer_mcp.flash_driver import NativeFlashDriver
 from cardputer_mcp.flash_lifecycle import FlashFailure
-from cardputer_mcp.serial_backend import fingerprint
+from cardputer_mcp.serial_backend import SerialFailure, fingerprint
 
 
 class HelloPort(FakePort):
@@ -52,8 +52,13 @@ class DriverBootTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         driver = NativeFlashDriver(
-            None, backend, fingerprint(entries[0]), Path(temporary.name), expected,
-            "abcdef0123456789" + "0" * 48, lambda: True
+            None,
+            backend,
+            fingerprint(entries[0]),
+            Path(temporary.name),
+            expected,
+            "abcdef0123456789" + "0" * 48,
+            lambda: True,
         )
         # No native receipt/process/USB operation; only the synthetic SerialBackend.
         driver._verified_port = lambda: entries[0].port
@@ -75,12 +80,14 @@ class DriverBootTests(unittest.TestCase):
     def test_wrong_or_missing_boot_evidence_never_sends_hello_keys(self):
         for startup in (
             STARTUP.replace(b"v5.5-test", b"v6.0.2"),
-            STARTUP.replace(b"v5.5-test", b"v6.0.1").replace(b"abcdef0123456789", b"1111111111111111"),
+            STARTUP.replace(b"v5.5-test", b"v6.0.1").replace(
+                b"abcdef0123456789", b"1111111111111111"
+            ),
             b"synthetic noise\r\n",
         ):
             driver, _, ports, _ = self.make_driver()
             ports[0].chunks = [startup]
-            with self.assertRaises(Exception):
+            with self.assertRaises((FlashFailure, SerialFailure)):
                 driver.boot()
             self.assertEqual(ports[1].writes, [])
             self.assertFalse(driver.active)
@@ -89,8 +96,10 @@ class DriverBootTests(unittest.TestCase):
         for revoked in (False, True):
             driver, backend, ports, _ = self.make_driver()
             deadline = backend.clock() + 1
-            driver.live = lambda: not revoked and backend.clock() < deadline
-            with self.assertRaises(Exception):
+            driver.live = lambda revoked=revoked, backend=backend, deadline=deadline: (
+                not revoked and backend.clock() < deadline
+            )
+            with self.assertRaises((FlashFailure, SerialFailure)):
                 driver.boot()
             self.assertEqual(ports[1].writes, [])
             self.assertFalse(driver.active)
@@ -98,12 +107,14 @@ class DriverBootTests(unittest.TestCase):
     def test_stop_during_passive_read_closes_without_commands(self):
         driver, _, ports, _ = self.make_driver()
         original = ports[0].read
+
         def stop_after_read(size):
             result = original(size)
             driver.stop()
             return result
+
         ports[0].read = stop_after_read
-        with self.assertRaises(Exception):
+        with self.assertRaises((FlashFailure, SerialFailure)):
             driver.boot()
         self.assertEqual(ports[0].writes, [])
         self.assertEqual(ports[1].writes, [])

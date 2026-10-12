@@ -56,6 +56,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv pip install --python .venv/Scripts/python.exe --no-build-isolation --no-deps --editable .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Contract tests with actual locked dependencies
+        run: |
+          .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_flash*.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Format public flash sources for review
         run: |
           $files = @(Get-ChildItem src/cardputer_mcp/flash*.py,src/cardputer_mcp/firmware_flash.py,src/cardputer_mcp/build_artifacts.py,tests/test_flash*.py | ForEach-Object { $_.FullName })
@@ -70,8 +74,4 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $source = @(Get-ChildItem src/cardputer_mcp/flash*.py,src/cardputer_mcp/firmware_flash.py,src/cardputer_mcp/build_artifacts.py | ForEach-Object { $_.FullName })
           .venv/Scripts/mypy.exe --follow-imports=silent @source
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Contract tests with actual locked dependencies
-        run: |
-          .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_flash*.py' -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

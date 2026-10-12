@@ -227,7 +227,6 @@ class FlashLifecycleTests(unittest.TestCase):
             self.run_plan()
         self.assertEqual(self.driver.writes, 1)
 
-
     def test_restore_requires_its_own_exact_plan_approval(self):
         plan = replace(self.plan, operation="restore", manifest_sha256=None)
         with self.assertRaisesRegex(FlashFailure, "approval_or_handoff"):
