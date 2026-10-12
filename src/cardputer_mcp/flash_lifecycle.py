@@ -129,6 +129,12 @@ class FlashLifecycle:
                 raise FlashFailure("flash_device_busy_or_uncertain")
             if approved_digest != plan.digest or reader_closed() is not True:
                 raise FlashFailure("flash_approval_or_handoff_required")
+            if plan.operation == "flash" and (
+                not isinstance(plan.expected_elf_sha256, str)
+                or len(plan.expected_elf_sha256) != 64
+                or any(c not in "0123456789abcdef" for c in plan.expected_elf_sha256)
+            ):
+                raise FlashFailure("flash_expected_elf_receipt_required")
             self.active = True
             self._committed = None
         result: tuple[BackupReceipt | None, bytes | None, dict[str, Any]]
@@ -204,6 +210,7 @@ class FlashLifecycle:
                 self._live(live)
                 if (
                     summary.get("boot_observed") is not True
+                    or summary.get("hello_verified") is not True
                     or summary.get("idf_version") != "6.0.1"
                     or summary.get("target") != "esp32s3"
                     or (
@@ -226,6 +233,8 @@ class FlashLifecycle:
                         "idf_version": "6.0.1",
                         "target": "esp32s3",
                         "readback_verified": True,
+                        "hello_verified": True,
+                        "boot_text_identity_verified": False,
                     },
                 )
             self._live(live)
@@ -245,7 +254,9 @@ class FlashLifecycle:
                 raise FlashFailure("flash_shutdown_uncertain_needs_review") from None
             if not self.uncertain:
                 self.active = False
+        self._live(live)
         with self._lock:
-            self._live(live)
+            if self.cancelled.is_set():
+                raise FlashFailure("flash_cancelled_needs_review")
             self._committed = plan.job_id
         return result

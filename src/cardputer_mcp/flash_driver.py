@@ -16,7 +16,7 @@ from .firmware_build import OS_ENV, hash_file
 from .flash_lifecycle import FlashFailure, SecurityReceipt
 from .models import TestName
 from .ports import resolve_port
-from .serial_backend import fingerprint
+from .serial_backend import SerialBackend, fingerprint
 
 
 def esptool_fingerprint(root: Path) -> str:
@@ -41,7 +41,8 @@ def esptool_fingerprint(root: Path) -> str:
 
 
 class NativeFlashDriver:
-    def __init__(self, registration: Any, backend: Any, expected_usb: str, work_root: Path) -> None:
+    def __init__(self, registration: Any, backend: Any, expected_usb: str, work_root: Path,
+                 expected_app_bin_sha256: str | None = None) -> None:
         self.registration = registration
         self.backend = backend
         self.expected_usb = expected_usb
@@ -50,14 +51,20 @@ class NativeFlashDriver:
         self.device_sha256: str | None = None
         self._stop = threading.Event()
         self.last_observation: Any = None
+        self.expected_app_bin_sha256 = expected_app_bin_sha256
+        self._hello_backend: Any = None
 
     @property
     def active(self) -> bool:
-        return bool(self.process.active or self.backend.active or self.backend.hardware_connected)
+        hello_active = self._hello_backend is not None and (
+            self._hello_backend.active or self._hello_backend.hardware_connected
+        )
+        return bool(self.process.active or self.backend.active or self.backend.hardware_connected or hello_active)
 
     @property
     def uncertain(self) -> bool:
-        return bool(self.process.uncertain or getattr(self.backend, "ownership_uncertain", False))
+        return bool(self.process.uncertain or getattr(self.backend, "ownership_uncertain", False)
+                    or getattr(self._hello_backend, "ownership_uncertain", False))
 
     def _verified_port(self) -> str:
         if self._stop.is_set():
@@ -119,15 +126,15 @@ class NativeFlashDriver:
             result = json.loads(lines[0])
             if result.get("ok") is not True:
                 raise FlashFailure("flash_native_failed_needs_review")
-            data = None
+            read_data: bytes | None = None
             if action == "read":
                 path = temporary / "read.bin"
                 if path.is_symlink() or path.stat().st_size != size:
                     raise FlashFailure("flash_native_read_incomplete")
-                data = path.read_bytes()
-                if len(data) != size or hashlib.sha256(data).hexdigest() != result.get("sha256"):
+                read_data = path.read_bytes()
+                if len(read_data) != size or hashlib.sha256(read_data).hexdigest() != result.get("sha256"):
                     raise FlashFailure("flash_native_read_incomplete")
-            return result, data
+            return result, read_data
         except FlashFailure:
             raise
         except Exception:
@@ -164,11 +171,27 @@ class NativeFlashDriver:
             raise FlashFailure("flash_boot_observation_missing")
         self.last_observation = result.observation
         metadata = result.observation.firmware.metadata()
+        if self.expected_app_bin_sha256 is None:
+            raise FlashFailure("flash_application_identity_required")
+        # An execution-only image context; the user's registration is unchanged.
+        self._hello_backend = SerialBackend(
+            self.backend.config.model_copy(update={"expected_firmware_sha256": self.expected_app_bin_sha256}),
+            inventory=self.backend.inventory, factory=self.backend.factory,
+            clock=self.backend.clock, pause=self.backend.pause,
+        )
+        self._verified_port()
+        hello_plan = {"test": TestName.HELLO.value, **self._hello_backend.prepare(TestName.HELLO)}
+        if hello_plan["device_fingerprint"] != self.expected_usb:
+            raise FlashFailure("flash_boot_device_changed")
+        hello = asyncio.run(self._hello_backend.execute(hello_plan, lambda _: None))
+        if hello != "hello_markers_passed_physical_checks_not_assessed":
+            raise FlashFailure("flash_hello_contract_not_verified")
         return {
             "boot_observed": metadata["status"] == "observed",
             "idf_version": (metadata["idf_version"] or "").removeprefix("v"),
             "target": "esp32s3",
             "elf_sha256_prefix": metadata["elf_sha256_prefix"],
+            "hello_verified": True,
         }
 
     def stop(self) -> None:

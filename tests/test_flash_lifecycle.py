@@ -25,7 +25,8 @@ class FakeDriver:
         self.writes = 0
         self.callback = lambda phase: None
         self.security = SecurityReceipt("a" * 64, len(self.data), "esp32s3", False, False, False)
-        self.summary = {"boot_observed": True, "idf_version": "6.0.1", "target": "esp32s3"}
+        self.summary = {"boot_observed": True, "idf_version": "6.0.1", "target": "esp32s3",
+                        "hello_verified": True, "elf_sha256_prefix": "c" * 9}
 
     def probe(self):
         self.active = True
@@ -78,6 +79,7 @@ class FlashLifecycleTests(unittest.TestCase):
             "a" * 64,
             hashlib.sha256(self.backup).hexdigest(),
             "b" * 64,
+            "c" * 64,
         )
         self.live = True
         self.stages = []
@@ -209,6 +211,22 @@ class FlashLifecycleTests(unittest.TestCase):
             self.run_plan()
         self.assertEqual(self.driver.writes, 1)
         self.assertTrue(self.driver.closed)
+
+    def test_elf_prefix_is_separate_from_bin_hash_and_required_for_flash(self):
+        self.assertNotEqual(self.bundle.segments[0].sha256, self.plan.expected_elf_sha256)
+        with self.assertRaisesRegex(FlashFailure, "expected_elf_receipt"):
+            self.run_plan(replace(self.plan, expected_elf_sha256=None))
+        self.assertEqual(self.driver.writes, 0)
+        self.driver.summary["elf_sha256_prefix"] = "d" * 9
+        with self.assertRaisesRegex(FlashFailure, "boot_unverified"):
+            self.run_plan()
+        self.assertEqual(self.driver.writes, 1)
+
+    def test_hello_contract_failure_never_claims_boot_success(self):
+        self.driver.summary["hello_verified"] = False
+        with self.assertRaisesRegex(FlashFailure, "boot_unverified"):
+            self.run_plan()
+        self.assertEqual(self.driver.writes, 1)
 
     def test_restore_requires_its_own_exact_plan_approval(self):
         plan = replace(self.plan, operation="restore", manifest_sha256=None)

@@ -38,7 +38,7 @@ class BackupStore:
         _not_link(directory)
         info = directory.stat()
         if os.name == "posix" and (
-            info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700
+            info.st_uid != int(getattr(os, "geteuid")()) or stat.S_IMODE(info.st_mode) != 0o700
         ):
             raise FlashFailure("private_backup_directory_required")
         self.directory = directory
@@ -114,7 +114,7 @@ class BackupStore:
             if info.st_nlink != 1 or info.st_size != record.flash_bytes:
                 raise ValueError
             if os.name == "posix" and (
-                info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600
+                info.st_uid != int(getattr(os, "geteuid")()) or stat.S_IMODE(info.st_mode) != 0o600
             ):
                 raise ValueError
             flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)

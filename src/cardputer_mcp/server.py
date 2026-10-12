@@ -34,6 +34,7 @@ from .http_diagnostics import (
 from .key_registry import KeyRegistry, KeyRegistryError
 from .key_registry import Scope as KeyScope
 from .models import (
+    FLASH_TESTS,
     AcquireRequest,
     BuildLogRequest,
     CancelDeviceRequest,
@@ -552,7 +553,7 @@ def create_server(
             "Images require local preview/send approval or an explicit operator key policy. "
             "Read permitted captures within five minutes using the same identity. "
             "Pixels do not prove LCD transfer. "
-            "No shell, raw serial or flash tools are available. "
+            "No arbitrary shell/raw serial commands are available. Flash requires registered device/build/backup and exact local approval. "
             "Restart requires an exact locally approved plan."
         ),
         log_level="WARNING",
@@ -613,6 +614,7 @@ def create_server(
                 TestName.FIRMWARE,
                 TestName.RESTART,
                 TestName.BUILD,
+                *FLASH_TESTS,
             ):
                 owner = principal(ctx, "control")
                 resident.require_owner(
@@ -654,6 +656,10 @@ def create_server(
             store = resident._store()
             job = store.job(request.job_id)
             plan = store.plan(job["plan_hash"]) if job is not None else None
+            if plan is not None and plan.get("test") in {t.value for t in FLASH_TESTS}:
+                if plan.get("flash_principal") != owner.principal_id:
+                    raise BrokerError("flash_log_not_available")
+                return resident.firmware_flash.read_logs(request, owner.principal_id)
             if (
                 plan is None
                 or plan.get("test") != TestName.BUILD.value

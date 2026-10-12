@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Identifier = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
 Capability = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -24,8 +24,14 @@ class TestName(StrEnum):
     FIRMWARE = "firmware_observe"
     RESTART = "restart_and_observe"
     BUILD = "firmware_build"
+    BACKUP = "firmware_backup"
+    FLASH = "firmware_flash"
+    RESTORE = "firmware_restore"
     HELLO = "hello"
     CAPTURE = "capture_home"
+
+
+FLASH_TESTS = frozenset({TestName.BACKUP, TestName.FLASH, TestName.RESTORE})
 
 
 class AcquireRequest(StrictModel):
@@ -45,6 +51,27 @@ class PrepareRequest(LeaseRequest):
     job_id: Identifier
     test: TestName = TestName.DIAGNOSTICS
     project_id: Identifier | None = None
+    device_id: Identifier | None = None
+    build_job_id: Identifier | None = None
+    backup_job_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def flash_references(self) -> "PrepareRequest":
+        if self.test not in FLASH_TESTS:
+            if any(value is not None for value in (self.device_id, self.build_job_id, self.backup_job_id)):
+                raise ValueError("flash_references_only_for_flash_operations")
+        elif self.device_id is None or self.project_id is not None:
+            raise ValueError("registered_flash_device_required")
+        elif self.test == TestName.BACKUP:
+            if self.build_job_id is not None or self.backup_job_id is not None:
+                raise ValueError("backup_has_no_build_or_backup_input")
+        elif self.backup_job_id is None:
+            raise ValueError("successful_backup_job_required")
+        elif self.test == TestName.FLASH and self.build_job_id is None:
+            raise ValueError("successful_build_job_required")
+        elif self.test == TestName.RESTORE and self.build_job_id is not None:
+            raise ValueError("restore_uses_backup_only")
+        return self
 
 
 class ExecuteRequest(LeaseRequest):

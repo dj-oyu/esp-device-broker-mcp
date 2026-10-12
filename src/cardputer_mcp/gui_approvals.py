@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from .models import TestName
+from .models import FLASH_TESTS, TestName
 
 if TYPE_CHECKING:
     import tkinter as tk
@@ -74,6 +74,8 @@ RESTART_NOTICE = (
 )
 ATTESTATIONS = {
     "none": "",
+    "flash_device_read_verified": "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ",
+    "flash_device_backup_verified": "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN",
     "device_free_firmware": "DEVICE FREE AND FIRMWARE VERIFIED",
     "device_home_firmware": "DEVICE HOME AND FIRMWARE VERIFIED",
 }
@@ -269,6 +271,9 @@ class PlanReview:
             if row.test not in (
                 "passive_observe",
                 "firmware_build",
+                "firmware_backup",
+                "firmware_flash",
+                "firmware_restore",
                 "firmware_observe",
                 "restart_and_observe",
                 "hello",
@@ -279,9 +284,17 @@ class PlanReview:
                 expected = "device_free_firmware"
             elif row.test == "capture_home":
                 expected = "device_home_firmware"
+        if row.test == TestName.BACKUP.value:
+            expected = "flash_device_read_verified"
+        elif row.test in (TestName.FLASH.value, TestName.RESTORE.value):
+            expected = "flash_device_backup_verified"
         if data["attestation"] != expected:
             raise ValueError("invalid_plan_response")
         log_recipient = None
+        if row.test in {t.value for t in FLASH_TESTS}:
+            from .firmware_flash import validate_flash_plan
+            validate_flash_plan(plan)
+            log_recipient = plan["flash_principal"]
         if row.test == "firmware_build":
             recipient = plan.get("build_principal")
             if (
@@ -368,6 +381,17 @@ def review_warning(review: PlanReview) -> str:
             "No additional send approval is required. The bounded report is retained in RAM "
             "for at most five minutes. Firmware identity is device-reported and unverified; "
             "configured firmware hashes are not evidence of running firmware.\n\n" + notice
+        )
+    if review.test in {t.value for t in FLASH_TESTS}:
+        return (
+            "BACKUP enters ROM download mode and reads full plaintext flash into private local storage. "
+            "FLASH/RESTORE write the exact displayed artifact/backup and erase affected sectors. "
+            "Verify the registered device, build security policy and recovery backup before this exact approval. "
+            "Reset/HELLO checks may exit the current app and lose unsaved state. "
+            "Cancellation or failure does not undo partial writes; needs_review blocks further work. "
+            f"Bounded redacted boot/progress logs go to principal: {review.log_recipient}. "
+            "Boot text is unverified; BIN readback and ELF prefix are separate evidence. No automatic restore.\n\n"
+            + notice
         )
     if review.test == "firmware_build":
         return (

@@ -11,6 +11,7 @@ import threading
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .build_artifacts import BuildArtifacts
 from .build_logs import BuildLogs
 from .build_process import BuildProcess
 from .build_security import BuildSecurityConfigError, interpret_idf601_security
@@ -267,6 +268,7 @@ def hash_file(path: Path) -> str:
 class FirmwareBuild:
     def __init__(self, settings: Any) -> None:
         self.settings = settings
+        self.artifacts = BuildArtifacts()
         self.process = BuildProcess()
         self.logs: dict[str, BuildLogs] = {}
         self.manifests: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -612,6 +614,7 @@ class FirmwareBuild:
             with self._lock:
                 self._check_cancelled()
                 candidate.replace(build_dir / "broker-manifest.json")
+                self.artifacts.publish(plan["job_id"], principal, build_dir, manifest)
                 self.manifests[plan["job_id"]] = (principal, manifest)
                 self._committed_job = plan["job_id"]
                 logs.append(
@@ -620,6 +623,9 @@ class FirmwareBuild:
         finally:
             candidate.unlink(missing_ok=True)
         return "firmware_build_succeeded_no_flash"
+
+    def resolve_flash_manifest(self, job_id: str, principal: str) -> tuple[Path, dict[str, Any]]:
+        return self.artifacts.resolve(job_id, principal)
 
     def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
         with self._lock:

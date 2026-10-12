@@ -39,6 +39,18 @@ def run_job(job: dict[str, Any], root: Path, tool: Any) -> dict[str, Any]:
         raise ValueError("registered_windows_port_required")
     if type(capacity) is not int or capacity not in (2097152, 4194304, 8388608, 16777216):
         raise ValueError("verified_flash_capacity_required")
+    if job["action"] == "read":
+        offset, size = job.get("offset"), job.get("size")
+        if type(offset) is not int or type(size) is not int or not 0 <= offset < capacity or not 0 < size <= min(capacity, 0x1000000) - offset:
+            raise ValueError("invalid_internal_read_range")
+    elif job["action"] == "write":
+        records = job.get("segments")
+        if not isinstance(records, list) or not 1 <= len(records) <= 16:
+            raise ValueError("invalid_internal_write_map")
+        for record in records:
+            offset, size = record.get("offset"), record.get("bytes")
+            if type(offset) is not int or type(size) is not int or offset < 0 or offset % 4096 or not 0 < size <= min(capacity, 0x1000000) - offset:
+                raise ValueError("unsafe_internal_write_range")
     esp = None
     with contextlib.redirect_stdout(Discard()), contextlib.redirect_stderr(Discard()):
         try:
@@ -127,8 +139,8 @@ def main() -> None:
         job = json.loads(path.read_text("utf-8"))
         if "Python " + platform.python_version() != job["expected_python_version"]:
             raise ValueError
-        import esptool
-        import esptool.cmds
+        import esptool  # type: ignore[import-not-found]  # Registered external SDK only.
+        import esptool.cmds  # type: ignore[import-not-found]
         if Path(esptool.__file__).resolve().parent != Path(job["esptool_directory"]).resolve():
             raise ValueError
         result = run_job(job, path.parent, esptool)
