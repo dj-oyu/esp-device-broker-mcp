@@ -45,7 +45,7 @@ use `cardputer.exe` directly for this distribution.
 
 ## Maintainer build and validation
 
-The workflow runs on `windows-2022` x64 with Python 3.12.14 and uv 0.12.19.
+The workflow runs on `windows-2022` x64 with Python 3.13.16 and uv 0.12.19.
 Application dependencies use the checked-in `uv.lock` with `--frozen --no-dev`.
 The complete packaging tool set is version-pinned separately in
 `packaging/requirements-windows-build.txt`, installed with `--no-deps` and checked

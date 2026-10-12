@@ -70,7 +70,7 @@ def create_archive(exe: Path, output: Path, ref: str, commit: str, root: Path = 
         "source_commit": commit,
         "source_ref": ref,
         "platform": "windows-x64",
-        "python_version": "3.12.14",
+        "python_version": "3.13.16",
         "uv_version": "0.12.19",
         "uv_lock_sha256": digest((root / "uv.lock").read_bytes()),
         "build_requirements_sha256": digest(
