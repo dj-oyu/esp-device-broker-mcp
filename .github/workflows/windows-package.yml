@@ -56,9 +56,11 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --no-deps uv==0.12.19
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv sync --frozen --no-dev --python python
+          uv sync --frozen --no-dev --no-install-project --python python
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv pip install --python .venv/Scripts/python.exe --no-deps -r packaging/requirements-windows-build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv/Scripts/python.exe --no-build-isolation --no-deps --editable .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv pip check --python .venv/Scripts/python.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
