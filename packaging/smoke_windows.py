@@ -180,6 +180,9 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
         with socket.socket() as check:
             assert check.connect_ex(("127.0.0.1", port)) != 0
     print("PASS: ZIP allowlist/hashes/version; EXE help/version/Tunnel dispatch; authenticated mock HTTP")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        from check_receipt_source import check
+        check()
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ class SecurityPolicyTests(unittest.TestCase):
             ("SECURE_BOOT", None), ("SECURE_FLASH_ENC_ENABLED", 0),
             ("BOOTLOADER_APP_ROLLBACK_ENABLE", None), ("BOOTLOADER_APP_ROLLBACK_ENABLE", True),
             ("SECURE_DISABLE_ROM_DL_MODE", True), ("SECURE_ENABLE_SECURE_ROM_DL_MODE", True),
-            ("SECURE_UNKNOWN_FUSE_WRITE", True), ("BOOT_ROM_LOG_ALWAYS_OFF", True),
+            ("SECURE_BOOT_FUTURE_SUPPORTED", True), ("BOOT_ROM_LOG_ALWAYS_OFF", True),
         ):
             data = self.fixture()
             data[key] = value

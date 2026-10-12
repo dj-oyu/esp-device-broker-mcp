@@ -43,7 +43,7 @@ class FlashManifestTests(unittest.TestCase):
             "artifacts": [],
         }
         security = json.dumps({"SECURE_BOOT": False, "SECURE_FLASH_ENC_ENABLED": False,
-                               "BOOTLOADER_APP_ANTI_ROLLBACK": False, "BOOTLOADER_APP_ROLLBACK_ENABLE": False, "SECURE_INSECURE_ALLOW_DL_MODE": True, "BOOT_ROM_LOG_ALWAYS_ON": True}).encode()
+                               "BOOTLOADER_APP_ANTI_ROLLBACK": False, "BOOTLOADER_APP_ROLLBACK_ENABLE": False, "BOOT_ROM_LOG_ALWAYS_ON": True}).encode()
         (self.root / "config").mkdir()
         (self.root / "config/sdkconfig.json").write_bytes(security)
         self.manifest["flash_security"] = self.receipt("config/sdkconfig.json", security)
@@ -81,7 +81,7 @@ class FlashManifestTests(unittest.TestCase):
     def test_security_build_configuration_never_authorizes_first_boot_fuse_changes(self):
         for key in ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK"):
             security = {"SECURE_BOOT": False, "SECURE_FLASH_ENC_ENABLED": False,
-                        "BOOTLOADER_APP_ANTI_ROLLBACK": False, "BOOTLOADER_APP_ROLLBACK_ENABLE": False, "SECURE_INSECURE_ALLOW_DL_MODE": True, "BOOT_ROM_LOG_ALWAYS_ON": True}
+                        "BOOTLOADER_APP_ANTI_ROLLBACK": False, "BOOTLOADER_APP_ROLLBACK_ENABLE": False, "BOOT_ROM_LOG_ALWAYS_ON": True}
             security[key] = True
             data = json.dumps(security).encode()
             (self.root / "config/sdkconfig.json").write_bytes(data)
