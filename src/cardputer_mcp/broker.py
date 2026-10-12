@@ -19,6 +19,7 @@ from uuid import uuid4
 from filelock import FileLock, Timeout
 
 from .backend import Backend, BackendResult, DeviceDisconnected, DeviceOperationFailure, MockBackend
+from .build_locations import BuildLocationError
 from .capture import CapturedImage
 from .config import Settings
 from .device_observation import DeviceObservation
@@ -973,6 +974,7 @@ class Broker:
             raise BrokerError("authentication_required")
         if store.needs_review():
             raise BrokerError("recovery_review_required")
+        storage = None
         try:
             if request.test in FLASH_TESTS:
                 details = self.firmware_flash.prepare(
@@ -982,10 +984,13 @@ class Broker:
                 details = self.firmware_build.prepare(
                     request.project_id, session.principal_id or ""
                 )
+                storage = self.firmware_build.storage(request.project_id or "")
             else:
                 if request.project_id is not None:
                     raise ValueError("project_only_for_build")
                 details = self.backend.prepare(request.test)
+        except BuildLocationError as exc:
+            raise BrokerError(exc.code) from None
         except (FlashFailure, FlashAdmissionError) as exc:
             raise BrokerError(str(exc)) from None
         except ValueError as exc:
@@ -1022,6 +1027,7 @@ class Broker:
         result = {
             "plan_hash": digest,
             "plan": payload,
+            **({"storage": storage} if storage is not None else {}),
             "approval_required": request.test in ({TestName.BUILD} | FLASH_TESTS)
             or (not self.settings.allow_mock_execution and not policy_available),
         }
@@ -1852,7 +1858,7 @@ class Broker:
                     store.set_job(job_id, "needs_review", str(failure))
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
-                except BuildPreflightFailure as failure:
+                except (BuildPreflightFailure, BuildLocationError) as failure:
                     store.set_job(job_id, "needs_review", failure.code)
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")

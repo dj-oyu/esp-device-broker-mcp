@@ -222,7 +222,7 @@ class FirmwareFlash:
         resolver = self.resolver or getattr(self.build, "resolve_flash_manifest", None)
         if resolver is None:
             raise FlashFailure("build_manifest_resolver_unavailable")
-        root, manifest = resolver(job_id, principal)
+        root, manifest = resolver(job_id, principal, plan["project_id"])
         if not isinstance(root, Path) or not isinstance(manifest, dict):
             raise FlashFailure("invalid_internal_build_manifest_context")
         return root, manifest

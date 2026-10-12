@@ -12,6 +12,17 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .build_artifacts import BuildArtifacts
+from .build_locations import (
+    BuildLocationError,
+    build_directory,
+    build_location,
+    check_storage_before_write,
+    check_windows_path,
+    claim_build_directory,
+    resolve_build_manifest,
+    slot_lock_path,
+    storage_snapshot,
+)
 from .build_logs import BuildLogs
 from .build_process import BuildProcess
 from .build_security import BuildSecurityConfigError, interpret_idf601_security
@@ -274,6 +285,7 @@ class FirmwareBuild:
         self.manifests: dict[str, tuple[str, dict[str, Any]]] = {}
         self._lock = threading.RLock()
         self._committed_job: str | None = None
+        self._build_lock: Any = None
 
     @staticmethod
     def _registered_tools(project: Any) -> dict[str, Any]:
@@ -308,6 +320,20 @@ class FirmwareBuild:
         if not (project.project_dir / "CMakeLists.txt").is_file():
             raise ValueError("idf_project_required")
         registered_tools = self._registered_tools(project)
+        build_root = getattr(project, "build_root", None)
+        if build_root is not None:
+            source = project.project_dir.resolve()
+            output = build_root.resolve()
+            if output.is_relative_to(source) or source.is_relative_to(output):
+                raise BuildLocationError("build_output_root_invalid")
+        if hasattr(self.settings, "state_dir"):
+            prospective = build_directory(self.settings.state_dir, build_root, "f" * 64, "e" * 64)
+            check_windows_path(prospective, windows=os.name == "nt")
+            check_storage_before_write(
+                self.settings.state_dir,
+                build_root,
+                getattr(project, "build_min_free_bytes", 512 * 1024 * 1024),
+            )
         fingerprint = hashlib.sha256(
             json.dumps(
                 {
@@ -323,6 +349,14 @@ class FirmwareBuild:
                     "version": project.expected_idf,
                     "target": project.target,
                     "profile_policy": getattr(project, "profile_execution_policy", "inherit"),
+                    "build_min_free_bytes": getattr(
+                        project, "build_min_free_bytes", 512 * 1024 * 1024
+                    ),
+                    "build_root_id": (
+                        hashlib.sha256(str(build_root.resolve()).casefold().encode()).hexdigest()
+                        if build_root is not None
+                        else None
+                    ),
                     "registered_tools": {
                         name: dict(
                             path=str(tool.executable.resolve(strict=True)).casefold(),
@@ -383,6 +417,24 @@ class FirmwareBuild:
         )
 
     def _execute(self, plan: dict[str, Any], stage: Any) -> str:
+        if self._build_lock is not None:
+            raise BuildLocationError("build_output_in_use")
+        try:
+            return self._execute_inner(plan, stage)
+        finally:
+            if self._build_lock is not None and not (
+                getattr(self.process, "active", False) or getattr(self.process, "uncertain", False)
+            ):
+                try:
+                    self._build_lock.release()
+                except Exception:
+                    with self._lock:
+                        self.manifests.pop(plan.get("job_id", ""), None)
+                        self._committed_job = None
+                    raise BuildLocationError("build_output_release_unconfirmed") from None
+                self._build_lock = None
+
+    def _execute_inner(self, plan: dict[str, Any], stage: Any) -> str:
         self._check_cancelled()
         if os.name != "nt":
             raise ValueError("external_windows_idf_required")
@@ -535,13 +587,27 @@ class FirmwareBuild:
             ).encode()
         ).hexdigest()
         logs.append("-- External Python, toolchain and ESP-IDF 6.0.1 diagnostics passed")
-        build_dir = (
-            self.settings.state_dir.resolve()
-            / "firmware-builds"
-            / plan["fingerprint"]
-            / environment_fingerprint
+        from filelock import FileLock, Timeout
+
+        build_root = getattr(project, "build_root", None)
+        check_storage_before_write(
+            self.settings.state_dir,
+            build_root,
+            getattr(project, "build_min_free_bytes", 512 * 1024 * 1024),
         )
-        build_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = slot_lock_path(
+            self.settings.state_dir, build_root, plan["fingerprint"], environment_fingerprint
+        )
+        lock_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        lock = FileLock(str(lock_path), timeout=0)
+        try:
+            lock.acquire()
+        except Timeout:
+            raise BuildLocationError("build_output_in_use") from None
+        self._build_lock = lock
+        build_dir = claim_build_directory(
+            self.settings.state_dir, build_root, plan["fingerprint"], environment_fingerprint
+        )
         stage("idf_build")
 
         def emit(line: str, stream: str) -> None:
@@ -604,6 +670,7 @@ class FirmwareBuild:
             flash_layout=flash_layout,
             flash_security=flash_security,
             flash_security_summary=security_summary,
+            build_location=build_location(plan["fingerprint"], environment_fingerprint, build_root),
             flash_authorized=False,
         )
         # Write an inert candidate first. Accepted cancellation must never publish
@@ -624,8 +691,27 @@ class FirmwareBuild:
             candidate.unlink(missing_ok=True)
         return "firmware_build_succeeded_no_flash"
 
-    def resolve_flash_manifest(self, job_id: str, principal: str) -> tuple[Path, dict[str, Any]]:
-        return self.artifacts.resolve(job_id, principal)
+    def storage(self, project_id: str) -> dict[str, Any]:
+        project = self.settings.build_projects.get(project_id)
+        if project is None:
+            raise BuildLocationError("registered_build_project_required")
+        return storage_snapshot(
+            self.settings.state_dir,
+            getattr(project, "build_root", None),
+            min_free_bytes=getattr(project, "build_min_free_bytes", 512 * 1024 * 1024),
+        )
+
+    def resolve_flash_manifest(
+        self, job_id: str, principal: str, project_id: str
+    ) -> tuple[Path, dict[str, Any]]:
+        cached_root, manifest = self.artifacts.resolve(job_id, principal)
+        project = self.settings.build_projects.get(project_id)
+        if project is None:
+            raise BuildLocationError("registered_build_project_required")
+        root = resolve_build_manifest(self.settings.state_dir, project.build_root, manifest)
+        if root.resolve() != cached_root:
+            raise BuildLocationError("build_output_identity_mismatch")
+        return root, manifest
 
     def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
         with self._lock:

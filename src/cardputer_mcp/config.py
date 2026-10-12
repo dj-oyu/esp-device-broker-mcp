@@ -59,11 +59,20 @@ class BuildProject(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     project_dir: Path
     trusted_profile: Path
+    build_root: Path | None = None
+    build_min_free_bytes: int = Field(default=512 * 1024 * 1024, strict=True, ge=0, le=1 << 40)
     profile_execution_policy: Literal["inherit", "RemoteSigned"] = "inherit"
     node_tool: RegisteredBuildTool | None = None
     git_tool: RegisteredBuildTool | None = None
     expected_idf: Literal["6.0.1"] = "6.0.1"
     target: Literal["esp32s3"] = "esp32s3"
+
+    @field_validator("build_root")
+    @classmethod
+    def absolute_build_root(cls, value: Path | None) -> Path | None:
+        if value is not None and (not value.is_absolute() or ".." in value.parts):
+            raise ValueError("absolute_registered_output_root_required")
+        return value
 
     @field_validator("project_dir", "trusted_profile")
     @classmethod
@@ -85,8 +94,8 @@ class Settings(BaseModel):
     max_work_sessions: int = Field(default=128, ge=1, le=1024)
     max_waiters: int = Field(default=32, ge=1, le=256)
     log_capacity: int = Field(default=256, ge=4, le=10000)
-    build_projects: dict[str, BuildProject] = Field(default_factory=dict, max_length=16)
     flash_devices: dict[str, FlashDevice] = Field(default_factory=dict, max_length=8)
+    build_projects: dict[str, BuildProject] = Field(default_factory=dict, max_length=16)
     serial: SerialSettings | None = None
     tunnel: TunnelMetadata | None = None
 
