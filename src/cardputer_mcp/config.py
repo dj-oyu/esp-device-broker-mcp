@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .flash_models import FlashDevice
 from .models import Digest
 from .ports import DeviceSelector
 
@@ -93,6 +94,7 @@ class Settings(BaseModel):
     max_work_sessions: int = Field(default=128, ge=1, le=1024)
     max_waiters: int = Field(default=32, ge=1, le=256)
     log_capacity: int = Field(default=256, ge=4, le=10000)
+    flash_devices: dict[str, FlashDevice] = Field(default_factory=dict, max_length=8)
     build_projects: dict[str, BuildProject] = Field(default_factory=dict, max_length=16)
     serial: SerialSettings | None = None
     tunnel: TunnelMetadata | None = None

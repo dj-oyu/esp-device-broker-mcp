@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from .broker import Broker, BrokerError, Session, digest_plan
-from .models import TestName
+from .models import FLASH_TESTS, TestName
 
 _MAX_PLAN_BYTES = 16 * 1024
 _MAX_PENDING = 64
@@ -39,6 +39,8 @@ _SERIAL_KEYS = {
 }
 _ATTESTATIONS = {
     "none": "",
+    "flash_device_read_verified": "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ",
+    "flash_device_backup_verified": "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN",
     "device_free_firmware": "DEVICE FREE AND FIRMWARE VERIFIED",
     "device_home_firmware": "DEVICE HOME AND FIRMWARE VERIFIED",
 }
@@ -157,7 +159,12 @@ class PlanApprovals:
         backend, test = plan.get("backend"), plan.get("test")
         if type(test) is not str:
             raise ValueError
-        if test == TestName.BUILD.value:
+        if test in {t.value for t in FLASH_TESTS}:
+            from .firmware_flash import FLASH_FIELDS, validate_flash_plan
+
+            validate_flash_plan(plan)
+            expected_keys = _BASE_KEYS | FLASH_FIELDS
+        elif test == TestName.BUILD.value:
             expected_keys = _BASE_KEYS | {
                 "project_id",
                 "fingerprint",
@@ -333,7 +340,10 @@ class PlanApprovals:
             or plan["device"] != self.broker.backend.device
         ):
             raise BrokerError("plan_backend_mismatch")
-        if plan["test"] == TestName.BUILD.value:
+        if plan["test"] in {t.value for t in FLASH_TESTS}:
+            if plan["flash_principal"] != lease.principal_id:
+                raise BrokerError("plan_session_mismatch")
+        elif plan["test"] == TestName.BUILD.value:
             if plan["build_principal"] != lease.principal_id:
                 raise BrokerError("plan_session_mismatch")
         elif plan["backend"] == "serial":
@@ -407,6 +417,10 @@ class PlanApprovals:
 
     @staticmethod
     def _attestation(plan: dict[str, Any]) -> str:
+        if plan["test"] == TestName.BACKUP.value:
+            return "flash_device_read_verified"
+        if plan["test"] in (TestName.FLASH.value, TestName.RESTORE.value):
+            return "flash_device_backup_verified"
         if plan["backend"] == "serial":
             if plan["test"] == "hello":
                 return "device_free_firmware"
@@ -476,7 +490,12 @@ class PlanApprovals:
                     except BrokerError:
                         continue
                     submitted = self.broker.pending_execution(plan_hash) is not None
-                    if allow_mock and not submitted and plan["test"] != TestName.BUILD.value:
+                    if (
+                        allow_mock
+                        and not submitted
+                        and plan["test"]
+                        not in ({TestName.BUILD.value} | {t.value for t in FLASH_TESTS})
+                    ):
                         continue
                     policies = self.broker.capture_policies
                     if plan["test"] == "capture_home" and not submitted:
@@ -634,7 +653,9 @@ class PlanApprovals:
             ):
                 raise BrokerError("device_attestation_required")
             try:
-                if plan["test"] == TestName.BUILD.value:
+                if plan["test"] in {t.value for t in FLASH_TESTS}:
+                    details = self.broker.firmware_flash.prepare_plan(plan)
+                elif plan["test"] == TestName.BUILD.value:
                     details = self.broker.firmware_build.prepare(
                         plan["project_id"], lease.principal_id or ""
                     )

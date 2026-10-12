@@ -11,6 +11,7 @@ import threading
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .build_artifacts import BuildArtifacts
 from .build_locations import (
     BuildLocationError,
     build_directory,
@@ -18,6 +19,7 @@ from .build_locations import (
     check_storage_before_write,
     check_windows_path,
     claim_build_directory,
+    resolve_build_manifest,
     slot_lock_path,
     storage_snapshot,
 )
@@ -277,6 +279,7 @@ def hash_file(path: Path) -> str:
 class FirmwareBuild:
     def __init__(self, settings: Any) -> None:
         self.settings = settings
+        self.artifacts = BuildArtifacts()
         self.process = BuildProcess()
         self.logs: dict[str, BuildLogs] = {}
         self.manifests: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -678,6 +681,7 @@ class FirmwareBuild:
             with self._lock:
                 self._check_cancelled()
                 candidate.replace(build_dir / "broker-manifest.json")
+                self.artifacts.publish(plan["job_id"], principal, build_dir, manifest)
                 self.manifests[plan["job_id"]] = (principal, manifest)
                 self._committed_job = plan["job_id"]
                 logs.append(
@@ -696,6 +700,18 @@ class FirmwareBuild:
             getattr(project, "build_root", None),
             min_free_bytes=getattr(project, "build_min_free_bytes", 512 * 1024 * 1024),
         )
+
+    def resolve_flash_manifest(
+        self, job_id: str, principal: str, project_id: str
+    ) -> tuple[Path, dict[str, Any]]:
+        cached_root, manifest = self.artifacts.resolve(job_id, principal)
+        project = self.settings.build_projects.get(project_id)
+        if project is None:
+            raise BuildLocationError("registered_build_project_required")
+        root = resolve_build_manifest(self.settings.state_dir, project.build_root, manifest)
+        if root.resolve() != cached_root:
+            raise BuildLocationError("build_output_identity_mismatch")
+        return root, manifest
 
     def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
         with self._lock:

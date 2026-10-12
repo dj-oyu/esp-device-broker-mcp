@@ -34,6 +34,7 @@ from .http_diagnostics import (
 from .key_registry import KeyRegistry, KeyRegistryError
 from .key_registry import Scope as KeyScope
 from .models import (
+    FLASH_TESTS,
     AcquireRequest,
     BuildLogRequest,
     CancelDeviceRequest,
@@ -552,13 +553,15 @@ def create_server(
             "Images require local preview/send approval or an explicit operator key policy. "
             "Read permitted captures within five minutes using the same identity. "
             "Pixels do not prove LCD transfer. "
-            "No shell, raw serial or flash tools are available. "
+            "No arbitrary shell/raw serial commands are available. Flash requires "
+            "registered device/build/backup and exact local approval. "
             "Restart requires an exact locally approved plan."
         ),
         log_level="WARNING",
     )
     read_only = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
     mutating = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
+    execution = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
 
     @server.tool(annotations=read_only)
     async def client_identity(ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -605,7 +608,13 @@ def create_server(
 
     @server.tool(annotations=mutating)
     async def prepare_test(request: PrepareRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
-        """Prepare an immutable plan; serial preflight enumerates without opening USB."""
+        """Prepare an immutable plan; serial preflight enumerates without opening USB.
+
+        Backup, flash and restore are independent exact-approval operations.
+        Their plans disclose ROM download-mode resets, writes and observation.
+        Flash leaves verified new firmware installed; restore requires a separate
+        explicit request. No automatic rollback, repeat write or HELLO is added.
+        """
 
         def prepare() -> dict[str, Any]:
             if request.test in (
@@ -613,6 +622,7 @@ def create_server(
                 TestName.FIRMWARE,
                 TestName.RESTART,
                 TestName.BUILD,
+                *FLASH_TESTS,
             ):
                 owner = principal(ctx, "control")
                 resident.require_owner(
@@ -622,9 +632,17 @@ def create_server(
 
         return _result(prepare)
 
-    @server.tool(annotations=mutating)
+    @server.tool(annotations=execution)
     async def execute_test(request: ExecuteRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Request execution of an exact plan; repeated requests never replay a job.
+
+        Firmware backup probes/reads private full flash via ROM connections that
+        can reset into download mode; it does not reset back into normal boot.
+        Flash/restore write only their approved images/backup, verify readback,
+        then perform one 100 ms normal-boot RTS pulse and passive observation
+        (up to 30 s). A disconnect allows at most one same-USB reopen after close,
+        without another reset pulse. Failure stops for review without retry or
+        automatic restore. HELLO remains a separate approved request.
 
         Set wait_for_approval=true to submit before manual approval. When approval
         is still required it returns awaiting_approval immediately; local GUI
@@ -654,6 +672,10 @@ def create_server(
             store = resident._store()
             job = store.job(request.job_id)
             plan = store.plan(job["plan_hash"]) if job is not None else None
+            if plan is not None and plan.get("test") in {t.value for t in FLASH_TESTS}:
+                if plan.get("flash_principal") != owner.principal_id:
+                    raise BrokerError("flash_log_not_available")
+                return resident.firmware_flash.read_logs(request, owner.principal_id)
             if (
                 plan is None
                 or plan.get("test") != TestName.BUILD.value

@@ -47,7 +47,11 @@ class ReviewPlan(BaseModel):
 class ApprovePlan(ReviewPlan):
     review_revision: Digest
     attestation: Literal[
-        "", "DEVICE FREE AND FIRMWARE VERIFIED", "DEVICE HOME AND FIRMWARE VERIFIED"
+        "",
+        "DEVICE FREE AND FIRMWARE VERIFIED",
+        "DEVICE HOME AND FIRMWARE VERIFIED",
+        "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ",
+        "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN",
     ]
     retain_local_home_line: bool = False
 

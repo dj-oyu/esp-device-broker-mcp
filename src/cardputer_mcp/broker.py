@@ -24,9 +24,12 @@ from .capture import CapturedImage
 from .config import Settings
 from .device_observation import DeviceObservation
 from .firmware_build import BuildPreflightFailure
+from .flash_lifecycle import FlashFailure
+from .flash_manifest import FlashAdmissionError
 from .home_line import HomeLineProbe
 from .logs import Event, LogBook
 from .models import (
+    FLASH_TESTS,
     AcquireRequest,
     CancelDeviceRequest,
     CancelRequest,
@@ -198,6 +201,11 @@ class Broker:
         from .firmware_build import FirmwareBuild
 
         self.firmware_build = FirmwareBuild(settings)
+        from .firmware_flash import FirmwareFlash
+
+        self.firmware_flash = FirmwareFlash(
+            settings, self.backend, self.firmware_build, self._store
+        )
         self.queue: asyncio.Queue[str | None] = asyncio.Queue(settings.max_queue)
         self.worker: asyncio.Task[None] | None = None
         self.store: Store | None = None
@@ -249,6 +257,7 @@ class Broker:
             return
         self.closing = True
         self.firmware_build.request_stop()
+        self.firmware_flash.request_stop()
         self._clear_local_home_diagnostic()
         self.captures.clear()
         self.device_observations.clear()
@@ -401,6 +410,8 @@ class Broker:
             or self.backend.active
             or self.firmware_build.process.active
             or self.firmware_build.process.uncertain
+            or self.firmware_flash.active
+            or self.firmware_flash.uncertain
             or getattr(self.backend, "ownership_uncertain", False)
         )
 
@@ -953,7 +964,11 @@ class Broker:
         session = self._lease(request.session)
         store = self._store()
         if (
-            request.test in (TestName.CAPTURE, TestName.FIRMWARE, TestName.RESTART, TestName.BUILD)
+            request.test
+            in (
+                {TestName.CAPTURE, TestName.FIRMWARE, TestName.RESTART, TestName.BUILD}
+                | FLASH_TESTS
+            )
             and session.principal_id is None
         ):
             raise BrokerError("authentication_required")
@@ -961,7 +976,11 @@ class Broker:
             raise BrokerError("recovery_review_required")
         storage = None
         try:
-            if request.test == TestName.BUILD:
+            if request.test in FLASH_TESTS:
+                details = self.firmware_flash.prepare(
+                    request, session.principal_id or "", self.epoch, session.id
+                )
+            elif request.test == TestName.BUILD:
                 details = self.firmware_build.prepare(
                     request.project_id, session.principal_id or ""
                 )
@@ -972,6 +991,8 @@ class Broker:
                 details = self.backend.prepare(request.test)
         except BuildLocationError as exc:
             raise BrokerError(exc.code) from None
+        except (FlashFailure, FlashAdmissionError) as exc:
+            raise BrokerError(str(exc)) from None
         except ValueError as exc:
             raise BrokerError("backend_preflight_failed") from exc
         payload = {
@@ -1007,7 +1028,7 @@ class Broker:
             "plan_hash": digest,
             "plan": payload,
             **({"storage": storage} if storage is not None else {}),
-            "approval_required": request.test == TestName.BUILD
+            "approval_required": request.test in ({TestName.BUILD} | FLASH_TESTS)
             or (not self.settings.allow_mock_execution and not policy_available),
         }
         if request.test == TestName.CAPTURE:
@@ -1082,7 +1103,7 @@ class Broker:
         allow_mock = (
             self.settings.backend == "mock"
             and self.settings.allow_mock_execution
-            and payload["test"] != TestName.BUILD.value
+            and payload["test"] not in ({TestName.BUILD.value} | {t.value for t in FLASH_TESTS})
         )
         if request.wait_for_approval and not approved and not allow_mock and authorization is None:
             # Policy callbacks must not extend the original request's lifetime
@@ -1183,8 +1204,13 @@ class Broker:
                 raise BrokerError("execution_intent_not_available")
             self._cancel_execution_intent(intent, "client_cancelled_awaiting_approval")
             return self.job(request.job_id)
-        if job["state"] == "running" and plan["test"] == TestName.BUILD.value:
-            accepted = self.firmware_build.request_stop(request.job_id)
+        if job["state"] == "running" and plan["test"] in (
+            {TestName.BUILD.value} | {t.value for t in FLASH_TESTS}
+        ):
+            controller = (
+                self.firmware_build if plan["test"] == TestName.BUILD.value else self.firmware_flash
+            )
+            accepted = controller.request_stop(request.job_id)
             return {**job, "stop_requested": accepted, "requires_review": accepted}
         if job["state"] != "queued":
             raise BrokerError("only_queued_jobs_can_be_cancelled")
@@ -1710,7 +1736,50 @@ class Broker:
                         db.set_stage(job, name)
                         self.logs.append(Event.STAGE, stage=name)
 
-                    if plan["test"] == TestName.BUILD.value:
+                    if plan["test"] in {t.value for t in FLASH_TESTS}:
+                        if capture_principal != plan.get("flash_principal"):
+                            raise BrokerError("flash_principal_mismatch")
+
+                        def flash_live(
+                            plan: dict[str, Any] = plan,
+                            lease: Session = lease,
+                            capture_principal: str | None = capture_principal,
+                        ) -> bool:
+                            current = self.session
+                            if (
+                                self.closing
+                                or current is None
+                                or capture_principal is None
+                                or current is not lease
+                                or current.principal_id != capture_principal
+                                or not math.isfinite(self.clock())
+                                or self.clock() >= current.deadline
+                            ):
+                                return False
+                            registration = self.settings.flash_devices.get(plan["device_id"])
+                            if (
+                                registration is None
+                                or getattr(registration, "allow_" + plan["flash_operation"])
+                                is not True
+                                or hashlib.sha256(
+                                    registration.model_dump_json().encode()
+                                ).hexdigest()
+                                != plan["registration_sha256"]
+                            ):
+                                return False
+                            if not self._device_lock.is_locked or not self._state_lock.is_locked:
+                                return False
+                            if self.principal_valid is None:
+                                return False
+                            return (
+                                self.principal_valid(
+                                    capture_principal, current.owner, frozenset({"read", "control"})
+                                )
+                                is True
+                            )
+
+                        result = await self.firmware_flash.execute(plan, on_stage, flash_live)
+                    elif plan["test"] == TestName.BUILD.value:
                         if capture_principal != plan.get("build_principal"):
                             raise BrokerError("build_principal_mismatch")
                         result = await self.firmware_build.execute(plan, on_stage)
@@ -1785,6 +1854,10 @@ class Broker:
                             datetime.now(UTC).isoformat(),
                             policy_target=capture_target,
                         )
+                except (FlashFailure, FlashAdmissionError) as failure:
+                    store.set_job(job_id, "needs_review", str(failure))
+                    self.logs.append(Event.REVIEW)
+                    self._cancel_queued("recovery_review_required")
                 except (BuildPreflightFailure, BuildLocationError) as failure:
                     store.set_job(job_id, "needs_review", failure.code)
                     self.logs.append(Event.REVIEW)
@@ -1826,6 +1899,8 @@ class Broker:
                         not self.backend.active
                         and not self.firmware_build.process.active
                         and not self.firmware_build.process.uncertain
+                        and not self.firmware_flash.active
+                        and not self.firmware_flash.uncertain
                     ):
                         self.active_job = None
                     self._expire()

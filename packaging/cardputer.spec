@@ -6,6 +6,7 @@ from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 root = Path(SPECPATH).parent
 datas = copy_metadata("cardputer-device-mcp", recursive=True)
+datas.append((str(root / "src" / "cardputer_mcp" / "flash_worker.py"), "cardputer_mcp"))
 analysis = Analysis(
     [str(root / "packaging" / "windows_entry.py")],
     pathex=[str(root / "src")],

@@ -25,6 +25,10 @@ settings from this file.
 
 - ESP-IDF is external and fixed at **6.0.1**. Do not automatically migrate/fall back
   to 6.1 or bundle an SDK/toolchain.
+- Keep MCP side effects simple and explicit. Backup, flash and restore are
+  separate approved operations. Leave verified new firmware installed; do not
+  add implicit rollback, write retries or other automatically executed commands.
+  Disclose existing reset/reopen behavior and retain cancellation/ownership checks.
 - Register projects and execution profiles locally. MCP must not accept arbitrary
   shell commands or unrestricted project/profile paths.
 - Preserve approval, ownership, cancellation and redaction boundaries in build,
