@@ -16,7 +16,7 @@ from release_windows import MEMBERS, create_archive, release_version, verify_arc
 
 class WindowsReleaseTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
+        self.temporary = tempfile.TemporaryDirectory(dir="/tmp" if sys.platform == "linux" else None)
         self.addCleanup(self.temporary.cleanup)
         self.folder = Path(self.temporary.name)
         self.exe = self.folder / "cardputer.exe"
@@ -101,6 +101,30 @@ class WindowsReleaseTests(unittest.TestCase):
         from unittest.mock import patch
         with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(self.exe)):
             self.assertEqual(module._adapter_root(), self.folder.resolve())
+
+    def test_frozen_private_file_rejects_installation_and_extraction(self):
+        path = ROOT / "src/cardputer_mcp/client_environment.py"
+        spec = importlib.util.spec_from_file_location("release_client_boundary", path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        self.addCleanup(sys.modules.pop, spec.name)
+        spec.loader.exec_module(module)
+        from unittest.mock import patch
+        app = self.folder / "application"
+        extraction = self.folder / "extraction"
+        private = self.folder / "private"
+        for folder in (app, extraction, private):
+            folder.mkdir()
+            (folder / "client.env").write_text("dummy")
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "executable", str(app / "cardputer.exe")),
+            patch.object(sys, "_MEIPASS", str(extraction), create=True),
+        ):
+            for folder in (app, extraction):
+                with self.assertRaises(module.ClientEnvironmentError):
+                    module._check_location((folder / "client.env").resolve())
+            module._check_location((private / "client.env").resolve())
 
 
 if __name__ == "__main__":

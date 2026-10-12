@@ -53,14 +53,18 @@ def _check_location(path: Path) -> None:
     if not path.is_absolute() or ".." in path.parts:
         raise ClientEnvironmentError()
     root = _adapter_root()
+    roots = [root]
+    extraction = getattr(sys, "_MEIPASS", None)
+    if getattr(sys, "frozen", False) and extraction is not None:
+        roots.append(Path(extraction).resolve())
     # Resolve aliases as well as checking the supplied spelling, including
     # Windows short names. Linked components are separately rejected before IO.
     resolved = path.resolve(strict=True)
-    if path.is_relative_to(root) or resolved.is_relative_to(root):
+    if any(path.is_relative_to(folder) or resolved.is_relative_to(folder) for folder in roots):
         raise ClientEnvironmentError()
     # A .git directory, worktree file or even a dangling .git link counts.
     # Check every ancestor, not only the nearest repository boundary.
-    for origin in (path.parent, resolved.parent, root, Path.cwd()):
+    for origin in (path.parent, resolved.parent, *roots, Path.cwd()):
         for ancestor in (origin, *origin.parents):
             try:
                 (ancestor / ".git").lstat()
