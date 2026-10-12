@@ -401,3 +401,33 @@ CONTROL_PLANE_API_KEY (presence booleans only). Real Tunnel/cloud connectivity
 was therefore not tested. Launch from the PowerShell process that has the key,
 or restart Codex after setting its inherited environment. No real key values,
 USB access, hardware writes or user config modifications were performed.
+
+
+### Authorized real Tunnel follow-up (2026-10-12 UTC)
+
+After Codex restart, CARDPUTER_TUNNEL_API_KEY was nonempty in both Process and
+User scopes (presence booleans only). Following explicit user authorization to
+use the real Tunnel, the existing official pinned EXE/ZIP passed verification.
+The existing Tunnel ID/client paths were used in memory; the user's broker TOML
+was unchanged. A separate Temp mock TOML contained no API key or real device
+metadata, used an unused loopback port and absolute state directory, and disabled
+mock execution. Its broker received only filtered OS variables and dummy local /
+remote MCP authentication; the real runtime key went only to the normal Tunnel
+client environment via the application's existing fallback.
+
+Local authenticated discovery exposed 17 tools, and client_identity/device_status/
+read_logs succeeded. Native Tunnel health reported local_readiness=true and
+cloud_poll_observed=true. While it was connected, this delegated task also called
+USB device connection's client_identity, device_status and read_logs through its
+connected MCP app tools: all returned ok=true, with device_status backend=mock.
+This validates that app tool route; a separate invocation by the parent cloud
+thread itself was not performed here. The manager's app_verified field remains
+false by design; it does not track these independently performed app calls.
+
+No new account links, permissions or credentials were created. No USB, capture,
+reset, flash or IDF build was performed. Native client output and response data
+were suppressed. A smoke harness cleanup print initially treated manager.close()
+(which returns bool) as a status dict. The Tunnel had closed, but broker cleanup
+was interrupted. The exact Temp mock command's two Python processes were verified
+as one launcher/broker parent-child tree and stopped. Afterwards the Tunnel health
+listener was free and ownership lock released. No user process was stopped.
