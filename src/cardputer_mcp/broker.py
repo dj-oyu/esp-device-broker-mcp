@@ -958,7 +958,9 @@ class Broker:
             raise BrokerError("recovery_review_required")
         try:
             if request.test == TestName.BUILD:
-                details = self.firmware_build.prepare(request.project_id, session.principal_id or "")
+                details = self.firmware_build.prepare(
+                    request.project_id, session.principal_id or ""
+                )
             else:
                 if request.project_id is not None:
                     raise ValueError("project_only_for_build")
@@ -1804,7 +1806,9 @@ class Broker:
                     # Do not keep the last image alive in this suspended worker frame
                     # after the bounded cache expires or is cleared.
                     result = ""
-                    if not self.backend.active and not self.firmware_build.process.active and not self.firmware_build.process.uncertain:
+                    if (not self.backend.active
+                        and not self.firmware_build.process.active
+                        and not self.firmware_build.process.uncertain):
                         self.active_job = None
                     self._expire()
             finally:

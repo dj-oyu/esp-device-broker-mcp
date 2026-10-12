@@ -8,6 +8,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import BinaryIO, cast
 
 from .windows_process import (
     NativeWindowsAPI, OwnedWindowsProcess, ProcessHandles, WindowsProcessError,
@@ -125,7 +126,7 @@ class BuildProcess:
             raise ValueError("build_process_busy")
         self.active = True
         readers: list[threading.Thread] = []
-        pipes: list[object] = []
+        pipes: list[BinaryIO] = []
         process = None
         try:
             if os.name == "nt":
@@ -138,11 +139,15 @@ class BuildProcess:
                     os.set_handle_inheritable(out, True)
                     os.set_handle_inheritable(err, True)
                     api = PipeWindowsAPI(out, err)
-                    self.owner = OwnedWindowsProcess(api, api.create_job())
-                    api.configure_job(self.owner._job)
-                    api.create_suspended(self.owner._job, args, env, str(cwd), self.owner._handles)
-                    api.resume_thread(self.owner._handles.thread)
-                    api.close_handle(self.owner._handles.thread)
+                    job = api.create_job()
+                    self.owner = OwnedWindowsProcess(api, job)
+                    api.configure_job(job)
+                    api.create_suspended(job, args, env, str(cwd), self.owner._handles)
+                    thread = self.owner._handles.thread
+                    if self.owner._handles.process is None or thread is None:
+                        raise WindowsProcessError("owned_process_handles_missing")
+                    api.resume_thread(thread)
+                    api.close_handle(thread)
                     self.owner._handles.thread = None
                 except BaseException:
                     os.close(stdout_read)
@@ -151,24 +156,35 @@ class BuildProcess:
                 finally:
                     os.close(stdout_write)
                     os.close(stderr_write)
-                pipes = [os.fdopen(stdout_read, "rb", buffering=0),
-                         os.fdopen(stderr_read, "rb", buffering=0)]
+                pipes = [cast(BinaryIO, os.fdopen(stdout_read, "rb", buffering=0)),
+                         cast(BinaryIO, os.fdopen(stderr_read, "rb", buffering=0))]
             else:
                 process = subprocess.Popen(list(args), cwd=cwd, env=dict(env),
                                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                            stderr=subprocess.PIPE, start_new_session=True)
-                pipes = [process.stdout, process.stderr]
+                assert process.stdout is not None and process.stderr is not None
+                pipes = [cast(BinaryIO, process.stdout), cast(BinaryIO, process.stderr)]
 
-            def consume(pipe: object, stream: str) -> None:
+            def consume(pipe: BinaryIO, stream: str) -> None:
                 pending = bytearray()
+                oversized = False
                 while chunk := pipe.read(1024):
                     for byte in chunk:
-                        if byte == 10 or len(pending) >= 4096:
-                            emit(pending.decode("utf-8", errors="replace").rstrip("\r"), stream)
+                        if byte == 10:
+                            if oversized:
+                                emit("warning: oversized output line omitted", stream)
+                            else:
+                                emit(pending.decode("utf-8", errors="replace").rstrip("\r"), stream)
                             pending.clear()
-                        if byte != 10:
+                            oversized = False
+                        elif not oversized:
                             pending.append(byte)
-                if pending:
+                            if len(pending) > 4096:
+                                pending.clear()
+                                oversized = True
+                if oversized:
+                    emit("warning: oversized output line omitted", stream)
+                elif pending:
                     emit(pending.decode("utf-8", errors="replace"), stream)
 
             for pipe, stream in zip(pipes, ("stdout", "stderr"), strict=True):
@@ -177,7 +193,11 @@ class BuildProcess:
                 reader.start()
             deadline = time.monotonic() + timeout
             while True:
-                code = self.owner.poll() if self.owner else process.poll()
+                if self.owner is not None:
+                    code = self.owner.poll()
+                else:
+                    assert process is not None
+                    code = process.poll()
                 if code is not None:
                     break
                 if self.stop_requested.wait(0.02) or time.monotonic() >= deadline:

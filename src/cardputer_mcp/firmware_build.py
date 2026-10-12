@@ -52,7 +52,7 @@ def source_fingerprint(directory: Path) -> str:
     count = total = 0
     for path in sorted(directory.rglob("*")):
         relative = path.relative_to(directory)
-        if any(part in (".git", ".state", "__pycache__") or part == "build" or part.startswith("build-")
+        if any(part in (".git", ".state", "__pycache__", "build") or part.startswith("build-")
                for part in relative.parts):
             continue
         if path.is_symlink():
@@ -99,7 +99,8 @@ class FirmwareBuild:
         }, sort_keys=True).encode()).hexdigest()
         return dict(project_id=project_id, fingerprint=fingerprint,
                     expected_idf=project.expected_idf, target=project.target,
-                    build_principal=principal, stages=["idf_profile", "idf_diagnostics", "idf_build"],
+                    build_principal=principal,
+                    stages=["idf_profile", "idf_diagnostics", "idf_build"],
                     effects=["Executes registered trusted profile and project build scripts",
                              "Runs external ESP-IDF 6.0.1; no flash, USB or version fallback",
                              "Delivers bounded redacted output to requesting principal"],
@@ -213,7 +214,8 @@ class FirmwareBuild:
         if not artifacts:
             raise ValueError("build_artifacts_missing")
         manifest = dict(schema_version=1, idf_version="6.0.1", target=project.target,
-                        fingerprint=plan["fingerprint"], environment_fingerprint=environment_fingerprint,
+                        fingerprint=plan["fingerprint"],
+                        environment_fingerprint=environment_fingerprint,
                         artifacts=artifacts,
                         flash_authorized=False)
         with self._lock:

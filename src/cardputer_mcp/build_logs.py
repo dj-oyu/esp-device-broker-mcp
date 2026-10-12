@@ -67,7 +67,9 @@ class BuildLogs:
         selected: set[int] = set()
         for i, entry in enumerate(items):
             if entry["level"] in request.levels or entry["progress"]:
-                selected.update(range(max(0, i-request.context), min(len(items), i+request.context+1)))
+                selected.update(range(
+                    max(0, i-request.context), min(len(items), i+request.context+1)
+                ))
         result = [entry for i, entry in enumerate(items)
                   if i in selected and entry["sequence"] > after][:request.limit]
         sequence = result[-1]["sequence"] if len(result) == request.limit else self.sequence

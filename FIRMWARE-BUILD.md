@@ -45,7 +45,8 @@ context. Explicit levels: error, warning, info, debug, unknown. Stderr is a stre
 not an error severity. Notes and multiline text remain available through context
 or unknown-level reads. Each reader owns its epoch/sequence cursor; reads do not
 consume entries. Retention is at most eight jobs, 2,048 lines / 256 KiB per job and
-five minutes since the last appended line. A line is capped at 4,096 characters.
+five minutes since the last appended line. Oversized process lines are omitted after 4,096 bytes rather than split into
+potential credential fragments.
 Cursor gaps, restart epoch mismatch and expiry are explicit. Raw output stays in
 RAM; no caller-specified path can be opened. Known credential patterns and known
 ambient secret values are removed; arbitrary application secrets cannot be

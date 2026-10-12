@@ -413,7 +413,8 @@ class PlanApprovals:
             allow_mock = (
                 self.broker.backend.name == "mock" and self.broker.settings.allow_mock_execution
             )
-            if allow_mock and not self.broker._execution_intents and not self.broker.settings.build_projects:
+            if (allow_mock and not self.broker._execution_intents
+                and not self.broker.settings.build_projects):
                 return {"broker_epoch": self.broker.epoch, "plans": [], "has_more": False}
             # CASE prevents SQLite evaluating json_extract against corrupt JSON.
             query = """FROM plans p WHERE CASE WHEN json_valid(p.payload)
