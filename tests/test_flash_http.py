@@ -103,6 +103,7 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
         ):
             lease = await call(remote, "acquire_session", {"owner": "remote_mcp"})
             session = lease["session"]
+
             async def approve(job, action, **references):
                 prepared = await call(
                     remote,
@@ -139,6 +140,7 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
                 )
                 assert response.status_code == 200 and response.json()["ok"], response.text
                 return prepared
+
             backup = await approve("backup-one", "firmware_backup")
             executed = await call(
                 remote, "execute_test", {"session": session, "plan_hash": backup["plan_hash"]}
@@ -169,10 +171,12 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
                 assert replay["deduplicated"]
             prepared = await approve("cancel-one", "firmware_restore", backup_job_id="backup-one")
             entered = threading.Event()
+
             def block_read(phase):
                 if phase == "read":
                     entered.set()
                     assert release.wait(5)
+
             driver.callback = block_read
             await call(
                 remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
