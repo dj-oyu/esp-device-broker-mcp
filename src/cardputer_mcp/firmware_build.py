@@ -269,6 +269,13 @@ class FirmwareBuild:
         def emit(line: str, stream: str) -> None:
             with self._lock:
                 logs.append(line, stream)
+        # Diagnostics can take time. Recheck live project/profile/lock inputs
+        # immediately before launching build; a changed tree needs a new plan.
+        self._check_cancelled()
+        if self.prepare(plan["project_id"], principal)["fingerprint"] != plan["fingerprint"]:
+            logs.append("error: build inputs changed before launch; prepare a new plan")
+            raise ValueError("build_inputs_changed")
+        self._check_cancelled()
         if self.process.run([str(python), str(idf_py), "-B", str(build_dir), "build"],
                             env, project.project_dir, emit):
             raise ValueError("idf_build_failed_needs_review")

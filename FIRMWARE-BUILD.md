@@ -80,9 +80,9 @@ jobs are not marked recovered or successful.
 ## Validation in the delegated cloud environment
 
 - 2026-10-12: compileall succeeds.
-- Dependency-free unittest suite: 19 passed, two skipped because pyserial/filelock
+- Dependency-free unittest suite: 20 passed, two skipped because pyserial/filelock
   are not installed. With cloud-only lock/port dependency facades injected, all
-  21 tests pass. This exercises the actual Broker/SQLite/PlanApprovals/PlanReview
+  22 tests pass. This exercises the actual Broker/SQLite/PlanApprovals/PlanReview
   serial and mock prepare-submit-GUI-approve paths, principal mismatch, no replay
   and cancellation to durable needs_review, but does not validate native locks. Includes mock profile/diagnostics/build/manifest/read traversal,
   output flood, multiple readers, unknown/stderr/context, expiry/epoch/gap,
@@ -109,3 +109,38 @@ hashed normally; only repository metadata and explicitly identified broker state
 output roots are excluded. Different registered checkouts cannot share a builddir.
 The native GUI accepts serial build plans and displays code-execution/log-delivery
 warnings for both serial and mock builds, naming the actual recipient.
+
+
+## Live project and dependency preparation boundary
+
+The plan is immutable metadata. This implementation builds the registered live
+checkout; it does not make an isolated immutable source snapshot or prevent a
+trusted local writer from modifying files after the final check. Source/profile/
+lock fingerprints are checked before diagnostics, again immediately before build
+launch, and after build. Do not edit that checkout during execution. A diagnostic-
+time source change prevents launching build; a build-time change prevents success
+publication and requires review. This is detection around trusted project code,
+not a filesystem sandbox or a universal guarantee about every input a script reads.
+
+The inspected Cardputer checkout 1b4524e3 has dependencies.lock references to older
+.cache/components and removed UI dependencies, while current component manifests
+use the vendored components/pocketjs_guest and components/quickjs-ng. CMake also
+uses fetched .cache BMI270/Opus/minimp3 sources. The lock and these actual source
+bytes are included in fingerprints. Initial dependency preparation/configuration
+can update the lock or materialize sources and invalidate an earlier plan.
+
+Use a separately explicitly authorized local preparation/configuration step for
+that registered checkout under the same external IDF 6.0.1, inspect the resulting
+lock/source changes, then prepare and approve a fresh build plan. This feature
+adds no arbitrary dependency-install MCP command or automatic approval. If an
+approved build itself changes dependency inputs, inspect and acknowledge its
+needs_review result before creating a new job/plan; never reinterpret that old
+approval or unsuccessful job as success. Dependency locks and .cache source
+content must not be excluded from hashing merely to make a first build pass.
+
+Actions packaging run 38295992731 succeeded for PR head 6bf848df. It checked out
+synthetic merge source 60e8339ff98c8f551d43c7656f40590e0fdeef0c, whose tree equals
+that head's tree (8aac63bacc4dd3eb85b28fbf54471e5f9de8828f). Extracted EXE authenticated
+mock status/log smoke passed. New modules are static imports in the successful
+broker startup and are also covered by collect_submodules(cardputer_mcp). Direct
+new-tool catalog/schema and artifact byte inspection remain independent checks.

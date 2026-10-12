@@ -238,7 +238,7 @@ class WindowsOwnedBuildTests(unittest.TestCase):
 class FirmwareVerticalTests(unittest.TestCase):
 
     def _exercise_build(self, cancel_at=None, policy="inherit", profile_denied=False,
-                        toolchain_failed=False):
+                        toolchain_failed=False, mutate_during_diagnostics=False):
         from unittest.mock import patch
 
         from cardputer_mcp import firmware_build as module
@@ -288,6 +288,8 @@ class FirmwareVerticalTests(unittest.TestCase):
                         ):
                             emit(line, 'stdout')
                     elif args[-1] == '--version':
+                        if mutate_during_diagnostics and args[0] == str(compiler):
+                            (project / 'CMakeLists.txt').write_text('unapproved changed source')
                         if toolchain_failed and args[0] == str(compiler):
                             emit('private native diagnostic', 'stderr')
                             return 1
@@ -308,7 +310,7 @@ class FirmwareVerticalTests(unittest.TestCase):
                 nonlocal prepare_calls
                 prepare_calls += 1
                 value = original_prepare(*args)
-                if cancel_at == 'fingerprint' and prepare_calls == 2:
+                if cancel_at == 'fingerprint' and prepare_calls == 3:
                     builder.request_stop('job')
                 return value
             def hash_hook(path):
@@ -324,6 +326,12 @@ class FirmwareVerticalTests(unittest.TestCase):
                 patch.object(builder, 'prepare', side_effect=prepare_hook),
                 patch.object(module, 'hash_file', side_effect=hash_hook),
             ):
+                if mutate_during_diagnostics:
+                    with self.assertRaisesRegex(ValueError, "build_inputs_changed"):
+                        builder._execute(plan, lambda _: None)
+                    self.assertEqual(4, len(calls))
+                    self.assertFalse(builder.manifests)
+                    return
                 if toolchain_failed:
                     with self.assertRaisesRegex(ValueError, "external_toolchain_diagnostic_failed"):
                         builder._execute(plan, lambda _: None)
@@ -376,6 +384,9 @@ class FirmwareVerticalTests(unittest.TestCase):
 
     def test_toolchain_failure_prevents_build(self):
         self._exercise_build(toolchain_failed=True)
+
+    def test_diagnostic_time_source_change_prevents_build(self):
+        self._exercise_build(mutate_during_diagnostics=True)
 
 
 class BuildLifecycleRegressionTests(unittest.TestCase):
