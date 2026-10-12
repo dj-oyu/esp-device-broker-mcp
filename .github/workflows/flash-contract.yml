@@ -35,6 +35,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13.16'
@@ -64,7 +65,9 @@ jobs:
         run: |
           .venv/Scripts/python.exe packaging/check_flash_style.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Native Windows type checks
+      - name: Native Windows type checks against the same base
+        env:
+          FLASH_BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
         run: |
-          .venv/Scripts/mypy.exe src
+          .venv/Scripts/python.exe packaging/check_flash_types.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
