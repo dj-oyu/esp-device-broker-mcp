@@ -22,15 +22,25 @@ class BuildFlashLayoutTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.binary = self.root / "firmware.bin"
         self.binary.write_bytes(b"synthetic firmware")
-        self.artifacts = [{
-            "name": "firmware.bin", "bytes": self.binary.stat().st_size,
-            "sha256": hashlib.sha256(self.binary.read_bytes()).hexdigest(),
-        }]
+        self.artifacts = [
+            {
+                "name": "firmware.bin",
+                "bytes": self.binary.stat().st_size,
+                "sha256": hashlib.sha256(self.binary.read_bytes()).hexdigest(),
+            }
+        ]
         self.layout = {
             "flash_files": {"0x10000": "firmware.bin"},
             "extra_esptool_args": {"chip": "esp32s3"},
             "flash_settings": {"flash_mode": "dio", "flash_size": "8MB", "flash_freq": "80m"},
-            "write_flash_args": ["--flash-mode", "dio", "--flash-size", "8MB", "--flash-freq", "80m"],
+            "write_flash_args": [
+                "--flash-mode",
+                "dio",
+                "--flash-size",
+                "8MB",
+                "--flash-freq",
+                "80m",
+            ],
         }
         self.write_layout()
 
@@ -43,10 +53,14 @@ class BuildFlashLayoutTests(unittest.TestCase):
 
     def test_exact_bytes_receipt(self):
         receipt = self.verify()
-        self.assertEqual(receipt, {
-            "name": "flasher_args.json", "bytes": len(self.raw),
-            "sha256": hashlib.sha256(self.raw).hexdigest(),
-        })
+        self.assertEqual(
+            receipt,
+            {
+                "name": "flasher_args.json",
+                "bytes": len(self.raw),
+                "sha256": hashlib.sha256(self.raw).hexdigest(),
+            },
+        )
 
     def test_wrong_target_and_missing_layout_fail_closed(self):
         self.layout["extra_esptool_args"]["chip"] = "esp32p4"
@@ -92,12 +106,15 @@ class BuildFlashLayoutTests(unittest.TestCase):
 
     def test_reparse_marker_is_rejected(self):
         original = Path.lstat
+
         def reparse(path):
             value = original(path)
             if path.name == "flasher_args.json":
                 from types import SimpleNamespace
+
                 return SimpleNamespace(st_mode=value.st_mode, st_file_attributes=0x400)
             return value
+
         with patch.object(Path, "lstat", reparse):
             with self.assertRaises(BuildFlashLayoutFailure):
                 self.verify()
@@ -114,9 +131,13 @@ class BuildFlashSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "config").mkdir()
-            config = {"IDF_TARGET": "esp32s3", "SECURE_BOOT": False,
-                      "SECURE_FLASH_ENC_ENABLED": False, "BOOTLOADER_APP_ANTI_ROLLBACK": False,
-                      "WIFI_PASSWORD": "private-example-value"}
+            config = {
+                "IDF_TARGET": "esp32s3",
+                "SECURE_BOOT": False,
+                "SECURE_FLASH_ENC_ENABLED": False,
+                "BOOTLOADER_APP_ANTI_ROLLBACK": False,
+                "WIFI_PASSWORD": "private-example-value",
+            }
             raw = json.dumps(config).encode()
             (root / "config/sdkconfig.json").write_bytes(raw)
             receipt, summary = build_flash_security_receipt(root, "esp32s3")
@@ -134,7 +155,7 @@ class BuildFlashSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "config").mkdir()
-            for raw in (b'{}', b'not-json', b' '*1048577):
+            for raw in (b"{}", b"not-json", b" " * 1048577):
                 (root / "config/sdkconfig.json").write_bytes(raw)
                 with self.assertRaises(BuildFlashSecurityFailure):
                     build_flash_security_receipt(root, "esp32s3")
