@@ -54,7 +54,17 @@ class GuardedObservationPort:
         return getattr(self._port, name)
 
     def __setattr__(self, name: str, value: Any) -> None:
+        if name in {"dtr", "rts"}:
+            self._check()
         setattr(self._port, name, value)
+
+    def open(self) -> None:
+        self._check()
+        self._port.open()
+
+    def reset_input_buffer(self) -> None:
+        self._check()
+        self._port.reset_input_buffer()
 
     def read(self, size: int = 1) -> bytes:
         self._check()

@@ -103,6 +103,8 @@ class DriverBootTests(unittest.TestCase):
                 driver.boot()
             self.assertEqual(ports[1].writes, [])
             self.assertFalse(driver.active)
+            if revoked:
+                self.assertEqual(ports[0].opens, 0)
 
     def test_stop_during_passive_read_closes_without_commands(self):
         driver, _, ports, _ = self.make_driver()
@@ -120,6 +122,31 @@ class DriverBootTests(unittest.TestCase):
         self.assertEqual(ports[1].writes, [])
         self.assertFalse(driver.active)
         self.assertEqual(ports[0].opens, ports[0].closes)
+
+    def test_stop_before_reset_controls_never_opens(self):
+        driver, backend, ports, _ = self.make_driver()
+        original = backend.factory
+        def stop_at_factory():
+            driver.stop()
+            return original()
+        backend.factory = stop_at_factory
+        with self.assertRaises((FlashFailure, SerialFailure)):
+            driver.boot()
+        self.assertEqual(ports[0].opens, 0)
+        self.assertFalse(any(event[1:] == ("rts", True) for event in ports[0].trace))
+        self.assertFalse(driver.active)
+
+    def test_stop_during_disconnect_never_reopens(self):
+        driver, _, ports, _ = self.make_driver()
+        def disconnect(size):
+            driver.stop()
+            raise OSError("synthetic disconnected")
+        ports[0].read = disconnect
+        with self.assertRaises((FlashFailure, SerialFailure)):
+            driver.boot()
+        self.assertEqual(ports[1].opens, 0)
+        self.assertEqual(ports[0].opens, ports[0].closes)
+        self.assertFalse(driver.active)
 
     def test_without_expected_elf_boot_cannot_be_claimed(self):
         driver, _, ports, _ = self.make_driver()
