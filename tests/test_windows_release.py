@@ -16,7 +16,7 @@ from release_windows import MEMBERS, create_archive, release_version, verify_arc
 
 class WindowsReleaseTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(dir="/tmp" if sys.platform == "linux" else None)
+        self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.folder = Path(self.temporary.name)
         self.exe = self.folder / "cardputer.exe"
@@ -116,15 +116,28 @@ class WindowsReleaseTests(unittest.TestCase):
         for folder in (app, extraction, private):
             folder.mkdir()
             (folder / "client.env").write_text("dummy")
+        original_lstat = Path.lstat
+
+        def fixture_lstat(candidate):
+            # Model a standalone installation. The cloud sandbox itself has Git
+            # markers in /workspace and /tmp; fixture-owned markers remain real.
+            if candidate.name == ".git" and not candidate.is_relative_to(self.folder):
+                raise FileNotFoundError
+            return original_lstat(candidate)
+
         with (
             patch.object(sys, "frozen", True, create=True),
             patch.object(sys, "executable", str(app / "cardputer.exe")),
             patch.object(sys, "_MEIPASS", str(extraction), create=True),
+            patch.object(Path, "lstat", fixture_lstat),
         ):
             for folder in (app, extraction):
                 with self.assertRaises(module.ClientEnvironmentError):
                     module._check_location((folder / "client.env").resolve())
             module._check_location((private / "client.env").resolve())
+            (private / ".git").mkdir()
+            with self.assertRaises(module.ClientEnvironmentError):
+                module._check_location((private / "client.env").resolve())
 
 
 if __name__ == "__main__":
