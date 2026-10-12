@@ -22,6 +22,7 @@ from .backend import Backend, BackendResult, DeviceDisconnected, DeviceOperation
 from .capture import CapturedImage
 from .config import Settings
 from .device_observation import DeviceObservation
+from .firmware_build import BuildPreflightFailure
 from .home_line import HomeLineProbe
 from .logs import Event, LogBook
 from .models import (
@@ -1775,6 +1776,10 @@ class Broker:
                             datetime.now(UTC).isoformat(),
                             policy_target=capture_target,
                         )
+                except BuildPreflightFailure as failure:
+                    store.set_job(job_id, "needs_review", failure.code)
+                    self.logs.append(Event.REVIEW)
+                    self._cancel_queued("recovery_review_required")
                 except DeviceOperationFailure as failure:
                     store.set_job(job_id, "needs_review", failure.code, failure.diagnostic)
                     if self.capture_policies is not None:

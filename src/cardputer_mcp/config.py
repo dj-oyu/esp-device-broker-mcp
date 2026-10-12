@@ -41,6 +41,7 @@ class BuildProject(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     project_dir: Path
     trusted_profile: Path
+    profile_execution_policy: Literal["inherit", "RemoteSigned"] = "inherit"
     expected_idf: Literal["6.0.1"] = "6.0.1"
     target: Literal["esp32s3"] = "esp32s3"
 

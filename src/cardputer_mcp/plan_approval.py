@@ -160,7 +160,7 @@ class PlanApprovals:
         if test == TestName.BUILD.value:
             expected_keys = _BASE_KEYS | {
                 "project_id", "fingerprint", "expected_idf", "target", "build_principal",
-                "effects", "argv_template",
+                "effects", "argv_template", "profile_execution_policy",
             }
             if (backend not in ("mock", "serial")
                 or plan.get("device") != (
@@ -169,6 +169,7 @@ class PlanApprovals:
                 or not _hex(plan.get("fingerprint"), 64)
                 or type(plan.get("project_id")) is not str
                 or re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", plan["project_id"]) is None
+                or plan.get("profile_execution_policy") not in ("inherit", "RemoteSigned")
                 or plan.get("expected_idf") != "6.0.1"
                 or plan.get("target") != "esp32s3"
                 or type(plan.get("build_principal")) is not str

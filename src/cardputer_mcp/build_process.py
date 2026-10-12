@@ -11,8 +11,15 @@ from pathlib import Path
 from typing import BinaryIO, cast
 
 from .windows_process import (
-    NativeWindowsAPI, OwnedWindowsProcess, ProcessHandles, WindowsProcessError,
-    _SecurityAttributes, _SIZE_T, _HANDLE, _StartupInfoEx, _ProcessInformation,
+    NativeWindowsAPI,
+    OwnedWindowsProcess,
+    ProcessHandles,
+    WindowsProcessError,
+    _HANDLE,
+    _SIZE_T,
+    _ProcessInformation,
+    _SecurityAttributes,
+    _StartupInfoEx,
 )
 
 
@@ -136,10 +143,12 @@ class BuildProcess:
                 stdout_read, stdout_write = os.pipe()
                 stderr_read, stderr_write = os.pipe()
                 try:
-                    out = msvcrt.get_osfhandle(stdout_write)
-                    err = msvcrt.get_osfhandle(stderr_write)
-                    os.set_handle_inheritable(out, True)
-                    os.set_handle_inheritable(err, True)
+                    get_handle = getattr(msvcrt, "get_osfhandle")
+                    set_inheritable = getattr(os, "set_handle_inheritable")
+                    out = get_handle(stdout_write)
+                    err = get_handle(stderr_write)
+                    set_inheritable(out, True)
+                    set_inheritable(err, True)
                     api = PipeWindowsAPI(out, err)
                     job = api.create_job()
                     self.owner = OwnedWindowsProcess(api, job)

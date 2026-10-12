@@ -6,10 +6,10 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.build_process import BuildProcess
-from cardputer_mcp.firmware_build import parse_profile, source_fingerprint, FirmwareBuild
+from cardputer_mcp.firmware_build import FirmwareBuild, parse_profile, source_fingerprint
 
 def request(cursor=None, levels=('error', 'warning'), context=2, limit=40):
     return SimpleNamespace(cursor=cursor, levels=levels, context=context, limit=limit)
@@ -17,7 +17,10 @@ def request(cursor=None, levels=('error', 'warning'), context=2, limit=40):
 class BuildTests(unittest.TestCase):
 
     def test_profile_strict_filter(self):
-        env = parse_profile('IDF_PATH=C:/idf\nIDF_PYTHON_ENV_PATH=C:/python\nPATH=C:/tools\nTOKEN=private\n')
+        env = parse_profile(
+            'IDF_PATH=C:/idf\nIDF_PYTHON_ENV_PATH=C:/python\n'
+            'PATH=C:/tools\nTOKEN=private\n'
+        )
         self.assertNotIn('TOKEN', env)
         for value in ('noise', 'IDF_PATH=x\nIDF_PATH=y', 'KEY=bad\x00value', 'PATH=x'):
             with self.assertRaises(ValueError):
@@ -29,13 +32,20 @@ class BuildTests(unittest.TestCase):
         except ModuleNotFoundError as error:
             self.skipTest(str(error))
         with self.assertRaises(ValueError):
-            BuildProject(project_dir=Path('/project'), trusted_profile=Path('/profile'), expected_idf='6.1')
+            BuildProject(project_dir=Path('/project'), trusted_profile=Path('/profile'),
+                         expected_idf='6.1')
         with self.assertRaises(ValueError):
             BuildProject(project_dir=Path('relative'), trusted_profile=Path('/profile'))
+        with self.assertRaises(ValueError):
+            BuildProject(project_dir=Path('/project'), trusted_profile=Path('/profile'),
+                         profile_execution_policy='Bypass')
 
     def test_logs_multireader_filters_context_redaction(self):
         logs = BuildLogs('alice')
-        for line in ['source.cpp', 'warning: trouble token=private', 'note: here', 'unknown text', '[4/5] compiling']:
+        for line in [
+            'source.cpp', 'warning: trouble token=private', 'note: here',
+            'unknown text', '[4/5] compiling',
+        ]:
             logs.append(line, 'stderr')
         first = logs.read('alice', request())
         self.assertEqual(first, logs.read('alice', request()))
@@ -55,8 +65,12 @@ class BuildTests(unittest.TestCase):
             logs.append('error: ' + 'x' * 500)
         self.assertLessEqual(logs.bytes, 1000)
         self.assertLessEqual(len(logs.entries), 8)
-        self.assertTrue(logs.read('alice', request(SimpleNamespace(epoch=epoch, sequence=0)))['gap'])
-        self.assertTrue(logs.read('alice', request(SimpleNamespace(epoch='other', sequence=0)))['gap'])
+        self.assertTrue(logs.read(
+            'alice', request(SimpleNamespace(epoch=epoch, sequence=0))
+        )['gap'])
+        self.assertTrue(logs.read(
+            'alice', request(SimpleNamespace(epoch='other', sequence=0))
+        )['gap'])
         logs.deadline = 0
         self.assertTrue(logs.read('alice', request())['expired'])
 
@@ -77,7 +91,9 @@ class BuildTests(unittest.TestCase):
             (root / 'CMakeLists.txt').write_text('source')
             profile = root / 'profile.ps1'
             profile.write_text('return')
-            settings = SimpleNamespace(build_projects={'cardputer': SimpleNamespace(project_dir=root, trusted_profile=profile, expected_idf='6.0.1', target='esp32s3')})
+            settings = SimpleNamespace(build_projects={'cardputer': SimpleNamespace(
+                project_dir=root, trusted_profile=profile, expected_idf='6.0.1', target='esp32s3'
+            )})
             plan = FirmwareBuild(settings).prepare('cardputer', 'alice')
             self.assertNotIn(temp, str(plan))
             self.assertEqual('6.0.1', plan['expected_idf'])
@@ -88,7 +104,11 @@ class BuildTests(unittest.TestCase):
     def test_process_bounded_streams_and_stderr_not_error(self):
         process = BuildProcess()
         lines = []
-        code = process.run([sys.executable, '-c', 'import sys;print("x"*100000);print("note: text",file=sys.stderr)'], {}, Path('/tmp'), lambda line, stream: lines.append((line, stream)), timeout=10)
+        script = 'import sys;print("x"*100000);print("note: text",file=sys.stderr)'
+        code = process.run(
+            [sys.executable, '-c', script], {}, Path('/tmp'),
+            lambda line, stream: lines.append((line, stream)), timeout=10
+        )
         self.assertEqual(code, 0)
         self.assertFalse(process.active)
         self.assertLessEqual(max((len(line) for line, stream in lines)), 4096)
@@ -101,7 +121,10 @@ class BuildTests(unittest.TestCase):
 
         def run():
             try:
-                process.run([sys.executable, '-c', 'import time;time.sleep(20)'], {}, Path('/tmp'), lambda *_: None, timeout=30)
+                process.run(
+                    [sys.executable, '-c', 'import time;time.sleep(20)'],
+                    {}, Path('/tmp'), lambda *_: None, timeout=30
+                )
             except ValueError as error:
                 failures.append(str(error))
         worker = threading.Thread(target=run)
@@ -118,6 +141,7 @@ class WindowsOwnedBuildTests(unittest.TestCase):
     def test_leader_exit_does_not_release_live_descendants(self):
         import os
         from unittest.mock import patch
+
         from cardputer_mcp import build_process as module
 
         class FakeAPI:
@@ -163,8 +187,16 @@ class WindowsOwnedBuildTests(unittest.TestCase):
         runner = BuildProcess()
         lines = []
         cwd = Path('/tmp')
-        with patch.object(module.os, 'name', 'nt'), patch.object(module, 'PipeWindowsAPI', FakeAPI), patch.dict(sys.modules, {'msvcrt': SimpleNamespace(get_osfhandle=lambda fd: fd)}), patch.object(module.os, 'set_handle_inheritable', lambda *_: None, create=True):
-            code = runner.run(['trusted-python', 'idf.py', 'build'], {'PATH': 'trusted'}, cwd, lambda line, stream: lines.append((line, stream)))
+        with (
+            patch.object(module.os, 'name', 'nt'),
+            patch.object(module, 'PipeWindowsAPI', FakeAPI),
+            patch.dict(sys.modules, {'msvcrt': SimpleNamespace(get_osfhandle=lambda fd: fd)}),
+            patch.object(module.os, 'set_handle_inheritable', lambda *_: None, create=True),
+        ):
+            code = runner.run(
+                ['trusted-python', 'idf.py', 'build'], {'PATH': 'trusted'}, cwd,
+                lambda line, stream: lines.append((line, stream))
+            )
         self.assertEqual(code, 0)
         self.assertTrue(FakeAPI.last.terminated)
         self.assertFalse(runner.active)
@@ -172,8 +204,8 @@ class WindowsOwnedBuildTests(unittest.TestCase):
         self.assertIn(('note: stderr', 'stderr'), lines)
 
     def test_shutdown_failure_latches_ownership(self):
-        import os
         from unittest.mock import patch
+
         from cardputer_mcp import build_process as module
 
         class FakeAPI:
@@ -191,8 +223,13 @@ class WindowsOwnedBuildTests(unittest.TestCase):
                 raise RuntimeError('synthetic')
         runner = BuildProcess()
         cwd = Path('/tmp')
-        with patch.object(module.os, 'name', 'nt'), patch.object(module, 'PipeWindowsAPI', FakeAPI), patch.dict(sys.modules, {'msvcrt': SimpleNamespace(get_osfhandle=lambda fd: fd)}), patch.object(module.os, 'set_handle_inheritable', lambda *_: None, create=True):
-            with self.assertRaises(Exception):
+        with (
+            patch.object(module.os, 'name', 'nt'),
+            patch.object(module, 'PipeWindowsAPI', FakeAPI),
+            patch.dict(sys.modules, {'msvcrt': SimpleNamespace(get_osfhandle=lambda fd: fd)}),
+            patch.object(module.os, 'set_handle_inheritable', lambda *_: None, create=True),
+        ):
+            with self.assertRaisesRegex(ValueError, "build_tree_stop_unconfirmed"):
                 runner.run(['trusted'], {}, cwd, lambda *_: None)
         self.assertTrue(runner.active)
         self.assertTrue(runner.uncertain)
@@ -200,8 +237,10 @@ class WindowsOwnedBuildTests(unittest.TestCase):
 
 class FirmwareVerticalTests(unittest.TestCase):
 
-    def _exercise_build(self, cancel_at=None):
+    def _exercise_build(self, cancel_at=None, policy="inherit", profile_denied=False,
+                        toolchain_failed=False):
         from unittest.mock import patch
+
         from cardputer_mcp import firmware_build as module
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -224,7 +263,11 @@ class FirmwareVerticalTests(unittest.TestCase):
             python.write_bytes(b'python')
             compiler = root / 'xtensa-esp32s3-elf-gcc.exe'
             compiler.write_bytes(b'gcc')
-            settings = SimpleNamespace(state_dir=root / 'state', build_projects={'cardputer': SimpleNamespace(project_dir=project, trusted_profile=profile, expected_idf='6.0.1', target='esp32s3')})
+            settings = SimpleNamespace(state_dir=root / 'state', build_projects={
+                'cardputer': SimpleNamespace(project_dir=project, trusted_profile=profile,
+                                            expected_idf='6.0.1', target='esp32s3')
+            })
+            settings.build_projects["cardputer"].profile_execution_policy = policy
             builder = FirmwareBuild(settings)
             plan = builder.prepare('cardputer', 'alice') | {'job_id': 'job'}
             calls = []
@@ -236,9 +279,18 @@ class FirmwareVerticalTests(unittest.TestCase):
                     calls.append(args)
                     self_test.assertNotIn('UNTRUSTED_TOKEN', env)
                     if '-e' in args:
-                        for line in (f'IDF_PATH={idf}', f'IDF_PYTHON_ENV_PATH={python_env}', f'PATH={root}', 'UNTRUSTED_TOKEN=secret'):
+                        if profile_denied:
+                            emit('synthetic PSSecurityException private-path', 'stderr')
+                            return 1
+                        for line in (
+                            f'IDF_PATH={idf}', f'IDF_PYTHON_ENV_PATH={python_env}',
+                            f'PATH={root}', 'UNTRUSTED_TOKEN=secret',
+                        ):
                             emit(line, 'stdout')
                     elif args[-1] == '--version':
+                        if toolchain_failed and args[0] == str(compiler):
+                            emit('private native diagnostic', 'stderr')
+                            return 1
                         emit('ESP-IDF v6.0.1' if args[1] == str(idf_py) else 'version', 'stdout')
                     else:
                         directory = Path(args[args.index('-B') + 1])
@@ -264,7 +316,27 @@ class FirmwareVerticalTests(unittest.TestCase):
                 if cancel_at == 'artifact' and path.name == 'firmware.bin':
                     builder.request_stop('job')
                 return value
-            with patch.object(module, 'os', SimpleNamespace(name='nt', environ={'SYSTEMROOT': str(system), 'UNTRUSTED_TOKEN': 'secret'})), patch.object(module.shutil, 'which', return_value=str(compiler)), patch.object(builder, 'prepare', side_effect=prepare_hook), patch.object(module, 'hash_file', side_effect=hash_hook):
+            with (
+                patch.object(module, 'os', SimpleNamespace(name='nt', environ={
+                    'SYSTEMROOT': str(system), 'UNTRUSTED_TOKEN': 'secret'
+                })),
+                patch.object(module.shutil, 'which', return_value=str(compiler)),
+                patch.object(builder, 'prepare', side_effect=prepare_hook),
+                patch.object(module, 'hash_file', side_effect=hash_hook),
+            ):
+                if toolchain_failed:
+                    with self.assertRaisesRegex(ValueError, "external_toolchain_diagnostic_failed"):
+                        builder._execute(plan, lambda _: None)
+                    self.assertEqual(4, len(calls))
+                    self.assertFalse(builder.manifests)
+                    return
+                if profile_denied:
+                    with self.assertRaisesRegex(ValueError, "profile_export_rejected_or_failed"):
+                        builder._execute(plan, lambda _: None)
+                    self.assertNotIn("private-path", str(builder.read_logs(
+                        SimpleNamespace(job_id="job", **vars(request())), "alice"
+                    )))
+                    return
                 if cancel_at:
                     with self.assertRaisesRegex(ValueError, 'build_interrupted_needs_review'):
                         builder._execute(plan, lambda _: None)
@@ -273,7 +345,12 @@ class FirmwareVerticalTests(unittest.TestCase):
                     return
                 result = builder._execute(plan, lambda _: None)
             self.assertEqual(result, 'firmware_build_succeeded_no_flash')
-            self.assertEqual(calls[0][1:3], ['-NoProfile', '-File'])
+            if policy == 'inherit':
+                self.assertEqual(calls[0][1:3], ['-NoProfile', '-File'])
+                self.assertNotIn('-ExecutionPolicy', calls[0])
+            else:
+                self.assertEqual(calls[0][1:5],
+                                 ['-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File'])
             self.assertEqual(calls[-1][-1], 'build')
             self.assertEqual(len(calls), 5)
             report = builder.read_logs(SimpleNamespace(job_id='job', **vars(request())), 'alice')
@@ -291,6 +368,15 @@ class FirmwareVerticalTests(unittest.TestCase):
     def test_cancel_during_artifact_hash(self):
         self._exercise_build('artifact')
 
+    def test_local_policy_opt_in_only(self):
+        self._exercise_build(policy='RemoteSigned')
+
+    def test_profile_policy_rejection_has_fixed_private_diagnostic(self):
+        self._exercise_build(profile_denied=True)
+
+    def test_toolchain_failure_prevents_build(self):
+        self._exercise_build(toolchain_failed=True)
+
 
 class BuildLifecycleRegressionTests(unittest.TestCase):
     def test_expired_poll_preserves_live_redaction(self):
@@ -306,10 +392,14 @@ class BuildLifecycleRegressionTests(unittest.TestCase):
 
     def test_preexisting_stop_never_launches(self):
         from unittest.mock import patch
+
         from cardputer_mcp import build_process as module
         runner = BuildProcess()
         runner.stop_requested.set()
-        with patch.object(module.subprocess, 'Popen') as launch, patch.object(module, 'PipeWindowsAPI') as win_api:
+        with (
+            patch.object(module.subprocess, 'Popen') as launch,
+            patch.object(module, 'PipeWindowsAPI') as win_api,
+        ):
             with self.assertRaisesRegex(ValueError, 'build_interrupted_needs_review'):
                 runner.run(['trusted'], {}, Path('/tmp'), lambda *_: None)
         launch.assert_not_called()
@@ -350,7 +440,9 @@ class BuildLifecycleRegressionTests(unittest.TestCase):
             second = builder.prepare('second', 'alice')['fingerprint']
             self.assertNotEqual(first, second)
             # Even the same registration ID in another broker config cannot alias roots.
-            other = FirmwareBuild(SimpleNamespace(build_projects={'first': registrations['second']}))
+            other = FirmwareBuild(SimpleNamespace(
+                build_projects={'first': registrations['second']}
+            ))
             self.assertNotEqual(first, other.prepare('first', 'alice')['fingerprint'])
 
 

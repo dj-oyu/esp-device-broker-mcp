@@ -24,6 +24,26 @@ OS_ENV = ALLOWED_ENV - {"IDF_PATH", "IDF_PYTHON_ENV_PATH", "IDF_TOOLS_PATH",
                         "IDF_TARGET", "ESP_IDF_VERSION", "PATH"}
 
 
+
+class BuildPreflightFailure(ValueError):
+    """Base for fixed preflight diagnostics, without native output."""
+    code: str
+
+
+class ProfileExportFailure(BuildPreflightFailure):
+    """Fixed public diagnostic; no PowerShell stderr or profile path is reflected."""
+    code = "profile_export_rejected_or_failed"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
+class ToolchainDiagnosticFailure(BuildPreflightFailure):
+    code = "external_toolchain_diagnostic_failed"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
 def parse_profile(text: str) -> dict[str, str]:
     if len(text.encode("utf-8")) > 131072:
         raise ValueError("profile_output_limit")
@@ -110,9 +130,13 @@ class FirmwareBuild:
             "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
             "profile": hash_file(project.trusted_profile),
             "version": project.expected_idf, "target": project.target,
+            "profile_policy": getattr(project, "profile_execution_policy", "inherit"),
         }, sort_keys=True).encode()).hexdigest()
         return dict(project_id=project_id, fingerprint=fingerprint,
                     expected_idf=project.expected_idf, target=project.target,
+                    profile_execution_policy=getattr(
+                        project, "profile_execution_policy", "inherit"
+                    ),
                     build_principal=principal,
                     stages=["idf_profile", "idf_diagnostics", "idf_build"],
                     effects=["Executes registered trusted profile and project build scripts",
@@ -172,18 +196,33 @@ class FirmwareBuild:
         stage("idf_profile")
         output: list[str] = []
         output_bytes = 0
+        stderr_seen = False
         def profile_output(line: str, stream: str) -> None:
-            nonlocal output_bytes
+            nonlocal output_bytes, stderr_seen
             output_bytes += len(line.encode("utf-8")) + 1
-            if output_bytes > 131072 or stream != "stdout":
+            if output_bytes > 131072:
                 self.process.stop_requested.set()
                 return
+            if stream != "stdout":
+                stderr_seen = True
+                return
             output.append(line)
-        code = self.process.run([str(powershell), "-NoProfile", "-File",
-                                 str(project.trusted_profile), "-e"], env,
-                                project.project_dir, profile_output, timeout=30)
-        if code or self.process.stop_requested.is_set():
-            raise ValueError("profile_export_failed")
+        profile_args = [str(powershell), "-NoProfile"]
+        if getattr(project, "profile_execution_policy", "inherit") == "RemoteSigned":
+            profile_args.extend(["-ExecutionPolicy", "RemoteSigned"])
+        profile_args.extend(["-File", str(project.trusted_profile), "-e"])
+        try:
+            code = self.process.run(profile_args, env, project.project_dir,
+                                    profile_output, timeout=30)
+        except ValueError:
+            if stderr_seen:
+                logs.append("error: trusted profile export rejected or failed")
+                raise ProfileExportFailure() from None
+            raise
+        self._check_cancelled()
+        if code or stderr_seen:
+            logs.append("error: trusted profile export rejected or failed")
+            raise ProfileExportFailure()
         env.update(parse_profile("\n".join(output)))
         output.clear()
         idf = Path(env["IDF_PATH"])
@@ -216,7 +255,8 @@ class FirmwareBuild:
         version.clear()
         if self.process.run([compiler, "--version"], env, project.project_dir,
                             version_output, timeout=30):
-            raise ValueError("external_toolchain_diagnostic_failed")
+            logs.append("error: external toolchain diagnostic failed; build not started")
+            raise ToolchainDiagnosticFailure()
         environment_fingerprint = hashlib.sha256(json.dumps({
             "idf_py": hash_file(idf_py), "python": hash_file(python),
             "compiler": hash_file(Path(compiler)), "environment": env,
@@ -238,7 +278,7 @@ class FirmwareBuild:
         description = json.loads((build_dir / "project_description.json").read_text())
         if description.get("target") != project.target:
             raise ValueError("build_target_mismatch")
-        artifacts = []
+        artifacts: list[dict[str, Any]] = []
         for path in sorted(build_dir.rglob("*")):
             self._check_cancelled()
             if path.suffix in (".bin", ".elf") and path.is_file():
@@ -264,7 +304,9 @@ class FirmwareBuild:
                 candidate.replace(build_dir / "broker-manifest.json")
                 self.manifests[plan["job_id"]] = (principal, manifest)
                 self._committed_job = plan["job_id"]
-                logs.append("Build complete; artifact hashes recorded; flash requires separate approval")
+                logs.append(
+                    "Build complete; artifact hashes recorded; flash requires separate approval"
+                )
         finally:
             candidate.unlink(missing_ok=True)
         return "firmware_build_succeeded_no_flash"

@@ -237,6 +237,7 @@ class PlanReview:
     json_text: str
     log_recipient: str | None = None
     execution_submitted: bool = False
+    profile_execution_policy: str = "inherit"
 
     @classmethod
     def parse(cls, data: dict[str, Any], started_at: float) -> PlanReview:
@@ -285,6 +286,7 @@ class PlanReview:
             recipient = plan.get("build_principal")
             if (not isinstance(recipient, str)
                 or re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", recipient) is None
+                or plan.get("profile_execution_policy") not in ("inherit", "RemoteSigned")
                 or plan.get("expected_idf") != "6.0.1"
                 or plan.get("target") != "esp32s3"
                 or plan.get("stages") != ["idf_profile", "idf_diagnostics", "idf_build"]):
@@ -351,6 +353,7 @@ class PlanReview:
             rendered,
             log_recipient,
             row.execution_submitted,
+            plan.get("profile_execution_policy", "inherit"),
         )
 
 
@@ -372,7 +375,9 @@ def review_warning(review: PlanReview) -> str:
             "Output may contain private data; redaction cannot recognize every secret. "
             "Logs remain in RAM for five minutes after the latest output, capped at "
             "256 KiB / 2,048 lines per job. External ESP-IDF must be exactly 6.0.1. "
-            "No flash, USB, reset, install or version fallback.\n\n" + notice
+            f"Profile execution policy: {review.profile_execution_policy} "
+            "(local registration only). No flash, USB, reset, install or version fallback.\n\n"
+            + notice
         )
     if review.test == "firmware_observe":
         return (

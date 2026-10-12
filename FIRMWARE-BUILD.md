@@ -13,13 +13,23 @@ Example paths are placeholders, not the user's private configuration:
 project_dir = 'C:\example\firmware'
 trusted_profile = 'C:\example\trusted-idf-export.ps1'
 expected_idf = '6.0.1'
+# Optional, only after explicit local authorization; default is inherit:
+# profile_execution_policy = 'RemoteSigned'
 target = 'esp32s3'
 ```
 
 The registered profile must support `-e`: output literal KEY=VALUE lines and
 return. It is invoked with the system PowerShell `-NoProfile -File profile -e`,
 never dot-sourced. Malformed or duplicate assignments, stderr, excessive output
-or a nonzero exit fail closed. Only an explicit environment allowlist reaches the
+or a nonzero exit fail closed. Execution policy is inherited by default. Local registration may explicitly select
+`profile_execution_policy = "RemoteSigned"`; this adds only the child process
+`-ExecutionPolicy RemoteSigned` flag. Group Policy remains authoritative. Bypass,
+Unrestricted, scope writes and shell fallbacks are not supported. MCP cannot set
+this policy. Its choice is disclosed in the plan/GUI and bound into the fingerprint.
+Profile refusal persists `profile_export_rejected_or_failed`; compiler preflight
+nonzero exit persists `external_toolchain_diagnostic_failed` and never starts build.
+Neither fixed diagnostic contains native stderr or private paths.
+Only an explicit environment allowlist reaches the
 child. Ambient credentials and arbitrary exported variables are excluded.
 
 Acquire an authenticated lease, then call `prepare_test` with
@@ -70,9 +80,9 @@ jobs are not marked recovered or successful.
 ## Validation in the delegated cloud environment
 
 - 2026-10-12: compileall succeeds.
-- Dependency-free unittest suite: 16 passed, two skipped because pyserial/filelock
+- Dependency-free unittest suite: 19 passed, two skipped because pyserial/filelock
   are not installed. With cloud-only lock/port dependency facades injected, all
-  18 tests pass. This exercises the actual Broker/SQLite/PlanApprovals/PlanReview
+  21 tests pass. This exercises the actual Broker/SQLite/PlanApprovals/PlanReview
   serial and mock prepare-submit-GUI-approve paths, principal mismatch, no replay
   and cancellation to durable needs_review, but does not validate native locks. Includes mock profile/diagnostics/build/manifest/read traversal,
   output flood, multiple readers, unknown/stderr/context, expiry/epoch/gap,

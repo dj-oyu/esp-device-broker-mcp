@@ -92,12 +92,18 @@ class CloseWorkSessionRequest(ResumeWorkSessionRequest):
     pass
 
 
+BuildLogLevel = Literal["error", "warning", "info", "debug", "unknown"]
+
+
+def _default_build_log_levels() -> list[BuildLogLevel]:
+    return ["error", "warning"]
+
 
 class BuildLogRequest(StrictModel):
     job_id: Identifier
     cursor: LogCursor | None = None
-    levels: list[Literal["error", "warning", "info", "debug", "unknown"]] = Field(
-        default_factory=lambda: ["error", "warning"] , max_length=5
+    levels: list[BuildLogLevel] = Field(
+        default_factory=_default_build_log_levels, max_length=5
     )
     context: int = Field(default=2, ge=0, le=10)
     limit: int = Field(default=40, ge=1, le=100)
