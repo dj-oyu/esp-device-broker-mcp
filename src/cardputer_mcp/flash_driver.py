@@ -54,7 +54,8 @@ class GuardedObservationPort:
         return getattr(self._port, name)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name in {"dtr", "rts"}:
+        # Deasserting an already started pulse is cleanup, even after revocation.
+        if name in {"dtr", "rts"} and value is not False:
             self._check()
         setattr(self._port, name, value)
 

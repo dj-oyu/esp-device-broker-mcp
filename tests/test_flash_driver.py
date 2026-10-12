@@ -136,6 +136,39 @@ class DriverBootTests(unittest.TestCase):
         self.assertFalse(any(event[1:] == ("rts", True) for event in ports[0].trace))
         self.assertFalse(driver.active)
 
+    def test_post_open_revocation_never_starts_reset(self):
+        driver, backend, ports, _ = self.make_driver()
+        original = backend.inventory
+        count = 0
+        def revoke_after_open():
+            nonlocal count
+            count += 1
+            if count == 3:
+                driver.stop()
+            return original()
+        backend.inventory = revoke_after_open
+        with self.assertRaises((FlashFailure, SerialFailure)):
+            driver.boot()
+        self.assertEqual(ports[0].opens, 1)
+        self.assertFalse(any(event[1:] == ("rts", True) for event in ports[0].trace))
+        self.assertEqual(ports[0].opens, ports[0].closes)
+        self.assertFalse(driver.active)
+
+    def test_cancel_during_pulse_allows_deassertion_and_close(self):
+        driver, backend, ports, _ = self.make_driver()
+        original = backend.pause
+        def stop_during_pulse(seconds):
+            original(seconds)
+            driver.stop()
+        backend.pause = stop_during_pulse
+        with self.assertRaises((FlashFailure, SerialFailure)):
+            driver.boot()
+        rts = [event[2] for event in ports[0].trace if event[1] == "rts"]
+        self.assertEqual(rts[-2:], [True, False])
+        self.assertEqual(ports[0].opens, ports[0].closes)
+        self.assertEqual(ports[1].opens, 0)
+        self.assertFalse(driver.active)
+
     def test_stop_during_disconnect_never_reopens(self):
         driver, _, ports, _ = self.make_driver()
         def disconnect(size):
