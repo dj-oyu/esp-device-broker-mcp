@@ -561,6 +561,7 @@ def create_server(
     )
     read_only = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
     mutating = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
+    execution = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
 
     @server.tool(annotations=read_only)
     async def client_identity(ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -631,7 +632,7 @@ def create_server(
 
         return _result(prepare)
 
-    @server.tool(annotations=mutating)
+    @server.tool(annotations=execution)
     async def execute_test(request: ExecuteRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Request execution of an exact plan; repeated requests never replay a job.
 

@@ -49,7 +49,6 @@ FLASH_EFFECTS = [
     ),
     "Backup: ROM probe/read resets may occur; no normal-boot reset or firmware write",
     "Flash leaves the new firmware installed; restore is a separate exact approval; no rollback",
-
     (
         "Shares bounded redacted progress/boot logs only with the requesting "
         "principal; no raw backup delivery"

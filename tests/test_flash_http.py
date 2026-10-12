@@ -101,6 +101,9 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
             ) as http,
             connect(service.url, key.token) as remote,
         ):
+            advertised = await remote.list_tools()
+            execute = next(tool for tool in advertised.tools if tool.name == "execute_test")
+            assert execute.annotations.destructive_hint is True
             lease = await call(remote, "acquire_session", {"owner": "remote_mcp"})
             session = lease["session"]
 
