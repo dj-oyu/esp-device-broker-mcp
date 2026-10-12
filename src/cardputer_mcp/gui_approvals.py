@@ -385,25 +385,17 @@ def review_warning(review: PlanReview) -> str:
         )
     if review.test in {t.value for t in FLASH_TESTS}:
         return (
-            (
-                "BACKUP enters ROM download mode and reads full plaintext flash into "
-                "private local storage. "
-            )
+            "BACKUP enters ROM download mode and reads full plaintext flash into "
+            "private local storage. "
             "FLASH/RESTORE write the exact displayed artifact/backup and erase affected sectors. "
-            (
-                "Verify the registered device, build security policy and recovery "
-                "backup before this exact approval. "
-            )
+            "Verify the registered device, build security policy and recovery "
+            "backup before this exact approval. "
             "Reset and passive boot checks may exit the current app and lose unsaved state. "
-            (
-                "Cancellation or failure does not undo partial writes; needs_review "
-                "blocks further work. "
-            )
+            "Cancellation or failure does not undo partial writes; needs_review "
+            "blocks further work. "
             f"Bounded redacted boot/progress logs go to principal: {review.log_recipient}. "
-            (
-                "Boot text is unverified; BIN readback and ELF prefix are separate "
-                "evidence. No automatic restore.\n\n"
-            )
+            "Boot text is unverified; BIN readback and ELF prefix are separate "
+            "evidence. No automatic restore.\n\n"
             + notice
         )
     if review.test == "firmware_build":

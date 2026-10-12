@@ -18,7 +18,10 @@ startup opt-in, authenticated clients and exact local per-job approval. See
 [SERIAL.md](SERIAL.md) for effects, limitations and user-run Windows instructions.
 
 Mock remains the default. `mock_flash`, `mock_boot`, and `mock_test` are synthetic.
-Real flashing and firmware build integration remain unimplemented.
+Registered external [ESP-IDF 6.0.1 builds](FIRMWARE-BUILD.md) and separately approved
+[backup/flash/restore](FIRMWARE-FLASH.md) are implemented. Flash defaults to disabled;
+physical device behavior remains unvalidated. Completion uses readback and passive
+boot IDF/ELF evidence, with no HELLO key commands.
 [HOME capture](CAPTURE.md) returns a bounded MCP PNG after confirmed serial close;
 its mock image is visibly labeled TEST / NOT DEVICE. A [local queue GUI](GUI-WINDOWS.md) and [logical work sessions/FIFO](SESSIONS.md)
 are now implemented and mock-tested. The optional [Windows Tunnel preparation](TUNNEL-WINDOWS.md) launcher
@@ -267,7 +270,8 @@ Mock tests: `diagnostics`, `firmware_workflow`, `capture_home`. Serial tests:
 with mandatory local approval and
 authentication. Capture requires an authenticated principal-bound lease even in
 mock mode. No generic shell, raw serial, arbitrary file path, command upload,
-real flash or fault injection tool exists. Restart is a fixed, individually
+or fault injection tool exists. Flash accepts only registered device IDs and
+successful owned build/backup jobs with independent exact local approval. Restart is a fixed, individually
 approved job, not an arbitrary serial command tool. Domain failures use structured `{ok:false,error:...}`;
 SDK validation failures return a generic MCP tool error without reflecting inputs.
 
@@ -290,7 +294,8 @@ anew rather than hard-coded. Tests cover a synthetic COM-name change and Linux
 The opt-in pySerial adapter supports bounded observation, HELLO and HOME capture; see
 [SERIAL.md](SERIAL.md). Actual Windows driver/reset behavior, physical reconnect
 identity and Linux permissions/exclusive-open behavior still need authorized
-hardware validation. No bootloader PID substitution or flash adapter is available. A broker lock cannot prevent an unrelated terminal or flash
+hardware validation. No bootloader PID substitution is available. The registered Windows ROM-only
+flash worker is implemented and still requires authorized hardware validation. A broker lock cannot prevent an unrelated terminal or flash
 program from opening a real device; all participating tools must integrate with
 one broker and the adapter must also acquire OS-level serial exclusivity.
 
