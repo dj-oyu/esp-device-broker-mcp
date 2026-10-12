@@ -18,6 +18,7 @@ who can change the containing directories. No permissions or ACLs are modified.
 import os
 import re
 import stat
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -42,6 +43,8 @@ class ClientEnvironment:
 
 
 def _adapter_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
     package_parent = Path(__file__).resolve().parent.parent
     return package_parent.parent if package_parent.name == "src" else package_parent
 
