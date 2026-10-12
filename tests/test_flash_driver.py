@@ -126,9 +126,11 @@ class DriverBootTests(unittest.TestCase):
     def test_stop_before_reset_controls_never_opens(self):
         driver, backend, ports, _ = self.make_driver()
         original = backend.factory
+
         def stop_at_factory():
             driver.stop()
             return original()
+
         backend.factory = stop_at_factory
         with self.assertRaises((FlashFailure, SerialFailure)):
             driver.boot()
@@ -140,12 +142,14 @@ class DriverBootTests(unittest.TestCase):
         driver, backend, ports, _ = self.make_driver()
         original = backend.inventory
         count = 0
+
         def revoke_after_open():
             nonlocal count
             count += 1
             if count == 3:
                 driver.stop()
             return original()
+
         backend.inventory = revoke_after_open
         with self.assertRaises((FlashFailure, SerialFailure)):
             driver.boot()
@@ -157,9 +161,11 @@ class DriverBootTests(unittest.TestCase):
     def test_cancel_during_pulse_allows_deassertion_and_close(self):
         driver, backend, ports, _ = self.make_driver()
         original = backend.pause
+
         def stop_during_pulse(seconds):
             original(seconds)
             driver.stop()
+
         backend.pause = stop_during_pulse
         with self.assertRaises((FlashFailure, SerialFailure)):
             driver.boot()
@@ -171,9 +177,11 @@ class DriverBootTests(unittest.TestCase):
 
     def test_stop_during_disconnect_never_reopens(self):
         driver, _, ports, _ = self.make_driver()
+
         def disconnect(size):
             driver.stop()
             raise OSError("synthetic disconnected")
+
         ports[0].read = disconnect
         with self.assertRaises((FlashFailure, SerialFailure)):
             driver.boot()

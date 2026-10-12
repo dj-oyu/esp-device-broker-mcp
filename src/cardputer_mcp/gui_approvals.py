@@ -395,8 +395,7 @@ def review_warning(review: PlanReview) -> str:
             "blocks further work. "
             f"Bounded redacted boot/progress logs go to principal: {review.log_recipient}. "
             "Boot text is unverified; BIN readback and ELF prefix are separate "
-            "evidence. No automatic restore.\n\n"
-            + notice
+            "evidence. No automatic restore.\n\n" + notice
         )
     if review.test == "firmware_build":
         return (

@@ -114,6 +114,7 @@ class WindowsReleaseTests(unittest.TestCase):
         self.addCleanup(sys.modules.pop, spec.name)
         spec.loader.exec_module(module)
         from unittest.mock import patch
+
         app = self.folder / "application"
         extraction = self.folder / "extraction"
         private = self.folder / "private"
@@ -126,7 +127,8 @@ class WindowsReleaseTests(unittest.TestCase):
             # Model a standalone installation. The cloud sandbox itself has Git
             # markers in /workspace and /tmp; fixture-owned markers remain real.
             if sys.platform == "linux" and candidate in (
-                Path("/workspace/.git"), Path("/tmp/.git")
+                Path("/workspace/.git"),
+                Path("/tmp/.git"),
             ):
                 raise FileNotFoundError
             return original_lstat(candidate)
