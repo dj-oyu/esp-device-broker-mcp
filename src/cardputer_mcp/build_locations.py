@@ -27,10 +27,14 @@ def _digest(value: Any) -> str:
 
 
 def build_slot(fingerprint: str, environment_fingerprint: str) -> str:
-    payload = {"domain": "esp-device-broker-mcp/build-slot/v2",
-               "fingerprint": _digest(fingerprint),
-               "environment_fingerprint": _digest(environment_fingerprint)}
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    payload = {
+        "domain": "esp-device-broker-mcp/build-slot/v2",
+        "fingerprint": _digest(fingerprint),
+        "environment_fingerprint": _digest(environment_fingerprint),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def output_base(state_dir: Path, build_root: Path | None) -> Path:
@@ -42,8 +46,9 @@ def output_base(state_dir: Path, build_root: Path | None) -> Path:
     return chosen.resolve()
 
 
-def build_directory(state_dir: Path, build_root: Path | None,
-                    fingerprint: str, environment_fingerprint: str) -> Path:
+def build_directory(
+    state_dir: Path, build_root: Path | None, fingerprint: str, environment_fingerprint: str
+) -> Path:
     base = output_base(state_dir, build_root)
     if build_root is not None:
         return base / build_slot(fingerprint, environment_fingerprint)
@@ -57,8 +62,9 @@ def check_windows_path(path: Path, *, windows: bool | None = None) -> None:
         raise BuildLocationError("build_output_path_too_long")
 
 
-def build_location(fingerprint: str, environment_fingerprint: str,
-                   build_root: Path | None) -> dict[str, Any]:
+def build_location(
+    fingerprint: str, environment_fingerprint: str, build_root: Path | None
+) -> dict[str, Any]:
     if build_root is None:
         return {"layout_version": 1}
     return {"layout_version": 2, "slot": build_slot(fingerprint, environment_fingerprint)}
@@ -81,6 +87,7 @@ def _json(path: Path) -> dict[str, Any]:
         raw = handle.read(65537)
     if len(raw) > 65536:
         raise BuildLocationError("build_output_identity_mismatch")
+
     def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in pairs:
@@ -88,6 +95,7 @@ def _json(path: Path) -> dict[str, Any]:
                 raise BuildLocationError("build_output_identity_mismatch")
             result[key] = value
         return result
+
     try:
         value = json.loads(raw, object_pairs_hook=unique)
     except (UnicodeError, json.JSONDecodeError, RecursionError):
@@ -97,17 +105,23 @@ def _json(path: Path) -> dict[str, Any]:
     return value
 
 
-def identity_receipt(state_dir: Path, build_root: Path | None,
-                     fingerprint: str, environment_fingerprint: str) -> dict[str, Any]:
-    return {"receipt_version": 1, "location": build_location(fingerprint, environment_fingerprint,
-                                                           build_root),
-            "fingerprint": _digest(fingerprint),
-            "environment_fingerprint": _digest(environment_fingerprint),
-            "root_id": hashlib.sha256(str(output_base(state_dir, build_root)).casefold().encode()).hexdigest()}
+def identity_receipt(
+    state_dir: Path, build_root: Path | None, fingerprint: str, environment_fingerprint: str
+) -> dict[str, Any]:
+    return {
+        "receipt_version": 1,
+        "location": build_location(fingerprint, environment_fingerprint, build_root),
+        "fingerprint": _digest(fingerprint),
+        "environment_fingerprint": _digest(environment_fingerprint),
+        "root_id": hashlib.sha256(
+            str(output_base(state_dir, build_root)).casefold().encode()
+        ).hexdigest(),
+    }
 
 
-def claim_build_directory(state_dir: Path, build_root: Path | None,
-                          fingerprint: str, environment_fingerprint: str) -> Path:
+def claim_build_directory(
+    state_dir: Path, build_root: Path | None, fingerprint: str, environment_fingerprint: str
+) -> Path:
     """Caller must hold the corresponding slot lock through build and hashing."""
     destination = build_directory(state_dir, build_root, fingerprint, environment_fingerprint)
     check_windows_path(destination)
@@ -125,10 +139,13 @@ def claim_build_directory(state_dir: Path, build_root: Path | None,
     return destination
 
 
-
-def storage_snapshot(state_dir: Path, build_root: Path | None, *,
-                     min_free_bytes: int = 512*1024*1024,
-                     max_files: int = 10000) -> dict[str, Any]:
+def storage_snapshot(
+    state_dir: Path,
+    build_root: Path | None,
+    *,
+    min_free_bytes: int = 512 * 1024 * 1024,
+    max_files: int = 10000,
+) -> dict[str, Any]:
     """Read-only bounded owned-slot inventory. Never cleans or adopts other data."""
     base = output_base(state_dir, build_root)
     existing = base
@@ -147,8 +164,11 @@ def storage_snapshot(state_dir: Path, build_root: Path | None, *,
             if scanned > 2048:
                 scan_complete = False
                 break
-            if (not re.fullmatch(r"[a-f0-9]{64}", first.name) or first.is_symlink()
-                or not first.is_dir()):
+            if (
+                not re.fullmatch(r"[a-f0-9]{64}", first.name)
+                or first.is_symlink()
+                or not first.is_dir()
+            ):
                 continue
             try:
                 _plain(first)
@@ -181,8 +201,12 @@ def storage_snapshot(state_dir: Path, build_root: Path | None, *,
                 break
     used = files = entries = 0
     complete = len(slots) < 256 and scan_complete
+    def walk_failed(error: OSError) -> None:
+        nonlocal complete
+        complete = False
+
     for slot in slots:
-        for directory, directories, names in os.walk(slot, followlinks=False):
+        for directory, directories, names in os.walk(slot, followlinks=False, onerror=walk_failed):
             entries += 1 + len(directories)
             if entries > max_files:
                 complete = False
@@ -214,29 +238,37 @@ def storage_snapshot(state_dir: Path, build_root: Path | None, *,
                 break
         if files > max_files or entries > max_files:
             break
-    return {"free_bytes": disk.free, "total_bytes": disk.total,
-            "owned_bytes": used, "owned_slots": len(slots), "usage_complete": complete,
-            "min_free_bytes": min_free_bytes, "cleanup_enabled": False}
+    return {
+        "free_bytes": disk.free,
+        "total_bytes": disk.total,
+        "owned_bytes": used,
+        "owned_slots": len(slots),
+        "usage_complete": complete,
+        "min_free_bytes": min_free_bytes,
+        "cleanup_enabled": False,
+    }
 
 
-def check_storage_before_write(state_dir: Path, build_root: Path | None,
-                               min_free_bytes: int = 512*1024*1024) -> dict[str, Any]:
+def check_storage_before_write(
+    state_dir: Path, build_root: Path | None, min_free_bytes: int = 512 * 1024 * 1024
+) -> dict[str, Any]:
     value = storage_snapshot(state_dir, build_root, min_free_bytes=min_free_bytes)
     if value["free_bytes"] < min_free_bytes:
         raise BuildLocationError("build_output_insufficient_space")
     return value
 
-def slot_lock_path(state_dir: Path, build_root: Path | None,
-                   fingerprint: str, environment_fingerprint: str) -> Path:
+
+def slot_lock_path(
+    state_dir: Path, build_root: Path | None, fingerprint: str, environment_fingerprint: str
+) -> Path:
     locks = output_base(state_dir, build_root) / ".locks"
     _plain(locks)
-    return locks / (
-        build_slot(fingerprint, environment_fingerprint) + ".lock"
-    )
+    return locks / (build_slot(fingerprint, environment_fingerprint) + ".lock")
 
 
-def resolve_build_manifest(state_dir: Path, build_root: Path | None,
-                           manifest: dict[str, Any]) -> Path:
+def resolve_build_manifest(
+    state_dir: Path, build_root: Path | None, manifest: dict[str, Any]
+) -> Path:
     """Internal locator only. Flash still requires artifact hashes and separate approval.
 
     Old schema-v1 manifests without a build_location use the original two-hash
@@ -254,9 +286,13 @@ def resolve_build_manifest(state_dir: Path, build_root: Path | None,
         _plain(root.parent)
         _plain(root)
         saved = _json(root / "broker-manifest.json")
-        if (type(saved.get("schema_version")) is not int or saved.get("schema_version") != 1
+        if (
+            type(saved.get("schema_version")) is not int
+            or saved.get("schema_version") != 1
             or saved.get("fingerprint") != fingerprint
-            or saved.get("environment_fingerprint") != environment or saved != manifest):
+            or saved.get("environment_fingerprint") != environment
+            or saved != manifest
+        ):
             raise BuildLocationError("build_output_identity_mismatch")
         return root
     if build_root is None or location != build_location(fingerprint, environment, build_root):

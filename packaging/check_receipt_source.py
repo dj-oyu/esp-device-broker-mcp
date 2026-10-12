@@ -17,14 +17,7 @@ def check() -> None:
              "tests/test_build_flash_layout.py", "src/cardputer_mcp/build_security.py",
              "tests/test_build_security.py", "src/cardputer_mcp/build_locations.py",
              "tests/test_build_locations.py", "src/cardputer_mcp/config.py",
-             "src/cardputer_mcp/broker.py"]
-    subprocess.run([str(python), "-m", "ruff", "check", "--fix", *paths], cwd=root, check=False)
-    subprocess.run([str(python), "-m", "ruff", "format", *paths], cwd=root, check=True)
-    import base64
-    import json
-    import zlib
-    snapshot = json.dumps({name: (root / name).read_text(encoding="utf-8") for name in paths})
-    print("ROOT_FORMAT_B64:" + base64.b64encode(zlib.compress(snapshot.encode())).decode(), flush=True)
+             "src/cardputer_mcp/broker.py", "tests/test_build_approval_integration.py"]
     subprocess.run([str(python), "-m", "ruff", "format", "--check", *paths],
                    cwd=root, check=True)
     subprocess.run([str(python), "-m", "ruff", "check", *paths], cwd=root, check=True)
@@ -32,7 +25,6 @@ def check() -> None:
     subprocess.run([str(python), "-m", "unittest", "discover", "-s", "tests", "-p", "*build*.py", "-v"],
                    cwd=root, check=True)
     print("PASS: receipt source format/lint/Linux type/build-unit checks", flush=True)
-    raise SystemExit("Formatter bridge: source snapshot must be committed before passing")
 
 
 if __name__ == "__main__":

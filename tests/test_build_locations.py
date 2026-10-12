@@ -48,11 +48,11 @@ class BuildLocationTests(unittest.TestCase):
         self.assertEqual(path, resolve_build_manifest(self.state, self.output, self.manifest(True)))
 
     def test_different_identity_and_forced_collision(self):
-        self.assertNotEqual(build_slot(self.fp, self.env), build_slot("c"*64, self.env))
-        with patch("cardputer_mcp.build_locations.build_slot", return_value="d"*64):
+        self.assertNotEqual(build_slot(self.fp, self.env), build_slot("c" * 64, self.env))
+        with patch("cardputer_mcp.build_locations.build_slot", return_value="d" * 64):
             claim_build_directory(self.state, self.output, self.fp, self.env)
             with self.assertRaisesRegex(BuildLocationError, "build_output_identity_mismatch"):
-                claim_build_directory(self.state, self.output, "c"*64, self.env)
+                claim_build_directory(self.state, self.output, "c" * 64, self.env)
 
     def test_existing_unknown_directory_is_not_adopted_or_removed(self):
         path = build_directory(self.state, self.output, self.fp, self.env)
@@ -78,9 +78,9 @@ class BuildLocationTests(unittest.TestCase):
             resolve_build_manifest(self.state, self.output, self.manifest(True))
 
     def test_long_windows_path_fixed_diagnostic(self):
-        check_windows_path(PureWindowsPath("C:/b") / ("a"*64), windows=True)
+        check_windows_path(PureWindowsPath("C:/b") / ("a" * 64), windows=True)
         with self.assertRaisesRegex(BuildLocationError, "build_output_path_too_long"):
-            check_windows_path(PureWindowsPath("C:/" + "x"*170) / ("a"*64), windows=True)
+            check_windows_path(PureWindowsPath("C:/" + "x" * 170) / ("a" * 64), windows=True)
 
     def test_read_only_owned_inventory_and_no_delete(self):
         path = claim_build_directory(self.state, self.output, self.fp, self.env)
@@ -127,16 +127,31 @@ class BuildLocationTests(unittest.TestCase):
 
     def test_reparse_root_marker_is_rejected(self):
         from cardputer_mcp.build_locations import output_base
+
         self.output.mkdir()
         original = Path.lstat
+
         def reparse(path):
             value = original(path)
             if path == self.output:
                 return SimpleNamespace(st_mode=value.st_mode, st_file_attributes=0x400)
             return value
+
         with patch.object(Path, "lstat", reparse):
             with self.assertRaisesRegex(BuildLocationError, "build_output_linked"):
                 output_base(self.state, self.output)
+
+    def test_walk_error_marks_inventory_incomplete(self):
+        claim_build_directory(self.state, self.output, self.fp, self.env)
+
+        def failed_walk(path, *, followlinks, onerror):
+            onerror(PermissionError("synthetic"))
+            return iter(())
+
+        with patch("cardputer_mcp.build_locations.os.walk", failed_walk):
+            report = storage_snapshot(self.state, self.output)
+        self.assertFalse(report["usage_complete"])
+        self.assertFalse(report["cleanup_enabled"])
 
     def test_native_slot_lock_refuses_concurrent_writer(self):
         try:
@@ -144,6 +159,7 @@ class BuildLocationTests(unittest.TestCase):
         except ModuleNotFoundError as error:
             self.skipTest(str(error))
         from cardputer_mcp.build_locations import slot_lock_path
+
         path = slot_lock_path(self.state, self.output, self.fp, self.env)
         path.parent.mkdir(parents=True)
         first, second = FileLock(str(path), timeout=0), FileLock(str(path), timeout=0)
@@ -154,8 +170,10 @@ class BuildLocationTests(unittest.TestCase):
             self.assertTrue(second.is_locked)
 
     def test_insufficient_space_before_writes(self):
-        with patch("cardputer_mcp.build_locations.shutil.disk_usage",
-                   return_value=SimpleNamespace(free=1, total=100)):
+        with patch(
+            "cardputer_mcp.build_locations.shutil.disk_usage",
+            return_value=SimpleNamespace(free=1, total=100),
+        ):
             with self.assertRaisesRegex(BuildLocationError, "build_output_insufficient_space"):
                 check_storage_before_write(self.state, self.output, 2)
         self.assertFalse(self.output.exists())
@@ -164,15 +182,20 @@ class BuildLocationTests(unittest.TestCase):
 class BuildSlotOwnershipTests(unittest.TestCase):
     def test_uncertain_process_keeps_slot_lock(self):
         from cardputer_mcp.firmware_build import FirmwareBuild
+
         builder = FirmwareBuild(SimpleNamespace())
         lock = SimpleNamespace(released=False)
+
         def release():
             lock.released = True
+
         lock.release = release
         builder.process.uncertain = True
+
         def fail(*_):
             builder._build_lock = lock
             raise ValueError("synthetic")
+
         with patch.object(builder, "_execute_inner", side_effect=fail):
             with self.assertRaises(ValueError):
                 builder._execute({}, lambda _: None)
@@ -181,14 +204,19 @@ class BuildSlotOwnershipTests(unittest.TestCase):
 
     def test_confirmed_stop_releases_slot_after_failure(self):
         from cardputer_mcp.firmware_build import FirmwareBuild
+
         builder = FirmwareBuild(SimpleNamespace())
         lock = SimpleNamespace(released=False)
+
         def release():
             lock.released = True
+
         lock.release = release
+
         def fail(*_):
             builder._build_lock = lock
             raise ValueError("synthetic")
+
         with patch.object(builder, "_execute_inner", side_effect=fail):
             with self.assertRaises(ValueError):
                 builder._execute({}, lambda _: None)

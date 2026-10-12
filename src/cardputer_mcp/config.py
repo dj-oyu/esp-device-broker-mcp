@@ -59,7 +59,7 @@ class BuildProject(BaseModel):
     project_dir: Path
     trusted_profile: Path
     build_root: Path | None = None
-    build_min_free_bytes: int = Field(default=512*1024*1024, strict=True, ge=0, le=1<<40)
+    build_min_free_bytes: int = Field(default=512 * 1024 * 1024, strict=True, ge=0, le=1 << 40)
     profile_execution_policy: Literal["inherit", "RemoteSigned"] = "inherit"
     node_tool: RegisteredBuildTool | None = None
     git_tool: RegisteredBuildTool | None = None

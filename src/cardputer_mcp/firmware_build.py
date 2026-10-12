@@ -12,8 +12,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .build_locations import (
-    BuildLocationError, build_directory, build_location, check_windows_path,
-    claim_build_directory, slot_lock_path, check_storage_before_write, storage_snapshot,
+    BuildLocationError,
+    build_directory,
+    build_location,
+    check_storage_before_write,
+    check_windows_path,
+    claim_build_directory,
+    slot_lock_path,
+    storage_snapshot,
 )
 from .build_logs import BuildLogs
 from .build_process import BuildProcess
@@ -318,10 +324,13 @@ class FirmwareBuild:
             if output.is_relative_to(source) or source.is_relative_to(output):
                 raise BuildLocationError("build_output_root_invalid")
         if hasattr(self.settings, "state_dir"):
-            prospective = build_directory(self.settings.state_dir, build_root, "f"*64, "e"*64)
+            prospective = build_directory(self.settings.state_dir, build_root, "f" * 64, "e" * 64)
             check_windows_path(prospective, windows=os.name == "nt")
-            check_storage_before_write(self.settings.state_dir, build_root,
-                                       getattr(project, "build_min_free_bytes", 512*1024*1024))
+            check_storage_before_write(
+                self.settings.state_dir,
+                build_root,
+                getattr(project, "build_min_free_bytes", 512 * 1024 * 1024),
+            )
         fingerprint = hashlib.sha256(
             json.dumps(
                 {
@@ -337,9 +346,14 @@ class FirmwareBuild:
                     "version": project.expected_idf,
                     "target": project.target,
                     "profile_policy": getattr(project, "profile_execution_policy", "inherit"),
-                    "build_min_free_bytes": getattr(project, "build_min_free_bytes", 512*1024*1024),
-                    "build_root_id": (hashlib.sha256(str(build_root.resolve()).casefold().encode()).hexdigest()
-                                      if build_root is not None else None),
+                    "build_min_free_bytes": getattr(
+                        project, "build_min_free_bytes", 512 * 1024 * 1024
+                    ),
+                    "build_root_id": (
+                        hashlib.sha256(str(build_root.resolve()).casefold().encode()).hexdigest()
+                        if build_root is not None
+                        else None
+                    ),
                     "registered_tools": {
                         name: dict(
                             path=str(tool.executable.resolve(strict=True)).casefold(),
@@ -573,10 +587,14 @@ class FirmwareBuild:
         from filelock import FileLock, Timeout
 
         build_root = getattr(project, "build_root", None)
-        check_storage_before_write(self.settings.state_dir, build_root,
-                                   getattr(project, "build_min_free_bytes", 512*1024*1024))
-        lock_path = slot_lock_path(self.settings.state_dir, build_root, plan["fingerprint"],
-                                   environment_fingerprint)
+        check_storage_before_write(
+            self.settings.state_dir,
+            build_root,
+            getattr(project, "build_min_free_bytes", 512 * 1024 * 1024),
+        )
+        lock_path = slot_lock_path(
+            self.settings.state_dir, build_root, plan["fingerprint"], environment_fingerprint
+        )
         lock_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         lock = FileLock(str(lock_path), timeout=0)
         try:
@@ -584,8 +602,9 @@ class FirmwareBuild:
         except Timeout:
             raise BuildLocationError("build_output_in_use") from None
         self._build_lock = lock
-        build_dir = claim_build_directory(self.settings.state_dir, build_root, plan["fingerprint"],
-                                          environment_fingerprint)
+        build_dir = claim_build_directory(
+            self.settings.state_dir, build_root, plan["fingerprint"], environment_fingerprint
+        )
         stage("idf_build")
 
         def emit(line: str, stream: str) -> None:
@@ -672,8 +691,11 @@ class FirmwareBuild:
         project = self.settings.build_projects.get(project_id)
         if project is None:
             raise BuildLocationError("registered_build_project_required")
-        return storage_snapshot(self.settings.state_dir, getattr(project, "build_root", None),
-                                min_free_bytes=getattr(project, "build_min_free_bytes", 512*1024*1024))
+        return storage_snapshot(
+            self.settings.state_dir,
+            getattr(project, "build_root", None),
+            min_free_bytes=getattr(project, "build_min_free_bytes", 512 * 1024 * 1024),
+        )
 
     def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
         with self._lock:
