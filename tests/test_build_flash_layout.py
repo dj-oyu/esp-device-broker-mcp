@@ -10,8 +10,8 @@ from unittest.mock import patch
 from cardputer_mcp.firmware_build import (
     BuildFlashLayoutFailure,
     BuildFlashSecurityFailure,
-    build_flash_security_receipt,
     build_flash_layout_receipt,
+    build_flash_security_receipt,
 )
 
 
