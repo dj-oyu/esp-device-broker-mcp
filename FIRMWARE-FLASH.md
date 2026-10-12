@@ -18,6 +18,20 @@ or uncertain, encryption, existing stubs, and ROM ranges above 16 MiB fail close
 Initial chip detection has bounded fallback before identity verification; writes
 have one attempt and block attempt, without reconnect/reflash or automatic restore.
 
+Keep command side effects simple and explicit: backup reads and preserves a
+private receipt, flash installs and leaves the verified new firmware installed,
+and restore writes the exact prior backup only when separately requested and
+approved. No command silently invokes another MCP command. Failure stops for
+review without rollback, repeat writes or automatically invoking restore.
+
+Each native ROM probe/read/write connects in download mode and can reset the
+selected device. Backup performs only probe/read and does not add a normal-boot
+reset. Flash/restore completion performs one normal-boot RTS pulse (100 ms), then
+up to 30 seconds of passive startup observation. A disconnect during that
+observation permits at most one same-identity reopen after confirmed close,
+without a second reset pulse. Cancellation/authority checks precede open/reopen,
+reset assertion and reads; pulse deassertion and close remain allowed for cleanup.
+
 Completion means exact readback, restart, and passive startup evidence matching
 ESP-IDF 6.0.1 and the expected ELF prefix. It sends no HELLO keys. HELLO remains an
 independent existing approval job. The ELF prefix is textual boot evidence;

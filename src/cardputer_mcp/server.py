@@ -607,7 +607,13 @@ def create_server(
 
     @server.tool(annotations=mutating)
     async def prepare_test(request: PrepareRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
-        """Prepare an immutable plan; serial preflight enumerates without opening USB."""
+        """Prepare an immutable plan; serial preflight enumerates without opening USB.
+
+        Backup, flash and restore are independent exact-approval operations.
+        Their plans disclose ROM download-mode resets, writes and observation.
+        Flash leaves verified new firmware installed; restore requires a separate
+        explicit request. No automatic rollback, repeat write or HELLO is added.
+        """
 
         def prepare() -> dict[str, Any]:
             if request.test in (
@@ -628,6 +634,14 @@ def create_server(
     @server.tool(annotations=mutating)
     async def execute_test(request: ExecuteRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Request execution of an exact plan; repeated requests never replay a job.
+
+        Firmware backup probes/reads private full flash via ROM connections that
+        can reset into download mode; it does not reset back into normal boot.
+        Flash/restore write only their approved images/backup, verify readback,
+        then perform one 100 ms normal-boot RTS pulse and passive observation
+        (up to 30 s). A disconnect allows at most one same-USB reopen after close,
+        without another reset pulse. Failure stops for review without retry or
+        automatic restore. HELLO remains a separate approved request.
 
         Set wait_for_approval=true to submit before manual approval. When approval
         is still required it returns awaiting_approval immediately; local GUI

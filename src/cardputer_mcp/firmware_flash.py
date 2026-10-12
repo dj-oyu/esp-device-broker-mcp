@@ -43,7 +43,13 @@ FLASH_EFFECTS = [
         "Writes only attested manifest regions or the exact device-bound backup; "
         "interrupted/uncertain work needs review"
     ),
-    "Resets and passively verifies startup IDF/ELF evidence; app state may be lost",
+    (
+        "Flash/restore: one 100 ms normal-boot reset and up to 30 s passive IDF/ELF "
+        "observation; at most one same-USB reopen after close, without another reset"
+    ),
+    "Backup: ROM probe/read resets may occur; no normal-boot reset or firmware write",
+    "Flash leaves the new firmware installed; restore is a separate exact approval; no rollback",
+
     (
         "Shares bounded redacted progress/boot logs only with the requesting "
         "principal; no raw backup delivery"
