@@ -161,6 +161,7 @@ class PlanApprovals:
             raise ValueError
         if test in {t.value for t in FLASH_TESTS}:
             from .firmware_flash import FLASH_FIELDS, validate_flash_plan
+
             validate_flash_plan(plan)
             expected_keys = _BASE_KEYS | FLASH_FIELDS
         elif test == TestName.BUILD.value:
@@ -489,7 +490,12 @@ class PlanApprovals:
                     except BrokerError:
                         continue
                     submitted = self.broker.pending_execution(plan_hash) is not None
-                    if allow_mock and not submitted and plan["test"] not in ({TestName.BUILD.value} | {t.value for t in FLASH_TESTS}):
+                    if (
+                        allow_mock
+                        and not submitted
+                        and plan["test"]
+                        not in ({TestName.BUILD.value} | {t.value for t in FLASH_TESTS})
+                    ):
                         continue
                     policies = self.broker.capture_policies
                     if plan["test"] == "capture_home" and not submitted:

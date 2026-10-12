@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "packaging"))
-from release_windows import MEMBERS, create_archive, release_version, verify_archive
+from release_windows import MEMBERS, create_archive, release_version, verify_archive  # noqa: E402
 
 
 class WindowsReleaseTests(unittest.TestCase):
@@ -99,7 +99,11 @@ class WindowsReleaseTests(unittest.TestCase):
         self.addCleanup(sys.modules.pop, spec.name)
         spec.loader.exec_module(module)
         from unittest.mock import patch
-        with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(self.exe)):
+
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "executable", str(self.exe)),
+        ):
             self.assertEqual(module._adapter_root(), self.folder.resolve())
 
     def test_frozen_private_file_rejects_installation_and_extraction(self):

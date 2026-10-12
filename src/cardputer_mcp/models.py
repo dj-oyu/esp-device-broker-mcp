@@ -58,7 +58,10 @@ class PrepareRequest(LeaseRequest):
     @model_validator(mode="after")
     def flash_references(self) -> "PrepareRequest":
         if self.test not in FLASH_TESTS:
-            if any(value is not None for value in (self.device_id, self.build_job_id, self.backup_job_id)):
+            if any(
+                value is not None
+                for value in (self.device_id, self.build_job_id, self.backup_job_id)
+            ):
                 raise ValueError("flash_references_only_for_flash_operations")
         elif self.device_id is None or self.project_id is not None:
             raise ValueError("registered_flash_device_required")

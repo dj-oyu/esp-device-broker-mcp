@@ -553,7 +553,10 @@ def create_server(
             "Images require local preview/send approval or an explicit operator key policy. "
             "Read permitted captures within five minutes using the same identity. "
             "Pixels do not prove LCD transfer. "
-            "No arbitrary shell/raw serial commands are available. Flash requires registered device/build/backup and exact local approval. "
+            (
+                "No arbitrary shell/raw serial commands are available. Flash requires "
+                "registered device/build/backup and exact local approval. "
+            )
             "Restart requires an exact locally approved plan."
         ),
         log_level="WARNING",

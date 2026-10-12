@@ -33,12 +33,22 @@ def approve_plan(
             raise ValueError("unsupported_backend")
         if plan.get("test") in ("firmware_backup", "firmware_flash", "firmware_restore"):
             from .plan_approval import PlanApprovals
+
             PlanApprovals._schema(plan)
-            expected = "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ" if plan["test"] == "firmware_backup" else "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN"
-            attestation = confirm(f"Verify this exact registered device/artifact/backup. Type {expected} to attest: ")
+            expected = (
+                "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ"
+                if plan["test"] == "firmware_backup"
+                else "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN"
+            )
+            attestation = confirm(
+                f"Verify this exact registered device/artifact/backup. Type {expected} to attest: "
+            )
             if attestation.strip() != expected:
                 raise ValueError("device_attestation_required")
-            disclosure = "This exact plan may reset/read/write the selected device. Verify the device/artifact/backup. Partial writes are not undone; no automatic restore.\n"
+            disclosure = (
+                "This exact plan may reset/read/write the selected device. Verify the "
+                "device/artifact/backup. Partial writes are not undone; no automatic restore.\n"
+            )
         elif plan.get("test") == "firmware_build":
             from .plan_approval import PlanApprovals
 
