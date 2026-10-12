@@ -6,10 +6,11 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from test_serial_restart import FakePort, STARTUP, device
+
 from cardputer_mcp.flash_driver import NativeFlashDriver
 from cardputer_mcp.flash_lifecycle import FlashFailure
 from cardputer_mcp.serial_backend import fingerprint
-from test_serial_restart import FakePort, STARTUP, device
 
 
 class HelloPort(FakePort):
@@ -21,7 +22,11 @@ class HelloPort(FakePort):
     def write(self, data):
         self.writes.append(data)
         if data == b"q":
-            reply = (b"MEM free=500 largest=300 js=0 frames=2\r\nAPP_STOPPED\r\n" if self.launches else b"") + b"HOME_READY\r\n"
+            reply = (
+                b"MEM free=500 largest=300 js=0 frames=2\r\nAPP_STOPPED\r\n"
+                if self.launches
+                else b""
+            ) + b"HOME_READY\r\n"
         elif data == b"a":
             reply = b"CATEGORY 0\r\n"
         elif data == b"u":
@@ -40,11 +45,15 @@ class HelloPort(FakePort):
 
 class DriverBootTests(unittest.TestCase):
     def make_driver(self, expected="a" * 64):
-        backend, ports, entries, created = device(chunks=(STARTUP.replace(b"v5.5-test", b"v6.0.1"),))
+        backend, ports, entries, created = device(
+            chunks=(STARTUP.replace(b"v5.5-test", b"v6.0.1"),)
+        )
         ports[1] = HelloPort(backend.clock)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        driver = NativeFlashDriver(None, backend, fingerprint(entries[0]), Path(temporary.name), expected)
+        driver = NativeFlashDriver(
+            None, backend, fingerprint(entries[0]), Path(temporary.name), expected
+        )
         # No native receipt/process/USB operation; only the synthetic SerialBackend.
         driver._verified_port = lambda: entries[0].port
         return driver, backend, ports, created

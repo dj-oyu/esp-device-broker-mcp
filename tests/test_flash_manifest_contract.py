@@ -13,7 +13,6 @@ sys.path.insert(0, str(ROOT / "src"))
 from cardputer_mcp import flash_manifest as module  # noqa: E402
 
 
-
 class FlashManifestTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -42,8 +41,15 @@ class FlashManifestTests(unittest.TestCase):
             "flash_authorized": False,
             "artifacts": [],
         }
-        security = json.dumps({"SECURE_BOOT": False, "SECURE_FLASH_ENC_ENABLED": False,
-                               "BOOTLOADER_APP_ANTI_ROLLBACK": False, "BOOTLOADER_APP_ROLLBACK_ENABLE": False, "BOOT_ROM_LOG_ALWAYS_ON": True}).encode()
+        security = json.dumps(
+            {
+                "SECURE_BOOT": False,
+                "SECURE_FLASH_ENC_ENABLED": False,
+                "BOOTLOADER_APP_ANTI_ROLLBACK": False,
+                "BOOTLOADER_APP_ROLLBACK_ENABLE": False,
+                "BOOT_ROM_LOG_ALWAYS_ON": True,
+            }
+        ).encode()
         (self.root / "config").mkdir()
         (self.root / "config/sdkconfig.json").write_bytes(security)
         self.manifest["flash_security"] = self.receipt("config/sdkconfig.json", security)
@@ -80,13 +86,20 @@ class FlashManifestTests(unittest.TestCase):
 
     def test_security_build_configuration_never_authorizes_first_boot_fuse_changes(self):
         for key in ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK"):
-            security = {"SECURE_BOOT": False, "SECURE_FLASH_ENC_ENABLED": False,
-                        "BOOTLOADER_APP_ANTI_ROLLBACK": False, "BOOTLOADER_APP_ROLLBACK_ENABLE": False, "BOOT_ROM_LOG_ALWAYS_ON": True}
+            security = {
+                "SECURE_BOOT": False,
+                "SECURE_FLASH_ENC_ENABLED": False,
+                "BOOTLOADER_APP_ANTI_ROLLBACK": False,
+                "BOOTLOADER_APP_ROLLBACK_ENABLE": False,
+                "BOOT_ROM_LOG_ALWAYS_ON": True,
+            }
             security[key] = True
             data = json.dumps(security).encode()
             (self.root / "config/sdkconfig.json").write_bytes(data)
             self.manifest["flash_security"] = self.receipt("config/sdkconfig.json", data)
-            with self.assertRaisesRegex(module.FlashAdmissionError, "security_configuration_not_authorized"):
+            with self.assertRaisesRegex(
+                module.FlashAdmissionError, "security_configuration_not_authorized"
+            ):
                 self.verify()
 
     def test_changed_binary_and_layout_are_rejected(self):

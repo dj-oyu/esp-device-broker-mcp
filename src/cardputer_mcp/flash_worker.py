@@ -41,7 +41,12 @@ def run_job(job: dict[str, Any], root: Path, tool: Any) -> dict[str, Any]:
         raise ValueError("verified_flash_capacity_required")
     if job["action"] == "read":
         offset, size = job.get("offset"), job.get("size")
-        if type(offset) is not int or type(size) is not int or not 0 <= offset < capacity or not 0 < size <= min(capacity, 0x1000000) - offset:
+        if (
+            type(offset) is not int
+            or type(size) is not int
+            or not 0 <= offset < capacity
+            or not 0 < size <= min(capacity, 0x1000000) - offset
+        ):
             raise ValueError("invalid_internal_read_range")
     elif job["action"] == "write":
         records = job.get("segments")
@@ -49,7 +54,13 @@ def run_job(job: dict[str, Any], root: Path, tool: Any) -> dict[str, Any]:
             raise ValueError("invalid_internal_write_map")
         for record in records:
             offset, size = record.get("offset"), record.get("bytes")
-            if type(offset) is not int or type(size) is not int or offset < 0 or offset % 4096 or not 0 < size <= min(capacity, 0x1000000) - offset:
+            if (
+                type(offset) is not int
+                or type(size) is not int
+                or offset < 0
+                or offset % 4096
+                or not 0 < size <= min(capacity, 0x1000000) - offset
+            ):
                 raise ValueError("unsafe_internal_write_range")
     esp = None
     with contextlib.redirect_stdout(Discard()), contextlib.redirect_stderr(Discard()):
@@ -67,7 +78,8 @@ def run_job(job: dict[str, Any], root: Path, tool: Any) -> dict[str, Any]:
             if (
                 flags.get("SECURE_BOOT_EN") is not False
                 or flags.get("SECURE_DOWNLOAD_ENABLE") is not False
-                or type(count) is not int or not 0 <= count <= 255
+                or type(count) is not int
+                or not 0 <= count <= 255
                 or count.bit_count() % 2 != 0
                 or esp.secure_download_mode is not False
             ):
@@ -80,18 +92,41 @@ def run_job(job: dict[str, Any], root: Path, tool: Any) -> dict[str, Any]:
             expected = job.get("expected_device_sha256")
             if expected is not None and device != expected:
                 raise ValueError("flash_device_changed")
-            result = {"device_sha256": device, "flash_bytes": capacity, "chip": "esp32s3",
-                      "secure_boot": False, "flash_encryption": False, "secure_download": False}
+            result = {
+                "device_sha256": device,
+                "flash_bytes": capacity,
+                "chip": "esp32s3",
+                "secure_boot": False,
+                "flash_encryption": False,
+                "secure_download": False,
+            }
             if job["action"] == "read":
                 offset, size = job.get("offset"), job.get("size")
-                if type(offset) is not int or type(size) is not int or not 0 <= offset < capacity or not 0 < size <= capacity - offset:
+                if (
+                    type(offset) is not int
+                    or type(size) is not int
+                    or not 0 <= offset < capacity
+                    or not 0 < size <= capacity - offset
+                ):
                     raise ValueError("invalid_internal_read_range")
-                data = tool.cmds.read_flash(esp, offset, size, output=None,
-                                           flash_size=f"{capacity // 1048576}MB", no_progress=True)
+                data = tool.cmds.read_flash(
+                    esp,
+                    offset,
+                    size,
+                    output=None,
+                    flash_size=f"{capacity // 1048576}MB",
+                    no_progress=True,
+                )
                 if not isinstance(data, bytes) or len(data) != size:
                     raise ValueError("flash_read_incomplete")
                 output = root / "read.bin"
-                flags_open = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                flags_open = (
+                    os.O_CREAT
+                    | os.O_EXCL
+                    | os.O_WRONLY
+                    | getattr(os, "O_BINARY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                )
                 descriptor = os.open(output, flags_open, 0o600)
                 with os.fdopen(descriptor, "wb") as handle:
                     handle.write(data)
@@ -105,8 +140,19 @@ def run_job(job: dict[str, Any], root: Path, tool: Any) -> dict[str, Any]:
                 segments = []
                 previous_end = 0
                 for record in records:
-                    offset, name, size, digest = record["offset"], record["name"], record["bytes"], record["sha256"]
-                    if type(offset) is not int or type(size) is not int or offset % 4096 or offset < previous_end or not 0 < size <= capacity - offset:
+                    offset, name, size, digest = (
+                        record["offset"],
+                        record["name"],
+                        record["bytes"],
+                        record["sha256"],
+                    )
+                    if (
+                        type(offset) is not int
+                        or type(size) is not int
+                        or offset % 4096
+                        or offset < previous_end
+                        or not 0 < size <= capacity - offset
+                    ):
                         raise ValueError("unsafe_internal_write_range")
                     path = _inside(root, name)
                     if path.stat().st_size != size:
@@ -114,15 +160,27 @@ def run_job(job: dict[str, Any], root: Path, tool: Any) -> dict[str, Any]:
                     data = path.read_bytes()
                     if hashlib.sha256(data).hexdigest() != digest:
                         raise ValueError("internal_write_hash_mismatch")
-                    if offset == 0 and (len(data) < 24 or data[0] != 0xE9 or int.from_bytes(data[12:14], "little") != 9):
+                    if offset == 0 and (
+                        len(data) < 24
+                        or data[0] != 0xE9
+                        or int.from_bytes(data[12:14], "little") != 9
+                    ):
                         raise ValueError("esp32s3_boot_image_required")
                     segments.append((offset, data))
                     previous_end = ((offset + size + 4095) // 4096) * 4096
                 # ROM-only; no stub upload, erase-all, force, encryption or eFuse operation.
                 # Keep the attested image header unchanged for exact readback verification.
-                tool.cmds.write_flash(esp, segments, flash_freq="keep", flash_mode="keep",
-                                     flash_size="keep", erase_all=False, encrypt=False,
-                                     force=False, compress=False)
+                tool.cmds.write_flash(
+                    esp,
+                    segments,
+                    flash_freq="keep",
+                    flash_mode="keep",
+                    flash_size="keep",
+                    erase_all=False,
+                    encrypt=False,
+                    force=False,
+                    compress=False,
+                )
             return result
         finally:
             if esp is not None:
@@ -141,6 +199,7 @@ def main() -> None:
             raise ValueError
         import esptool  # type: ignore[import-not-found]  # Registered external SDK only.
         import esptool.cmds  # type: ignore[import-not-found]
+
         if Path(esptool.__file__).resolve().parent != Path(job["esptool_directory"]).resolve():
             raise ValueError
         result = run_job(job, path.parent, esptool)

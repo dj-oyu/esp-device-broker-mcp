@@ -25,8 +25,13 @@ class FakeDriver:
         self.writes = 0
         self.callback = lambda phase: None
         self.security = SecurityReceipt("a" * 64, len(self.data), "esp32s3", False, False, False)
-        self.summary = {"boot_observed": True, "idf_version": "6.0.1", "target": "esp32s3",
-                        "hello_verified": True, "elf_sha256_prefix": "c" * 9}
+        self.summary = {
+            "boot_observed": True,
+            "idf_version": "6.0.1",
+            "target": "esp32s3",
+            "hello_verified": True,
+            "elf_sha256_prefix": "c" * 9,
+        }
 
     def probe(self):
         self.active = True

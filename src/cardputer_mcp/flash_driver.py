@@ -26,7 +26,9 @@ def esptool_fingerprint(root: Path) -> str:
         relative = path.relative_to(root)
         if "__pycache__" in relative.parts or path.suffix == ".pyc":
             continue
-        if path.is_symlink() or (path.exists() and getattr(path.lstat(), "st_file_attributes", 0) & 0x400):
+        if path.is_symlink() or (
+            path.exists() and getattr(path.lstat(), "st_file_attributes", 0) & 0x400
+        ):
             raise FlashFailure("linked_esptool_not_supported")
         if not path.is_file():
             continue
@@ -41,8 +43,14 @@ def esptool_fingerprint(root: Path) -> str:
 
 
 class NativeFlashDriver:
-    def __init__(self, registration: Any, backend: Any, expected_usb: str, work_root: Path,
-                 expected_app_bin_sha256: str | None = None) -> None:
+    def __init__(
+        self,
+        registration: Any,
+        backend: Any,
+        expected_usb: str,
+        work_root: Path,
+        expected_app_bin_sha256: str | None = None,
+    ) -> None:
         self.registration = registration
         self.backend = backend
         self.expected_usb = expected_usb
@@ -59,12 +67,20 @@ class NativeFlashDriver:
         hello_active = self._hello_backend is not None and (
             self._hello_backend.active or self._hello_backend.hardware_connected
         )
-        return bool(self.process.active or self.backend.active or self.backend.hardware_connected or hello_active)
+        return bool(
+            self.process.active
+            or self.backend.active
+            or self.backend.hardware_connected
+            or hello_active
+        )
 
     @property
     def uncertain(self) -> bool:
-        return bool(self.process.uncertain or getattr(self.backend, "ownership_uncertain", False)
-                    or getattr(self._hello_backend, "ownership_uncertain", False))
+        return bool(
+            self.process.uncertain
+            or getattr(self.backend, "ownership_uncertain", False)
+            or getattr(self._hello_backend, "ownership_uncertain", False)
+        )
 
     def _verified_port(self) -> str:
         if self._stop.is_set():
@@ -77,21 +93,31 @@ class NativeFlashDriver:
         if (
             self.registration.selector != self.backend.config.selector
             or self.registration.python_tool.executable.is_symlink()
-            or hash_file(self.registration.python_tool.executable) != self.registration.python_tool.sha256
-            or esptool_fingerprint(self.registration.esptool_directory) != self.registration.esptool_sha256
+            or hash_file(self.registration.python_tool.executable)
+            != self.registration.python_tool.sha256
+            or esptool_fingerprint(self.registration.esptool_directory)
+            != self.registration.esptool_sha256
         ):
             raise FlashFailure("registered_flash_tools_changed")
         return port.port
 
-    def _invoke(self, action: str, *, offset: int = 0, size: int = 0,
-                segments: tuple[tuple[int, bytes], ...] = ()) -> tuple[dict[str, Any], bytes | None]:
+    def _invoke(
+        self,
+        action: str,
+        *,
+        offset: int = 0,
+        size: int = 0,
+        segments: tuple[tuple[int, bytes], ...] = (),
+    ) -> tuple[dict[str, Any], bytes | None]:
         port = self._verified_port()
         if self.backend.active or self.backend.hardware_connected or self.active or self.uncertain:
             raise FlashFailure("flash_reader_handoff_unconfirmed")
         self.work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix="flash-op-", dir=self.work_root))
         payload: dict[str, Any] = {
-            "action": action, "port": port, "flash_bytes": self.registration.flash_bytes,
+            "action": action,
+            "port": port,
+            "flash_bytes": self.registration.flash_bytes,
             "expected_device_sha256": self.device_sha256,
             "esptool_directory": str(self.registration.esptool_directory),
             "expected_python_version": self.registration.python_tool.version,
@@ -103,23 +129,42 @@ class NativeFlashDriver:
             for i, (position, data) in enumerate(segments):
                 name = f"segment-{i}.bin"
                 (temporary / name).write_bytes(data)
-                records.append(dict(offset=position, name=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
+                records.append(
+                    dict(
+                        offset=position,
+                        name=name,
+                        bytes=len(data),
+                        sha256=hashlib.sha256(data).hexdigest(),
+                    )
+                )
             payload["segments"] = records
         job = temporary / "job.json"
         job.write_text(json.dumps(payload), encoding="utf-8")
         if os.name == "posix":
             job.chmod(0o600)
         lines: list[str] = []
+
         def output(line: str, stream: str) -> None:
             if stream == "stdout" and line.startswith("FLASH_RESULT=") and len(lines) < 2:
                 lines.append(line.removeprefix("FLASH_RESULT="))
+
         env = {key.upper(): value for key, value in os.environ.items() if key.upper() in OS_ENV}
         worker = Path(__file__).with_name("flash_worker.py")
         try:
             code = self.process.run(
-                [str(self.registration.python_tool.executable), "-I", "-B", "-X",
-                 f"pycache_prefix={temporary / 'pycache'}", str(worker), str(job)],
-                env, temporary, output, timeout=300,
+                [
+                    str(self.registration.python_tool.executable),
+                    "-I",
+                    "-B",
+                    "-X",
+                    f"pycache_prefix={temporary / 'pycache'}",
+                    str(worker),
+                    str(job),
+                ],
+                env,
+                temporary,
+                output,
+                timeout=300,
             )
             if code or len(lines) != 1:
                 raise FlashFailure("flash_native_failed_needs_review")
@@ -132,7 +177,9 @@ class NativeFlashDriver:
                 if path.is_symlink() or path.stat().st_size != size:
                     raise FlashFailure("flash_native_read_incomplete")
                 read_data = path.read_bytes()
-                if len(read_data) != size or hashlib.sha256(read_data).hexdigest() != result.get("sha256"):
+                if len(read_data) != size or hashlib.sha256(read_data).hexdigest() != result.get(
+                    "sha256"
+                ):
                     raise FlashFailure("flash_native_read_incomplete")
             return result, read_data
         except FlashFailure:
@@ -146,8 +193,19 @@ class NativeFlashDriver:
 
     def probe(self) -> SecurityReceipt:
         result, _ = self._invoke("probe")
-        receipt = SecurityReceipt(**{key: result[key] for key in (
-            "device_sha256", "flash_bytes", "chip", "secure_boot", "flash_encryption", "secure_download")})
+        receipt = SecurityReceipt(
+            **{
+                key: result[key]
+                for key in (
+                    "device_sha256",
+                    "flash_bytes",
+                    "chip",
+                    "secure_boot",
+                    "flash_encryption",
+                    "secure_download",
+                )
+            }
+        )
         receipt.verify(None, self.registration.flash_bytes)
         self.device_sha256 = receipt.device_sha256
         return receipt
@@ -175,9 +233,13 @@ class NativeFlashDriver:
             raise FlashFailure("flash_application_identity_required")
         # An execution-only image context; the user's registration is unchanged.
         self._hello_backend = SerialBackend(
-            self.backend.config.model_copy(update={"expected_firmware_sha256": self.expected_app_bin_sha256}),
-            inventory=self.backend.inventory, factory=self.backend.factory,
-            clock=self.backend.clock, pause=self.backend.pause,
+            self.backend.config.model_copy(
+                update={"expected_firmware_sha256": self.expected_app_bin_sha256}
+            ),
+            inventory=self.backend.inventory,
+            factory=self.backend.factory,
+            clock=self.backend.clock,
+            pause=self.backend.pause,
         )
         self._verified_port()
         hello_plan = {"test": TestName.HELLO.value, **self._hello_backend.prepare(TestName.HELLO)}

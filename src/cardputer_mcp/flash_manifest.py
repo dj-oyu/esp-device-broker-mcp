@@ -93,7 +93,10 @@ def verify_bundle(root: Path, manifest: dict[str, Any], *, flash_bytes: int) -> 
     if type(flash_bytes) is not int or not 0 < flash_bytes <= 16 * 1024 * 1024:
         _fail("verified_flash_capacity_required")
     security_receipt = manifest.get("flash_security")
-    if not isinstance(security_receipt, dict) or security_receipt.get("name") != "config/sdkconfig.json":
+    if (
+        not isinstance(security_receipt, dict)
+        or security_receipt.get("name") != "config/sdkconfig.json"
+    ):
         _fail("build_flash_security_receipt_required")
     try:
         security = json.loads(_file(root, security_receipt, 1048576), object_pairs_hook=_unique)
@@ -102,6 +105,7 @@ def verify_bundle(root: Path, manifest: dict[str, Any], *, flash_bytes: int) -> 
     if not isinstance(security, dict):
         _fail("invalid_build_flash_security")
     from .flash_security import validate_build_security
+
     try:
         validate_build_security(security)
     except ValueError:

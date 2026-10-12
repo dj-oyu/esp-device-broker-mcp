@@ -218,7 +218,9 @@ class FlashLifecycle:
                         and (
                             not isinstance(summary.get("elf_sha256_prefix"), str)
                             or not 8 <= len(summary["elf_sha256_prefix"]) <= 16
-                            or any(c not in "0123456789abcdef" for c in summary["elf_sha256_prefix"])
+                            or any(
+                                c not in "0123456789abcdef" for c in summary["elf_sha256_prefix"]
+                            )
                             or not plan.expected_elf_sha256.startswith(summary["elf_sha256_prefix"])
                         )
                     )
