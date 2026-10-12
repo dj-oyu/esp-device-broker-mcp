@@ -431,3 +431,29 @@ were suppressed. A smoke harness cleanup print initially treated manager.close()
 was interrupted. The exact Temp mock command's two Python processes were verified
 as one launcher/broker parent-child tree and stopped. Afterwards the Tunnel health
 listener was free and ownership lock released. No user process was stopped.
+
+
+### Parent cloud thread round-trip confirmed (2026-10-12 UTC)
+
+A second coordinated live window used the same existing runtime key and verified
+Tunnel client, with a dedicated authenticated mock broker and execution disabled.
+Native health reported local_readiness=true and cloud_poll_observed=true. The
+parent cloud thread reported that its own connected MCP app tool calls completed
+at approximately 17:44:40 UTC:
+
+- device_status: ok=true, backend=mock, hardware_connected=false,
+  active_job=null, queue_depth=0.
+- client_identity: ok=true, authenticated=true, origin=remote_mcp.
+- read_logs: ok=true, broker_started around 17:43:22 UTC, gap=false.
+
+This supersedes the earlier parent-path limitation: the parent's actual connector
+read calls reached the running mock MCP through the real Tunnel. It does not
+validate hardware operations. Response identifiers, credentials and authenticated
+URLs are not recorded here.
+
+After the parent completion signal, the harness exited successfully:
+manager.close() returned true, the owned mock broker stopped, its remaining
+process count was zero, and the Tunnel health listener / ownership lock were free.
+Only this test's processes were stopped; user config was unchanged. No new key,
+account permission, USB operation, firmware write or IDF build was performed.
+Cardputer remains on ESP-IDF 6.0.1; no 6.1 fallback or migration was performed.
