@@ -13,6 +13,7 @@ from typing import Any
 
 from .build_logs import BuildLogs
 from .build_process import BuildProcess
+from .build_security import BuildSecurityConfigError, interpret_idf601_security
 
 ALLOWED_ENV = frozenset(
     {
@@ -196,25 +197,12 @@ def build_flash_security_receipt(root: Path, target: str) -> tuple[dict[str, Any
         config = json.loads(raw, object_pairs_hook=_unique_layout_pairs)
     except (OSError, UnicodeError, json.JSONDecodeError, RecursionError, BuildFlashLayoutFailure):
         raise BuildFlashSecurityFailure() from None
-    keys = ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK")
-    if (
-        not isinstance(config, dict)
-        or config.get("IDF_TARGET") != target
-        or any(type(config.get(key)) is not bool for key in keys)
-    ):
+    if not isinstance(config, dict) or config.get("IDF_TARGET") != target:
         raise BuildFlashSecurityFailure()
-    summary = {
-        "secure_boot": config[keys[0]],
-        "flash_encryption": config[keys[1]],
-        "anti_rollback": config[keys[2]],
-        "additional_security_enabled": any(
-            value is True
-            for key, value in config.items()
-            if key not in keys
-            and key.startswith(("SECURE_BOOT", "SECURE_FLASH_ENC", "SECURE_SIGNED_APPS"))
-        ),
-        "flash_admission": "not_evaluated",
-    }
+    try:
+        summary = interpret_idf601_security(config)
+    except BuildSecurityConfigError:
+        raise BuildFlashSecurityFailure() from None
     receipt = dict(name="config/sdkconfig.json", bytes=size, sha256=hashlib.sha256(raw).hexdigest())
     return receipt, summary
 

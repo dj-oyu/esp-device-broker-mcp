@@ -223,3 +223,23 @@ config receipts were accepted, while legacy v1 without the layout receipt was
 refused. No device, flash, eFuse or boot operation was performed. Short build_root,
 slot ownership and storage diagnostics are retained separately for a later PR;
 this receipt-only change does not modify output layout or storage policy.
+
+
+### IDF 6.0.1 dependency-aware security interpretation
+
+The shared pure build_security.interpret_idf601_security function is intended for
+both producer summaries and offline flash admission. It is pinned to the actual
+6.0.1 bootloader Kconfig definitions. SECURE_BOOT and SECURE_FLASH_ENC_ENABLED must
+be explicit booleans. Missing BOOTLOADER_APP_ANTI_ROLLBACK is normalized disabled
+only if BOOTLOADER_APP_ROLLBACK_ENABLE is explicitly false; enabled/unknown/missing
+dependency is refused. This is not a general missing=false rule.
+
+Exact capability/preference flags (V1_SUPPORTED, V2_RSA_SUPPORTED,
+V2_ECC_SUPPORTED, V2_PREFERRED and the ROM-mode choice default helper) do not mean
+security is activated. Actual enable fields still set risk categories; unknown
+true security flags or malformed types are refused. Ordinary real projection with
+rollback=false, antirollback absent, V2_PREFERRED/RSA_SUPPORTED=true is covered by a
+regression. A flash caller should use the same interpreter on the hash-verified
+config and refuse any secure_boot/flash_encryption/anti_rollback/additional_security_
+enabled category. It must not substitute the public summary for the attested bytes.
+Sources: v6.0.1 components/bootloader/Kconfig.app_rollback and Kconfig.projbuild.
