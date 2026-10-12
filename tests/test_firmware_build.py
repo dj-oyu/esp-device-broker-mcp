@@ -358,6 +358,15 @@ class FirmwareVerticalTests(unittest.TestCase):
                         directory.mkdir(parents=True, exist_ok=True)
                         (directory / "project_description.json").write_text('{"target":"esp32s3"}')
                         (directory / "firmware.bin").write_bytes(b"firmware")
+                        (directory / "config").mkdir(exist_ok=True)
+                        (directory / "config/sdkconfig.json").write_text(
+                            '{"IDF_TARGET":"esp32s3","SECURE_BOOT":false,'
+                            '"SECURE_FLASH_ENC_ENABLED":false,"BOOTLOADER_APP_ANTI_ROLLBACK":false}'
+                        )
+                        (directory / "flasher_args.json").write_text(
+                            '{"extra_esptool_args":{"chip":"esp32s3"},'
+                            '"flash_files":{"0x10000":"firmware.bin"}}'
+                        )
                         emit("warning: synthetic token=hidden", "stderr")
                     return 0
 
@@ -461,6 +470,8 @@ class FirmwareVerticalTests(unittest.TestCase):
             report = builder.read_logs(SimpleNamespace(job_id="job", **vars(request())), "alice")
             self.assertFalse(report["manifest"]["flash_authorized"])
             self.assertEqual(report["manifest"]["idf_version"], "6.0.1")
+            self.assertEqual(report["manifest"]["flash_layout"]["name"], "flasher_args.json")
+            self.assertEqual(report["manifest"]["flash_security"]["name"], "config/sdkconfig.json")
             if node_mode:
                 self.assertEqual(
                     report["manifest"]["registered_tool_versions"]["node"]["version"], "v22.0.0"
