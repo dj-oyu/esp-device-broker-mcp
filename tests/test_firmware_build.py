@@ -271,6 +271,11 @@ class FirmwareVerticalTests(unittest.TestCase):
         mutate_during_diagnostics=False,
         node_mode=None,
     ):
+        try:
+            import filelock
+        except ModuleNotFoundError as error:
+            self.skipTest(str(error))
+        del filelock
         from unittest.mock import patch
 
         from cardputer_mcp import firmware_build as module
@@ -308,6 +313,7 @@ class FirmwareVerticalTests(unittest.TestCase):
                 },
             )
             settings.build_projects["cardputer"].profile_execution_policy = policy
+            settings.build_projects["cardputer"].build_root = root / "output"
             node = root / "additional-tools/node.exe"
             if node_mode:
                 node.parent.mkdir()
@@ -454,7 +460,7 @@ class FirmwareVerticalTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "build_interrupted_needs_review"):
                         builder._execute(plan, lambda _: None)
                     self.assertNotIn("job", builder.manifests)
-                    self.assertEqual([], list(settings.state_dir.rglob("broker-manifest.json")))
+                    self.assertEqual([], list(root.rglob("broker-manifest.json")))
                     return
                 result = builder._execute(plan, lambda _: None)
             self.assertEqual(result, "firmware_build_succeeded_no_flash")

@@ -243,3 +243,44 @@ regression. A flash caller should use the same interpreter on the hash-verified
 config and refuse any secure_boot/flash_encryption/anti_rollback/additional_security_
 enabled category. It must not substitute the public summary for the attested bytes.
 Sources: v6.0.1 components/bootloader/Kconfig.app_rollback and Kconfig.projbuild.
+
+## Optional short output root and read-only storage diagnosis
+
+A locally registered project may set `build_root` to a dedicated absolute short
+output directory outside its source tree. MCP requests still supply only a
+registered project ID. Omitting the setting keeps the original
+`state/firmware-builds/<full-input-hash>/<full-environment-hash>` layout.
+An explicit root uses one full SHA256 slot computed from a domain-separated
+canonical JSON object containing both complete hashes. No hash is truncated.
+
+The logical manifest remains schema version 1. New manifests add
+`build_location={"layout_version":2,"slot":"<full-sha256>"}` for explicit roots,
+or `{"layout_version":1}` for the original layout. Private absolute roots are
+never placed in the manifest or public diagnostics. A local identity receipt
+binds the complete input/environment identities and the registered root digest.
+Existing directories without a matching receipt are rejected; they are never
+adopted or deleted. Old manifests remain readable via the original resolver.
+
+Flash integrations call
+`resolve_build_manifest(state_dir, registered_build_root, manifest) -> Path`
+from `cardputer_mcp.build_locations`. The resolver verifies the persisted
+manifest and identities, rejects links/reparse points, and never silently falls
+back from a compact location to a legacy root. It grants no flash permission;
+consumer artifact hashes, security checks, successful job/plan checks and local
+approval are still mandatory. Older manifests lacking flash/security receipts
+remain diagnostic-only.
+
+Preparation reports a bounded read-only storage snapshot: free/total bytes,
+owned bytes/slots, whether the inventory is complete, the local minimum free
+space, and `cleanup_enabled=false`. Only receipt-verified owned slots count.
+The default minimum free space is 512 MiB and can be registered locally with
+`build_min_free_bytes`. The check runs before output writes. Insufficient space
+returns `build_output_insufficient_space`. There is no deletion, retention
+executor or automatic cleanup. Unrelated files are neither counted as owned
+nor changed.
+
+Windows output directories over 200 UTF-16 code units fail early with
+`build_output_path_too_long`. Choose a short dedicated root; this conservative
+preflight does not guarantee that every external project-generated path fits
+its toolchain. Output slot locks are held through build, hashing and publication,
+and remain held when owned process termination is uncertain.
