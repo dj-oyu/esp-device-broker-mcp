@@ -194,3 +194,32 @@ import verified AST equivalence for every returned file. That temporary formatte
 bridge intentionally did not publish a distribution; it has been removed, along
 with its temporary Ruff build dependency. The final head uses the ordinary Windows
 packaging workflow and its extracted-EXE build/log API probe.
+
+
+## Additive manifest-v1 flash receipts
+
+New admitted success manifests publish flash_layout={name:'flasher_args.json',bytes,
+sha256} and flash_security={name:'config/sdkconfig.json',bytes,sha256}. Exact generated
+bytes are bounded (64 KiB / 1 MiB), target-checked, duplicate-key rejected and
+contained under the build directory. Linked/reparse paths and layout references
+without matching BIN size/hash receipts are rejected. Generated argv is never
+executed; flash_authorized remains false.
+
+The generated SDK config is not published. Only its receipt and fixed boolean
+security categories are returned; arbitrary config/env/secret values are absent.
+flash_security_summary.flash_admission is not_evaluated. The separate flash gate
+must verify the attested snapshot and refuse forbidden policies, including secure
+boot/encryption/antirollback. A secure build itself does not grant flash permission.
+
+schema_version remains 1 and existing artifact name/bytes/sha256 receipts are
+unchanged. Older v1 without the new receipts remains readable for diagnostics but
+is not flash eligible; no offsets/security policies are inferred or upgraded from
+old BIN files. New build_job_id/build_plan_hash fields bind the manifest to the
+requested succeeded job and immutable plan. Private callers must establish that
+job/principal authority before offline flash admission.
+
+The producer was tested against flash contract a385bfd: its layout and generated-
+config receipts were accepted, while legacy v1 without the layout receipt was
+refused. No device, flash, eFuse or boot operation was performed. Short build_root,
+slot ownership and storage diagnostics are retained separately for a later PR;
+this receipt-only change does not modify output layout or storage policy.
