@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -30,6 +31,7 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         description="Single-owner Cardputer MCP (mock default, opt-in serial)"
     )
+    root.add_argument("--version", action="version", version=version("cardputer-device-mcp"))
     root.add_argument("--url", default="http://127.0.0.1:8765/mcp")
     root.add_argument(
         "--auth-source", choices=("none", "environment", "file", "key-environment"), default="none"
