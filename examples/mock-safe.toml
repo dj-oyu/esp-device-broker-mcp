@@ -1,7 +1,0 @@
-backend = "mock"
-host = "127.0.0.1"
-port = 8765
-state_dir = ".state/safe"
-# Each immutable plan requires the LOCAL operator `cardputer approve` command.
-allow_mock_execution = false
-mock_stage_seconds = 0.15

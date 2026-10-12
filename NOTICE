@@ -1,6 +1,0 @@
-The PocketJS HELLO marker and ordinary-navigation validation in serial_backend.py
-is adapted from PocketJS's MIT-licensed ordinary validation helpers, including
-tools/device_validation/integrated_smoke.py.
-
-Portions Copyright (c) 2026 dj-oyu. The MIT license text is included in LICENSE.
-No private runtime logs, local device identities or project paths were copied.

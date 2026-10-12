@@ -1,7 +1,0 @@
-# Merge this table into a trusted project's .codex/config.toml.
-# These paths are examples; use the same stable install/env-file in every worktree.
-[mcp_servers.device_broker]
-command = 'C:\Tools\cardputer-device-mcp\.venv\Scripts\python.exe'
-args = ['-m', 'cardputer_mcp.cli', 'stdio', '--env-file', 'C:\Users\YOUR_NAME\AppData\Local\DeviceBroker\local-client.env']
-cwd = 'C:\Tools\cardputer-device-mcp'
-startup_timeout_sec = 15
