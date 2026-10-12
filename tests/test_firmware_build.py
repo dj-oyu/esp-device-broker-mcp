@@ -1,4 +1,5 @@
 """Dependency-free unit tests; also collected by pytest in Windows/CI."""
+
 import sys
 import tempfile
 import threading
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.build_process import BuildProcess
 from cardputer_mcp.firmware_build import FirmwareBuild, parse_profile, source_fingerprint
+
 
 def request(cursor=None, levels=('error', 'warning'), context=2, limit=40):
     return SimpleNamespace(cursor=cursor, levels=levels, context=context, limit=limit)
@@ -238,7 +240,7 @@ class WindowsOwnedBuildTests(unittest.TestCase):
 class FirmwareVerticalTests(unittest.TestCase):
 
     def _exercise_build(self, cancel_at=None, policy="inherit", profile_denied=False,
-                        toolchain_failed=False, mutate_during_diagnostics=False):
+                        toolchain_failed=False, mutate_during_diagnostics=False, node_mode=None):
         from unittest.mock import patch
 
         from cardputer_mcp import firmware_build as module
@@ -268,15 +270,25 @@ class FirmwareVerticalTests(unittest.TestCase):
                                             expected_idf='6.0.1', target='esp32s3')
             })
             settings.build_projects["cardputer"].profile_execution_policy = policy
+            node = root / 'additional-tools/node.exe'
+            if node_mode:
+                node.parent.mkdir()
+                node.write_bytes(b'node')
+                if node_mode != 'unregistered':
+                    settings.build_projects['cardputer'].node_tool = SimpleNamespace(
+                        executable=node, sha256=module.hash_file(node), version='v22.0.0'
+                    )
             builder = FirmwareBuild(settings)
             plan = builder.prepare('cardputer', 'alice') | {'job_id': 'job'}
             calls = []
+            environments = []
 
             class FakeProcess:
                 stop_requested = threading.Event()
 
                 def run(self, args, env, cwd, emit, timeout=1800):
                     calls.append(args)
+                    environments.append(dict(env))
                     self_test.assertNotIn('UNTRUSTED_TOKEN', env)
                     if '-e' in args:
                         if profile_denied:
@@ -293,7 +305,12 @@ class FirmwareVerticalTests(unittest.TestCase):
                         if toolchain_failed and args[0] == str(compiler):
                             emit('private native diagnostic', 'stderr')
                             return 1
-                        emit('ESP-IDF v6.0.1' if args[1] == str(idf_py) else 'version', 'stdout')
+                        if args[0] == str(node):
+                            emit('v21.0.0' if node_mode == 'wrong_version' else 'v22.0.0',
+                                 'stdout')
+                        else:
+                            emit('ESP-IDF v6.0.1' if args[1] == str(idf_py) else 'version',
+                                 'stdout')
                     else:
                         directory = Path(args[args.index('-B') + 1])
                         directory.mkdir(parents=True, exist_ok=True)
@@ -318,14 +335,29 @@ class FirmwareVerticalTests(unittest.TestCase):
                 if cancel_at == 'artifact' and path.name == 'firmware.bin':
                     builder.request_stop('job')
                 return value
+            def which(name, path=None):
+                if name == 'xtensa-esp32s3-elf-gcc.exe':
+                    return str(compiler)
+                if name == 'node.exe' and node_mode:
+                    return str(compiler if node_mode == 'ambiguous' else node)
+                return None
             with (
                 patch.object(module, 'os', SimpleNamespace(name='nt', environ={
                     'SYSTEMROOT': str(system), 'UNTRUSTED_TOKEN': 'secret'
                 })),
-                patch.object(module.shutil, 'which', return_value=str(compiler)),
+                patch.object(module.shutil, 'which', side_effect=which),
                 patch.object(builder, 'prepare', side_effect=prepare_hook),
                 patch.object(module, 'hash_file', side_effect=hash_hook),
             ):
+                if node_mode in ("wrong_version", "ambiguous", "unregistered"):
+                    code = {"wrong_version": "registered_tool_version_mismatch",
+                            "ambiguous": "registered_tool_resolution_ambiguous",
+                            "unregistered": "node_requires_explicit_local_registration"}[node_mode]
+                    with self.assertRaisesRegex(ValueError, code):
+                        builder._execute(plan, lambda _: None)
+                    self.assertFalse(builder.manifests)
+                    self.assertFalse(any(command[-1] == "build" for command in calls))
+                    return
                 if mutate_during_diagnostics:
                     with self.assertRaisesRegex(ValueError, "build_inputs_changed"):
                         builder._execute(plan, lambda _: None)
@@ -360,10 +392,15 @@ class FirmwareVerticalTests(unittest.TestCase):
                 self.assertEqual(calls[0][1:5],
                                  ['-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File'])
             self.assertEqual(calls[-1][-1], 'build')
-            self.assertEqual(len(calls), 5)
+            self.assertEqual(len(calls), 6 if node_mode else 5)
             report = builder.read_logs(SimpleNamespace(job_id='job', **vars(request())), 'alice')
             self.assertFalse(report['manifest']['flash_authorized'])
             self.assertEqual(report['manifest']['idf_version'], '6.0.1')
+            if node_mode:
+                self.assertEqual(report['manifest']['registered_tool_versions']['node']['version'],
+                                 'v22.0.0')
+                self.assertEqual(environments[-1]["PATH"].split(";")[0], str(node.parent))
+                self.assertNotIn("SYSTEM_PATH", environments[-1])
             self.assertNotIn('hidden', str(report))
             with self.assertRaises(ValueError):
                 builder.read_logs(SimpleNamespace(job_id='job', **vars(request())), 'bob')
@@ -387,6 +424,18 @@ class FirmwareVerticalTests(unittest.TestCase):
 
     def test_diagnostic_time_source_change_prevents_build(self):
         self._exercise_build(mutate_during_diagnostics=True)
+
+    def test_registered_node_version_recorded(self):
+        self._exercise_build(node_mode='registered')
+
+    def test_wrong_registered_node_version_blocks_build(self):
+        self._exercise_build(node_mode='wrong_version')
+
+    def test_ambiguous_node_resolution_blocks_build(self):
+        self._exercise_build(node_mode='ambiguous')
+
+    def test_unregistered_node_on_profile_path_blocks_build(self):
+        self._exercise_build(node_mode='unregistered')
 
 
 class BuildLifecycleRegressionTests(unittest.TestCase):

@@ -80,9 +80,9 @@ jobs are not marked recovered or successful.
 ## Validation in the delegated cloud environment
 
 - 2026-10-12: compileall succeeds.
-- Dependency-free unittest suite: 20 passed, two skipped because pyserial/filelock
+- Dependency-free unittest suite: 24 passed, two skipped because pyserial/filelock
   are not installed. With cloud-only lock/port dependency facades injected, all
-  22 tests pass. This exercises the actual Broker/SQLite/PlanApprovals/PlanReview
+  26 tests pass. This exercises the actual Broker/SQLite/PlanApprovals/PlanReview
   serial and mock prepare-submit-GUI-approve paths, principal mismatch, no replay
   and cancellation to durable needs_review, but does not validate native locks. Includes mock profile/diagnostics/build/manifest/read traversal,
   output flood, multiple readers, unknown/stderr/context, expiry/epoch/gap,
@@ -144,3 +144,36 @@ that head's tree (8aac63bacc4dd3eb85b28fbf54471e5f9de8828f). Extracted EXE authe
 mock status/log smoke passed. New modules are static imports in the successful
 broker startup and are also covered by collect_submodules(cardputer_mcp). Direct
 new-tool catalog/schema and artifact byte inspection remain independent checks.
+
+
+## Explicit external Node/Git registration
+
+SYSTEM_PATH and ambient PATH are not merged into the child. Optional node_tool
+and git_tool registrations each contain an absolute executable, SHA-256 receipt
+and exact --version output. For example (placeholder path/digest/version):
+
+```toml
+[build_projects.cardputer.node_tool]
+executable = 'C:\example\node\node.exe'
+sha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+version = 'v22.0.0'
+```
+
+Git uses the same fields under git_tool, with git.exe and an exact version string
+such as git version 2.51.0.windows.1. Obtain these receipts through separately
+approved local diagnostics. Preparation rejects mismatched executable hashes;
+execution uses absolute --version argv, then prepends only registered executable
+parent directories to the profile-exported IDF PATH. It verifies resolution points
+back to the registered executable. Node found on the exported PATH without explicit
+registration is refused; version mismatch or ambiguous resolution prevents build.
+Successful diagnostic versions are recorded in bounded logs and success manifests,
+without private executable paths. Tool receipts are included in the plan fingerprint.
+No arbitrary extra tools/commands/search paths are accepted from MCP.
+
+Frozen validation run 38296963003 succeeded on PR head f2339055, actual checkout
+merge source d46077e7a77a636e79fa8cdbf8c736b05fea5b0a. The extracted EXE passed
+its authenticated catalog/build/log API probe without executing a firmware build.
+Artifact ID 11767609431 has service-reported archive SHA-256
+41ff4648d0c4ef70d073e3a2a06f2c73aca99bfd456ab0b689d767fcee74bc85.
+This archive hash is not the inner EXE or distribution ZIP hash. Cloud download
+of the separate diagnostics archive failed once with CONNECT 503; no retry/bypass.

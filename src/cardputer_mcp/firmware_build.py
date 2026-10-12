@@ -110,6 +110,24 @@ class FirmwareBuild:
         self._lock = threading.RLock()
         self._committed_job: str | None = None
 
+    @staticmethod
+    def _registered_tools(project: Any) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for name in ("node", "git"):
+            tool = getattr(project, name + "_tool", None)
+            if tool is None:
+                continue
+            executable = tool.executable
+            if (not executable.is_absolute() or executable.name.casefold() != name + ".exe"
+                or executable.is_symlink() or hash_file(executable) != tool.sha256):
+                raise ValueError("registered_tool_not_verified")
+            if name == "node" and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tool.version) is None:
+                raise ValueError("registered_node_version_required")
+            if name == "git" and not tool.version.startswith("git version "):
+                raise ValueError("registered_git_version_required")
+            result[name] = tool
+        return result
+
     def prepare(self, project_id: str | None, principal: str) -> dict[str, Any]:
         project = self.settings.build_projects.get(project_id)
         if project is None or not principal:
@@ -120,6 +138,7 @@ class FirmwareBuild:
             raise ValueError("project_must_not_be_inside_broker_state")
         if not (project.project_dir / "CMakeLists.txt").is_file():
             raise ValueError("idf_project_required")
+        registered_tools = self._registered_tools(project)
         fingerprint = hashlib.sha256(json.dumps({
             "source": source_fingerprint(
                 project.project_dir,
@@ -131,6 +150,11 @@ class FirmwareBuild:
             "profile": hash_file(project.trusted_profile),
             "version": project.expected_idf, "target": project.target,
             "profile_policy": getattr(project, "profile_execution_policy", "inherit"),
+            "registered_tools": {
+                name: dict(path=str(tool.executable.resolve(strict=True)).casefold(),
+                           sha256=tool.sha256, version=tool.version)
+                for name, tool in registered_tools.items()
+            },
         }, sort_keys=True).encode()).hexdigest()
         return dict(project_id=project_id, fingerprint=fingerprint,
                     expected_idf=project.expected_idf, target=project.target,
@@ -257,6 +281,33 @@ class FirmwareBuild:
                             version_output, timeout=30):
             logs.append("error: external toolchain diagnostic failed; build not started")
             raise ToolchainDiagnosticFailure()
+        registered_versions: dict[str, dict[str, str]] = {}
+        registered_tools = self._registered_tools(project)
+        search_directories: list[str] = []
+        for name, tool in registered_tools.items():
+            version.clear()
+            if self.process.run([str(tool.executable), "--version"], env, project.project_dir,
+                                version_output, timeout=30):
+                raise ValueError("registered_tool_diagnostic_failed")
+            self._check_cancelled()
+            if version != [tool.version]:
+                raise ValueError("registered_tool_version_mismatch")
+            search_directories.append(str(tool.executable.parent))
+            registered_versions[name] = dict(version=tool.version, sha256=tool.sha256)
+            logs.append(f"-- Registered {name} version: {tool.version} (SHA-256 verified)")
+        if search_directories:
+            # Never merge SYSTEM_PATH or ambient PATH. Only hash-verified local
+            # registrations supplement the trusted IDF export environment.
+            env["PATH"] = ";".join([*search_directories, env["PATH"]])
+        for name, tool in registered_tools.items():
+            resolved = shutil.which(name + ".exe", path=env["PATH"])
+            if resolved is None or Path(resolved).resolve() != tool.executable.resolve():
+                raise ValueError("registered_tool_resolution_ambiguous")
+        resolved_compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
+        if resolved_compiler is None or Path(resolved_compiler).resolve() != Path(compiler).resolve():
+            raise ValueError("external_toolchain_resolution_changed")
+        if "node" not in registered_tools and shutil.which("node.exe", path=env["PATH"]):
+            raise ValueError("node_requires_explicit_local_registration")
         environment_fingerprint = hashlib.sha256(json.dumps({
             "idf_py": hash_file(idf_py), "python": hash_file(python),
             "compiler": hash_file(Path(compiler)), "environment": env,
@@ -300,6 +351,7 @@ class FirmwareBuild:
                         fingerprint=plan["fingerprint"],
                         environment_fingerprint=environment_fingerprint,
                         artifacts=artifacts,
+                        registered_tool_versions=registered_versions,
                         flash_authorized=False)
         # Write an inert candidate first. Accepted cancellation must never publish
         # a success manifest, including cancellation during hashing or serialization.

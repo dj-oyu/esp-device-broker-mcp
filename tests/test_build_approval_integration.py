@@ -14,7 +14,11 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
             from cardputer_mcp.config import BuildProject, SerialSettings, Settings
             from cardputer_mcp.gui_approvals import PlanReview, review_warning
             from cardputer_mcp.models import (
-                AcquireRequest, CancelRequest, ExecuteRequest, Origin, PrepareRequest,
+                AcquireRequest,
+                CancelRequest,
+                ExecuteRequest,
+                Origin,
+                PrepareRequest,
             )
             from cardputer_mcp.plan_approval import PlanApprovals
             from cardputer_mcp.ports import DeviceSelector
@@ -82,7 +86,7 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn('log', warning)
                     calls = []
 
-                    async def synthetic_build(plan, stage):
+                    async def synthetic_build(plan, stage, calls=calls):
                         calls.append(plan['job_id'])
                         return 'firmware_build_succeeded_no_flash'
 
@@ -101,10 +105,12 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                                                            project_id='registered'))
                     start = asyncio.Event()
                     finish = asyncio.Event()
-                    async def cancellable_build(plan, stage):
-                        start.set()
-                        await finish.wait()
-                        broker.firmware_build._check_cancelled()
+                    async def cancellable_build(
+                        plan, stage, started=start, finished=finish, resident=broker
+                    ):
+                        started.set()
+                        await finished.wait()
+                        resident.firmware_build._check_cancelled()
                         return 'firmware_build_succeeded_no_flash'
                     broker.firmware_build.execute = cancellable_build
                     broker.execute(ExecuteRequest(session=lease, plan_hash=second['plan_hash'],
