@@ -13,8 +13,14 @@ _SECRETS = re.compile(
 
 
 class BuildLogs:
-    def __init__(self, principal: str, *, max_bytes: int = 262144,
-                 max_lines: int = 2048, retention: float = 300) -> None:
+    def __init__(
+        self,
+        principal: str,
+        *,
+        max_bytes: int = 262144,
+        max_lines: int = 2048,
+        retention: float = 300,
+    ) -> None:
         self.principal = principal
         self.epoch = uuid4().hex
         self.sequence = 0
@@ -39,8 +45,9 @@ class BuildLogs:
                 break
         progress = bool(re.match(r"\[\d+/\d+\]|(?:-- |Executing action|Build complete)", text))
         self.sequence += 1
-        entry = dict(sequence=self.sequence, text=text, level=level,
-                     stream=stream, progress=progress)
+        entry = dict(
+            sequence=self.sequence, text=text, level=level, stream=stream, progress=progress
+        )
         size = len(text.encode("utf-8"))
         if size <= self.max_bytes:
             self.entries.append(entry)
@@ -55,8 +62,13 @@ class BuildLogs:
         if time.monotonic() >= self.deadline:
             self.entries.clear()
             self.bytes = 0
-            return dict(entries=[], expired=True, gap=True,
-                        next_cursor=dict(epoch=self.epoch, sequence=self.sequence), has_more=False)
+            return dict(
+                entries=[],
+                expired=True,
+                gap=True,
+                next_cursor=dict(epoch=self.epoch, sequence=self.sequence),
+                has_more=False,
+            )
         cursor = request.cursor
         reset = cursor is not None and cursor.epoch != self.epoch
         after = 0 if cursor is None or reset else cursor.sequence
@@ -67,12 +79,18 @@ class BuildLogs:
         selected: set[int] = set()
         for i, entry in enumerate(items):
             if entry["level"] in request.levels or entry["progress"]:
-                selected.update(range(
-                    max(0, i-request.context), min(len(items), i+request.context+1)
-                ))
-        result = [entry for i, entry in enumerate(items)
-                  if i in selected and entry["sequence"] > after][:request.limit]
+                selected.update(
+                    range(max(0, i - request.context), min(len(items), i + request.context + 1))
+                )
+        result = [
+            entry for i, entry in enumerate(items) if i in selected and entry["sequence"] > after
+        ][: request.limit]
         sequence = result[-1]["sequence"] if len(result) == request.limit else self.sequence
-        return dict(entries=result, expired=False, gap=reset or after < oldest-1,
-                    oldest_sequence=oldest, next_cursor=dict(epoch=self.epoch, sequence=sequence),
-                    has_more=sequence < self.sequence)
+        return dict(
+            entries=result,
+            expired=False,
+            gap=reset or after < oldest - 1,
+            oldest_sequence=oldest,
+            next_cursor=dict(epoch=self.epoch, sequence=sequence),
+            has_more=sequence < self.sequence,
+        )

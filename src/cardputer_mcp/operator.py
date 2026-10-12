@@ -33,6 +33,7 @@ def approve_plan(
             raise ValueError("unsupported_backend")
         if plan.get("test") == "firmware_build":
             from .plan_approval import PlanApprovals
+
             PlanApprovals._schema(plan)
             disclosure = (
                 "Executes trusted local profile and project build scripts as your OS user. "

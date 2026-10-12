@@ -108,17 +108,23 @@ class PipeWindowsAPI(win.NativeWindowsAPI):
             handles.auxiliary.remove(int(null))
 
 
-
 class BuildProcess:
     """Retain uncertain ownership; never stop a searched PID or process name."""
+
     def __init__(self) -> None:
         self.stop_requested = threading.Event()
         self.active = False
         self.uncertain = False
         self.owner: win.OwnedWindowsProcess | None = None
 
-    def run(self, args: Sequence[str], env: Mapping[str, str], cwd: Path,
-            emit: Callable[[str, str], None], timeout: float = 1800) -> int:
+    def run(
+        self,
+        args: Sequence[str],
+        env: Mapping[str, str],
+        cwd: Path,
+        emit: Callable[[str, str], None],
+        timeout: float = 1800,
+    ) -> int:
         if self.active or self.uncertain:
             raise ValueError("build_process_busy")
         if self.stop_requested.is_set():
@@ -130,6 +136,7 @@ class BuildProcess:
         try:
             if os.name == "nt":
                 import msvcrt
+
                 stdout_read, stdout_write = os.pipe()
                 stderr_read, stderr_write = os.pipe()
                 try:
@@ -163,14 +170,22 @@ class BuildProcess:
                 finally:
                     os.close(stdout_write)
                     os.close(stderr_write)
-                pipes = [cast(BinaryIO, os.fdopen(stdout_read, "rb", buffering=0)),
-                         cast(BinaryIO, os.fdopen(stderr_read, "rb", buffering=0))]
+                pipes = [
+                    cast(BinaryIO, os.fdopen(stdout_read, "rb", buffering=0)),
+                    cast(BinaryIO, os.fdopen(stderr_read, "rb", buffering=0)),
+                ]
             else:
                 if self.stop_requested.is_set():
                     raise ValueError("build_interrupted_needs_review")
-                process = subprocess.Popen(list(args), cwd=cwd, env=dict(env),
-                                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                           stderr=subprocess.PIPE, start_new_session=True)
+                process = subprocess.Popen(
+                    list(args),
+                    cwd=cwd,
+                    env=dict(env),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
                 assert process.stdout is not None and process.stderr is not None
                 pipes = [cast(BinaryIO, process.stdout), cast(BinaryIO, process.stderr)]
 

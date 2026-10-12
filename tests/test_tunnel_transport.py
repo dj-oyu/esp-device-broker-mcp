@@ -462,4 +462,3 @@ async def test_remote_relay_cannot_supply_its_own_approval(tunnel_contract):
     assert service.backend.calls == 0
     assert service.broker.queue.empty()
     await service.tool("relay", "release_session", {"session": session})
-

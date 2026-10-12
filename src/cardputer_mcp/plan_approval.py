@@ -159,13 +159,19 @@ class PlanApprovals:
             raise ValueError
         if test == TestName.BUILD.value:
             expected_keys = _BASE_KEYS | {
-                "project_id", "fingerprint", "expected_idf", "target", "build_principal",
-                "effects", "argv_template", "profile_execution_policy",
+                "project_id",
+                "fingerprint",
+                "expected_idf",
+                "target",
+                "build_principal",
+                "effects",
+                "argv_template",
+                "profile_execution_policy",
             }
-            if (backend not in ("mock", "serial")
-                or plan.get("device") != (
-                    "mock-cardputer" if backend == "mock" else "configured-cardputer"
-                )
+            if (
+                backend not in ("mock", "serial")
+                or plan.get("device")
+                != ("mock-cardputer" if backend == "mock" else "configured-cardputer")
                 or not _hex(plan.get("fingerprint"), 64)
                 or type(plan.get("project_id")) is not str
                 or re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", plan["project_id"]) is None
@@ -178,8 +184,15 @@ class PlanApprovals:
                 or type(plan.get("effects")) is not list
                 or len(plan["effects"]) != 3
                 or any(type(value) is not str or len(value) > 256 for value in plan["effects"])
-                or plan.get("argv_template") != ["registered-python", "registered-idf.py", "-B",
-                                                "fingerprint-build-directory", "build"]):
+                or plan.get("argv_template")
+                != [
+                    "registered-python",
+                    "registered-idf.py",
+                    "-B",
+                    "fingerprint-build-directory",
+                    "build",
+                ]
+            ):
                 raise ValueError
         elif backend == "mock":
             from .backend import MockBackend
@@ -414,8 +427,11 @@ class PlanApprovals:
             allow_mock = (
                 self.broker.backend.name == "mock" and self.broker.settings.allow_mock_execution
             )
-            if (allow_mock and not self.broker._execution_intents
-                and not self.broker.settings.build_projects):
+            if (
+                allow_mock
+                and not self.broker._execution_intents
+                and not self.broker.settings.build_projects
+            ):
                 return {"broker_epoch": self.broker.epoch, "plans": [], "has_more": False}
             # CASE prevents SQLite evaluating json_extract against corrupt JSON.
             query = """FROM plans p WHERE CASE WHEN json_valid(p.payload)

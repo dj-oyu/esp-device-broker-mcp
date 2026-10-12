@@ -195,6 +195,7 @@ class Broker:
         self.active_job: str | None = None
         self.logs = LogBook(settings.log_capacity)
         from .firmware_build import FirmwareBuild
+
         self.firmware_build = FirmwareBuild(settings)
         self.queue: asyncio.Queue[str | None] = asyncio.Queue(settings.max_queue)
         self.worker: asyncio.Task[None] | None = None
@@ -1000,9 +1001,8 @@ class Broker:
         result = {
             "plan_hash": digest,
             "plan": payload,
-            "approval_required": request.test == TestName.BUILD or (
-                not self.settings.allow_mock_execution and not policy_available
-            ),
+            "approval_required": request.test == TestName.BUILD
+            or (not self.settings.allow_mock_execution and not policy_available),
         }
         if request.test == TestName.CAPTURE:
             result["policy_permit_available"] = policy_available
@@ -1073,8 +1073,11 @@ class Broker:
                 authorization, payload
             ):
                 raise BrokerError("capture_policy_no_longer_valid")
-        allow_mock = (self.settings.backend == "mock" and self.settings.allow_mock_execution
-                      and payload["test"] != TestName.BUILD.value)
+        allow_mock = (
+            self.settings.backend == "mock"
+            and self.settings.allow_mock_execution
+            and payload["test"] != TestName.BUILD.value
+        )
         if request.wait_for_approval and not approved and not allow_mock and authorization is None:
             # Policy callbacks must not extend the original request's lifetime
             # or register work under a replacement lease/principal.
@@ -1813,9 +1816,11 @@ class Broker:
                     # Do not keep the last image alive in this suspended worker frame
                     # after the bounded cache expires or is cleared.
                     result = ""
-                    if (not self.backend.active
+                    if (
+                        not self.backend.active
                         and not self.firmware_build.process.active
-                        and not self.firmware_build.process.uncertain):
+                        and not self.firmware_build.process.uncertain
+                    ):
                         self.active_job = None
                     self._expire()
             finally:

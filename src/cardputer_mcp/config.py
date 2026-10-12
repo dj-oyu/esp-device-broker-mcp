@@ -38,6 +38,7 @@ class TunnelMetadata(BaseModel):
 
 class RegisteredBuildTool(BaseModel):
     """Trusted local executable receipt, not a remotely selectable command."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     executable: Path
     sha256: Digest
@@ -53,6 +54,7 @@ class RegisteredBuildTool(BaseModel):
 
 class BuildProject(BaseModel):
     """Trusted local registration, never supplied as an MCP pathname."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     project_dir: Path
     trusted_profile: Path

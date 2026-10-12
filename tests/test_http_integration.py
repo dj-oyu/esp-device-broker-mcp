@@ -90,7 +90,11 @@ async def test_real_mcp_http_disconnect_retry_handover(service):
         schema = tool_data.get("input_schema", tool_data.get("inputSchema"))
         build_request = schema["$defs"]["BuildLogRequest"]
         assert set(build_request["properties"]) == {
-            "job_id", "cursor", "levels", "context", "limit"
+            "job_id",
+            "cursor",
+            "levels",
+            "context",
+            "limit",
         }
         assert build_request["additionalProperties"] is False
         # Even an unauthenticated mock demo must not expose build output.

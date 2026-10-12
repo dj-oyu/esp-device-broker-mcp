@@ -13,26 +13,52 @@ from typing import Any
 from .build_logs import BuildLogs
 from .build_process import BuildProcess
 
-ALLOWED_ENV = frozenset({
-    "IDF_PATH", "IDF_PYTHON_ENV_PATH", "IDF_TOOLS_PATH", "IDF_TOOLS_EXPORT_CMD",
-    "IDF_TOOLS_INSTALL_CMD", "IDF_TARGET", "ESP_IDF_VERSION", "PATH", "PATHEXT",
-    "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "TEMP", "TMP", "COMSPEC",
-    "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOME",
-    "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
-})
-OS_ENV = ALLOWED_ENV - {"IDF_PATH", "IDF_PYTHON_ENV_PATH", "IDF_TOOLS_PATH",
-                        "IDF_TOOLS_EXPORT_CMD", "IDF_TOOLS_INSTALL_CMD",
-                        "IDF_TARGET", "ESP_IDF_VERSION", "PATH"}
-
+ALLOWED_ENV = frozenset(
+    {
+        "IDF_PATH",
+        "IDF_PYTHON_ENV_PATH",
+        "IDF_TOOLS_PATH",
+        "IDF_TOOLS_EXPORT_CMD",
+        "IDF_TOOLS_INSTALL_CMD",
+        "IDF_TARGET",
+        "ESP_IDF_VERSION",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "SYSTEMDRIVE",
+        "TEMP",
+        "TMP",
+        "COMSPEC",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "HOME",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_ARCHITEW6432",
+    }
+)
+OS_ENV = ALLOWED_ENV - {
+    "IDF_PATH",
+    "IDF_PYTHON_ENV_PATH",
+    "IDF_TOOLS_PATH",
+    "IDF_TOOLS_EXPORT_CMD",
+    "IDF_TOOLS_INSTALL_CMD",
+    "IDF_TARGET",
+    "ESP_IDF_VERSION",
+    "PATH",
+}
 
 
 class BuildPreflightFailure(ValueError):
     """Base for fixed preflight diagnostics, without native output."""
+
     code: str
 
 
 class ProfileExportFailure(BuildPreflightFailure):
     """Fixed public diagnostic; no PowerShell stderr or profile path is reflected."""
+
     code = "profile_export_rejected_or_failed"
 
     def __init__(self) -> None:
@@ -44,6 +70,7 @@ class ToolchainDiagnosticFailure(BuildPreflightFailure):
 
     def __init__(self) -> None:
         super().__init__(self.code)
+
 
 def parse_profile(text: str) -> dict[str, str]:
     if len(text.encode("utf-8")) > 131072:
@@ -119,8 +146,12 @@ class FirmwareBuild:
             if tool is None:
                 continue
             executable = tool.executable
-            if (not executable.is_absolute() or executable.name.casefold() != name + ".exe"
-                or executable.is_symlink() or hash_file(executable) != tool.sha256):
+            if (
+                not executable.is_absolute()
+                or executable.name.casefold() != name + ".exe"
+                or executable.is_symlink()
+                or hash_file(executable) != tool.sha256
+            ):
                 raise ValueError("registered_tool_not_verified")
             if name == "node" and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tool.version) is None:
                 raise ValueError("registered_node_version_required")
@@ -133,42 +164,61 @@ class FirmwareBuild:
         project = self.settings.build_projects.get(project_id)
         if project is None or not principal:
             raise ValueError("registered_build_project_required")
-        if (hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
+        if hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
             self.settings.state_dir.resolve()
-        )):
+        ):
             raise ValueError("project_must_not_be_inside_broker_state")
         if not (project.project_dir / "CMakeLists.txt").is_file():
             raise ValueError("idf_project_required")
         registered_tools = self._registered_tools(project)
-        fingerprint = hashlib.sha256(json.dumps({
-            "source": source_fingerprint(
-                project.project_dir,
-                excluded_roots=(self.settings.state_dir.resolve(),)
-                if hasattr(self.settings, "state_dir") else (),
-            ),
-            "project_id": project_id,
-            "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
-            "profile": hash_file(project.trusted_profile),
-            "version": project.expected_idf, "target": project.target,
-            "profile_policy": getattr(project, "profile_execution_policy", "inherit"),
-            "registered_tools": {
-                name: dict(path=str(tool.executable.resolve(strict=True)).casefold(),
-                           sha256=tool.sha256, version=tool.version)
-                for name, tool in registered_tools.items()
-            },
-        }, sort_keys=True).encode()).hexdigest()
-        return dict(project_id=project_id, fingerprint=fingerprint,
-                    expected_idf=project.expected_idf, target=project.target,
-                    profile_execution_policy=getattr(
-                        project, "profile_execution_policy", "inherit"
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "source": source_fingerprint(
+                        project.project_dir,
+                        excluded_roots=(self.settings.state_dir.resolve(),)
+                        if hasattr(self.settings, "state_dir")
+                        else (),
                     ),
-                    build_principal=principal,
-                    stages=["idf_profile", "idf_diagnostics", "idf_build"],
-                    effects=["Executes registered trusted profile and project build scripts",
-                             "Runs external ESP-IDF 6.0.1; no flash, USB or version fallback",
-                             "Delivers bounded redacted output to requesting principal"],
-                    argv_template=["registered-python", "registered-idf.py", "-B",
-                                   "fingerprint-build-directory", "build"])
+                    "project_id": project_id,
+                    "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
+                    "profile": hash_file(project.trusted_profile),
+                    "version": project.expected_idf,
+                    "target": project.target,
+                    "profile_policy": getattr(project, "profile_execution_policy", "inherit"),
+                    "registered_tools": {
+                        name: dict(
+                            path=str(tool.executable.resolve(strict=True)).casefold(),
+                            sha256=tool.sha256,
+                            version=tool.version,
+                        )
+                        for name, tool in registered_tools.items()
+                    },
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        return dict(
+            project_id=project_id,
+            fingerprint=fingerprint,
+            expected_idf=project.expected_idf,
+            target=project.target,
+            profile_execution_policy=getattr(project, "profile_execution_policy", "inherit"),
+            build_principal=principal,
+            stages=["idf_profile", "idf_diagnostics", "idf_build"],
+            effects=[
+                "Executes registered trusted profile and project build scripts",
+                "Runs external ESP-IDF 6.0.1; no flash, USB or version fallback",
+                "Delivers bounded redacted output to requesting principal",
+            ],
+            argv_template=[
+                "registered-python",
+                "registered-idf.py",
+                "-B",
+                "fingerprint-build-directory",
+                "build",
+            ],
+        )
 
     def request_stop(self, job_id: str | None = None) -> bool:
         """Serialize accepted cancellation against the final success commit."""
@@ -204,9 +254,11 @@ class FirmwareBuild:
             raise ValueError("build_inputs_changed")
         project = self.settings.build_projects[plan["project_id"]]
         logs = BuildLogs(principal)
-        logs.redactions = tuple(value for key, value in os.environ.items()
-                                if re.search(r"(?i)token|secret|password|key|bearer", key)
-                                and len(value) >= 8)
+        logs.redactions = tuple(
+            value
+            for key, value in os.environ.items()
+            if re.search(r"(?i)token|secret|password|key|bearer", key) and len(value) >= 8
+        )
         with self._lock:
             while len(self.logs) >= 8:
                 oldest = next(iter(self.logs))
@@ -222,6 +274,7 @@ class FirmwareBuild:
         output: list[str] = []
         output_bytes = 0
         stderr_seen = False
+
         def profile_output(line: str, stream: str) -> None:
             nonlocal output_bytes, stderr_seen
             output_bytes += len(line.encode("utf-8")) + 1
@@ -232,13 +285,15 @@ class FirmwareBuild:
                 stderr_seen = True
                 return
             output.append(line)
+
         profile_args = [str(powershell), "-NoProfile"]
         if getattr(project, "profile_execution_policy", "inherit") == "RemoteSigned":
             profile_args.extend(["-ExecutionPolicy", "RemoteSigned"])
         profile_args.extend(["-File", str(project.trusted_profile), "-e"])
         try:
-            code = self.process.run(profile_args, env, project.project_dir,
-                                    profile_output, timeout=30)
+            code = self.process.run(
+                profile_args, env, project.project_dir, profile_output, timeout=30
+            )
         except ValueError:
             if stderr_seen:
                 logs.append("error: trusted profile export rejected or failed")
@@ -253,33 +308,47 @@ class FirmwareBuild:
         idf = Path(env["IDF_PATH"])
         python = Path(env["IDF_PYTHON_ENV_PATH"]) / "Scripts/python.exe"
         idf_py = idf / "tools/idf.py"
-        if (not idf.is_absolute() or not python.is_absolute()
-            or not python.is_file() or not idf_py.is_file()
-            or python.is_symlink() or idf_py.is_symlink()):
+        if (
+            not idf.is_absolute()
+            or not python.is_absolute()
+            or not python.is_file()
+            or not idf_py.is_file()
+            or python.is_symlink()
+            or idf_py.is_symlink()
+        ):
             raise ValueError("external_idf_environment_invalid")
         env["IDF_TARGET"] = project.target
         stage("idf_diagnostics")
         version: list[str] = []
+
         def version_output(line: str, stream: str) -> None:
             if len(version) >= 32:
                 self.process.stop_requested.set()
             else:
                 version.append(line)
-        if self.process.run([str(python), str(idf_py), "--version"], env,
-                            project.project_dir, version_output, timeout=30):
+
+        if self.process.run(
+            [str(python), str(idf_py), "--version"],
+            env,
+            project.project_dir,
+            version_output,
+            timeout=30,
+        ):
             raise ValueError("idf_version_diagnostic_failed")
         if not any(re.fullmatch(r"ESP-IDF v6\.0\.1", line.strip()) for line in version):
             raise ValueError("idf_version_mismatch_no_fallback")
         version.clear()
-        if self.process.run([str(python), "--version"], env, project.project_dir,
-                            version_output, timeout=30):
+        if self.process.run(
+            [str(python), "--version"], env, project.project_dir, version_output, timeout=30
+        ):
             raise ValueError("external_python_diagnostic_failed")
         compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
         if compiler is None:
             raise ValueError("external_toolchain_missing")
         version.clear()
-        if self.process.run([compiler, "--version"], env, project.project_dir,
-                            version_output, timeout=30):
+        if self.process.run(
+            [compiler, "--version"], env, project.project_dir, version_output, timeout=30
+        ):
             logs.append("error: external toolchain diagnostic failed; build not started")
             raise ToolchainDiagnosticFailure()
         registered_versions: dict[str, dict[str, str]] = {}
@@ -287,8 +356,13 @@ class FirmwareBuild:
         search_directories: list[str] = []
         for name, tool in registered_tools.items():
             version.clear()
-            if self.process.run([str(tool.executable), "--version"], env, project.project_dir,
-                                version_output, timeout=30):
+            if self.process.run(
+                [str(tool.executable), "--version"],
+                env,
+                project.project_dir,
+                version_output,
+                timeout=30,
+            ):
                 raise ValueError("registered_tool_diagnostic_failed")
             self._check_cancelled()
             if version != [tool.version]:
@@ -305,23 +379,38 @@ class FirmwareBuild:
             if resolved is None or Path(resolved).resolve() != tool.executable.resolve():
                 raise ValueError("registered_tool_resolution_ambiguous")
         resolved_compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
-        if (resolved_compiler is None
-            or Path(resolved_compiler).resolve() != Path(compiler).resolve()):
+        if (
+            resolved_compiler is None
+            or Path(resolved_compiler).resolve() != Path(compiler).resolve()
+        ):
             raise ValueError("external_toolchain_resolution_changed")
         if "node" not in registered_tools and shutil.which("node.exe", path=env["PATH"]):
             raise ValueError("node_requires_explicit_local_registration")
-        environment_fingerprint = hashlib.sha256(json.dumps({
-            "idf_py": hash_file(idf_py), "python": hash_file(python),
-            "compiler": hash_file(Path(compiler)), "environment": env,
-        }, sort_keys=True).encode()).hexdigest()
+        environment_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "idf_py": hash_file(idf_py),
+                    "python": hash_file(python),
+                    "compiler": hash_file(Path(compiler)),
+                    "environment": env,
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
         logs.append("-- External Python, toolchain and ESP-IDF 6.0.1 diagnostics passed")
-        build_dir = (self.settings.state_dir.resolve() / "firmware-builds"
-                     / plan["fingerprint"] / environment_fingerprint)
+        build_dir = (
+            self.settings.state_dir.resolve()
+            / "firmware-builds"
+            / plan["fingerprint"]
+            / environment_fingerprint
+        )
         build_dir.mkdir(parents=True, exist_ok=True)
         stage("idf_build")
+
         def emit(line: str, stream: str) -> None:
             with self._lock:
                 logs.append(line, stream)
+
         # Diagnostics can take time. Recheck live project/profile/lock inputs
         # immediately before launching build; a changed tree needs a new plan.
         self._check_cancelled()
@@ -329,8 +418,12 @@ class FirmwareBuild:
             logs.append("error: build inputs changed before launch; prepare a new plan")
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
-        if self.process.run([str(python), str(idf_py), "-B", str(build_dir), "build"],
-                            env, project.project_dir, emit):
+        if self.process.run(
+            [str(python), str(idf_py), "-B", str(build_dir), "build"],
+            env,
+            project.project_dir,
+            emit,
+        ):
             raise ValueError("idf_build_failed_needs_review")
         if self.prepare(plan["project_id"], principal)["fingerprint"] != plan["fingerprint"]:
             raise ValueError("build_inputs_changed")
@@ -344,17 +437,26 @@ class FirmwareBuild:
             if path.suffix in (".bin", ".elf") and path.is_file():
                 if len(artifacts) >= 32:
                     raise ValueError("artifact_count_limit")
-                artifacts.append(dict(name=path.relative_to(build_dir).as_posix(),
-                                      bytes=path.stat().st_size, sha256=hash_file(path)))
+                artifacts.append(
+                    dict(
+                        name=path.relative_to(build_dir).as_posix(),
+                        bytes=path.stat().st_size,
+                        sha256=hash_file(path),
+                    )
+                )
         self._check_cancelled()
         if not artifacts:
             raise ValueError("build_artifacts_missing")
-        manifest = dict(schema_version=1, idf_version="6.0.1", target=project.target,
-                        fingerprint=plan["fingerprint"],
-                        environment_fingerprint=environment_fingerprint,
-                        artifacts=artifacts,
-                        registered_tool_versions=registered_versions,
-                        flash_authorized=False)
+        manifest = dict(
+            schema_version=1,
+            idf_version="6.0.1",
+            target=project.target,
+            fingerprint=plan["fingerprint"],
+            environment_fingerprint=environment_fingerprint,
+            artifacts=artifacts,
+            registered_tool_versions=registered_versions,
+            flash_authorized=False,
+        )
         # Write an inert candidate first. Accepted cancellation must never publish
         # a success manifest, including cancellation during hashing or serialization.
         candidate = build_dir / "broker-manifest.pending.json"

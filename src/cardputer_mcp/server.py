@@ -609,7 +609,10 @@ def create_server(
 
         def prepare() -> dict[str, Any]:
             if request.test in (
-                TestName.CAPTURE, TestName.FIRMWARE, TestName.RESTART, TestName.BUILD
+                TestName.CAPTURE,
+                TestName.FIRMWARE,
+                TestName.RESTART,
+                TestName.BUILD,
             ):
                 owner = principal(ctx, "control")
                 resident.require_owner(
@@ -645,22 +648,32 @@ def create_server(
         Cursor reads do not consume output. Expiry, restart and eviction report gaps.
         A successful build includes a hashed manifest; it grants no flash permission.
         """
+
         def get_logs() -> dict[str, Any]:
             owner = principal(ctx, "read")
             store = resident._store()
             job = store.job(request.job_id)
             plan = store.plan(job["plan_hash"]) if job is not None else None
-            if (plan is None or plan.get("test") != TestName.BUILD.value
-                or plan.get("build_principal") != owner.principal_id):
+            if (
+                plan is None
+                or plan.get("test") != TestName.BUILD.value
+                or plan.get("build_principal") != owner.principal_id
+            ):
                 raise BrokerError("build_log_not_available")
             if request.job_id not in resident.firmware_build.logs:
-                return dict(entries=[], expired=True, gap=True, has_more=False,
-                            reason="not_started_or_history_not_retained",
-                            next_cursor=dict(epoch=resident.epoch, sequence=0))
+                return dict(
+                    entries=[],
+                    expired=True,
+                    gap=True,
+                    has_more=False,
+                    reason="not_started_or_history_not_retained",
+                    next_cursor=dict(epoch=resident.epoch, sequence=0),
+                )
             try:
                 return resident.firmware_build.read_logs(request, owner.principal_id)
             except ValueError as exc:
                 raise BrokerError(str(exc)) from None
+
         return _result(get_logs)
 
     @server.tool(annotations=read_only)

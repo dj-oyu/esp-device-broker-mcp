@@ -284,12 +284,14 @@ class PlanReview:
         log_recipient = None
         if row.test == "firmware_build":
             recipient = plan.get("build_principal")
-            if (not isinstance(recipient, str)
+            if (
+                not isinstance(recipient, str)
                 or re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", recipient) is None
                 or plan.get("profile_execution_policy") not in ("inherit", "RemoteSigned")
                 or plan.get("expected_idf") != "6.0.1"
                 or plan.get("target") != "esp32s3"
-                or plan.get("stages") != ["idf_profile", "idf_diagnostics", "idf_build"]):
+                or plan.get("stages") != ["idf_profile", "idf_diagnostics", "idf_build"]
+            ):
                 raise ValueError("invalid_plan_response")
             _hex(plan.get("fingerprint"), 64)
             log_recipient = recipient
@@ -884,4 +886,3 @@ class PlanApprovalPanel:
             return False
         self.worker.stop()
         return True
-

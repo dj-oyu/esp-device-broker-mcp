@@ -177,3 +177,20 @@ Artifact ID 11767609431 has service-reported archive SHA-256
 41ff4648d0c4ef70d073e3a2a06f2c73aca99bfd456ab0b689d767fcee74bc85.
 This archive hash is not the inner EXE or distribution ZIP hash. Cloud download
 of the separate diagnostics archive failed once with CONNECT 503; no retry/bypass.
+
+
+## Windows architecture environment and canonical format
+
+The explicit OS child environment preserves PROCESSOR_ARCHITECTURE and
+PROCESSOR_ARCHITEW6432. Both are non-secret platform descriptors used by external
+Python/ESP-IDF platform.machine() detection; ambient PATH/SYSTEM_PATH remains
+excluded. A regression asserts the architecture variables reach the profile and
+all diagnostic/build subprocess calls while unrelated values are absent.
+
+The remaining Tunnel transport expected tool catalog includes read_build_logs.
+Fifteen changed src/tests files were formatted by lockfile-matched Ruff 0.16.10 in
+cloud Actions run 38299610752. The formatter's post-format check passed and cloud
+import verified AST equivalence for every returned file. That temporary formatter
+bridge intentionally did not publish a distribution; it has been removed, along
+with its temporary Ruff build dependency. The final head uses the ordinary Windows
+packaging workflow and its extracted-EXE build/log API probe.

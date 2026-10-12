@@ -861,4 +861,3 @@ async def test_status_reports_enabled_ingress_without_claiming_cloud_connection(
         assert status["tunnel_ingress_enabled"] is True
         assert status["tunnel"] == "external_lifecycle_unknown"
         assert status["hardware_connected"] is False
-
