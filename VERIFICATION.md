@@ -364,3 +364,40 @@ No real USB port, hardware action, user credential or Tunnel account was operate
 Native Windows rendering remains unverified for this change. The update provides
 local evidence for a separately approved diagnostic run; it does not establish
 the real wire-format cause or relax the strict HOME acknowledgement.
+
+
+## Windows runtime-key change: baseline comparison (2026-10-12 UTC)
+
+Compared tracked snapshots of main `71d3412` and runtime-key commit `f415967` in
+separate LocalAppData Temp directories, using the same clone `.venv` (CPython
+3.14.3, frozen uv.lock dependencies), pytest options, Windows environment, and
+separate test fixtures. PYTHONPATH selected each snapshot's own `src`; imports
+were verified. User device.local.toml and worktree were unchanged by comparison.
+
+- main: 2935 passed, 51 failed, 16 errors, 34 skipped.
+- change: 2948 passed, 45 failed, 16 errors, 34 skipped.
+- JUnit comparison: 53 shared failed/error testcase records match by testcase,
+  outcome and error message; zero change-only failures/errors. Six main-only
+  failures are all in unchanged client_environment tests. Counts vary between
+  runs; this does not establish a clean Windows suite. Pytest reports 16 errors
+  while its JUnit output has eight error testcase records.
+- Native Windows mypy outputs match exactly: 14 errors in four unchanged files.
+  `mypy --platform linux` passes; ruff and PowerShell parsing pass.
+- Shared failures include Windows environment-variable length limits in
+  parametrized tests, PermissionError in capture/observation tests, and Windows
+  path separator expectations. Access-denied paths were not bypassed.
+
+Basic local smoke from the specified clone used a temporary mock TOML with
+absolute state_dir, an unused loopback port, dummy process-only local/remote
+credentials and filtered environment. Authenticated MCP discovery returned 17
+tools; client_identity, device_status and read_logs succeeded. Native Tk manager
+started and refreshed, then closed; owned mock broker was terminated. The live
+GUI produced `TclError: invalid command name` in gui_timeline._canvas_size. The
+same callback error was reproduced on both snapshots with an authenticated mock
+broker, so it is pre-existing and remains unresolved in this PR.
+
+This execution process did not inherit CARDPUTER_TUNNEL_API_KEY or
+CONTROL_PLANE_API_KEY (presence booleans only). Real Tunnel/cloud connectivity
+was therefore not tested. Launch from the PowerShell process that has the key,
+or restart Codex after setting its inherited environment. No real key values,
+USB access, hardware writes or user config modifications were performed.
