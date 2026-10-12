@@ -26,7 +26,7 @@ class FlashPython(BaseModel):
 class FlashDevice(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     selector: DeviceSelector
-    flash_bytes: Literal[2097152, 4194304, 8388608, 16777216, 33554432]
+    flash_bytes: Literal[2097152, 4194304, 8388608, 16777216]
     project_id: Identifier
     python_tool: FlashPython
     esptool_directory: Path

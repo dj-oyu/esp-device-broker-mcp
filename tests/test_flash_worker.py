@@ -19,6 +19,7 @@ class FakePort:
 
 class FakeChip:
     CHIP_NAME = "ESP32-S3"
+    IS_STUB = False
     secure_download_mode = False
     def __init__(self):
         self._port = FakePort()
@@ -43,7 +44,7 @@ class WorkerTests(unittest.TestCase):
         def detect(port, **kwargs):
             self.calls.append((port, kwargs))
             return self.chip
-        self.tool = SimpleNamespace(__version__="5.1.0", cmds=SimpleNamespace(
+        self.tool = SimpleNamespace(__version__="5.1.0", loader=SimpleNamespace(WRITE_BLOCK_ATTEMPTS=3), cmds=SimpleNamespace(
             detect_chip=detect, attach_flash=lambda chip: None,
             read_flash=lambda chip, offset, size, **kwargs: b"x" * size,
             write_flash=lambda chip, data, **kwargs: self.writes.append((data, kwargs)),
@@ -56,6 +57,19 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(result["device_sha256"], hashlib.sha256(b"esp32s3\0" + bytes(self.chip.read_mac())).hexdigest())
         self.assertEqual(self.calls, [("COM1", {"connect_mode": "default-reset", "connect_attempts": 1})])
         self.assertFalse(self.chip._port.is_open)
+        self.assertEqual(self.writes, [])
+        self.assertEqual(self.chip.WRITE_FLASH_ATTEMPTS, 1)
+        self.assertEqual(self.tool.loader.WRITE_BLOCK_ATTEMPTS, 1)
+
+    def test_rom_limit_rejects_32mb_before_device_open(self):
+        with self.assertRaisesRegex(ValueError, "capacity_required"):
+            run_job(dict(self.job, flash_bytes=33554432), self.root, self.tool)
+        self.assertEqual(self.calls, [])
+
+    def test_existing_stub_is_rejected(self):
+        self.chip.IS_STUB = True
+        with self.assertRaisesRegex(ValueError, "target_mismatch"):
+            run_job(self.job, self.root, self.tool)
         self.assertEqual(self.writes, [])
 
     def test_unknown_protected_or_encrypted_device_blocks_write(self):

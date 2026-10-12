@@ -37,14 +37,18 @@ def run_job(job: dict[str, Any], root: Path, tool: Any) -> dict[str, Any]:
     capacity = job.get("flash_bytes")
     if not isinstance(port, str) or re.fullmatch(r"COM[1-9][0-9]{0,3}", port) is None:
         raise ValueError("registered_windows_port_required")
-    if type(capacity) is not int or capacity not in (2097152, 4194304, 8388608, 16777216, 33554432):
+    if type(capacity) is not int or capacity not in (2097152, 4194304, 8388608, 16777216):
         raise ValueError("verified_flash_capacity_required")
     esp = None
     with contextlib.redirect_stdout(Discard()), contextlib.redirect_stderr(Discard()):
         try:
             esp = tool.cmds.detect_chip(port, connect_mode="default-reset", connect_attempts=1)
-            if esp.CHIP_NAME != "ESP32-S3":
+            if esp.CHIP_NAME != "ESP32-S3" or esp.IS_STUB is not False:
                 raise ValueError("flash_target_mismatch")
+            # esptool defaults can reconnect and replay a write, and retry blocks.
+            # This isolated ROM worker must make exactly one attempt at each.
+            esp.WRITE_FLASH_ATTEMPTS = 1
+            tool.loader.WRITE_BLOCK_ATTEMPTS = 1
             security = esp.get_security_info(cache=False)
             flags = security.get("parsed_flags", {})
             count = security.get("flash_crypt_cnt")

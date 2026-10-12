@@ -156,7 +156,7 @@ class NativeFlashDriver:
 
     def boot(self) -> dict[str, Any]:
         self._verified_port()
-        plan = self.backend.prepare(TestName.RESTART)
+        plan = {"test": TestName.RESTART.value, **self.backend.prepare(TestName.RESTART)}
         if plan["device_fingerprint"] != self.expected_usb:
             raise FlashFailure("flash_boot_device_changed")
         result = asyncio.run(self.backend.execute(plan, lambda _: None))

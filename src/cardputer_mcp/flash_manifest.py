@@ -90,7 +90,7 @@ def verify_bundle(root: Path, manifest: dict[str, Any], *, flash_bytes: int) -> 
         _fail("build_manifest_not_flash_eligible")
     _digest(manifest.get("fingerprint"))
     _digest(manifest.get("environment_fingerprint"))
-    if type(flash_bytes) is not int or not 0 < flash_bytes <= 32 * 1024 * 1024:
+    if type(flash_bytes) is not int or not 0 < flash_bytes <= 16 * 1024 * 1024:
         _fail("verified_flash_capacity_required")
     security_receipt = manifest.get("flash_security")
     if not isinstance(security_receipt, dict) or security_receipt.get("name") != "config/sdkconfig.json":
@@ -103,6 +103,11 @@ def verify_bundle(root: Path, manifest: dict[str, Any], *, flash_bytes: int) -> 
         security.get(key) is not False for key in
         ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK")
     ):
+        _fail("build_security_configuration_not_authorized")
+    if any(security.get(key) is True for key in (
+        "SECURE_DISABLE_ROM_DL_MODE", "SECURE_ENABLE_SECURE_ROM_DL_MODE",
+        "BOOT_ROM_LOG_ALWAYS_OFF", "BOOT_ROM_LOG_ON_GPIO_HIGH", "BOOT_ROM_LOG_ON_GPIO_LOW",
+    )):
         _fail("build_security_configuration_not_authorized")
     if any(
         value is True for key, value in security.items()
@@ -125,7 +130,7 @@ def verify_bundle(root: Path, manifest: dict[str, Any], *, flash_bytes: int) -> 
     settings = layout.get("flash_settings")
     if not isinstance(settings, dict) or (
         settings.get("flash_mode") not in ("dio", "dout", "qio", "qout")
-        or settings.get("flash_size") not in ("2MB", "4MB", "8MB", "16MB", "32MB")
+        or settings.get("flash_size") not in ("2MB", "4MB", "8MB", "16MB")
         or settings.get("flash_freq") not in ("20m", "26m", "40m", "80m")
     ):
         _fail("unsupported_flash_settings")

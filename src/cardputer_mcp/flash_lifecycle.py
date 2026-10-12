@@ -53,7 +53,7 @@ class OperationPlan:
     expected_device_sha256: str | None = None
     backup_sha256: str | None = None
     manifest_sha256: str | None = None
-    expected_app_sha256: str | None = None
+    expected_elf_sha256: str | None = None
 
     @property
     def digest(self) -> str:
@@ -207,8 +207,13 @@ class FlashLifecycle:
                     or summary.get("idf_version") != "6.0.1"
                     or summary.get("target") != "esp32s3"
                     or (
-                        plan.expected_app_sha256 is not None
-                        and summary.get("app_sha256") != plan.expected_app_sha256
+                        plan.expected_elf_sha256 is not None
+                        and (
+                            not isinstance(summary.get("elf_sha256_prefix"), str)
+                            or not 8 <= len(summary["elf_sha256_prefix"]) <= 16
+                            or any(c not in "0123456789abcdef" for c in summary["elf_sha256_prefix"])
+                            or not plan.expected_elf_sha256.startswith(summary["elf_sha256_prefix"])
+                        )
                     )
                 ):
                     raise FlashFailure("flash_boot_unverified_needs_review")
