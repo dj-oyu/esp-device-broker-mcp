@@ -60,17 +60,11 @@ jobs:
         run: |
           .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_flash*.py' -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Verify checked-in formatting
+      - name: Integration style diagnostics
         run: |
-          $files = @(Get-ChildItem src/cardputer_mcp/flash*.py,src/cardputer_mcp/firmware_flash.py,src/cardputer_mcp/build_artifacts.py,tests/test_flash*.py | ForEach-Object { $_.FullName })
-          .venv/Scripts/ruff.exe format --check @files
+          .venv/Scripts/python.exe packaging/check_flash_style.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Lint and type checks
+      - name: Native Windows type checks
         run: |
-          $files = @(Get-ChildItem src/cardputer_mcp/flash*.py,src/cardputer_mcp/firmware_flash.py,src/cardputer_mcp/build_artifacts.py,tests/test_flash*.py | ForEach-Object { $_.FullName })
-          .venv/Scripts/ruff.exe check @files
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $source = @(Get-ChildItem src/cardputer_mcp/flash*.py,src/cardputer_mcp/firmware_flash.py,src/cardputer_mcp/build_artifacts.py | ForEach-Object { $_.FullName })
-          .venv/Scripts/mypy.exe --follow-imports=silent @source
+          .venv/Scripts/mypy.exe src
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

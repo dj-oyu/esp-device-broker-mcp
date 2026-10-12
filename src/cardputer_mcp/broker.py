@@ -1721,7 +1721,11 @@ class Broker:
                     if plan["test"] in {t.value for t in FLASH_TESTS}:
                         if capture_principal != plan.get("flash_principal"):
                             raise BrokerError("flash_principal_mismatch")
-                        def flash_live() -> bool:
+                        def flash_live(
+                            plan: dict[str, Any] = plan,
+                            lease: Session = lease,
+                            capture_principal: str | None = capture_principal,
+                        ) -> bool:
                             current = self.session
                             if self.closing or current is None or capture_principal is None or current is not lease or current.principal_id != capture_principal or not math.isfinite(self.clock()) or self.clock() >= current.deadline:
                                 return False
