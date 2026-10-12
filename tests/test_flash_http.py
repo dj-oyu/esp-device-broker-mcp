@@ -14,8 +14,8 @@ from test_registry_http import registry_service as registry_service
 
 from cardputer_mcp.broker import digest_plan
 from cardputer_mcp.build_locations import build_location, claim_build_directory
-from cardputer_mcp.config import BuildProject
 from cardputer_mcp.client import call, connect
+from cardputer_mcp.config import BuildProject
 from cardputer_mcp.flash_models import FlashDevice
 
 
