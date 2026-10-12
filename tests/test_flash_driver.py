@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from test_serial_restart import FakePort, STARTUP, device
+from test_serial_restart import STARTUP, FakePort, device
 
 from cardputer_mcp.flash_driver import NativeFlashDriver
 from cardputer_mcp.flash_lifecycle import FlashFailure
@@ -52,31 +52,68 @@ class DriverBootTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         driver = NativeFlashDriver(
-            None, backend, fingerprint(entries[0]), Path(temporary.name), expected
+            None, backend, fingerprint(entries[0]), Path(temporary.name), expected,
+            "abcdef0123456789" + "0" * 48, lambda: True
         )
         # No native receipt/process/USB operation; only the synthetic SerialBackend.
         driver._verified_port = lambda: entries[0].port
         return driver, backend, ports, created
 
-    def test_actual_serial_restart_and_hello_receive_complete_plan(self):
-        driver, backend, ports, created = self.make_driver()
+    def test_actual_restart_passively_verifies_boot_without_hello_commands(self):
+        driver, _, ports, created = self.make_driver()
         summary = driver.boot()
         self.assertTrue(summary["boot_observed"])
-        self.assertTrue(summary["hello_verified"])
         self.assertEqual(summary["idf_version"], "6.0.1")
         self.assertEqual(summary["elf_sha256_prefix"], "abcdef0123456789")
-        self.assertEqual(len(created), 2)
-        self.assertTrue(any(event[1:] == ("rts", True) for event in ports[0].trace))
-        self.assertTrue(ports[1].writes)
+        self.assertEqual(len(created), 1)
+        self.assertEqual(ports[0].writes, [])
+        self.assertEqual(ports[1].writes, [])
         self.assertFalse(driver.active)
         self.assertFalse(driver.uncertain)
-        self.assertIsNone(backend.config.expected_firmware_sha256)
         self.assertEqual(ports[0].opens, ports[0].closes)
-        self.assertEqual(ports[1].opens, ports[1].closes)
 
-    def test_without_attested_image_hash_hello_cannot_be_claimed(self):
-        driver, _, ports, _ = self.make_driver(None)
-        with self.assertRaisesRegex(FlashFailure, "application_identity_required"):
+    def test_wrong_or_missing_boot_evidence_never_sends_hello_keys(self):
+        for startup in (
+            STARTUP.replace(b"v5.5-test", b"v6.0.2"),
+            STARTUP.replace(b"v5.5-test", b"v6.0.1").replace(b"abcdef0123456789", b"1111111111111111"),
+            b"synthetic noise\r\n",
+        ):
+            driver, _, ports, _ = self.make_driver()
+            ports[0].chunks = [startup]
+            with self.assertRaises(Exception):
+                driver.boot()
+            self.assertEqual(ports[1].writes, [])
+            self.assertFalse(driver.active)
+
+    def test_expiry_or_revocation_during_observe_blocks_all_hello_keys(self):
+        for revoked in (False, True):
+            driver, backend, ports, _ = self.make_driver()
+            deadline = backend.clock() + 1
+            driver.live = lambda: not revoked and backend.clock() < deadline
+            with self.assertRaises(Exception):
+                driver.boot()
+            self.assertEqual(ports[1].writes, [])
+            self.assertFalse(driver.active)
+
+    def test_stop_during_passive_read_closes_without_commands(self):
+        driver, _, ports, _ = self.make_driver()
+        original = ports[0].read
+        def stop_after_read(size):
+            result = original(size)
+            driver.stop()
+            return result
+        ports[0].read = stop_after_read
+        with self.assertRaises(Exception):
+            driver.boot()
+        self.assertEqual(ports[0].writes, [])
+        self.assertEqual(ports[1].writes, [])
+        self.assertFalse(driver.active)
+        self.assertEqual(ports[0].opens, ports[0].closes)
+
+    def test_without_expected_elf_boot_cannot_be_claimed(self):
+        driver, _, ports, _ = self.make_driver()
+        driver.expected_elf_sha256 = None
+        with self.assertRaisesRegex(FlashFailure, "boot_unverified"):
             driver.boot()
         self.assertEqual(ports[1].writes, [])
         self.assertFalse(driver.active)

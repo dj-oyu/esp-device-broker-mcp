@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import threading
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from .backend import BackendResult
@@ -42,6 +43,29 @@ def esptool_fingerprint(root: Path) -> str:
     return digest.hexdigest()
 
 
+class GuardedObservationPort:
+    """Check the live authority immediately before each serial read/write."""
+
+    def __init__(self, port: Any, check: Callable[[], None]) -> None:
+        object.__setattr__(self, "_port", port)
+        object.__setattr__(self, "_check", check)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._port, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._port, name, value)
+
+    def read(self, size: int = 1) -> bytes:
+        self._check()
+        return bytes(self._port.read(size))
+
+    def write(self, data: bytes) -> int | None:
+        self._check()
+        result: int | None = self._port.write(data)
+        return result
+
+
 class NativeFlashDriver:
     def __init__(
         self,
@@ -50,6 +74,8 @@ class NativeFlashDriver:
         expected_usb: str,
         work_root: Path,
         expected_app_bin_sha256: str | None = None,
+        expected_elf_sha256: str | None = None,
+        live: Callable[[], bool] | None = None,
     ) -> None:
         self.registration = registration
         self.backend = backend
@@ -60,12 +86,14 @@ class NativeFlashDriver:
         self._stop = threading.Event()
         self.last_observation: Any = None
         self.expected_app_bin_sha256 = expected_app_bin_sha256
-        self._hello_backend: Any = None
+        self.expected_elf_sha256 = expected_elf_sha256
+        self.live = live
+        self._observation_backend: Any = None
 
     @property
     def active(self) -> bool:
-        hello_active = self._hello_backend is not None and (
-            self._hello_backend.active or self._hello_backend.hardware_connected
+        hello_active = self._observation_backend is not None and (
+            self._observation_backend.active or self._observation_backend.hardware_connected
         )
         return bool(
             self.process.active
@@ -79,10 +107,15 @@ class NativeFlashDriver:
         return bool(
             self.process.uncertain
             or getattr(self.backend, "ownership_uncertain", False)
-            or getattr(self._hello_backend, "ownership_uncertain", False)
+            or getattr(self._observation_backend, "ownership_uncertain", False)
         )
 
+    def _authority(self) -> None:
+        if self._stop.is_set() or self.live is None or self.live() is not True:
+            raise FlashFailure("flash_authority_changed_needs_review")
+
     def _verified_port(self) -> str:
+        self._authority()
         if self._stop.is_set():
             raise FlashFailure("flash_cancelled_needs_review")
         if os.name != "nt" or self.backend.name != "serial":
@@ -224,36 +257,35 @@ class NativeFlashDriver:
         plan = {"test": TestName.RESTART.value, **self.backend.prepare(TestName.RESTART)}
         if plan["device_fingerprint"] != self.expected_usb:
             raise FlashFailure("flash_boot_device_changed")
-        result = asyncio.run(self.backend.execute(plan, lambda _: None))
+        self._observation_backend = SerialBackend(
+            self.backend.config,
+            inventory=self.backend.inventory,
+            factory=lambda: GuardedObservationPort(self.backend.factory(), self._authority),
+            clock=self.backend.clock,
+            pause=self.backend.pause,
+        )
+        result = asyncio.run(self._observation_backend.execute(plan, lambda _: None))
         if not isinstance(result, BackendResult) or result.observation is None:
             raise FlashFailure("flash_boot_observation_missing")
         self.last_observation = result.observation
         metadata = result.observation.firmware.metadata()
-        if self.expected_app_bin_sha256 is None:
-            raise FlashFailure("flash_application_identity_required")
-        # An execution-only image context; the user's registration is unchanged.
-        self._hello_backend = SerialBackend(
-            self.backend.config.model_copy(
-                update={"expected_firmware_sha256": self.expected_app_bin_sha256}
-            ),
-            inventory=self.backend.inventory,
-            factory=self.backend.factory,
-            clock=self.backend.clock,
-            pause=self.backend.pause,
-        )
-        self._verified_port()
-        hello_plan = {"test": TestName.HELLO.value, **self._hello_backend.prepare(TestName.HELLO)}
-        if hello_plan["device_fingerprint"] != self.expected_usb:
-            raise FlashFailure("flash_boot_device_changed")
-        hello = asyncio.run(self._hello_backend.execute(hello_plan, lambda _: None))
-        if hello != "hello_markers_passed_physical_checks_not_assessed":
-            raise FlashFailure("flash_hello_contract_not_verified")
+        prefix = metadata.get("elf_sha256_prefix")
+        if (
+            metadata.get("status") != "observed"
+            or (metadata.get("idf_version") or "").removeprefix("v") != "6.0.1"
+            or not isinstance(prefix, str)
+            or not 8 <= len(prefix) <= 16
+            or any(c not in "0123456789abcdef" for c in prefix)
+            or self.expected_elf_sha256 is None
+            or not self.expected_elf_sha256.startswith(prefix)
+        ):
+            raise FlashFailure("flash_boot_unverified_needs_review")
+        self._authority()
         return {
             "boot_observed": metadata["status"] == "observed",
             "idf_version": (metadata["idf_version"] or "").removeprefix("v"),
             "target": "esp32s3",
             "elf_sha256_prefix": metadata["elf_sha256_prefix"],
-            "hello_verified": True,
         }
 
     def stop(self) -> None:

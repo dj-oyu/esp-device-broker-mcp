@@ -34,6 +34,7 @@ class FlashDevice(BaseModel):
     esptool_version: Literal["5.1.0"] = "5.1.0"
     backup_directory: Path
     private_backup_acl_confirmed: bool = Field(default=False, strict=True)
+    original_elf_sha256: Digest | None = None
     allow_backup: bool = Field(default=False, strict=True)
     allow_flash: bool = Field(default=False, strict=True)
     allow_restore: bool = Field(default=False, strict=True)

@@ -71,8 +71,11 @@ class BackupReceipt:
 class FlashDriver(Protocol):
     """Internal registered-device driver; no remote command/path interface."""
 
-    active: bool
-    uncertain: bool
+    @property
+    def active(self) -> bool: ...
+
+    @property
+    def uncertain(self) -> bool: ...
 
     def probe(self) -> SecurityReceipt: ...
     def read(self, offset: int, size: int) -> bytes: ...
@@ -210,7 +213,6 @@ class FlashLifecycle:
                 self._live(live)
                 if (
                     summary.get("boot_observed") is not True
-                    or summary.get("hello_verified") is not True
                     or summary.get("idf_version") != "6.0.1"
                     or summary.get("target") != "esp32s3"
                     or (
@@ -235,7 +237,7 @@ class FlashLifecycle:
                         "idf_version": "6.0.1",
                         "target": "esp32s3",
                         "readback_verified": True,
-                        "hello_verified": True,
+                        "passive_boot_verified": True,
                         "boot_text_identity_verified": False,
                     },
                 )

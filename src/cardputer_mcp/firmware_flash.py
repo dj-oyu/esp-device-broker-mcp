@@ -13,11 +13,11 @@ from typing import Any
 from .build_logs import BuildLogs
 from .flash_backup import BackupStore
 from .flash_driver import NativeFlashDriver, esptool_fingerprint
-from .flash_lifecycle import FlashFailure, FlashLifecycle, OperationPlan
+from .flash_lifecycle import FlashFailure, FlashLifecycle, Operation, OperationPlan
 from .flash_manifest import _file, verify_bundle
 from .models import TestName
 
-FLASH_ACTIONS = {
+FLASH_ACTIONS: dict[str, Operation] = {
     "firmware_backup": "backup",
     "firmware_flash": "flash",
     "firmware_restore": "restore",
@@ -43,7 +43,7 @@ FLASH_EFFECTS = [
         "Writes only attested manifest regions or the exact device-bound backup; "
         "interrupted/uncertain work needs review"
     ),
-    "Resets and observes startup, then tests the firmware HELLO contract; app state may be lost",
+    "Resets and passively verifies startup IDF/ELF evidence; app state may be lost",
     (
         "Shares bounded redacted progress/boot logs only with the requesting "
         "principal; no raw backup delivery"
@@ -267,6 +267,9 @@ class FirmwareFlash:
                     if self.backend.name == "serial"
                     else "0" * 64
                 )
+                elf_digest = registration.original_elf_sha256
+                if elf_digest is None:
+                    raise FlashFailure("restore_original_elf_receipt_required")
                 if image_digest is None:
                     raise FlashFailure("restore_original_firmware_receipt_required")
         registration_digest = hashlib.sha256(registration.model_dump_json().encode()).hexdigest()
@@ -386,6 +389,8 @@ class FirmwareFlash:
             plan["device_fingerprint"],
             registration.backup_directory / "work",
             plan["expected_app_bin_sha256"],
+            plan["expected_elf_sha256"],
+            live,
         )
         with self._lock:
             if plan["job_id"] in self._cancelled_jobs:
@@ -436,7 +441,7 @@ class FirmwareFlash:
                     log.append(line)
             self.results[self.job_id] = summary
             log.append("-- Flash operation completed; verified receipt/observations recorded")
-            return "firmware_" + plan["flash_operation"] + "_completed"
+            return f"firmware_{plan["flash_operation"]}_completed"
         except Exception:
             log.append("error: flash operation failed; needs review; no retry or automatic restore")
             raise

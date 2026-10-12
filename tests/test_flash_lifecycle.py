@@ -227,11 +227,6 @@ class FlashLifecycleTests(unittest.TestCase):
             self.run_plan()
         self.assertEqual(self.driver.writes, 1)
 
-    def test_hello_contract_failure_never_claims_boot_success(self):
-        self.driver.summary["hello_verified"] = False
-        with self.assertRaisesRegex(FlashFailure, "boot_unverified"):
-            self.run_plan()
-        self.assertEqual(self.driver.writes, 1)
 
     def test_restore_requires_its_own_exact_plan_approval(self):
         plan = replace(self.plan, operation="restore", manifest_sha256=None)

@@ -46,6 +46,7 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
                 flash_devices={"fixture": self.registration},
             ),
             lock_path=self.root / "device.lockfile",
+            principal_valid=lambda *args: True,
         )
         self.driver = FakeDriver()
         self.driver.data = bytearray(b"x" * self.registration.flash_bytes)
