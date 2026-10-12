@@ -304,7 +304,8 @@ class FirmwareBuild:
             if resolved is None or Path(resolved).resolve() != tool.executable.resolve():
                 raise ValueError("registered_tool_resolution_ambiguous")
         resolved_compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
-        if resolved_compiler is None or Path(resolved_compiler).resolve() != Path(compiler).resolve():
+        if (resolved_compiler is None
+            or Path(resolved_compiler).resolve() != Path(compiler).resolve()):
             raise ValueError("external_toolchain_resolution_changed")
         if "node" not in registered_tools and shutil.which("node.exe", path=env["PATH"]):
             raise ValueError("node_requires_explicit_local_registration")
