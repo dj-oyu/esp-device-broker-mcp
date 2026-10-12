@@ -19,6 +19,7 @@ import tempfile
 import time
 import tomllib
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -342,7 +343,24 @@ def preflight(settings: TunnelSettings, *, enable_serial: bool = False) -> dict[
     }
 
 
+def runtime_api_key(supplied: str, environment: Mapping[str, str]) -> str:
+    """Resolve only on explicit connection; never persist or echo credentials."""
+    return (
+        supplied
+        or environment.get("CARDPUTER_TUNNEL_API_KEY", "")
+        or environment.get("CONTROL_PLANE_API_KEY", "")
+    )
+
+
+def _consume_runtime_api_key() -> str:
+    key = runtime_api_key("", os.environ)
+    os.environ.pop("CARDPUTER_TUNNEL_API_KEY", None)
+    os.environ.pop("CONTROL_PLANE_API_KEY", None)
+    return key
+
+
 def child_environment(source: dict[str, str], api_key: str, bearer: str) -> dict[str, str]:
+    api_key = runtime_api_key(api_key, source)
     if not api_key or len(api_key) > 512 or any(ord(c) < 33 or ord(c) > 126 for c in api_key):
         raise TunnelError("invalid_runtime_key")
     if re.fullmatch(r"Bearer (?:[a-f0-9]{64}|cpk_[a-f0-9]{32}\.[a-f0-9]{64})", bearer) is None:
@@ -524,7 +542,7 @@ def launch_console(settings_path: Path, project: Path, shell: Path, *, enable_se
     encoded = base64.b64encode(command.encode("utf-16le")).decode("ascii")
     env = child_environment(
         dict(os.environ),
-        os.environ.pop("CARDPUTER_TUNNEL_API_KEY", ""),
+        _consume_runtime_api_key(),
         os.environ.pop("CARDPUTER_TUNNEL_BEARER", ""),
     )
     subprocess.Popen(
@@ -574,7 +592,7 @@ def main() -> None:
         if args.command == "preflight":
             print(json.dumps(result))
             return
-        api_key = os.environ.pop("CARDPUTER_TUNNEL_API_KEY", "")
+        api_key = _consume_runtime_api_key()
         bearer = os.environ.pop("CARDPUTER_TUNNEL_BEARER", "")
         env = child_environment(dict(os.environ), api_key, bearer)
         asyncio.run(check_broker(result["url"], bearer, ingress_enabled=settings.ingress_enabled))
