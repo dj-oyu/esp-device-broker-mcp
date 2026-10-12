@@ -43,7 +43,11 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     allow_mock_execution=backend_name == "mock",
                     serial=serial,
                     build_projects={
-                        "registered": BuildProject(project_dir=project, trusted_profile=profile)
+                        "registered": BuildProject(
+                            project_dir=project,
+                            trusted_profile=profile,
+                            build_root=root / "output",
+                        )
                     },
                 )
 
