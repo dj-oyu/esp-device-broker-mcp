@@ -12,7 +12,8 @@ from test_source_snapshot import COMMIT, FILES, REPOSITORY, archive
 
 from cardputer_mcp import firmware_build as build_module
 from cardputer_mcp.client import call, connect
-from cardputer_mcp.config import BuildProject, SourceRepository
+from cardputer_mcp.config import BuildProject, SerialSettings, SourceRepository
+from cardputer_mcp.ports import DeviceSelector
 from cardputer_mcp.source_snapshot import SourceError, file_receipt, tree_hash
 
 
@@ -41,7 +42,16 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
             private_acl_confirmed=True,
         ),
     )
-    settings = service.resident.settings.model_copy(update={"build_projects": {"fixture": project}})
+    serial = (
+        SerialSettings(selector=DeviceSelector(vid=0xCAFE, pid=1, serial_number="SYNTHETIC"))
+        if backend_name == "serial"
+        else None
+    )
+    if serial is not None:
+        monkeypatch.setattr(service.backend, "config", serial, raising=False)
+    settings = service.resident.settings.model_copy(
+        update={"backend": backend_name, "serial": serial, "build_projects": {"fixture": project}}
+    )
     service.resident.settings = settings
     service.resident.firmware_build.settings = settings
     service.resident.firmware_source.settings = settings
@@ -94,7 +104,7 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
         detail = (
             await http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})
         ).json()
-        assert detail["attestation"] == "none"
+        assert detail.get("attestation") == "none", detail
         approved = await http.post(
             "/operator/approve-plan",
             json={
