@@ -409,6 +409,9 @@ class PlanApprovals:
         elif plan["test"] == TestName.BUILD.value:
             if plan["build_principal"] != lease.principal_id:
                 raise BrokerError("plan_session_mismatch")
+        elif plan["test"] == TestName.SOURCE.value:
+            if plan["source_principal"] != lease.principal_id:
+                raise BrokerError("plan_session_mismatch")
         elif plan["backend"] == "serial":
             config = self.broker.settings.serial
             if config is None or (
