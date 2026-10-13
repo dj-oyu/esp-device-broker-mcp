@@ -55,7 +55,9 @@ def canonical(value: Any) -> bytes:
 
 def registration_digest(registration: Any, *, legacy: bool = False) -> str:
     # Preserve pre-submodule receipt bindings without rewriting old receipts.
-    excluded = {"submodule_repositories"} if legacy or not registration.submodule_repositories else set()
+    excluded = (
+        {"submodule_repositories"} if legacy or not registration.submodule_repositories else set()
+    )
     return digest(registration.model_dump_json(exclude=excluded).encode())
 
 
@@ -68,7 +70,12 @@ def validate_submodule_provenance(value: Any) -> None:
     seen: set[str] = set()
     for item in value:
         if not isinstance(item, dict) or set(item) != {
-            "path", "repository", "commit", "tree_sha1", "archive_sha256", "source_sha256"
+            "path",
+            "repository",
+            "commit",
+            "tree_sha1",
+            "archive_sha256",
+            "source_sha256",
         }:
             raise SourceError("source_submodule_provenance_rejected")
         if (
@@ -76,13 +83,11 @@ def validate_submodule_provenance(value: Any) -> None:
             or not isinstance(item["repository"], str)
             or re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", item["repository"]) is None
             or any(
-                not isinstance(item[key], str)
-                or re.fullmatch(r"[a-f0-9]{40}", item[key]) is None
+                not isinstance(item[key], str) or re.fullmatch(r"[a-f0-9]{40}", item[key]) is None
                 for key in ("commit", "tree_sha1")
             )
             or any(
-                not isinstance(item[key], str)
-                or re.fullmatch(r"[a-f0-9]{64}", item[key]) is None
+                not isinstance(item[key], str) or re.fullmatch(r"[a-f0-9]{64}", item[key]) is None
                 for key in ("archive_sha256", "source_sha256")
             )
             or item["path"].casefold() in seen
@@ -398,13 +403,19 @@ class RepositoryArchives:
         git_files = dict(own_files)
         for name, sha in links.items():
             # Reject tracked files, overlapping links, and archive directory aliases.
-            prefixes = {"/".join(name.split("/")[:depth]) for depth in range(1, len(name.split("/")) + 1)}
+            prefixes = {
+                "/".join(name.split("/")[:depth]) for depth in range(1, len(name.split("/")) + 1)
+            }
             for item in root.rglob("*"):
                 relative = item.relative_to(root).as_posix()
-                if any(relative.casefold() == prefix.casefold() and relative != prefix for prefix in prefixes):
+                if any(
+                    relative.casefold() == prefix.casefold() and relative != prefix
+                    for prefix in prefixes
+                ):
                     raise SourceError("source_archive_case_alias")
                 if item.is_file() and (
-                    relative == name or relative.startswith(name + "/")
+                    relative == name
+                    or relative.startswith(name + "/")
                     or name.startswith(relative + "/")
                 ):
                     raise SourceError("source_gitlink_path_conflict")
@@ -604,8 +615,12 @@ class SourceSnapshots:
                 value["schema_version"] not in (1, 2)
                 or value["principal"] != principal
                 or value["project_id"] != project_id
-                or value["registration_sha256"] not in (
-                    {registration_digest(registration), registration_digest(registration, legacy=True)}
+                or value["registration_sha256"]
+                not in (
+                    {
+                        registration_digest(registration),
+                        registration_digest(registration, legacy=True),
+                    }
                     if value["schema_version"] == 1
                     else {registration_digest(registration)}
                 )

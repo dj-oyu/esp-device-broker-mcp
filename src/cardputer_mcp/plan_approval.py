@@ -222,7 +222,8 @@ class PlanApprovals:
                         "tree_sha1",
                         "source_sha256",
                         "dependency_policy",
-                    } | ({"submodules"} if "submodules" in provenance else set())
+                    }
+                    | ({"submodules"} if "submodules" in provenance else set())
                     or provenance["source_receipt"] != plan["source_receipt"]
                     or not _hex(provenance["commit"], 40)
                     or not _hex(provenance["tree_sha1"], 40)

@@ -65,7 +65,7 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
     if with_submodule:
         root_files[".gitmodules"] = (
             b'[submodule "minimp3"]\npath = third_party/minimp3\n'
-            b'url = https://github.com/lieff/minimp3.git\n'
+            b"url = https://github.com/lieff/minimp3.git\n"
         )
     receipts = {name: file_receipt(data, "100644") for name, data in root_files.items()}
     if with_submodule:
@@ -80,17 +80,28 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
         if not live():
             raise SourceError("source_fetch_interrupted")
         if "/git/trees/" in url:
-            return json.dumps({
-                "sha": tree, "truncated": False,
-                "tree": [{"path": "third_party/minimp3", "sha": child_commit,
-                          "mode": "160000", "type": "commit"}],
-            }).encode()
+            return json.dumps(
+                {
+                    "sha": tree,
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": "third_party/minimp3",
+                            "sha": child_commit,
+                            "mode": "160000",
+                            "type": "commit",
+                        }
+                    ],
+                }
+            ).encode()
         child = "lieff/minimp3" in url
         if "/git/commits/" in url:
-            return json.dumps({
-                "sha": child_commit if child else COMMIT,
-                "tree": {"sha": child_tree if child else tree},
-            }).encode()
+            return json.dumps(
+                {
+                    "sha": child_commit if child else COMMIT,
+                    "tree": {"sha": child_tree if child else tree},
+                }
+            ).encode()
         return archive(
             child_files if child else root_files,
             repository="lieff/minimp3" if child else REPOSITORY,

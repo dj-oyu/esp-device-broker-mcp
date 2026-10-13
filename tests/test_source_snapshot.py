@@ -29,9 +29,7 @@ FILES = {
 }
 
 
-def archive(
-    files=FILES, *, mode=stat.S_IFREG | 0o644, repository=REPOSITORY, commit=COMMIT
-):
+def archive(files=FILES, *, mode=stat.S_IFREG | 0o644, repository=REPOSITORY, commit=COMMIT):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as zipped:
         for name, data in files.items():
@@ -178,14 +176,14 @@ class SourceTests(unittest.TestCase):
         root_files = dict(FILES)
         root_files[".gitmodules"] = modules or (
             b'[submodule "minimp3"]\npath = third_party/minimp3\n'
-            b'url = https://github.com/lieff/minimp3.git\n'
+            b"url = https://github.com/lieff/minimp3.git\n"
         )
         child_files = {"minimp3.h": b"synthetic upstream header"}
         nested_files = {"nested.h": b"nested header"}
         if nested:
             child_files[".gitmodules"] = (
                 b'[submodule "nested"]\npath = nested\n'
-                b'url = https://github.com/fixture/nested.git\n'
+                b"url = https://github.com/fixture/nested.git\n"
             )
         graph = {
             (REPOSITORY, COMMIT): (root_files, {"third_party/minimp3": gitlink or child_commit}),
@@ -215,7 +213,9 @@ class SourceTests(unittest.TestCase):
                 repository, commit = url.removeprefix("https://api.github.com/repos/").split(
                     "/git/commits/"
                 )
-                return json.dumps({"sha": commit, "tree": {"sha": trees[repository, commit]}}).encode()
+                return json.dumps(
+                    {"sha": commit, "tree": {"sha": trees[repository, commit]}}
+                ).encode()
             if "/git/trees/" in url:
                 repository, tree = url.removeprefix("https://api.github.com/repos/").split(
                     "/git/trees/"
@@ -224,10 +224,14 @@ class SourceTests(unittest.TestCase):
                 identity = next(key for key in graph if key[0] == repository and trees[key] == tree)
                 links = graph[identity][1]
                 return json.dumps(
-                    {"sha": tree, "truncated": False, "tree": [
-                        {"path": name, "sha": sha, "type": "commit", "mode": "160000"}
-                        for name, sha in links.items()
-                    ]}
+                    {
+                        "sha": tree,
+                        "truncated": False,
+                        "tree": [
+                            {"path": name, "sha": sha, "type": "commit", "mode": "160000"}
+                            for name, sha in links.items()
+                        ],
+                    }
                 ).encode()
             repository, commit = url.removeprefix("https://codeload.github.com/").split("/zip/")
             return archive(graph[repository, commit][0], repository=repository, commit=commit)
@@ -243,10 +247,14 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(result["submodules"][0]["commit"], commit)
         self.assertEqual(result["submodules"][0]["path"], "third_party/minimp3")
         self.assertEqual(len(result["submodules"]), 2)
-        self.assertEqual((source / "third_party/minimp3/nested/nested.h").read_bytes(), b"nested header")
+        self.assertEqual(
+            (source / "third_party/minimp3/nested/nested.h").read_bytes(), b"nested header"
+        )
         plan = FirmwareBuild(self.settings).prepare("fixture", "owner", result["source_receipt"])
         self.assertEqual(plan["source_provenance"]["submodules"], result["submodules"])
-        self.assertEqual(plan["source_provenance"]["dependency_policy"], "gitlinks_fixed_commits_no_fetch")
+        self.assertEqual(
+            plan["source_provenance"]["dependency_policy"], "gitlinks_fixed_commits_no_fetch"
+        )
         self.assertFalse(any("heads/" in url for url in self.urls))
         (source / "third_party/minimp3/minimp3.h").write_bytes(b"changed")
         with self.assertRaises(SourceError):
