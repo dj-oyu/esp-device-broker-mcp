@@ -95,10 +95,10 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage, str]:
                 consistent = False
             race_id = match[2]
             phase = match[1].decode()
+            if phase != "pad":
+                sequence.append(phase)
             if phase not in phases:
                 phases.append(phase)
-                if phase != "pad":
-                    sequence.append(phase)
                 reader.emit("derby_scene_" + phase + "_observed")
         if started and re.fullmatch(rb"DERBY DEMO END [0-9,-]{1,80}", line):
             ended = True

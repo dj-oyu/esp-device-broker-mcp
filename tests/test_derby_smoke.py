@@ -22,6 +22,7 @@ class Wire:
         self.writes = []
         self.closed = False
         self.running = False
+        self.phase_order = (b"gate", b"race", b"photo", b"res")
         self.demo = 0
         self.is_open = False
         self.dtr = self.rts = False
@@ -36,10 +37,10 @@ class Wire:
             if self.demo == 2:
                 self.now += 15
                 return b"DERBY DEMO START 5000,0,0,100\n"
-            if 3 <= self.demo <= 6:
-                phase = (b"gate", b"race", b"photo", b"res")[self.demo - 3]
+            if 3 <= self.demo < 3 + len(self.phase_order):
+                phase = self.phase_order[self.demo - 3]
                 return b"DERBY SCENE " + phase + b" race=1000001 seed=AB123456 plans=2 reg=3\n"
-            if self.demo == 7:
+            if self.demo == 3 + len(self.phase_order):
                 return b"DERBY DEMO END 5000,0,0,100\n"
         return b""
 
@@ -135,6 +136,22 @@ class DerbyTests(unittest.TestCase):
             self.run_wire(wire)
         self.assertNotIn(b"s", wire.writes)
         self.assertNotIn(b"q", wire.writes)
+
+    def test_reentered_gate_or_mixed_race_ids_never_claim_one_cycle(self):
+        wire = Wire()
+        wire.phase_order = (b"gate", b"race", b"gate", b"photo", b"res")
+        _, code = self.run_wire(wire)
+        self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
+        wire = Wire()
+        read = wire.read
+
+        def mixed_read(size=1):
+            data = read(size)
+            return data.replace(b"photo race=1000001", b"photo race=1000002")
+
+        wire.read = mixed_read
+        _, code = self.run_wire(wire)
+        self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
 
     def test_absent_phases_returns_time_image_limit_not_cycle_success(self):
         image, code = self.run_wire(Wire(phases=False))
