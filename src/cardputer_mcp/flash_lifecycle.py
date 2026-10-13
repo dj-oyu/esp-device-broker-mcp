@@ -54,6 +54,7 @@ class OperationPlan:
     backup_sha256: str | None = None
     manifest_sha256: str | None = None
     expected_elf_sha256: str | None = None
+    recovery_kind: str = "full_backup"
 
     @property
     def digest(self) -> str:
@@ -126,6 +127,9 @@ class FlashLifecycle:
         bundle: FlashBundle | None = None,
         images: tuple[bytes, ...] = (),
         backup: bytes | None = None,
+        recovery: tuple[FlashBundle, tuple[bytes, ...]] | None = None,
+        defer_commit: bool = False,
+        recovery_table_offset: int | None = None,
     ) -> tuple[BackupReceipt | None, bytes | None, dict[str, Any]]:
         with self._lock:
             if self.active or self.uncertain or self.driver.active or self.driver.uncertain:
@@ -164,7 +168,19 @@ class FlashLifecycle:
                 if (
                     plan.operation not in ("flash", "restore")
                     or plan.expected_device_sha256 is None
-                    or backup is None
+                ):
+                    raise FlashFailure("verified_device_recovery_required")
+                if plan.recovery_kind == "artifact_bundle":
+                    if recovery is None:
+                        raise FlashFailure("verified_firmware_recovery_required")
+                    prior, prior_images = recovery
+                    if len(prior.segments) != len(prior_images) or any(
+                        len(data) != item.size or hashlib.sha256(data).hexdigest() != item.sha256
+                        for item, data in zip(prior.segments, prior_images, strict=True)
+                    ):
+                        raise FlashFailure("lkg_bytes_changed")
+                elif (
+                    backup is None
                     or len(backup) != plan.flash_bytes
                     or hashlib.sha256(backup).hexdigest() != plan.backup_sha256
                 ):
@@ -184,17 +200,44 @@ class FlashLifecycle:
                     # Recheck every sector that will be erased, including padding.
                     # An unrelated NVS change outside these ranges is not erased.
                     stage("flash_backup_prewrite_check")
-                    for item in bundle.segments:
-                        size = ((item.size + 4095) // 4096) * 4096
-                        self._live(live)
-                        current = self.driver.read(item.offset, size)
-                        if current != backup[item.offset : item.offset + size]:
-                            raise FlashFailure("flash_backup_stale_needs_review")
+                    if recovery is not None:
+                        prior, prior_images = recovery
+                        for item, expected in zip(prior.segments, prior_images, strict=True):
+                            self._live(live)
+                            if self.driver.read(item.offset, item.size) != expected:
+                                raise FlashFailure("lkg_current_firmware_changed_needs_review")
+                    else:
+                        assert backup is not None
+                        for item in bundle.segments:
+                            size = ((item.size + 4095) // 4096) * 4096
+                            self._live(live)
+                            if (
+                                self.driver.read(item.offset, size)
+                                != backup[item.offset : item.offset + size]
+                            ):
+                                raise FlashFailure("flash_backup_stale_needs_review")
                     segments = tuple(
                         (item.offset, data)
                         for item, data in zip(bundle.segments, images, strict=True)
                     )
+                elif recovery is not None:
+                    prior, prior_images = recovery
+                    table = next(
+                        (item for item in prior.segments if item.offset == recovery_table_offset),
+                        None,
+                    )
+                    if table is None:
+                        raise FlashFailure("lkg_restore_layout_evidence_required")
+                    expected = prior_images[prior.segments.index(table)]
+                    self._live(live)
+                    if self.driver.read(table.offset, table.size) != expected:
+                        raise FlashFailure("lkg_restore_partition_changed_needs_review")
+                    segments = tuple(
+                        (item.offset, data)
+                        for item, data in zip(prior.segments, prior_images, strict=True)
+                    )
                 else:
+                    assert backup is not None
                     segments = ((0, backup),)
                 self._live(live)
                 stage("flash_write" if plan.operation == "flash" else "flash_restore_write")
@@ -262,5 +305,6 @@ class FlashLifecycle:
         with self._lock:
             if self.cancelled.is_set():
                 raise FlashFailure("flash_cancelled_needs_review")
-            self._committed = plan.job_id
+            if not defer_commit:
+                self._committed = plan.job_id
         return result

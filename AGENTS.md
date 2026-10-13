@@ -29,6 +29,12 @@ settings from this file.
   separate approved operations. Leave verified new firmware installed; do not
   add implicit rollback, write retries or other automatically executed commands.
   Disclose existing reset/reopen behavior and retain cancellation/ownership checks.
+- Retain exact verified firmware bytes by private content hash. LKG selection and
+  successful job must commit atomically after write/readback/expected same-device
+  boot/confirmed close/final authority. Failure/cancel/crash keeps the prior target.
+  Restore binds a prepared receipt and remains explicit. Keep the initial full
+  backup separate; protect referenced recovery objects from build retention.
+  Do not imply NVS/data compatibility or add implicit data/partition migrations.
 - Register projects and execution profiles locally. MCP must not accept arbitrary
   shell commands or unrestricted project/profile paths.
 - Preserve approval, ownership, cancellation and redaction boundaries in build,

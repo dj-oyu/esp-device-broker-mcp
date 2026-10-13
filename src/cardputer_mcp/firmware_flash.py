@@ -14,6 +14,14 @@ from .build_logs import BuildLogs
 from .flash_backup import BackupStore
 from .flash_driver import NativeFlashDriver, esptool_fingerprint
 from .flash_lifecycle import FlashFailure, FlashLifecycle, Operation, OperationPlan
+from .flash_lkg_bundle import (
+    baseline_layout,
+    bundle_from_record,
+    bundle_record,
+    compatibility,
+    same_layout,
+)
+from .flash_lkg_store import FirmwareSnapshots
 from .flash_manifest import _file, verify_bundle
 from .models import TestName
 
@@ -31,6 +39,13 @@ FLASH_STAGES = [
     "flash_close",
 ]
 FLASH_EFFECTS = [
+    "Successful flash/restore atomically selects verified recovery bytes with the successful job",
+    "Retained LKG may replace full backup input; the exact receipt is frozen at prepare time",
+    "Artifact restore targets firmware regions; full_backup restore also rewrites device data",
+    (
+        "Firmware may alter NVS/filesystem after boot; firmware recovery cannot promise "
+        "data compatibility"
+    ),
     (
         "Executes only the registered external Python/esptool 5.1.0 ROM worker; may "
         "reset the selected device"
@@ -60,6 +75,8 @@ FLASH_EFFECTS = [
 ]
 FLASH_FIELDS = {
     "flash_operation",
+    "lkg_receipt",
+    "recovery_kind",
     "device_id",
     "build_job_id",
     "backup_job_id",
@@ -93,6 +110,7 @@ def operation_from_plan(plan: dict[str, Any]) -> OperationPlan:
         plan["backup_sha256"],
         plan["manifest_sha256"],
         plan["expected_elf_sha256"],
+        plan["recovery_kind"],
     )
 
 
@@ -111,6 +129,7 @@ def validate_flash_plan(plan: dict[str, Any]) -> None:
         raise ValueError("invalid_flash_plan")
     if (
         plan["flash_operation"] != FLASH_ACTIONS[plan["test"]]
+        or plan["recovery_kind"] not in ("full_backup", "artifact_bundle")
         or plan["backend"] not in ("mock", "serial")
         or plan["device"]
         != ("mock-cardputer" if plan["backend"] == "mock" else "configured-cardputer")
@@ -141,6 +160,7 @@ def validate_flash_plan(plan: dict[str, Any]) -> None:
         "manifest_sha256",
         "expected_elf_sha256",
         "expected_app_bin_sha256",
+        "lkg_receipt",
     ):
         value = plan[key]
         if (
@@ -160,6 +180,7 @@ class FirmwareFlash:
         self.job_id: str | None = None
         self.logs: dict[str, BuildLogs] = {}
         self.results: dict[str, dict[str, Any]] = {}
+        self.promotions: dict[str, dict[str, str]] = {}
         self._cancelled_jobs: set[str] = set()
         self._lock = threading.RLock()
 
@@ -217,6 +238,53 @@ class FirmwareFlash:
             windows_private_acl_confirmed=registration.private_backup_acl_confirmed,
         ).load(job_id, principal)
 
+    def _snapshots(self, registration: Any) -> FirmwareSnapshots:
+        return FirmwareSnapshots(
+            registration.backup_directory / "lkg",
+            windows_private_acl_confirmed=registration.private_backup_acl_confirmed,
+        )
+
+    def _known(self, registration: Any, device_id: str, principal: str, receipt: str | None) -> Any:
+        row = (
+            self.store().firmware_known(device_id, principal, receipt)
+            if receipt
+            else self.store().firmware_current(device_id, principal)
+        )
+        if row is None:
+            raise FlashFailure("verified_lkg_or_initial_backup_required")
+        metadata, files = self._snapshots(registration).load(row["receipt"])
+        selector = hashlib.sha256(registration.selector.model_dump_json().encode()).hexdigest()
+        if (
+            metadata["device_id"] != device_id
+            or metadata["principal"] != principal
+            or metadata["selector_sha256"] != selector
+            or metadata["flash_bytes"] != registration.flash_bytes
+        ):
+            raise FlashFailure("lkg_device_binding_changed")
+        if metadata.get("kind") != row["kind"]:
+            raise FlashFailure("lkg_receipt_kind_changed")
+        return row, metadata, files
+
+    def commit_success(self, plan: dict[str, Any], result: str, live: Any) -> None:
+        def guard() -> bool:
+            return (
+                live() is True
+                and self.engine is not None
+                and not self.engine.cancelled.is_set()
+                and not self.active
+                and not self.uncertain
+            )
+
+        self.store().finish_firmware(
+            plan["job_id"], result, self.promotions.get(plan["job_id"]), guard
+        )
+        if self.engine is not None:
+            self.engine._committed = plan["job_id"]
+        if plan["job_id"] in self.promotions:
+            self.results[plan["job_id"]]["last_known_good_receipt"] = self.promotions[
+                plan["job_id"]
+            ]["receipt"]
+
     def _build_context(self, job_id: str, principal: str) -> tuple[Path, dict[str, Any]]:
         job = self.store().job(job_id)
         plan = self.store().plan(job["plan_hash"]) if job else None
@@ -246,11 +314,31 @@ class FirmwareFlash:
         else:
             usb = hashlib.sha256(("mock:" + self.backend.device).encode()).hexdigest()
         expected_device = backup_digest = manifest_digest = elf_digest = image_digest = None
+        lkg_receipt = None
+        recovery_kind = "full_backup"
+        known = None
         if operation != "backup":
-            receipt, _ = self._backup(registration, request.backup_job_id, principal)
-            if receipt.device_fingerprint != usb or receipt.flash_bytes != registration.flash_bytes:
-                raise FlashFailure("backup_registered_device_mismatch")
-            expected_device, backup_digest = receipt.device_sha256, receipt.sha256
+            if request.backup_job_id is not None:
+                receipt, _ = self._backup(registration, request.backup_job_id, principal)
+                if (
+                    receipt.device_fingerprint != usb
+                    or receipt.flash_bytes != registration.flash_bytes
+                ):
+                    raise FlashFailure("backup_registered_device_mismatch")
+                expected_device, backup_digest = receipt.device_sha256, receipt.sha256
+            else:
+                row, metadata, files = self._known(
+                    registration,
+                    request.device_id,
+                    principal,
+                    getattr(request, "lkg_receipt", None),
+                )
+                known = metadata, files
+                lkg_receipt, recovery_kind = row["receipt"], row["kind"]
+                expected_device = metadata["expected_device_sha256"]
+                backup_digest = (
+                    metadata["backup_sha256"] if recovery_kind == "full_backup" else lkg_receipt
+                )
             if operation == "flash":
                 root, manifest = self._build_context(request.build_job_id, principal)
                 build_job = self.store().job(request.build_job_id)
@@ -270,6 +358,10 @@ class FirmwareFlash:
                     raise FlashFailure("flash_app_elf_receipt_required")
                 _file(root, receipt_elf, 64 * 1024 * 1024)
                 elf_digest = receipt_elf["sha256"]
+            elif known is not None:
+                metadata, _ = known
+                image_digest = metadata["expected_app_bin_sha256"]
+                elf_digest = metadata["expected_elf_sha256"]
             else:
                 image_digest = (
                     self.backend.config.expected_firmware_sha256
@@ -277,9 +369,7 @@ class FirmwareFlash:
                     else "0" * 64
                 )
                 elf_digest = registration.original_elf_sha256
-                if elf_digest is None:
-                    raise FlashFailure("restore_original_elf_receipt_required")
-                if image_digest is None:
+                if elf_digest is None or image_digest is None:
                     raise FlashFailure("restore_original_firmware_receipt_required")
         registration_digest = hashlib.sha256(registration.model_dump_json().encode()).hexdigest()
         op = OperationPlan(
@@ -294,9 +384,12 @@ class FirmwareFlash:
             backup_digest,
             manifest_digest,
             elf_digest,
+            recovery_kind,
         )
         return dict(
             flash_operation=operation,
+            lkg_receipt=lkg_receipt,
+            recovery_kind=recovery_kind,
             device_id=request.device_id,
             build_job_id=request.build_job_id,
             backup_job_id=request.backup_job_id,
@@ -326,6 +419,7 @@ class FirmwareFlash:
             device_id=plan["device_id"],
             build_job_id=plan["build_job_id"],
             backup_job_id=plan["backup_job_id"],
+            lkg_receipt=plan["lkg_receipt"],
         )
         return self.prepare(
             request, plan["flash_principal"], plan["broker_epoch"], plan["session_id"]
@@ -342,7 +436,29 @@ class FirmwareFlash:
         backup = None
         bundle = None
         images: tuple[bytes, ...] = ()
-        if plan["flash_operation"] != "backup":
+        known = None
+        recovery = None
+        snapshot_files = {}
+        metadata = None
+        current = self.store().firmware_current(plan["device_id"], plan["flash_principal"])
+        baseline = current["baseline"] if current else plan["backup_job_id"]
+        if plan["lkg_receipt"] is not None:
+            row, metadata, snapshot_files = self._known(
+                registration, plan["device_id"], plan["flash_principal"], plan["lkg_receipt"]
+            )
+            known = metadata, snapshot_files
+            baseline = row["baseline"]
+            if plan["recovery_kind"] == "artifact_bundle":
+                old_bundle = bundle_from_record(metadata["bundle"])
+                recovery = (
+                    old_bundle,
+                    tuple(snapshot_files[item.name] for item in old_bundle.segments),
+                )
+            else:
+                _, backup = self._backup(
+                    registration, metadata["backup_job_id"], plan["flash_principal"]
+                )
+        elif plan["flash_operation"] != "backup":
             _, backup = self._backup(registration, plan["backup_job_id"], plan["flash_principal"])
         if plan["flash_operation"] == "flash":
             root, manifest = self._build_context(plan["build_job_id"], plan["flash_principal"])
@@ -351,7 +467,62 @@ class FirmwareFlash:
             images = tuple(
                 _file(root, receipts[item.name], 16 * 1024 * 1024) for item in bundle.segments
             )
-        packet = registration, backup, bundle, images
+            snapshot_files = {
+                name: data
+                for name, data in zip((item.name for item in bundle.segments), images, strict=True)
+            }
+            for receipt in (manifest["flash_layout"], manifest["flash_security"]):
+                snapshot_files[receipt["name"]] = _file(root, receipt, 1048576)
+            app = json.loads(snapshot_files[manifest["flash_layout"]["name"]])["app"]["file"]
+            elf_name = str(Path(app).with_suffix(".elf")).replace("\\", "/")
+            elf = next(item for item in manifest["artifacts"] if item["name"] == elf_name)
+            snapshot_files[elf_name] = _file(root, elf, 67108864)
+            compat = compatibility(manifest, bundle, snapshot_files, registration.flash_bytes)
+            if current is not None and known is None:
+                _, previous, _ = self._known(
+                    registration, plan["device_id"], plan["flash_principal"], current["receipt"]
+                )
+                if previous.get("compat") is not None:
+                    same_layout(previous["compat"], compat)
+            if known is not None and known[0].get("compat") is not None:
+                same_layout(known[0]["compat"], compat)
+            elif backup is not None:
+                table = next(
+                    item for item in bundle.segments if item.offset == compat["table_offset"]
+                )
+                baseline_layout(backup, compat, snapshot_files[table.name])
+            metadata = dict(
+                kind="artifact_bundle",
+                device_id=plan["device_id"],
+                principal=plan["flash_principal"],
+                expected_device_sha256=plan["expected_device_sha256"],
+                flash_bytes=plan["flash_bytes"],
+                selector_sha256=hashlib.sha256(
+                    registration.selector.model_dump_json().encode()
+                ).hexdigest(),
+                expected_elf_sha256=plan["expected_elf_sha256"],
+                expected_app_bin_sha256=plan["expected_app_bin_sha256"],
+                bundle=bundle_record(bundle),
+                manifest=manifest,
+                compat=compat,
+            )
+        if plan["flash_operation"] == "restore" and metadata is None:
+            metadata = dict(
+                kind="full_backup",
+                device_id=plan["device_id"],
+                principal=plan["flash_principal"],
+                expected_device_sha256=plan["expected_device_sha256"],
+                flash_bytes=plan["flash_bytes"],
+                selector_sha256=hashlib.sha256(
+                    registration.selector.model_dump_json().encode()
+                ).hexdigest(),
+                expected_elf_sha256=plan["expected_elf_sha256"],
+                expected_app_bin_sha256=plan["expected_app_bin_sha256"],
+                backup_sha256=plan["backup_sha256"],
+                backup_job_id=plan["backup_job_id"],
+                compat=None,
+            )
+        packet = registration, backup, bundle, images, recovery, metadata, snapshot_files, baseline
 
         async def check_on_loop() -> bool:
             return live() is True
@@ -386,7 +557,7 @@ class FirmwareFlash:
             raise FlashFailure("flash_cancelled_or_authority_changed_needs_review")
         if self.active or self.uncertain:
             raise FlashFailure("flash_device_busy_or_uncertain")
-        registration, backup, bundle, images = packet
+        registration, backup, bundle, images, recovery, metadata, snapshot_files, baseline = packet
         backup_store = BackupStore(
             registration.backup_directory,
             windows_private_acl_confirmed=registration.private_backup_acl_confirmed,
@@ -444,6 +615,11 @@ class FirmwareFlash:
                 bundle=bundle,
                 images=images,
                 backup=backup,
+                recovery=recovery,
+                defer_commit=True,
+                recovery_table_offset=metadata["compat"]["table_offset"]
+                if recovery is not None
+                else None,
             )
             if receipt is not None and data is not None:
                 retained = backup_store.save(self.job_id, plan["flash_principal"], receipt, data)
@@ -454,6 +630,36 @@ class FirmwareFlash:
             if observation is not None:
                 for line in observation.logs:
                     log.append(line)
+            if plan["flash_operation"] != "backup":
+                if metadata is None:
+                    metadata = dict(
+                        kind="full_backup",
+                        device_id=plan["device_id"],
+                        principal=plan["flash_principal"],
+                        expected_device_sha256=plan["expected_device_sha256"],
+                        flash_bytes=plan["flash_bytes"],
+                        selector_sha256=hashlib.sha256(
+                            registration.selector.model_dump_json().encode()
+                        ).hexdigest(),
+                        expected_elf_sha256=plan["expected_elf_sha256"],
+                        expected_app_bin_sha256=plan["expected_app_bin_sha256"],
+                        backup_sha256=plan["backup_sha256"],
+                        backup_job_id=plan["backup_job_id"],
+                    )
+                if self.engine.cancelled.is_set() or live() is not True:
+                    raise FlashFailure("lkg_promotion_cancelled_needs_review")
+                selected = (
+                    self._snapshots(registration).stage(metadata, snapshot_files)
+                    if plan["flash_operation"] == "flash" or plan["lkg_receipt"] is None
+                    else plan["lkg_receipt"]
+                )
+                self.promotions[self.job_id] = dict(
+                    device_id=plan["device_id"],
+                    principal=plan["flash_principal"],
+                    receipt=selected,
+                    kind=metadata["kind"],
+                    baseline=baseline or "",
+                )
             self.results[self.job_id] = summary
             log.append("-- Flash operation completed; verified receipt/observations recorded")
             return f"firmware_{plan['flash_operation']}_completed"

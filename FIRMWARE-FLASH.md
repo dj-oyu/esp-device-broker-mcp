@@ -12,7 +12,7 @@ Every operation requires exact local approval, including with mock automatic
 execution enabled. Backup bytes stay in a private local directory.
 
 Flash requires the approved build's attested layout, sdkconfig, BIN and ELF
-receipts and a device-bound full backup. Restore requires its own approval and
+receipts and either a device-bound initial full backup or retained verified LKG. Restore requires its own approval and
 the original firmware BIN and ELF receipts registered locally. Security enabled
 or uncertain, encryption, existing stubs, and ROM ranges above 16 MiB fail closed.
 Initial chip detection has bounded fallback before identity verification; writes
@@ -70,3 +70,39 @@ Read authority is rechecked during owned execution. Cancellation terminates the
 owned process tree and retains ownership until teardown is confirmed; uncertainty
 still needs review. Clients must explicitly renew a live lease for long reads.
 No stub, retry, implicit renewal, automatic rollback or restore is added.
+
+## Verified last-known-good recovery
+
+A successful flash automatically retains the exact BIN bytes plus manifest,
+security and full ELF evidence in private SHA-256 objects. Identical objects are
+shared. They are independent of the eight-entry build RAM cache and build output
+retention. No automatic cleanup removes these recovery objects or the initial
+full-device backup. The initial full backup remains a separate immutable rescue
+baseline; no short boot prefix is expanded into a full ELF hash.
+
+The IO worker stages immutable objects but never updates the LKG pointer. After
+write/readback, same-device expected IDF/ELF boot evidence, confirmed close and
+final lease/principal/cancel checks, one SQLite transaction records the successful
+job and selects its receipt. Failure/cancel/crash before that commit preserves the
+previous target. A committed successful job stays successful if the client loses
+its reply. Successful explicit restore selects the version actually restored;
+build timestamp does not select a newer version behind the user's back.
+
+After first successful flash, omit `backup_job_id` to prepare another flash using
+the current LKG. Restore may omit recovery inputs to select the current target,
+or pass `lkg_receipt` to select a previously verified exact target. Prepare freezes
+that receipt/hash; approval and execute never substitute dynamic latest. A
+`backup_job_id` explicitly selects full-device recovery, including data.
+
+The fast artifact path supports one factory app with exactly bootloader, table
+and app BIN regions. MD5, bounds, labels, flags, non-overlap and erase-sector fences
+are checked. Partition bytes, security settings and SPI geometry must be unchanged.
+NVS/filesystem/otadata are not firmware write targets. Before another flash, current
+firmware bytes are checked against the retained LKG rather than a stale initial
+full backup. Firmware-only restore also checks the current partition table; an
+unreadable/changed table stops for separate recovery validation.
+
+This protects the MCP write ranges, not subsequent firmware behavior. Firmware
+may erase or modify NVS/filesystems after boot, and firmware rollback cannot promise
+data compatibility or undo those changes. No implicit restore, data migration,
+retry, SDK fallback or additional MCP command is added.

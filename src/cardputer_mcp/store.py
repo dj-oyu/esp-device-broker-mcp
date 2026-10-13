@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,15 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS firmware_lkg_history (
+            receipt TEXT PRIMARY KEY, device_id TEXT NOT NULL, principal TEXT NOT NULL,
+            kind TEXT NOT NULL, baseline TEXT NOT NULL, completed_job TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS firmware_lkg (
+            device_id TEXT PRIMARY KEY, principal TEXT NOT NULL,
+            receipt TEXT NOT NULL, kind TEXT NOT NULL, baseline TEXT NOT NULL,
+            completed_job TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS plans (
             hash TEXT PRIMARY KEY, payload TEXT NOT NULL
         );
@@ -112,6 +122,70 @@ class Store:
             (state, result, json.dumps(diagnostic) if diagnostic else None, terminal, job_id),
         )
         self.db.commit()
+
+    def firmware_current(self, device_id: str, principal: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT * FROM firmware_lkg WHERE device_id=? AND principal=?",
+            (device_id, principal),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def firmware_known(self, device_id: str, principal: str, receipt: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT * FROM firmware_lkg_history WHERE device_id=? AND principal=? AND receipt=?",
+            (device_id, principal, receipt),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def finish_firmware(
+        self,
+        job_id: str,
+        result: str,
+        promotion: dict[str, str] | None,
+        guard: Callable[[], bool],
+    ) -> None:
+        """One durable commit: only a fully validated result can select a receipt."""
+        try:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None or row[0] != "running" or guard() is not True:
+                raise ValueError("firmware_final_commit_not_authorized")
+            self.db.execute(
+                "UPDATE jobs SET state='succeeded',result=?,finished=CURRENT_TIMESTAMP WHERE id=?",
+                (result, job_id),
+            )
+            if promotion is not None:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO firmware_lkg_history VALUES (?,?,?,?,?,?)",
+                    (
+                        promotion["receipt"],
+                        promotion["device_id"],
+                        promotion["principal"],
+                        promotion["kind"],
+                        promotion["baseline"],
+                        job_id,
+                    ),
+                )
+                self.db.execute(
+                    "INSERT INTO firmware_lkg VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(device_id) DO UPDATE SET principal=excluded.principal, "
+                    "receipt=excluded.receipt,kind=excluded.kind,baseline=excluded.baseline, "
+                    "completed_job=excluded.completed_job",
+                    (
+                        promotion["device_id"],
+                        promotion["principal"],
+                        promotion["receipt"],
+                        promotion["kind"],
+                        promotion["baseline"],
+                        job_id,
+                    ),
+                )
+            if guard() is not True:
+                raise ValueError("firmware_final_commit_not_authorized")
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
 
     def set_stage(self, job_id: str, stage: str) -> None:
         self.db.execute("UPDATE jobs SET stage=? WHERE id=?", (stage, job_id))

@@ -611,6 +611,9 @@ def create_server(
         """Prepare an immutable plan; serial preflight enumerates without opening USB.
 
         Backup, flash and restore are independent exact-approval operations.
+        Flash may use a retained verified LKG instead of another full backup.
+        Restore binds the exact recovery receipt at prepare time. Artifact recovery
+        is firmware-only; an explicit full backup restore also rewrites device data.
         Their plans disclose ROM download-mode resets, writes and observation.
         Flash leaves verified new firmware installed; restore requires a separate
         explicit request. No automatic rollback, repeat write or HELLO is added.
@@ -635,6 +638,12 @@ def create_server(
     @server.tool(annotations=execution)
     async def execute_test(request: ExecuteRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Request execution of an exact plan; repeated requests never replay a job.
+
+        Successful flash/restore automatically selects its verified recovery target
+        only with the final successful-job commit, after write/readback/expected
+        same-device boot/close/authorization. It never automatically restores.
+        Failed/cancelled work retains the prior LKG. Firmware itself may change
+        NVS/filesystem after boot; firmware recovery cannot guarantee data compatibility.
 
         Firmware backup probes/reads private full flash via ROM connections that
         can reset into download mode; it does not reset back into normal boot.

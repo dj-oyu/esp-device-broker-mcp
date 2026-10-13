@@ -1882,12 +1882,18 @@ class Broker:
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 else:
-                    store.set_job(
-                        job_id,
-                        "succeeded",
-                        result.code if isinstance(result, BackendResult) else result,
-                    )
-                    self.logs.append(Event.PASSED)
+                    try:
+                        completed = result.code if isinstance(result, BackendResult) else result
+                        if plan["test"] in {item.value for item in FLASH_TESTS}:
+                            self.firmware_flash.commit_success(plan, completed, flash_live)
+                        else:
+                            store.set_job(job_id, "succeeded", completed)
+                    except Exception:
+                        store.set_job(job_id, "needs_review", "firmware_final_commit_failed")
+                        self.logs.append(Event.REVIEW)
+                        self._cancel_queued("recovery_review_required")
+                    else:
+                        self.logs.append(Event.PASSED)
                 finally:
                     if local_home_probe is not None:
                         local_home_probe.finish()

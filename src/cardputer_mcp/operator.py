@@ -40,6 +40,8 @@ def approve_plan(
                 if plan["test"] == "firmware_backup"
                 else "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN"
             )
+            if plan["recovery_kind"] == "artifact_bundle":
+                expected = "DEVICE AND FIRMWARE RECOVERY VERIFIED FOR THIS EXACT PLAN"
             attestation = confirm(
                 f"Verify this exact registered device/artifact/backup. Type {expected} to attest: "
             )
