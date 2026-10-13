@@ -68,9 +68,9 @@ there is no hidden unbounded cache or forced deletion of referenced sources.
 
 Historical pre-submodule target checked: cardputer-adv-pocketjs commit
 6a139780b7eeececfaa17cf2ddee576a10a027f5 (1,524 files, about 28 MB). No gitlinks,
-.gitmodules or LFS pointers are required. QuickJS-NG/PocketJS and other components
-are tracked for QuickJS-NG/PocketJS; BMI270 and libopus remain external .cache
-requirements (see the firmware clean-checkout inventory). Node 16+ is required and must already be registered. The tracked
+.gitmodules or LFS pointers are required. QuickJS-NG/PocketJS are tracked. The companion firmware submodule PR replaces
+required BMI270/minimp3/libopus .cache sources with fixed Gitlinks (see the
+firmware clean-checkout inventory). Node 16+ is required and must already be registered. The tracked
 dependencies.lock contains old .cache references: receipt builds explicitly use
 IDF_COMPONENT_MANAGER=0 (no registry fetch) and SDKCONFIG in the build output,
 using tracked sdkconfig.defaults. No source rewrite or SDK 6.1 fallback is used.

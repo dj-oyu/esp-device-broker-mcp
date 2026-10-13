@@ -7,7 +7,9 @@ Add the non-secret repository allowlist to the existing project registration:
   "github_repository": "dj-oyu/cardputer-adv-pocketjs",
   "cache_root": "C:\\brksrc",
   "private_acl_confirmed": true,
-  "submodule_repositories": ["lieff/minimp3"]
+  "submodule_repositories": [
+    "boschsensortec/BMI270_SensorAPI", "lieff/minimp3", "xiph/opus"
+  ]
 }
 ```
 
@@ -44,10 +46,14 @@ allowlist is added to the same registration. Their original root registration,
 principal, successful fetch job and file hashes remain required. Schema-2
 receipts bind the full allowlist; changing it requires another source fetch.
 
-Firmware still has separate BMI270 and libopus `.cache` requirements listed in
-its `docs/platform/clean-checkout-dependencies.md`. Importing minimp3 does not
-populate them and does not make the whole firmware clean-buildable. They need a
-separate explicit dependency decision; no implicit SDK fetch is allowed.
+The firmware PR now also uses `third_party/bmi270` at existing commit
+`41129fcfe39c583ee5462d79195741945d51c1fe` and `third_party/opus` at
+`22244de5a79bd1d6d623c32e72bf1954b56235be` (the existing v1.6.1 tag).
+All three required source dependencies are formal fixed Gitlinks; no `.cache`
+preparation is required for them. Their external SDK/Node and generated-output
+prerequisites are listed in the firmware clean-checkout inventory. Existing
+schema-2 receipts made with a smaller allowlist require another explicit source
+fetch after updating the registration; they are never rewritten.
 
 Deployment acceptance: refresh the running server/client metadata using the
 existing host procedure, use the reviewed firmware full commit, explicitly
