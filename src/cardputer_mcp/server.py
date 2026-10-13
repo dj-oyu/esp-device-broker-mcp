@@ -614,6 +614,9 @@ def create_server(
         Flash may use a retained verified LKG instead of another full backup.
         Restore binds the exact recovery receipt at prepare time. Artifact recovery
         is firmware-only; an explicit full backup restore also rewrites device data.
+        DERBY smoke is a separately approved fixed row-12 launch, bounded automatic
+        demo observation, one render-buffer capture and explicit q exit. It exposes
+        no arbitrary keys; missing phase markers never prove a complete demo cycle.
         Their plans disclose ROM download-mode resets, writes and observation.
         Flash leaves verified new firmware installed; restore requires a separate
         explicit request. No automatic rollback, repeat write or HELLO is added.
@@ -622,6 +625,7 @@ def create_server(
         def prepare() -> dict[str, Any]:
             if request.test in (
                 TestName.CAPTURE,
+                TestName.DERBY,
                 TestName.FIRMWARE,
                 TestName.RESTART,
                 TestName.BUILD,

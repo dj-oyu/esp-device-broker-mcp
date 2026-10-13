@@ -213,6 +213,12 @@ class PlanApprovals:
                 raise ValueError
         elif backend == "serial":
             expected_keys = _BASE_KEYS | _SERIAL_KEYS
+            if test == "derby_smoke":
+                from .derby_smoke import SMOKE
+
+                expected_keys = expected_keys | {"smoke"}
+                if plan.get("smoke") != SMOKE:
+                    raise ValueError
             if test == "restart_and_observe":
                 expected_keys = expected_keys | {"restart"}
                 restart = plan.get("restart")
@@ -278,6 +284,7 @@ class PlanApprovals:
                     "passive_observe",
                     "hello",
                     "capture_home",
+                    "derby_smoke",
                     "firmware_observe",
                     "restart_and_observe",
                 )
@@ -295,7 +302,9 @@ class PlanApprovals:
                 )
                 or plan.get("protocol")
                 != (
-                    "pocketjs-legacy-capture-v1"
+                    "pocketjs-derby-smoke-v1"
+                    if test == "derby_smoke"
+                    else "pocketjs-legacy-capture-v1"
                     if test == "capture_home"
                     else "esp-idf-startup-log-v1"
                     if test in ("firmware_observe", "restart_and_observe")
@@ -429,7 +438,7 @@ class PlanApprovals:
         if plan["backend"] == "serial":
             if plan["test"] == "hello":
                 return "device_free_firmware"
-            if plan["test"] == "capture_home":
+            if plan["test"] in ("capture_home", "derby_smoke"):
                 return "device_home_firmware"
         return "none"
 

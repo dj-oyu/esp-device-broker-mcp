@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import Any, Protocol
@@ -123,6 +124,8 @@ class Reader:
         local_home_probe: HomeLineProbe | None = None,
     ) -> None:
         self.port, self.emit, self.clock, self.deadline = port, emit, clock, deadline
+        self.phase_observer: Callable[[bytes], None] | None = None
+        self.derby_mode = False
         self.pending = b""
         self.lines: list[bytes] = []
         self.bytes_read = 0
@@ -174,7 +177,9 @@ class Reader:
         if self.bytes_read > 256 * 1024:
             raise self.failure("serial_capture_limit")
         cleaned = ANSI.sub(b"", self.fault_tail + incoming)
-        if FAULT.search(cleaned):
+        if FAULT.search(cleaned) or (
+            self.derby_mode and re.search(rb"DEMOFAIL|FRAMEFAIL|LOADFAIL|DEGRADE|app: OOM", cleaned)
+        ):
             raise self.failure("serial_fault_marker")
         self.fault_tail = cleaned[-256:]
         capture_finished = self.capture_decoder is not None and self.capture_decoder.complete
@@ -189,6 +194,8 @@ class Reader:
         while b"\n" in self.pending:
             raw, self.pending = self.pending.split(b"\n", 1)
             line = clean_line(raw)
+            if self.phase_observer is not None:
+                self.phase_observer(line)
             if self.capture_guard:
                 if line.startswith(b"APP_ID"):
                     raise self.failure("serial_capture_unexpected_app")
@@ -230,7 +237,8 @@ class Reader:
             rb"HELLO_COUNT 1": "HELLO_COUNT_ONE",
         }.get(marker)
         capture_escape = key == b"\x1b" and marker == rb"HOME_READY" and step == "capture_home"
-        if key not in (b"q", b"a", b"u", b"e") and not capture_escape:
+        derby_down = self.derby_mode and key == b"d" and marker == rb"APP \d+"
+        if key not in (b"q", b"a", b"u", b"e") and not capture_escape and not derby_down:
             raise self.failure("command_not_allowlisted")
         # Drain already-buffered data through the same reader, preserving fault
         # detection. Never use reset_input_buffer to silently discard evidence.
@@ -247,6 +255,7 @@ class Reader:
                 b"q": "home_quit",
                 b"a": "select_apps",
                 b"u": "select_previous",
+                b"d": "select_next",
                 b"e": "enter",
             }[key]
         )
@@ -285,6 +294,7 @@ class Reader:
         """Drop protocol buffers after this worker finishes, including on failure."""
         self.pending = b""
         self.lines.clear()
+        self.phase_observer = None
         self.fault_tail = b""
         self.capture_decoder = None
         self.local_home_probe = None
@@ -460,6 +470,7 @@ class SerialBackend:
         self.hardware_connected = False
         self.ownership_uncertain = False
         self._unclosed_port: SerialPort | None = None
+        self.smoke_stop = threading.Event()
 
     def prepare(self, test: TestName) -> dict[str, Any]:
         if test not in (
@@ -468,10 +479,11 @@ class SerialBackend:
             TestName.RESTART,
             TestName.HELLO,
             TestName.CAPTURE,
+            TestName.DERBY,
         ):
             raise ValueError("test_not_available_for_backend")
         if (
-            test in (TestName.HELLO, TestName.CAPTURE)
+            test in (TestName.HELLO, TestName.CAPTURE, TestName.DERBY)
             and self.config.expected_firmware_sha256 is None
         ):
             raise ValueError("expected_firmware_required")
@@ -497,6 +509,18 @@ class SerialBackend:
                 "One frame only, 18-second reader budget, no automatic retry",
                 "Render-buffer capture does not prove LCD transfer or coherent snapshot",
                 "No reset command, firmware flash, upload or GRID run",
+            ]
+        if test == TestName.DERBY:
+            effects = [
+                "Operator verifies HOME and exact normal firmware; no physical input during job",
+                "Opens/closes serial; drivers may glitch control lines or reset device",
+                "Fixed Esc/a/u x16/d x12/e navigation requires local.derby and DERBY READY",
+                "Observe automatic demo up to 120 seconds; whole serial job at most 180 seconds",
+                "One s at observed photo phase or 45-second fallback; pixels may be private",
+                "One explicit q exit requiring fresh HOME_READY; game exit may save player state",
+                "Cancellation/lease loss stops new writes, including q; game may remain running",
+                "Render buffer does not prove LCD transfer; missing phases do not prove a full cycle",
+                "No keytest build, firmware flash, arbitrary keys, retries, or automatic reopen",
             ]
         if test == TestName.FIRMWARE:
             effects = [
@@ -535,7 +559,9 @@ class SerialBackend:
         protocol: str = self.config.protocol
         verification = "operator_attestation_only"
         observe_seconds = self.config.observe_seconds if test == TestName.OBSERVE else None
-        if test == TestName.CAPTURE:
+        if test == TestName.DERBY:
+            protocol = "pocketjs-derby-smoke-v1"
+        elif test == TestName.CAPTURE:
             protocol = "pocketjs-legacy-capture-v1"
         elif test in (TestName.FIRMWARE, TestName.RESTART):
             protocol = "esp-idf-startup-log-v1"
@@ -551,6 +577,10 @@ class SerialBackend:
             "observe_seconds": observe_seconds,
             "effects": effects,
         }
+        if test == TestName.DERBY:
+            from .derby_smoke import SMOKE
+
+            details["smoke"] = SMOKE
         if test == TestName.RESTART:
             details["restart"] = {
                 "method": RESTART_METHOD,
@@ -568,6 +598,16 @@ class SerialBackend:
     ) -> str | BackendResult:
         return await self._execute(plan, stage)
 
+    def request_smoke_stop(self) -> bool:
+        self.smoke_stop.set()
+        return bool(self.active)
+
+    async def execute_smoke(
+        self, plan: dict[str, Any], stage: Callable[[str], None], live: Callable[[], bool]
+    ) -> str | BackendResult:
+        self.smoke_stop.clear()
+        return await self._execute(plan, stage, live=live)
+
     async def execute_with_local_probe(
         self, plan: dict[str, Any], stage: Callable[[str], None], probe: HomeLineProbe
     ) -> str | BackendResult:
@@ -581,6 +621,7 @@ class SerialBackend:
         plan: dict[str, Any],
         stage: Callable[[str], None],
         local_home_probe: HomeLineProbe | None = None,
+        live: Callable[[], bool] | None = None,
     ) -> str | BackendResult:
         if self.active:
             raise SerialFailure("multiple_device_owners")
@@ -592,7 +633,7 @@ class SerialBackend:
         def emit(value: str) -> None:
             loop.call_soon_threadsafe(stage, value)
 
-        worker = loop.run_in_executor(None, self._execute_sync, plan, emit, local_home_probe)
+        worker = loop.run_in_executor(None, self._execute_sync, plan, emit, local_home_probe, live)
         interrupted = False
         try:
             # asyncio cancellation cannot stop an OS serial read/thread. Wait for
@@ -602,6 +643,8 @@ class SerialBackend:
                     await asyncio.shield(worker)
                 except asyncio.CancelledError:
                     interrupted = True
+                    if plan["test"] == TestName.DERBY.value:
+                        self.smoke_stop.set()
             result = worker.result()
             if interrupted:
                 raise SerialFailure("operation_interrupted_review_required")
@@ -623,6 +666,7 @@ class SerialBackend:
         plan: dict[str, Any],
         emit: Callable[[str], None],
         local_home_probe: HomeLineProbe | None = None,
+        live: Callable[[], bool] | None = None,
     ) -> str | BackendResult:
         test = TestName(plan["test"])
         current = self.prepare(test)
@@ -631,6 +675,10 @@ class SerialBackend:
         if test == TestName.RESTART:
             return self._execute_restart_sync(current, emit)
         port = self.factory()
+        if test == TestName.DERBY:
+            from .smoke_port import SmokePort
+
+            port = SmokePort(port, live, self.smoke_stop)
         reader: Reader | None = None
         try:
             port.dtr = False
@@ -661,7 +709,7 @@ class SerialBackend:
                 port,
                 emit,
                 self.clock,
-                self.clock() + (18 if test == TestName.CAPTURE else 90),
+                self.clock() + (18 if test == TestName.CAPTURE else 180 if test == TestName.DERBY else 90),
                 local_home_probe,
             )
             emit(test.value)
@@ -669,6 +717,11 @@ class SerialBackend:
                 reader.step = "passive_observe"
                 reader.observe(self.config.observe_seconds)
                 return "serial_observation_completed_no_commands"
+            if test == TestName.DERBY:
+                from .derby_smoke import derby_smoke
+
+                image, code = derby_smoke(reader)
+                return BackendResult(code, image)
             if test == TestName.CAPTURE:
                 image = capture_home(reader)
                 # Python completes finally before returning this result. The

@@ -966,7 +966,7 @@ class Broker:
         if (
             request.test
             in (
-                {TestName.CAPTURE, TestName.FIRMWARE, TestName.RESTART, TestName.BUILD}
+                {TestName.CAPTURE, TestName.DERBY, TestName.FIRMWARE, TestName.RESTART, TestName.BUILD}
                 | FLASH_TESTS
             )
             and session.principal_id is None
@@ -1204,6 +1204,13 @@ class Broker:
                 raise BrokerError("execution_intent_not_available")
             self._cancel_execution_intent(intent, "client_cancelled_awaiting_approval")
             return self.job(request.job_id)
+        if job["state"] == "running" and plan["test"] == TestName.DERBY.value:
+            from .serial_backend import SerialBackend
+
+            if not isinstance(self.backend, SerialBackend):
+                raise BrokerError("backend_not_available")
+            accepted = self.backend.request_smoke_stop()
+            return {**job, "stop_requested": accepted, "requires_review": accepted}
         if job["state"] == "running" and plan["test"] in (
             {TestName.BUILD.value} | {t.value for t in FLASH_TESTS}
         ):
@@ -1783,6 +1790,31 @@ class Broker:
                         if capture_principal != plan.get("build_principal"):
                             raise BrokerError("build_principal_mismatch")
                         result = await self.firmware_build.execute(plan, on_stage)
+                    elif plan["test"] == TestName.DERBY.value:
+                        from .serial_backend import SerialBackend
+
+                        if not isinstance(self.backend, SerialBackend):
+                            raise BrokerError("backend_not_available")
+
+                        def smoke_live() -> bool:
+                            return (
+                                not self.closing
+                                and self.session is lease
+                                and capture_principal is not None
+                                and lease.principal_id == capture_principal
+                                and math.isfinite(self.clock())
+                                and self.clock() < lease.deadline
+                                and self._device_lock.is_locked
+                                and self._state_lock.is_locked
+                                and self.principal_valid is not None
+                                and self.principal_valid(
+                                    capture_principal, lease.owner, frozenset({"read", "control"})
+                                ) is True
+                            )
+
+                        result = await self.backend.execute_smoke(plan, on_stage, smoke_live)
+                        if not smoke_live() or self.backend.smoke_stop.is_set():
+                            raise BrokerError("operation_interrupted_review_required")
                     elif local_home_probe is None:
                         result = await self.backend.execute(plan, on_stage)
                     else:
@@ -1793,7 +1825,7 @@ class Broker:
                         result = await self.backend.execute_with_local_probe(
                             plan, on_stage, local_home_probe
                         )
-                    if plan["test"] == TestName.CAPTURE.value and (
+                    if plan["test"] in (TestName.CAPTURE.value, TestName.DERBY.value) and (
                         not isinstance(result, BackendResult) or result.image is None
                     ):
                         raise BrokerError("capture_result_invalid")
@@ -1829,7 +1861,7 @@ class Broker:
                         )
                     if isinstance(result, BackendResult) and result.image is not None:
                         if (
-                            plan["test"] != TestName.CAPTURE.value
+                            plan["test"] not in (TestName.CAPTURE.value, TestName.DERBY.value)
                             or capture_principal is None
                             or self.backend.active
                             or self.backend.hardware_connected

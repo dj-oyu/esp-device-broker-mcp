@@ -29,6 +29,7 @@ class TestName(StrEnum):
     RESTORE = "firmware_restore"
     HELLO = "hello"
     CAPTURE = "capture_home"
+    DERBY = "derby_smoke"
 
 
 FLASH_TESTS = frozenset({TestName.BACKUP, TestName.FLASH, TestName.RESTORE})
