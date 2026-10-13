@@ -1,5 +1,6 @@
 """Private immutable content hashes, independently retained from build caches."""
 
+import ctypes
 import hashlib
 import json
 import os
@@ -16,6 +17,28 @@ class FirmwareSnapshots:
         self.root = BackupStore(
             root, windows_private_acl_confirmed=windows_private_acl_confirmed
         ).directory
+
+    def _directory_barrier(self, directory: Path) -> None:
+        if os.name == "posix":
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+    def _publish(self, pending: Path, target: Path) -> None:
+        if os.name == "nt":
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            move = kernel.MoveFileExW
+            move.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_ulong]
+            move.restype = ctypes.c_int
+            # MOVEFILE_WRITE_THROUGH, without REPLACE_EXISTING or cross-volume copy.
+            if not move(str(pending), str(target), 0x8):
+                raise FlashFailure("lkg_publication_failed")
+        else:
+            pending.rename(target)
+            self._directory_barrier(self.root)
+            self._directory_barrier(self.root.parent)
 
     def _path(self, digest: str) -> Path:
         if re.fullmatch(r"[a-f0-9]{64}", digest) is None:
@@ -42,7 +65,7 @@ class FirmwareSnapshots:
             # One broker owns the device/state lock; no overwrite/adoption of others.
             if path.exists():
                 raise FlashFailure("lkg_object_conflict")
-            pending.rename(path)
+            self._publish(pending, path)
         except Exception:
             raise FlashFailure("lkg_persistence_failed_needs_review") from None
         finally:
@@ -72,7 +95,7 @@ class FirmwareSnapshots:
             raise FlashFailure("lkg_object_missing_or_changed") from None
 
     def stage(self, metadata: dict[str, Any], files: dict[str, bytes]) -> str:
-        if not files or sum(map(len, files.values())) > 100 * 1048576:
+        if (not files and metadata.get("kind") != "full_backup") or sum(map(len, files.values())) > 100 * 1048576:
             raise FlashFailure("lkg_snapshot_size_invalid")
         receipts = {name: self.put(data) for name, data in files.items()}
         envelope = {"schema_version": 1, "metadata": metadata, "files": receipts}

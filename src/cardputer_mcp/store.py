@@ -14,6 +14,10 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS firmware_lkg_history (
+            receipt TEXT PRIMARY KEY, device_id TEXT NOT NULL, principal TEXT NOT NULL,
+            kind TEXT NOT NULL, baseline TEXT NOT NULL, completed_job TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS firmware_lkg (
             device_id TEXT PRIMARY KEY, principal TEXT NOT NULL,
             receipt TEXT NOT NULL, kind TEXT NOT NULL, baseline TEXT NOT NULL,
@@ -126,6 +130,13 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
+    def firmware_known(self, device_id: str, principal: str, receipt: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT * FROM firmware_lkg_history WHERE device_id=? AND principal=? AND receipt=?",
+            (device_id, principal, receipt),
+        ).fetchone()
+        return dict(row) if row else None
+
     def finish_firmware(
         self, job_id: str, result: str, promotion: dict[str, str] | None,
         guard: Callable[[], bool],
@@ -141,6 +152,11 @@ class Store:
                 (result, job_id),
             )
             if promotion is not None:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO firmware_lkg_history VALUES (?,?,?,?,?,?)",
+                    (promotion["receipt"], promotion["device_id"], promotion["principal"],
+                     promotion["kind"], promotion["baseline"], job_id),
+                )
                 self.db.execute(
                     "INSERT INTO firmware_lkg VALUES (?,?,?,?,?,?) "
                     "ON CONFLICT(device_id) DO UPDATE SET principal=excluded.principal, "

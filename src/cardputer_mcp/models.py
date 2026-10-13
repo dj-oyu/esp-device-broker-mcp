@@ -54,22 +54,23 @@ class PrepareRequest(LeaseRequest):
     device_id: Identifier | None = None
     build_job_id: Identifier | None = None
     backup_job_id: Identifier | None = None
+    lkg_receipt: Digest | None = None
 
     @model_validator(mode="after")
     def flash_references(self) -> "PrepareRequest":
         if self.test not in FLASH_TESTS:
             if any(
                 value is not None
-                for value in (self.device_id, self.build_job_id, self.backup_job_id)
+                for value in (self.device_id, self.build_job_id, self.backup_job_id, self.lkg_receipt)
             ):
                 raise ValueError("flash_references_only_for_flash_operations")
         elif self.device_id is None or self.project_id is not None:
             raise ValueError("registered_flash_device_required")
         elif self.test == TestName.BACKUP:
-            if self.build_job_id is not None or self.backup_job_id is not None:
+            if self.build_job_id is not None or self.backup_job_id is not None or self.lkg_receipt is not None:
                 raise ValueError("backup_has_no_build_or_backup_input")
-        elif self.backup_job_id is None:
-            raise ValueError("successful_backup_job_required")
+        elif self.backup_job_id is not None and self.lkg_receipt is not None:
+            raise ValueError("choose_one_recovery_source")
         elif self.test == TestName.FLASH and self.build_job_id is None:
             raise ValueError("successful_build_job_required")
         elif self.test == TestName.RESTORE and self.build_job_id is not None:

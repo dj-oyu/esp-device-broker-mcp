@@ -24,6 +24,7 @@ def factory_layout(data: bytes, *, table_offset: int, flash_bytes: int) -> Facto
     ):
         raise FlashFailure("lkg_partition_layout_unsupported")
     rows = []
+    labels = set()
     app = None
     verified_md5 = False
     ended = False
@@ -41,7 +42,11 @@ def factory_layout(data: bytes, *, table_offset: int, flash_bytes: int) -> Facto
             continue
         if verified_md5:
             raise FlashFailure("lkg_partition_layout_unsupported")
-        magic, kind, subtype, offset, size, _, flags = struct.unpack("<2sBBLL16sL", entry)
+        magic, kind, subtype, offset, size, label, flags = struct.unpack("<2sBBLL16sL", entry)
+        name = label.split(b"\x00", 1)[0]
+        if not name or name in labels:
+            raise FlashFailure("lkg_partition_label_invalid")
+        labels.add(name)
         if (
             magic != b"\xaa\x50"
             or kind not in (0, 1)
@@ -62,6 +67,6 @@ def factory_layout(data: bytes, *, table_offset: int, flash_bytes: int) -> Facto
     if not ended or not verified_md5 or app is None:
         raise FlashFailure("lkg_partition_layout_unsupported")
     ordered = sorted(rows)
-    if any(left[1] > right[0] for left, right in zip(ordered, ordered[1:])):
+    if any(left[1] > right[0] for left, right in zip(ordered, ordered[1:], strict=False)):
         raise FlashFailure("lkg_partition_overlap")
     return FactoryLayout(hashlib.sha256(data).hexdigest(), app[0], app[1])
