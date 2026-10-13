@@ -1,6 +1,5 @@
 """Bounded public GitHub commit archives in broker-owned private snapshots."""
 
-
 import hashlib
 import io
 import json
@@ -17,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from .flash_backup import BackupStore
+
 
 def _not_link(path: Path) -> None:
     for candidate in (path, *path.parents):
