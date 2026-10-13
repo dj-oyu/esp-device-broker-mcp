@@ -970,7 +970,13 @@ class Broker:
         if (
             request.test
             in (
-                {TestName.CAPTURE, TestName.FIRMWARE, TestName.RESTART, TestName.BUILD, TestName.SOURCE}
+                {
+                    TestName.CAPTURE,
+                    TestName.FIRMWARE,
+                    TestName.RESTART,
+                    TestName.BUILD,
+                    TestName.SOURCE,
+                }
                 | FLASH_TESTS
             )
             and session.principal_id is None
@@ -1115,7 +1121,8 @@ class Broker:
         allow_mock = (
             self.settings.backend == "mock"
             and self.settings.allow_mock_execution
-            and payload["test"] not in ({TestName.BUILD.value, TestName.SOURCE.value} | {t.value for t in FLASH_TESTS})
+            and payload["test"]
+            not in ({TestName.BUILD.value, TestName.SOURCE.value} | {t.value for t in FLASH_TESTS})
         )
         if request.wait_for_approval and not approved and not allow_mock and authorization is None:
             # Policy callbacks must not extend the original request's lifetime
@@ -1797,20 +1804,25 @@ class Broker:
 
                         result = await self.firmware_flash.execute(plan, on_stage, flash_live)
                     elif plan["test"] == TestName.SOURCE.value:
+
                         def source_live(
                             lease: Session = lease,
                             capture_principal: str | None = capture_principal,
                         ) -> bool:
                             return (
-                                not self.closing and self.session is lease
+                                not self.closing
+                                and self.session is lease
                                 and capture_principal is not None
                                 and lease.principal_id == capture_principal
-                                and math.isfinite(self.clock()) and self.clock() < lease.deadline
-                                and self._device_lock.is_locked and self._state_lock.is_locked
+                                and math.isfinite(self.clock())
+                                and self.clock() < lease.deadline
+                                and self._device_lock.is_locked
+                                and self._state_lock.is_locked
                                 and self.principal_valid is not None
                                 and self.principal_valid(
                                     capture_principal, lease.owner, frozenset({"read", "control"})
-                                ) is True
+                                )
+                                is True
                             )
 
                         result = await self.firmware_source.execute(plan, on_stage, source_live)

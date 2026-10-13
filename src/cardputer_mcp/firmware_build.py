@@ -319,10 +319,14 @@ class FirmwareBuild:
             return project, None
         from .source_snapshot import SourceSnapshots
 
-        root, metadata = SourceSnapshots(self.settings).resolve(project_id, source_receipt, principal)
+        root, metadata = SourceSnapshots(self.settings).resolve(
+            project_id, source_receipt, principal
+        )
         provenance = dict(
-            source_receipt=source_receipt, repository=metadata["repository"],
-            commit=metadata["commit"], tree_sha1=metadata["tree_sha1"],
+            source_receipt=source_receipt,
+            repository=metadata["repository"],
+            commit=metadata["commit"],
+            tree_sha1=metadata["tree_sha1"],
             source_sha256=metadata["source_sha256"],
             dependency_policy="vendored_components_no_fetch",
         )
@@ -339,7 +343,10 @@ class FirmwareBuild:
         if not (project.project_dir / "CMakeLists.txt").is_file():
             raise ValueError("idf_project_required")
         registered_tools = self._registered_tools(project)
-        if provenance is not None and provenance["repository"].casefold() == "dj-oyu/cardputer-adv-pocketjs":
+        if (
+            provenance is not None
+            and provenance["repository"].casefold() == "dj-oyu/cardputer-adv-pocketjs"
+        ):
             node = registered_tools.get("node")
             if node is None or int(node.version.split(".")[0][1:]) < 16:
                 raise ValueError("registered_node_16_required_for_source_project")
@@ -395,7 +402,11 @@ class FirmwareBuild:
         ).hexdigest()
         return dict(
             project_id=project_id,
-            **({"source_receipt": source_receipt, "source_provenance": provenance} if provenance else {}),
+            **(
+                {"source_receipt": source_receipt, "source_provenance": provenance}
+                if provenance
+                else {}
+            ),
             fingerprint=fingerprint,
             expected_idf=project.expected_idf,
             target=project.target,
@@ -465,9 +476,14 @@ class FirmwareBuild:
         if os.name != "nt":
             raise ValueError("external_windows_idf_required")
         principal = plan["build_principal"]
-        if self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"] != plan["fingerprint"]:
+        if (
+            self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"]
+            != plan["fingerprint"]
+        ):
             raise ValueError("build_inputs_changed")
-        project, provenance = self._project(plan["project_id"], principal, plan.get("source_receipt"))
+        project, provenance = self._project(
+            plan["project_id"], principal, plan.get("source_receipt")
+        )
         logs = BuildLogs(principal)
         logs.redactions = tuple(
             value
@@ -645,7 +661,10 @@ class FirmwareBuild:
         # Diagnostics can take time. Recheck live project/profile/lock inputs
         # immediately before launching build; a changed tree needs a new plan.
         self._check_cancelled()
-        if self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"] != plan["fingerprint"]:
+        if (
+            self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"]
+            != plan["fingerprint"]
+        ):
             logs.append("error: build inputs changed before launch; prepare a new plan")
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
@@ -660,7 +679,10 @@ class FirmwareBuild:
             emit,
         ):
             raise ValueError("idf_build_failed_needs_review")
-        if self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"] != plan["fingerprint"]:
+        if (
+            self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"]
+            != plan["fingerprint"]
+        ):
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
         description = json.loads((build_dir / "project_description.json").read_text())
