@@ -281,7 +281,13 @@ class FlashLifecycle:
                         "target": "esp32s3",
                         "readback_verified": True,
                         "passive_boot_verified": True,
+                        # Boot text is matching evidence, not authenticated identity.
                         "boot_text_identity_verified": False,
+                        "boot_log_matches_expected_artifact": True,
+                        "observed_elf_sha256_prefix": summary["elf_sha256_prefix"],
+                        "observed_idf_version": "6.0.1",
+                        "verification_basis": "full_segment_sha256_readback_and_boot_elf_prefix",
+                        "boot_text_is_cryptographic_proof": False,
                     },
                 )
             self._live(live)

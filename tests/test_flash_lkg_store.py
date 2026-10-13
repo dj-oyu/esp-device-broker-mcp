@@ -44,6 +44,29 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(snapshots.load(receipt)[1], {"app.bin": b"image"})
             self.assertFalse(list(snapshots.root.glob("*.pending")))
 
+    def test_job_summary_survives_restart_and_is_principal_scoped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.sqlite3"
+            store = Store(path)
+            store.put_plan("a" * 64, {})
+            store.add_job("one", "a" * 64)
+            store.set_job("one", "running")
+            summary = {"observed_elf_sha256_prefix": "c" * 9}
+            store.finish_firmware("one", "verified", None, lambda: True, summary, "owner")
+            store.db.close()
+            store = Store(path)
+            self.assertEqual(store.firmware_summary("one", "owner"), summary)
+            self.assertIsNone(store.firmware_summary("one", "other"))
+            store.add_job("two", "a" * 64)
+            store.set_job("two", "running")
+            checks = iter((True, False))
+            with self.assertRaises(ValueError):
+                store.finish_firmware(
+                    "two", "verified", None, lambda: next(checks), summary, "owner"
+                )
+            self.assertIsNone(store.firmware_summary("two", "owner"))
+            store.db.close()
+
     def test_missing_immutable_bytes_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             snapshots = FirmwareSnapshots(Path(temp), windows_private_acl_confirmed=True)

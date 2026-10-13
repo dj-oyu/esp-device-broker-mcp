@@ -14,6 +14,9 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS firmware_job_summaries (
+            job_id TEXT PRIMARY KEY, principal TEXT NOT NULL, payload TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS firmware_lkg_history (
             receipt TEXT PRIMARY KEY, device_id TEXT NOT NULL, principal TEXT NOT NULL,
             kind TEXT NOT NULL, baseline TEXT NOT NULL, completed_job TEXT NOT NULL
@@ -143,6 +146,8 @@ class Store:
         result: str,
         promotion: dict[str, str] | None,
         guard: Callable[[], bool],
+        summary: dict[str, Any] | None = None,
+        principal: str | None = None,
     ) -> None:
         """One durable commit: only a fully validated result can select a receipt."""
         try:
@@ -154,6 +159,14 @@ class Store:
                 "UPDATE jobs SET state='succeeded',result=?,finished=CURRENT_TIMESTAMP WHERE id=?",
                 (result, job_id),
             )
+            if summary is not None:
+                payload = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+                if principal is None or len(payload.encode()) > 4096:
+                    raise ValueError("firmware_summary_invalid")
+                self.db.execute(
+                    "INSERT INTO firmware_job_summaries VALUES (?,?,?)",
+                    (job_id, principal, payload),
+                )
             if promotion is not None:
                 self.db.execute(
                     "INSERT OR IGNORE INTO firmware_lkg_history VALUES (?,?,?,?,?,?)",
@@ -322,3 +335,10 @@ class Store:
             (limit,),
         ).fetchall()
         return [{**dict(row), "scopes": json.loads(row["scopes"])} for row in rows]
+
+    def firmware_summary(self, job_id: str, principal: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT payload FROM firmware_job_summaries WHERE job_id=? AND principal=?",
+            (job_id, principal),
+        ).fetchone()
+        return json.loads(row[0]) if row is not None else None
