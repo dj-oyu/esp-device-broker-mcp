@@ -505,7 +505,8 @@ class SourceSnapshots:
             limits=LIMITS,
             stages=["source_download", "source_validate", "source_publish"],
             effects=[
-                "Fetches a registered public GitHub commit and fixed allowlisted Gitlinks into a private snapshot",
+                "Fetches a registered public GitHub commit and fixed allowlisted Gitlinks "
+                "into a private snapshot",
                 "No user worktree overwrite, build, USB, flash, credential or SDK installation",
                 "Bounded cache; no automatic deletion of retained snapshots",
             ],
