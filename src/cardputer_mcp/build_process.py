@@ -124,11 +124,14 @@ class BuildProcess:
         cwd: Path,
         emit: Callable[[str, str], None],
         timeout: float = 1800,
+        monitor: Callable[[], None] | None = None,
     ) -> int:
         if self.active or self.uncertain:
             raise ValueError("build_process_busy")
         if self.stop_requested.is_set():
             raise ValueError("build_interrupted_needs_review")
+        if monitor is not None:
+            monitor()
         self.active = True
         readers: list[threading.Thread] = []
         pipes: list[BinaryIO] = []
@@ -216,6 +219,7 @@ class BuildProcess:
                 readers.append(reader)
                 reader.start()
             deadline = time.monotonic() + timeout
+            next_monitor = 0.0
             while True:
                 if self.owner is not None:
                     code = self.owner.poll()
@@ -224,6 +228,10 @@ class BuildProcess:
                     code = process.poll()
                 if code is not None:
                     break
+                now = time.monotonic()
+                if monitor is not None and now >= next_monitor:
+                    monitor()
+                    next_monitor = now + 0.25
                 if self.stop_requested.wait(0.02) or time.monotonic() >= deadline:
                     raise ValueError("build_interrupted_needs_review")
             if self.stop_requested.is_set():

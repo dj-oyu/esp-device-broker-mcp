@@ -12,6 +12,8 @@ import os
 import platform
 import re
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +32,10 @@ def _inside(root: Path, name: str) -> Path:
     return path
 
 
-def run_job(job: dict[str, Any], root: Path, tool: Any) -> dict[str, Any]:
+def run_job(
+    job: dict[str, Any], root: Path, tool: Any,
+    progress_emit: Callable[[int, int], None] | None = None,
+) -> dict[str, Any]:
     if tool.__version__ != "5.1.0" or job.get("action") not in ("probe", "read", "write"):
         raise ValueError("unsupported_external_flash_tool")
     port = job.get("port")
@@ -109,6 +114,33 @@ def run_job(job: dict[str, Any], root: Path, tool: Any) -> dict[str, Any]:
                     or not 0 < size <= capacity - offset
                 ):
                     raise ValueError("invalid_internal_read_range")
+                if progress_emit is not None:
+                    original_read = esp.read_flash
+                    last_emitted = time.monotonic()
+                    previous = 0
+
+                    def progress(done: int, total: int, address: int) -> None:
+                        nonlocal last_emitted, previous
+                        if (
+                            type(done) is not int or type(total) is not int
+                            or total != size or not previous < done <= total
+                        ):
+                            raise ValueError("invalid_rom_read_progress")
+                        previous = done
+                        now = time.monotonic()
+                        if done == total or now - last_emitted >= 5:
+                            progress_emit(done, total)
+                            last_emitted = now
+
+                    def monitored_read(address: int, length: int, ignored: Any = None) -> bytes:
+                        received = original_read(address, length, progress)
+                        if not isinstance(received, bytes):
+                            raise ValueError("flash_read_incomplete")
+                        return received
+
+                    # Keep cmds.read_flash parameter/security behavior. Only provide
+                    # its ROM read callback; native logger output is still discarded.
+                    esp.read_flash = monitored_read
                 data = tool.cmds.read_flash(
                     esp,
                     offset,
@@ -202,7 +234,15 @@ def main() -> None:
 
         if Path(esptool.__file__).resolve().parent != Path(job["esptool_directory"]).resolve():
             raise ValueError
-        result = run_job(job, path.parent, esptool)
+        structured_output = sys.stdout
+
+        def emit_progress(done: int, total: int) -> None:
+            print(
+                "FLASH_PROGRESS=" + json.dumps({"bytes": done, "total": total}),
+                file=structured_output, flush=True,
+            )
+
+        result = run_job(job, path.parent, esptool, emit_progress)
         print("FLASH_RESULT=" + json.dumps({"ok": True, **result}, sort_keys=True), flush=True)
     except Exception:
         print('FLASH_RESULT={"ok":false,"error":"flash_native_failed_needs_review"}', flush=True)
