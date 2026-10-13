@@ -993,11 +993,11 @@ class Broker:
             elif request.test == TestName.SOURCE:
                 self.firmware_source.settings = self.settings
                 details = self.firmware_source.prepare(request, session.principal_id or "")
-                storage = {"source_cache": self.firmware_source.snapshots.usage(request.project_id)}
+                storage = {"source_cache": self.firmware_source.snapshots.usage(request.project_id or "")}
             elif request.test == TestName.BUILD:
                 if request.source_receipt is not None:
                     self.firmware_source.authorize_receipt(
-                        request.project_id, request.source_receipt, session.principal_id or ""
+                        request.project_id or "", request.source_receipt, session.principal_id or ""
                     )
                 details = self.firmware_build.prepare(
                     request.project_id, session.principal_id or "", request.source_receipt

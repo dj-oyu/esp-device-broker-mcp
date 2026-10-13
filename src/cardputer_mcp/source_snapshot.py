@@ -406,7 +406,7 @@ class SourceSnapshots:
                 raise SourceError("source_receipt_not_owned")
             source = root / "source"
             _not_link(source)
-            files = {}
+            files: dict[str, dict[str, Any]] = {}
             for item in source.rglob("*"):
                 _not_link(item)
                 if not item.is_file():
