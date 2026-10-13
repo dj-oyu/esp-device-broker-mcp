@@ -91,9 +91,15 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
                             "mode": "160000",
                             "type": "commit",
                         }
-                    ] + [
-                        {"path": name, "sha": file_receipt(data, "100644")["git_sha1"],
-                         "mode": "100644", "type": "blob", "size": len(data)}
+                    ]
+                    + [
+                        {
+                            "path": name,
+                            "sha": file_receipt(data, "100644")["git_sha1"],
+                            "mode": "100644",
+                            "type": "blob",
+                            "size": len(data),
+                        }
                         for name, data in root_files.items()
                     ],
                 }

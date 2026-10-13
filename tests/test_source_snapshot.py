@@ -231,9 +231,15 @@ class SourceTests(unittest.TestCase):
                         "tree": [
                             {"path": name, "sha": sha, "type": "commit", "mode": "160000"}
                             for name, sha in links.items()
-                        ] + [
-                            {"path": name, "sha": file_receipt(data, "100644")["git_sha1"],
-                             "mode": "100644", "type": "blob", "size": len(data)}
+                        ]
+                        + [
+                            {
+                                "path": name,
+                                "sha": file_receipt(data, "100644")["git_sha1"],
+                                "mode": "100644",
+                                "type": "blob",
+                                "size": len(data),
+                            }
                             for name, data in graph[identity][0].items()
                         ],
                     }
@@ -326,13 +332,21 @@ class SourceTests(unittest.TestCase):
         tree = tree_hash(receipts)
         blobs = {receipts[name]["git_sha1"]: data for name, data in truth.items()}
         entries = [
-            {"path": name, "mode": "100644", "type": "blob", "sha": value["git_sha1"],
-             "size": value["bytes"]}
+            {
+                "path": name,
+                "mode": "100644",
+                "type": "blob",
+                "sha": value["git_sha1"],
+                "size": value["bytes"],
+            }
             for name, value in receipts.items()
         ]
         if tree_edit:
             tree_edit(entries)
-        exported = {"sdkconfig.defaults": FILES["sdkconfig.defaults"], "scripts/build.cmd": b"line\r\n"}
+        exported = {
+            "sdkconfig.defaults": FILES["sdkconfig.defaults"],
+            "scripts/build.cmd": b"line\r\n",
+        }
         if archive_extra:
             exported["not-in-git.txt"] = b"extra"
 
@@ -345,9 +359,13 @@ class SourceTests(unittest.TestCase):
             if "/git/blobs/" in url:
                 sha = url.rsplit("/", 1)[1]
                 data = blobs[sha]
-                response = {"sha": sha, "size": len(data), "encoding": "base64",
-                            "content": base64.b64encode(data).decode(),
-                            "url": "https://untrusted.test/secret?token=private"}
+                response = {
+                    "sha": sha,
+                    "size": len(data),
+                    "encoding": "base64",
+                    "content": base64.b64encode(data).decode(),
+                    "url": "https://untrusted.test/secret?token=private",
+                }
                 if corrupt:
                     corrupt(response)
                 return json.dumps(response).encode()

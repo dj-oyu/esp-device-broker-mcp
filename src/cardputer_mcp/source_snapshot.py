@@ -410,9 +410,8 @@ class RepositoryArchives:
                 current["git_sha1"] == item["sha"] and current["mode"] == item["mode"]
             ):
                 continue
-            if (
-                self.budget["expanded"] + item["size"] > LIMITS["expanded_bytes"]
-                or (current is None and self.budget["files"] >= LIMITS["files"])
+            if self.budget["expanded"] + item["size"] > LIMITS["expanded_bytes"] or (
+                current is None and self.budget["files"] >= LIMITS["files"]
             ):
                 raise SourceError("source_expansion_limit")
             encoded_limit = item["size"] * 2 + 65536
@@ -445,9 +444,10 @@ class RepositoryArchives:
             _not_link(target)
             # Tree paths receive the same private-cache and Windows checks as ZIP paths.
             relative = target.relative_to(root)
-            if os.name == "nt" and max(
-                len(str(target)), len(str(self.published_root / path / relative))
-            ) > 240:
+            if (
+                os.name == "nt"
+                and max(len(str(target)), len(str(self.published_root / path / relative))) > 240
+            ):
                 raise SourceError("source_windows_path_limit")
             if self.live() is not True:
                 raise SourceError("source_fetch_interrupted")
