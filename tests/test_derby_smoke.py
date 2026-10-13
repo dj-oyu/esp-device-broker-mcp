@@ -158,6 +158,67 @@ class DerbyTests(unittest.TestCase):
         self.assertTrue(image.png)
         self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
 
+    def test_wrong_order_and_duplicate_start_do_not_claim_cycle(self):
+        wire = Wire()
+        wire.phase_order = (b"race", b"gate", b"photo", b"res")
+        _, code = self.run_wire(wire)
+        self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
+        wire = Wire()
+        read = wire.read
+
+        def duplicate_start(size=1):
+            data = read(size)
+            if data.startswith(b"DERBY DEMO START"):
+                data += data
+            return data
+
+        wire.read = duplicate_start
+        _, code = self.run_wire(wire)
+        self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
+        self.assertEqual(wire.writes.count(b"s"), 1)
+        self.assertEqual(wire.writes.count(b"q"), 1)
+
+    def test_invalid_frame_or_missing_fresh_home_closes_without_retry(self):
+        async def run(broken_step):
+            wire = Wire()
+            write = wire.write
+
+            def broken_write(data):
+                count = write(data)
+                if data == broken_step:
+                    reply = b"".join(wire.queue)
+                    reply = (
+                        reply.replace(b"PIX 3 ", b"PIX 2 ")
+                        if data == b"s"
+                        else reply.replace(b"HOME_READY", b"NOT_HOME_READY")
+                    )
+                    wire.queue.clear()
+                    wire.queue.extend(reply[at : at + 1024] for at in range(0, len(reply), 1024))
+                return count
+
+            wire.write = broken_write
+            config = SerialSettings(
+                selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
+                expected_firmware_sha256="a" * 64,
+            )
+            backend = SerialBackend(
+                config,
+                inventory=lambda: [PortInfo(port="COM42", vid=1, pid=2, serial_number="synthetic")],
+                factory=lambda: wire,
+                clock=lambda: wire.now,
+            )
+            plan = {"test": Action.DERBY.value, **backend.prepare(Action.DERBY)}
+            with self.assertRaises(SerialFailure):
+                await backend.execute_smoke(plan, lambda _: None, lambda: True)
+            self.assertTrue(wire.closed)
+            self.assertEqual(backend.active, 0)
+            self.assertFalse(backend.hardware_connected)
+            self.assertEqual(wire.writes.count(b"s"), 1)
+            self.assertEqual(wire.writes.count(b"q"), int(broken_step == b"q"))
+
+        for broken_step in (b"s", b"q"):
+            asyncio.run(run(broken_step))
+
     def test_cancel_or_lease_loss_blocks_every_new_write_but_allows_close(self):
         for stop_requested in (False, True):
             wire = Wire()

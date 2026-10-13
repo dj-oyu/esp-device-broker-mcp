@@ -16,7 +16,9 @@ from cardputer_mcp.serial_backend import SerialBackend
 
 
 @pytest.mark.parametrize("interruption", [None, "cancel", "lease_expired"])
-async def test_fixed_smoke_local_approval_then_principal_bound_image(registry_service, interruption):
+async def test_fixed_smoke_local_approval_then_principal_bound_image(
+    registry_service, interruption
+):
     service = registry_service
     key = service.keys["second"]
     wire = Wire()
@@ -89,9 +91,11 @@ async def test_fixed_smoke_local_approval_then_principal_bound_image(registry_se
         if interruption:
             assert await asyncio.to_thread(entered.wait, 3)
             if interruption == "cancel":
-                cancelled = await call(remote, "cancel_job", {
-                    "session": lease["session"], "job_id": "derby-one",
-                })
+                cancelled = await call(
+                    remote,
+                    "cancel_job",
+                    {"session": lease["session"], "job_id": "derby-one"},
+                )
                 assert cancelled["stop_requested"]
             else:
                 service.resident.session.deadline = service.resident.clock() - 1

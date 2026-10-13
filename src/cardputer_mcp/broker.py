@@ -1847,7 +1847,8 @@ class Broker:
                             raise BrokerError("backend_not_available")
 
                         def smoke_live(
-                            lease: Session = lease, capture_principal: str | None = capture_principal
+                            lease: Session = lease,
+                            capture_principal: str | None = capture_principal,
                         ) -> bool:
                             return (
                                 not self.closing
