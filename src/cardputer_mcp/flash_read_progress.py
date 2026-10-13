@@ -8,13 +8,20 @@ from collections.abc import Callable
 from .flash_lifecycle import FlashFailure
 
 
+def read_deadline_seconds(size: int) -> int:
+    """Fixed policy, not a baud-derived runtime promise; hard cap is 16 MiB."""
+    if type(size) is not int or not 0 < size <= 16777216:
+        raise FlashFailure("flash_read_size_invalid")
+    return max(300, 60 + (size * 600 + 1048575) // 1048576)
+
+
 class ReadProgress:
     def __init__(
         self,
         size: int,
         hard_seconds: float,
         *,
-        idle_seconds: float = 30,
+        idle_seconds: float = 60,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.size = size
@@ -46,6 +53,11 @@ class ReadProgress:
             except (ValueError, TypeError, KeyError):
                 self.invalid = True
                 return None
+
+    def summary(self) -> str:
+        with self._lock:
+            elapsed = max(0, int(self.clock() - self.started))
+            return f"{self.done}/{self.size} bytes; elapsed {elapsed} s"
 
     def check(self) -> None:
         with self._lock:

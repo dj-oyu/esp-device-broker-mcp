@@ -43,3 +43,30 @@ is retained until owned processes and serial ports have certainly closed.
 Shared filtered logs disclose bounded redacted progress and approved boot logs,
 never raw backups or private tool paths. Mock verification does not authorize
 physical device access or prove a hardware flash succeeded.
+
+## Bounded ROM read duration
+
+The first 8 MiB hardware backup stopped after about 302 s with a 300 s native
+limit. Progress, bytes read and native exit code were not recorded, so a deadline
+is strongly suspected, not conclusively established. esptool 5.1 reads ROM flash
+in [64-byte commands](https://github.com/espressif/esptool/blob/v5.1.0/esptool/targets/esp32.py#L352)
+and offers a callback every KiB. A UART payload of 8 MiB at 115200 bit/s with
+10-bit framing alone would take about 728 s; native USB need not obey that baud.
+
+Only read operations use the fixed policy `max(300, 60 + ceil(bytes * 600 / MiB))`:
+2/4/8/16 MiB receive hard limits of 1260/2460/4860/9660 s. This is a bounded
+conservative allowance for ROM command overhead, not a measured throughput or
+completion guarantee. Progress never extends the hard deadline. No advancing
+progress for 60 s stops the owned process. Probe and write stay at 300 s.
+
+The worker suppresses native output and emits only advancing byte counts/total.
+The principal-bound shared log records start limits, counts, elapsed seconds,
+returned native exit code, and explicit deadline/stall/cancel/authority stop codes.
+Use `read_build_logs` with the `info` level to see numeric progress. Logs remain
+bounded/redacted; backup bytes and tool paths are not delivered. A complete
+verified read is still required before retaining a backup receipt.
+
+Read authority is rechecked during owned execution. Cancellation terminates the
+owned process tree and retains ownership until teardown is confirmed; uncertainty
+still needs review. Clients must explicitly renew a live lease for long reads.
+No stub, retry, implicit renewal, automatic rollback or restore is added.

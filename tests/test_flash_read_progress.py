@@ -7,16 +7,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from cardputer_mcp.flash_lifecycle import FlashFailure
-from cardputer_mcp.flash_read_progress import ReadProgress
+from cardputer_mcp.flash_read_progress import ReadProgress, read_deadline_seconds
 
 
 class ReadProgressTests(unittest.TestCase):
     def setUp(self):
         self.now = 0.0
-        self.progress = ReadProgress(8388608, 900, clock=lambda: self.now)
+        self.progress = ReadProgress(8388608, 900, idle_seconds=30, clock=lambda: self.now)
 
     def report(self, done):
         return self.progress.accept(json.dumps({"bytes": done, "total": 8388608}))
+
+    def test_size_based_read_deadlines_are_bounded(self):
+        self.assertEqual(read_deadline_seconds(4096), 300)
+        for size, seconds in ((2097152, 1260), (4194304, 2460), (8388608, 4860), (16777216, 9660)):
+            self.assertEqual(read_deadline_seconds(size), seconds)
+        for size in (True, 0, -1, 16777217):
+            with self.assertRaisesRegex(FlashFailure, "size_invalid"):
+                read_deadline_seconds(size)
 
     def test_advancing_read_can_cross_old_300_second_limit(self):
         for step in range(1, 62):
