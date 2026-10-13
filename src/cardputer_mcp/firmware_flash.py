@@ -48,6 +48,10 @@ FLASH_EFFECTS = [
         "observation; at most one same-USB reopen after close, without another reset"
     ),
     "Backup: ROM probe/read resets may occur; no normal-boot reset or firmware write",
+    (
+        "ROM reads: fixed 60 s + 600 s/MiB hard deadline, min 300 s/max 9660 s; "
+        "60 s without advancing progress stops; lease renewal remains explicit"
+    ),
     "Flash leaves the new firmware installed; restore is a separate exact approval; no rollback",
     (
         "Shares bounded redacted progress/boot logs only with the requesting "
@@ -413,6 +417,12 @@ class FirmwareFlash:
             del self.logs[oldest]
             self.results.pop(oldest, None)
         self.logs[self.job_id] = log
+
+        def progress_log(message: str) -> None:
+            with self._lock:
+                log.append(message)
+
+        driver.progress_log = progress_log
 
         def emit(name: str) -> None:
             with self._lock:

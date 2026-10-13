@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from .backend import BackendResult
-from .build_process import BuildProcess
+from .build_process import BuildProcess, ProcessDeadlineExpired
 from .firmware_build import OS_ENV, hash_file
 from .flash_lifecycle import FlashFailure, SecurityReceipt
+from .flash_read_progress import ReadProgress, read_deadline_seconds
 from .models import TestName
 from .ports import resolve_port
 from .serial_backend import SerialBackend, fingerprint
@@ -99,6 +100,7 @@ class NativeFlashDriver:
         self.expected_app_bin_sha256 = expected_app_bin_sha256
         self.expected_elf_sha256 = expected_elf_sha256
         self.live = live
+        self.progress_log: Callable[[str], None] | None = None
         self._observation_backend: Any = None
 
     @property
@@ -153,6 +155,7 @@ class NativeFlashDriver:
         size: int = 0,
         segments: tuple[tuple[int, bytes], ...] = (),
     ) -> tuple[dict[str, Any], bytes | None]:
+        native_seconds = read_deadline_seconds(size) if action == "read" else 300
         port = self._verified_port()
         if self.backend.active or self.backend.hardware_connected or self.active or self.uncertain:
             raise FlashFailure("flash_reader_handoff_unconfirmed")
@@ -187,9 +190,29 @@ class NativeFlashDriver:
         if os.name == "posix":
             job.chmod(0o600)
         lines: list[str] = []
+        read_progress = ReadProgress(size, native_seconds) if action == "read" else None
+        if read_progress is not None and self.progress_log is not None:
+            self.progress_log(
+                f"info: ROM read start {size} bytes; hard deadline {native_seconds} s; idle 60 s"
+            )
+
+        def monitor() -> None:
+            if self._stop.is_set():
+                raise FlashFailure("flash_cancelled_needs_review")
+            self._authority()
+            if read_progress is not None:
+                read_progress.check()
 
         def output(line: str, stream: str) -> None:
-            if stream == "stdout" and line.startswith("FLASH_RESULT=") and len(lines) < 2:
+            if (
+                stream == "stdout"
+                and read_progress is not None
+                and line.startswith("FLASH_PROGRESS=")
+            ):
+                message = read_progress.accept(line.removeprefix("FLASH_PROGRESS="))
+                if message is not None and self.progress_log is not None:
+                    self.progress_log(message)
+            elif stream == "stdout" and line.startswith("FLASH_RESULT=") and len(lines) < 2:
                 lines.append(line.removeprefix("FLASH_RESULT="))
 
         env = {key.upper(): value for key, value in os.environ.items() if key.upper() in OS_ENV}
@@ -208,8 +231,15 @@ class NativeFlashDriver:
                 env,
                 temporary,
                 output,
-                timeout=300,
+                timeout=native_seconds + 1 if read_progress is not None else 300,
+                monitor=monitor if read_progress is not None else None,
             )
+            if read_progress is not None:
+                if self.progress_log is not None:
+                    self.progress_log(
+                        f"info: ROM read native exit {code}; {read_progress.summary()}"
+                    )
+                monitor()
             if code or len(lines) != 1:
                 raise FlashFailure("flash_native_failed_needs_review")
             result = json.loads(lines[0])
@@ -226,9 +256,33 @@ class NativeFlashDriver:
                 ):
                     raise FlashFailure("flash_native_read_incomplete")
             return result, read_data
-        except FlashFailure:
+        except FlashFailure as failure:
+            if read_progress is not None and self.progress_log is not None:
+                self.progress_log(
+                    f"error: ROM read stopped {failure.code}; {read_progress.summary()}"
+                )
             raise
+        except ProcessDeadlineExpired:
+            if read_progress is not None:
+                if self.progress_log is not None:
+                    self.progress_log(
+                        f"error: ROM read stopped flash_read_deadline_needs_review; "
+                        f"{read_progress.summary()}"
+                    )
+                raise FlashFailure("flash_read_deadline_needs_review") from None
+            raise FlashFailure("flash_native_failed_needs_review") from None
         except Exception:
+            if read_progress is not None:
+                failure_code = (
+                    "flash_cancelled_needs_review"
+                    if self._stop.is_set() or self.process.stop_requested.is_set()
+                    else "flash_native_failed_needs_review"
+                )
+                if self.progress_log is not None:
+                    self.progress_log(
+                        f"error: ROM read stopped {failure_code}; {read_progress.summary()}"
+                    )
+                raise FlashFailure(failure_code) from None
             raise FlashFailure("flash_native_failed_needs_review") from None
         finally:
             env.clear()

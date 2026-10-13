@@ -139,6 +139,52 @@ class WorkerTests(unittest.TestCase):
         self.assertNotIn("data", result)
         self.assertEqual(self.writes, [])
 
+    def test_rom_progress_callback_is_structured_and_native_output_stays_private(self):
+        from unittest.mock import patch
+
+        updates = []
+
+        def native_read(offset, size, callback):
+            for done in range(1024, size + 1, 1024):
+                callback(done, size, offset)
+            return b"x" * size
+
+        self.chip.read_flash = native_read
+        self.tool.cmds.read_flash = lambda chip, offset, size, **kwargs: chip.read_flash(
+            offset, size
+        )
+        with patch("cardputer_mcp.flash_worker.time.monotonic", side_effect=[0, 6, 12, 18, 24]):
+            result = run_job(
+                dict(self.job, action="read", offset=4096, size=4096),
+                self.root,
+                self.tool,
+                lambda done, total: updates.append((done, total)),
+            )
+        self.assertEqual(updates, [(1024, 4096), (2048, 4096), (3072, 4096), (4096, 4096)])
+        self.assertEqual(result["bytes"], 4096)
+        self.assertNotIn("data", result)
+        self.assertEqual(self.writes, [])
+        self.assertFalse(self.chip._port.is_open)
+
+    def test_invalid_read_progress_never_creates_private_success_output(self):
+        def native_read(offset, size, callback):
+            callback(size + 1, size, offset)
+            return b"x" * size
+
+        self.chip.read_flash = native_read
+        self.tool.cmds.read_flash = lambda chip, offset, size, **kwargs: chip.read_flash(
+            offset, size
+        )
+        with self.assertRaisesRegex(ValueError, "read_progress"):
+            run_job(
+                dict(self.job, action="read", offset=0, size=1024),
+                self.root,
+                self.tool,
+                lambda done, total: None,
+            )
+        self.assertFalse((self.root / "read.bin").exists())
+        self.assertFalse(self.chip._port.is_open)
+
     def test_write_uses_attested_bytes_and_never_dangerous_options(self):
         data = b"synthetic-image" * 8
         (self.root / "segment-0.bin").write_bytes(data)

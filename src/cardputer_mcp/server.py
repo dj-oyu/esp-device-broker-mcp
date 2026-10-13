@@ -638,6 +638,9 @@ def create_server(
 
         Firmware backup probes/reads private full flash via ROM connections that
         can reset into download mode; it does not reset back into normal boot.
+        ROM read limits are fixed by size: at least 300 s, then 60 s + 600 s/MiB,
+        up to 9660 s for 16 MiB. No advancing progress for 60 s stops the job.
+        Longer reads require explicit lease renewal; the broker never renews it.
         Flash/restore write only their approved images/backup, verify readback,
         then perform one 100 ms normal-boot RTS pulse and passive observation
         (up to 30 s). A disconnect allows at most one same-USB reopen after close,
