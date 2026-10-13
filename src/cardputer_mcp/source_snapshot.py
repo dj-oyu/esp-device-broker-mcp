@@ -446,7 +446,8 @@ class RepositoryArchives:
             relative_path = target.relative_to(root)
             if (
                 os.name == "nt"
-                and max(len(str(target)), len(str(self.published_root / path / relative_path))) > 240
+                and max(len(str(target)), len(str(self.published_root / path / relative_path)))
+                > 240
             ):
                 raise SourceError("source_windows_path_limit")
             if self.live() is not True:
