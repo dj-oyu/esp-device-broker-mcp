@@ -421,8 +421,11 @@ class PlanApprovals:
         if plan["test"] == TestName.BACKUP.value:
             return "flash_device_read_verified"
         if plan["test"] in (TestName.FLASH.value, TestName.RESTORE.value):
-            return ("flash_device_firmware_recovery_verified"
-                    if plan["recovery_kind"] == "artifact_bundle" else "flash_device_backup_verified")
+            return (
+                "flash_device_firmware_recovery_verified"
+                if plan["recovery_kind"] == "artifact_bundle"
+                else "flash_device_backup_verified"
+            )
         if plan["backend"] == "serial":
             if plan["test"] == "hello":
                 return "device_free_firmware"

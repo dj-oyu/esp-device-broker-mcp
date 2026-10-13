@@ -206,7 +206,9 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
 
             driver.read = tracked_read
             prepared = await approve("flash-three", "firmware_flash", build_job_id="build-one")
-            await call(remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]})
+            await call(
+                remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+            )
             await service.resident.queue.join()
             assert service.resident.job("flash-three")["state"] == "succeeded"
             assert registration.flash_bytes not in reads

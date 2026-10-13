@@ -31,8 +31,8 @@ class GeometryTests(unittest.TestCase):
 
     def test_duplicate_partition_label_is_rejected(self):
         raw = bytearray(table())
-        raw[32 + 12:32 + 28] = raw[12:28]
-        raw[96 + 16:96 + 32] = hashlib.md5(raw[:96]).digest()
+        raw[32 + 12 : 32 + 28] = raw[12:28]
+        raw[96 + 16 : 96 + 32] = hashlib.md5(raw[:96]).digest()
         with self.assertRaisesRegex(FlashFailure, "label_invalid"):
             factory_layout(bytes(raw), table_offset=0x8000, flash_bytes=8388608)
 

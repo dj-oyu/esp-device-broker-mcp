@@ -288,8 +288,11 @@ class PlanReview:
         if row.test == TestName.BACKUP.value:
             expected = "flash_device_read_verified"
         elif row.test in (TestName.FLASH.value, TestName.RESTORE.value):
-            expected = ("flash_device_firmware_recovery_verified"
-                        if plan["recovery_kind"] == "artifact_bundle" else "flash_device_backup_verified")
+            expected = (
+                "flash_device_firmware_recovery_verified"
+                if plan["recovery_kind"] == "artifact_bundle"
+                else "flash_device_backup_verified"
+            )
         if data["attestation"] != expected:
             raise ValueError("invalid_plan_response")
         log_recipient = None

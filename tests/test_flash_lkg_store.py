@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from cardputer_mcp.flash_lifecycle import FlashFailure
 from cardputer_mcp.flash_lkg_store import FirmwareSnapshots
 from cardputer_mcp.store import Store
 
@@ -18,6 +19,15 @@ class PersistenceTests(unittest.TestCase):
             self.assertNotEqual(first, second)
             self.assertEqual(len(list(snapshots.root.iterdir())), 3)
             self.assertEqual(snapshots.load(first)[1], {"app.bin": b"image"})
+
+    def test_missing_immutable_bytes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots = FirmwareSnapshots(Path(temp), windows_private_acl_confirmed=True)
+            receipt = snapshots.stage({"device": "synthetic"}, {"app.bin": b"image"})
+            image = snapshots.put(b"image")
+            (snapshots.root / image).unlink()
+            with self.assertRaises(FlashFailure):
+                snapshots.load(receipt)
 
     def test_failed_final_authority_check_keeps_old_pointer_and_running_job(self):
         with tempfile.TemporaryDirectory() as temp:

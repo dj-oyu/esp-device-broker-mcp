@@ -222,7 +222,10 @@ class FlashLifecycle:
                     )
                 elif recovery is not None:
                     prior, prior_images = recovery
-                    table = next((item for item in prior.segments if item.offset == recovery_table_offset), None)
+                    table = next(
+                        (item for item in prior.segments if item.offset == recovery_table_offset),
+                        None,
+                    )
                     if table is None:
                         raise FlashFailure("lkg_restore_layout_evidence_required")
                     expected = prior_images[prior.segments.index(table)]

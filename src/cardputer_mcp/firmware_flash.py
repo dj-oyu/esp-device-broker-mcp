@@ -476,7 +476,9 @@ class FirmwareFlash:
             snapshot_files[elf_name] = _file(root, elf, 67108864)
             compat = compatibility(manifest, bundle, snapshot_files, registration.flash_bytes)
             if current is not None and known is None:
-                _, previous, _ = self._known(registration, plan["device_id"], plan["flash_principal"], current["receipt"])
+                _, previous, _ = self._known(
+                    registration, plan["device_id"], plan["flash_principal"], current["receipt"]
+                )
                 if previous.get("compat") is not None:
                     same_layout(previous["compat"], compat)
             if known is not None and known[0].get("compat") is not None:
@@ -612,7 +614,9 @@ class FirmwareFlash:
                 backup=backup,
                 recovery=recovery,
                 defer_commit=True,
-                recovery_table_offset=metadata["compat"]["table_offset"] if recovery is not None else None,
+                recovery_table_offset=metadata["compat"]["table_offset"]
+                if recovery is not None
+                else None,
             )
             if receipt is not None and data is not None:
                 retained = backup_store.save(self.job_id, plan["flash_principal"], receipt, data)
