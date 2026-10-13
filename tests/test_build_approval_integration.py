@@ -181,7 +181,11 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                 },
             )
-            broker = Broker(settings, lock_path=root / "device.lock")
+            broker = Broker(
+                settings,
+                lock_path=root / "device.lock",
+                principal_valid=lambda who, *_: who == "alice",
+            )
             await broker.start()
             try:
                 lease = broker.acquire(
