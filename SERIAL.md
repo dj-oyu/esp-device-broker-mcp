@@ -22,7 +22,7 @@ Supported operations:
 - `capture_home`: require physical HOME attestation, send one Esc and confirm HOME,
   receive one bounded render-buffer frame after a fixed s command, close
 
-No flash, arbitrary reset command, JavaScript upload, generic shell, raw serial tool, GRID,
+This fixed serial backend has no flash, arbitrary reset command, JavaScript upload, generic shell, raw serial tool, GRID,
 fault injection, arbitrary current-app screenshot, project build, ESP-IDF subprocess, or Tunnel setup
 is included. See [CAPTURE.md](CAPTURE.md) for capture approval and evidence limits.
 See [DEVICE-LOGS.md](DEVICE-LOGS.md) for log delivery, bounds and firmware identity limits.
@@ -200,3 +200,33 @@ Do not publish runtime state or authentication files.
   subprocess-tree ownership and reader handoff. Those APIs do not exist yet
 - Authenticated Tunnel ingress and cloud access are separate future work. Do not
   expose this listener through a public proxy or tunnel as-is
+
+## Fixed DERBY smoke
+
+`derby_smoke` requires a normal firmware, locally attested HOME/exact firmware,
+an authenticated owner and exact local plan approval. It opens once, sends Esc,
+checks fresh HOME_READY, sends a, normalizes to row 0 with 16 u acknowledgements,
+selects row 12 with 12 d acknowledgements, and sends e. Fresh APP_ID local.derby
+must precede DERBY READY tones=true/false; wrong row/identity fails without retry.
+The pinned normal firmware is cardputer-adv-pocketjs 6a139780. It prints DEMO
+START/END and SCENE pad/gate/race/photo/res through the existing console. No
+POCKET_KEYTEST build or new firmware write is required.
+
+Observation is at most 120 seconds after READY, within a 180-second whole-job
+reader budget. Auto-demo starts after 15 seconds of no input; a race's wall time
+is frame-rate dependent. Capture sends one s at an observed photo scene or a
+45-second fallback. Image coherence and physical LCD transfer remain unverified.
+Only observed START, ordered gate/race/photo/res and END support the cycle result;
+missing/out-of-order signals yield an image/time observation with limits, never
+an inferred cycle success. Capture traffic can overlap phase text.
+
+One explicit q exit must produce fresh HOME_READY, then the owner closes serial.
+Game exit can save the restored player state; this plan does not test player
+input/save coverage. Cancellation, principal revocation or lease expiry blocks
+all new sends, including q; the game may remain running. Close is always allowed
+and uncertain close retains ownership/requires review. No arbitrary key, command,
+retry/reopen or firmware write API is added. Rendered pixels use the existing
+principal-bound, five-minute image cache and separate image delivery approval;
+raw game logs and unknown text are not persisted or emitted.
+
+Firmware backup/flash/restore are implemented as separate approved broker operations; see FIRMWARE-FLASH.md.

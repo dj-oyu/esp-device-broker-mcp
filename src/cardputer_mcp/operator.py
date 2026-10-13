@@ -67,6 +67,7 @@ def approve_plan(
                 "passive_observe",
                 "hello",
                 "capture_home",
+                "derby_smoke",
                 "firmware_observe",
                 "restart_and_observe",
             ):
@@ -100,9 +101,13 @@ def approve_plan(
                     "or reset the device. Firmware fields are unverified observed startup text; "
                     "an ELF prefix is not the firmware binary SHA256.\n"
                 )
-            if plan.get("test") in ("hello", "capture_home"):
+            if plan.get("test") in ("hello", "capture_home", "derby_smoke"):
                 effects = (
-                    "CAPTURE requires the device already be at HOME. It sends one Esc to confirm "
+                    "DERBY performs the exact fixed navigation, observation, capture and exit "
+                    "listed in this plan; interruption may leave the game running. "
+                    if plan.get("test") == "derby_smoke"
+                    else "CAPTURE requires the device already be at HOME. "
+                    "It sends one Esc to confirm "
                     "HOME, then one s key and receives "
                     "rendered pixels. In another screen Esc may exit an app/editor and lose "
                     "unsaved state. The requesting authenticated client may retrieve the image "
@@ -114,7 +119,7 @@ def approve_plan(
                 )
                 phrase = (
                     "DEVICE HOME AND FIRMWARE VERIFIED"
-                    if plan.get("test") == "capture_home"
+                    if plan.get("test") in ("capture_home", "derby_smoke")
                     else "DEVICE FREE AND FIRMWARE VERIFIED"
                 )
                 attestation = confirm(
