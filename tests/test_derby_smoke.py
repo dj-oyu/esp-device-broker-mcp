@@ -224,7 +224,7 @@ class DerbyTests(unittest.TestCase):
             wire = Wire()
             stop = threading.Event()
             live = [True]
-            guarded = SmokePort(wire, lambda: live[0], stop)
+            guarded = SmokePort(wire, lambda live=live: live[0], stop)
             guarded.write(b"a")
             if stop_requested:
                 stop.set()

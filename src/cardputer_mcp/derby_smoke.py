@@ -20,7 +20,8 @@ SMOKE = {
 def take_frame(reader: Any) -> CapturedImage:
     reader.capture_guard = True
     reader.capture_quiet_boundary()
-    reader.capture_decoder = LegacyCaptureDecoder()
+    decoder = LegacyCaptureDecoder()
+    reader.capture_decoder = decoder
     reader.expected_marker = "CAPTURE_END"
     reader.receive_diagnostics.begin_command("capture_frame")
     try:
@@ -28,12 +29,12 @@ def take_frame(reader: Any) -> CapturedImage:
             raise reader.failure("incomplete_serial_write")
         reader.receive_diagnostics.write_completed()
         stop = min(reader.clock() + 18, reader.deadline)
-        while not reader.capture_decoder.complete:
+        while not decoder.complete:
             if reader.clock() >= stop:
                 raise reader.failure("serial_capture_timeout")
             reader.read_once()
         reader.capture_quiet_boundary()
-        return reader.capture_decoder.finish()
+        return decoder.finish()
     except CaptureError:
         raise reader.failure("serial_capture_invalid") from None
     finally:

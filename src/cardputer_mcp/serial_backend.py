@@ -519,7 +519,8 @@ class SerialBackend:
                 "One s at observed photo phase or 45-second fallback; pixels may be private",
                 "One explicit q exit requiring fresh HOME_READY; game exit may save player state",
                 "Cancellation/lease loss stops new writes, including q; game may remain running",
-                "Render buffer does not prove LCD transfer; missing phases do not prove a full cycle",
+                "Render buffer does not prove LCD transfer; "
+                "missing phases do not prove a full cycle",
                 "No keytest build, firmware flash, arbitrary keys, retries, or automatic reopen",
             ]
         if test == TestName.FIRMWARE:
