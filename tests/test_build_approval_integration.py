@@ -155,13 +155,18 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await broker.close()
 
-
     async def test_failed_diagnostic_job_keeps_fixed_code_and_private_logs(self):
         from cardputer_mcp.broker import Broker
         from cardputer_mcp.build_logs import BuildLogs
         from cardputer_mcp.config import BuildProject, Settings
         from cardputer_mcp.firmware_build import FixedDiagnosticFailure
-        from cardputer_mcp.models import AcquireRequest, ExecuteRequest, Origin, PrepareRequest
+        from cardputer_mcp.models import (
+            AcquireRequest,
+            BuildLogRequest,
+            ExecuteRequest,
+            Origin,
+            PrepareRequest,
+        )
         from cardputer_mcp.plan_approval import PlanApprovals
 
         with tempfile.TemporaryDirectory() as temp:
@@ -188,9 +193,9 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             await broker.start()
             try:
-                lease = broker.acquire(
-                    AcquireRequest(owner=Origin.REMOTE), principal_id="alice"
-                )["session"]
+                lease = broker.acquire(AcquireRequest(owner=Origin.REMOTE), principal_id="alice")[
+                    "session"
+                ]
                 prepared = broker.prepare(
                     PrepareRequest(
                         session=lease,
@@ -223,6 +228,15 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("idf_version_diagnostic_failed", str(job))
                 self.assertNotIn("synthetic-secret", str(job))
                 self.assertFalse(broker.firmware_build.manifests)
+                report = broker.firmware_build.read_logs(
+                    BuildLogRequest(job_id="diagnostic-failure"), "alice"
+                )
+                self.assertIn("Windows- unsupported", str(report))
+                self.assertNotIn("synthetic-secret", str(report))
+                with self.assertRaises(ValueError):
+                    broker.firmware_build.read_logs(
+                        BuildLogRequest(job_id="diagnostic-failure"), "bob"
+                    )
                 self.assertEqual(
                     broker._store().job("diagnostic-failure")["diagnostic"],
                     {"code": "idf_version_diagnostic_failed"},

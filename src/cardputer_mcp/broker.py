@@ -1908,9 +1908,7 @@ class Broker:
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except (BuildPreflightFailure, BuildLocationError) as failure:
-                    store.set_job(
-                        job_id, "needs_review", failure.code, {"code": failure.code}
-                    )
+                    store.set_job(job_id, "needs_review", failure.code, {"code": failure.code})
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except DeviceOperationFailure as failure:
