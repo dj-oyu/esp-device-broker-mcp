@@ -677,6 +677,9 @@ def create_server(
         Default warning/error plus progress, with diagnostic context; no path input.
         Cursor reads do not consume output. Expiry, restart and eviction report gaps.
         A successful build includes a hashed manifest; it grants no flash permission.
+        Flash summaries survive log expiry/restart and contain bounded matched IDF/ELF
+        evidence. Full BIN readback hashes plus boot prefix support artifact matching;
+        boot text alone is not authenticated or cryptographic identity proof.
         """
 
         def get_logs() -> dict[str, Any]:

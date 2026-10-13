@@ -180,6 +180,15 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
                 assert service.resident.job(job)["state"] == "succeeded"
                 logs = await call(remote, "read_build_logs", {"job_id": job})
                 assert logs["ok"] and logs["flash_summary"]["boot_observed"], logs
+                summary = logs["flash_summary"]
+                assert summary["boot_log_matches_expected_artifact"] is True
+                assert summary["boot_text_identity_verified"] is False
+                assert summary["observed_idf_version"] == "6.0.1"
+                assert 8 <= len(summary["observed_elf_sha256_prefix"]) <= 16
+                service.resident.firmware_flash.logs.pop(job)
+                service.resident.firmware_flash.results.pop(job)
+                retained = await call(remote, "read_build_logs", {"job_id": job})
+                assert retained["expired"] and retained["flash_summary"] == summary
                 replay = await call(
                     remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
                 )

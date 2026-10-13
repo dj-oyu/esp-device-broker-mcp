@@ -106,3 +106,13 @@ This protects the MCP write ranges, not subsequent firmware behavior. Firmware
 may erase or modify NVS/filesystems after boot, and firmware rollback cannot promise
 data compatibility or undo those changes. No implicit restore, data migration,
 retry, SDK fallback or additional MCP command is added.
+
+Successful flash/restore stores a bounded, principal-scoped job summary atomically
+with success. `boot_log_matches_expected_artifact` means required IDF 6.0.1 and
+observed ELF prefix matched the expected artifact after full segment SHA-256
+readback. `observed_elf_sha256_prefix` is 8–16 lowercase hex characters;
+`observed_idf_version` records the matched IDF. `verification_basis` describes
+readback plus boot prefix. These fields survive shared-log expiry and broker restart.
+`boot_text_identity_verified=false` remains for compatibility: serial boot text
+alone is not authenticated identity or cryptographic proof. No raw boot log is
+retained, and no verification criterion or USB behavior changes.

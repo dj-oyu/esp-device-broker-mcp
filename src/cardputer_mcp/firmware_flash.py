@@ -275,8 +275,16 @@ class FirmwareFlash:
                 and not self.uncertain
             )
 
+        summary = dict(self.results.get(plan["job_id"], {}))
+        if plan["job_id"] in self.promotions:
+            summary["last_known_good_receipt"] = self.promotions[plan["job_id"]]["receipt"]
         self.store().finish_firmware(
-            plan["job_id"], result, self.promotions.get(plan["job_id"]), guard
+            plan["job_id"],
+            result,
+            self.promotions.get(plan["job_id"]),
+            guard,
+            summary if plan["flash_operation"] != "backup" else None,
+            plan["flash_principal"],
         )
         if self.engine is not None:
             self.engine._committed = plan["job_id"]
@@ -673,14 +681,18 @@ class FirmwareFlash:
         with self._lock:
             logs = self.logs.get(request.job_id)
             if logs is None:
-                return dict(
+                result = dict(
                     entries=[],
                     expired=True,
                     gap=True,
                     has_more=False,
                     next_cursor=dict(epoch="0" * 32, sequence=0),
                 )
-            result = logs.read(principal, request)
-            if not result["expired"] and request.job_id in self.results:
+            else:
+                result = logs.read(principal, request)
+            persisted = self.store().firmware_summary(request.job_id, principal)
+            if persisted is not None:
+                result["flash_summary"] = persisted
+            elif not result["expired"] and request.job_id in self.results:
                 result["flash_summary"] = self.results[request.job_id]
             return result
