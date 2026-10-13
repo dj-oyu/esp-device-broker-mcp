@@ -56,8 +56,10 @@ class FirmwareSnapshots:
         pending = self.root / (digest + ".pending")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
+        created = False
         try:
             descriptor = os.open(pending, flags, 0o600)
+            created = True
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(data)
                 handle.flush()
@@ -69,7 +71,8 @@ class FirmwareSnapshots:
         except Exception:
             raise FlashFailure("lkg_persistence_failed_needs_review") from None
         finally:
-            pending.unlink(missing_ok=True)
+            if created:
+                pending.unlink(missing_ok=True)
         return digest
 
     def get(self, digest: str, limit: int = 67108864) -> bytes:

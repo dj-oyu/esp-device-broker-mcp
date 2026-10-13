@@ -1,8 +1,11 @@
 """Private hash retention and atomic successful-job selection, no device IO."""
 
+import errno
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from cardputer_mcp.flash_lifecycle import FlashFailure
 from cardputer_mcp.flash_lkg_store import FirmwareSnapshots
@@ -19,6 +22,27 @@ class PersistenceTests(unittest.TestCase):
             self.assertNotEqual(first, second)
             self.assertEqual(len(list(snapshots.root.iterdir())), 3)
             self.assertEqual(snapshots.load(first)[1], {"app.bin": b"image"})
+
+    def test_competing_pending_object_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots = FirmwareSnapshots(Path(temp), windows_private_acl_confirmed=True)
+            digest = hashlib.sha256(b"image").hexdigest()
+            pending = snapshots.root / (digest + ".pending")
+            pending.write_bytes(b"other-owner")
+            with self.assertRaises(FlashFailure):
+                snapshots.put(b"image")
+            self.assertEqual(pending.read_bytes(), b"other-owner")
+            self.assertFalse((snapshots.root / digest).exists())
+
+    def test_disk_full_does_not_publish_or_replace_verified_objects(self):
+        with tempfile.TemporaryDirectory() as temp:
+            snapshots = FirmwareSnapshots(Path(temp), windows_private_acl_confirmed=True)
+            receipt = snapshots.stage({"device": "synthetic"}, {"app.bin": b"image"})
+            with patch.object(snapshots, "_publish", side_effect=OSError(errno.ENOSPC, "full")):
+                with self.assertRaises(FlashFailure):
+                    snapshots.stage({"device": "synthetic"}, {"app.bin": b"new-image"})
+            self.assertEqual(snapshots.load(receipt)[1], {"app.bin": b"image"})
+            self.assertFalse(list(snapshots.root.glob("*.pending")))
 
     def test_missing_immutable_bytes_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
