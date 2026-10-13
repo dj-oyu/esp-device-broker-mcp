@@ -1,5 +1,6 @@
 """Dependency-free unit tests; also collected by pytest in Windows/CI."""
 
+import json
 import sys
 import tempfile
 import threading
@@ -303,6 +304,8 @@ class FirmwareVerticalTests(unittest.TestCase):
                     "cardputer": SimpleNamespace(
                         project_dir=project,
                         trusted_profile=profile,
+                        build_root=root / "out",
+                        build_min_free_bytes=0,
                         expected_idf="6.0.1",
                         target="esp32s3",
                     )
