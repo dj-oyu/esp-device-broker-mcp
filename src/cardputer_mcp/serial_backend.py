@@ -633,7 +633,16 @@ class SerialBackend:
         def emit(value: str) -> None:
             loop.call_soon_threadsafe(stage, value)
 
-        worker = loop.run_in_executor(None, self._execute_sync, plan, emit, local_home_probe, live)
+        async def check_on_loop() -> bool:
+            return live is not None and live() is True
+
+        def worker_live() -> bool:
+            return asyncio.run_coroutine_threadsafe(check_on_loop(), loop).result(timeout=5)
+
+        worker = loop.run_in_executor(
+            None, self._execute_sync, plan, emit, local_home_probe,
+            worker_live if live is not None else None,
+        )
         interrupted = False
         try:
             # asyncio cancellation cannot stop an OS serial read/thread. Wait for
