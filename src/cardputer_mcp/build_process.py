@@ -13,6 +13,10 @@ from typing import BinaryIO, cast
 from . import windows_process as win
 
 
+class ProcessDeadlineExpired(ValueError):
+    """The owned-process hard deadline expired; teardown still precedes return."""
+
+
 class PipeWindowsAPI(win.NativeWindowsAPI):
     def __init__(self, stdout_handle: int, stderr_handle: int) -> None:
         super().__init__()
@@ -232,8 +236,10 @@ class BuildProcess:
                 if monitor is not None and now >= next_monitor:
                     monitor()
                     next_monitor = now + 0.25
-                if self.stop_requested.wait(0.02) or time.monotonic() >= deadline:
+                if self.stop_requested.wait(0.02):
                     raise ValueError("build_interrupted_needs_review")
+                if time.monotonic() >= deadline:
+                    raise ProcessDeadlineExpired("build_interrupted_needs_review")
             if self.stop_requested.is_set():
                 raise ValueError("build_interrupted_needs_review")
             return code

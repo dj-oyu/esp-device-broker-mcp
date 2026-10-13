@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from cardputer_mcp.build_process import ProcessDeadlineExpired
 from cardputer_mcp.flash_driver import NativeFlashDriver
 from cardputer_mcp.flash_lifecycle import FlashFailure
 from cardputer_mcp.flash_read_progress import ReadProgress
@@ -30,12 +31,14 @@ class ReadDriverTests(unittest.TestCase):
             python_tool=SimpleNamespace(executable=root / "python.exe", version="Python 3.13.16"),
         )
         backend = SimpleNamespace(active=False, hardware_connected=False)
-        self.driver = NativeFlashDriver(registration, backend, "a" * 64, root / "work",
-                                        live=lambda: self.live)
+        self.driver = NativeFlashDriver(
+            registration, backend, "a" * 64, root / "work", live=lambda: self.live
+        )
         self.driver._verified_port = lambda: "COM1"
         self.driver.progress_log = self.logs.append
-        self.driver.process = SimpleNamespace(active=False, uncertain=False,
-                                             stop_requested=threading.Event())
+        self.driver.process = SimpleNamespace(
+            active=False, uncertain=False, stop_requested=threading.Event()
+        )
         self.mode = "healthy"
         self.invocations = []
 
@@ -45,6 +48,8 @@ class ReadDriverTests(unittest.TestCase):
             if payload["action"] in ("probe", "write"):
                 emit('FLASH_RESULT={"ok":true}', "stdout")
                 return 0
+            if self.mode == "process_deadline":
+                raise ProcessDeadlineExpired("build_interrupted_needs_review")
             monitor()
             if self.mode == "stalled":
                 self.now = 60
@@ -58,17 +63,25 @@ class ReadDriverTests(unittest.TestCase):
                 monitor()
             for index in range(1, 65):
                 self.now = index * 5
-                emit("FLASH_PROGRESS=" + json.dumps({"bytes": index * 131072,
-                                                     "total": 8388608}), "stdout")
+                emit(
+                    "FLASH_PROGRESS=" + json.dumps({"bytes": index * 131072, "total": 8388608}),
+                    "stdout",
+                )
                 monitor()
             data = b"x" * payload["size"]
             (cwd / "read.bin").write_bytes(data)
-            emit("FLASH_RESULT=" + json.dumps({"ok": True, "sha256": hashlib.sha256(data).hexdigest()}), "stdout")
+            emit(
+                "FLASH_RESULT="
+                + json.dumps({"ok": True, "sha256": hashlib.sha256(data).hexdigest()}),
+                "stdout",
+            )
             return 0
 
         self.driver.process.run = run
-        self.progress = patch("cardputer_mcp.flash_driver.ReadProgress",
-                              lambda size, seconds: ReadProgress(size, seconds, clock=lambda: self.now))
+        self.progress = patch(
+            "cardputer_mcp.flash_driver.ReadProgress",
+            lambda size, seconds: ReadProgress(size, seconds, clock=lambda: self.now),
+        )
         self.progress.start()
         self.addCleanup(self.progress.stop)
 
@@ -85,8 +98,12 @@ class ReadDriverTests(unittest.TestCase):
         self.assertIsNone(self.invocations[-1][2])
 
     def test_stall_deadline_and_revocation_never_return_backup_bytes(self):
-        for mode, code in (("stalled", "read_stalled"), ("deadline", "read_deadline"),
-                           ("revoked", "authority_changed")):
+        for mode, code in (
+            ("stalled", "read_stalled"),
+            ("deadline", "read_deadline"),
+            ("process_deadline", "read_deadline"),
+            ("revoked", "authority_changed"),
+        ):
             self.mode = mode
             self.now = 0
             self.live = True

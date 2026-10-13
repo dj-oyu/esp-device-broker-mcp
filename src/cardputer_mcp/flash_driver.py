@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .backend import BackendResult
-from .build_process import BuildProcess
+from .build_process import BuildProcess, ProcessDeadlineExpired
 from .firmware_build import OS_ENV, hash_file
 from .flash_lifecycle import FlashFailure, SecurityReceipt
 from .flash_read_progress import ReadProgress, read_deadline_seconds
@@ -204,7 +204,11 @@ class NativeFlashDriver:
                 read_progress.check()
 
         def output(line: str, stream: str) -> None:
-            if stream == "stdout" and read_progress is not None and line.startswith("FLASH_PROGRESS="):
+            if (
+                stream == "stdout"
+                and read_progress is not None
+                and line.startswith("FLASH_PROGRESS=")
+            ):
                 message = read_progress.accept(line.removeprefix("FLASH_PROGRESS="))
                 if message is not None and self.progress_log is not None:
                     self.progress_log(message)
@@ -254,8 +258,19 @@ class NativeFlashDriver:
             return result, read_data
         except FlashFailure as failure:
             if read_progress is not None and self.progress_log is not None:
-                self.progress_log(f"error: ROM read stopped {failure.code}; {read_progress.summary()}")
+                self.progress_log(
+                    f"error: ROM read stopped {failure.code}; {read_progress.summary()}"
+                )
             raise
+        except ProcessDeadlineExpired:
+            if read_progress is not None:
+                if self.progress_log is not None:
+                    self.progress_log(
+                        f"error: ROM read stopped flash_read_deadline_needs_review; "
+                        f"{read_progress.summary()}"
+                    )
+                raise FlashFailure("flash_read_deadline_needs_review") from None
+            raise FlashFailure("flash_native_failed_needs_review") from None
         except Exception:
             if read_progress is not None:
                 code = (

@@ -34,8 +34,10 @@ class PinnedROMReadTests(unittest.TestCase):
                 self.params = []
 
             def get_security_info(self, cache=False):
-                return {"parsed_flags": {"SECURE_BOOT_EN": False,
-                                         "SECURE_DOWNLOAD_ENABLE": False}, "flash_crypt_cnt": 0}
+                return {
+                    "parsed_flags": {"SECURE_BOOT_EN": False, "SECURE_DOWNLOAD_ENABLE": False},
+                    "flash_crypt_cnt": 0,
+                }
 
             def flash_id(self):
                 return 21 << 16
@@ -54,19 +56,33 @@ class PinnedROMReadTests(unittest.TestCase):
 
         chip = ROM()
         tool = SimpleNamespace(
-            __version__=esptool.__version__, loader=esptool.loader,
-            cmds=SimpleNamespace(detect_chip=lambda *args, **kwargs: chip,
-                                 attach_flash=lambda chip: None,
-                                 read_flash=esptool.cmds.read_flash),
+            __version__=esptool.__version__,
+            loader=esptool.loader,
+            cmds=SimpleNamespace(
+                detect_chip=lambda *args, **kwargs: chip,
+                attach_flash=lambda chip: None,
+                read_flash=esptool.cmds.read_flash,
+            ),
         )
         updates = []
         clock = itertools.count(0, 6)
-        with tempfile.TemporaryDirectory() as temp, patch(
-            "cardputer_mcp.flash_worker.time.monotonic", side_effect=lambda: next(clock)
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            patch("cardputer_mcp.flash_worker.time.monotonic", side_effect=lambda: next(clock)),
         ):
-            result = run_job({"action": "read", "port": "COM1", "flash_bytes": 2097152,
-                              "expected_device_sha256": None, "offset": 4096, "size": 2048},
-                             Path(temp), tool, lambda done, total: updates.append((done, total)))
+            result = run_job(
+                {
+                    "action": "read",
+                    "port": "COM1",
+                    "flash_bytes": 2097152,
+                    "expected_device_sha256": None,
+                    "offset": 4096,
+                    "size": 2048,
+                },
+                Path(temp),
+                tool,
+                lambda done, total: updates.append((done, total)),
+            )
         self.assertEqual(commands, [(4096 + index * 64, 64) for index in range(32)])
         self.assertEqual(updates, [(1024, 2048), (2048, 2048)])
         self.assertEqual(result["bytes"], 2048)

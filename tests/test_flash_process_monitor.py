@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from cardputer_mcp.build_process import BuildProcess
+from cardputer_mcp.build_process import BuildProcess, ProcessDeadlineExpired
 from cardputer_mcp.flash_lifecycle import FlashFailure
 
 
@@ -29,10 +29,24 @@ class ProcessMonitorTests(unittest.TestCase):
             with self.assertRaisesRegex(FlashFailure, "authority_changed"):
                 process.run(
                     [sys.executable, "-c", "import time; time.sleep(60)"],
-                    dict(os.environ), Path(temp), lambda line, stream: None,
-                    timeout=600, monitor=monitor,
+                    dict(os.environ),
+                    Path(temp),
+                    lambda line, stream: None,
+                    timeout=600,
+                    monitor=monitor,
                 )
         self.assertLess(time.monotonic() - started, 6)
+        self.assertFalse(process.active)
+        self.assertFalse(process.uncertain)
+
+    def test_process_deadline_has_a_distinct_type_after_confirmed_teardown(self):
+        process = BuildProcess()
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises(ProcessDeadlineExpired):
+                process.run(
+                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                    dict(os.environ), Path(temp), lambda line, stream: None, timeout=0.2,
+                )
         self.assertFalse(process.active)
         self.assertFalse(process.uncertain)
 
@@ -46,7 +60,9 @@ class ProcessMonitorTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "interrupted"):
                     process.run(
                         [sys.executable, "-c", "import time; time.sleep(60)"],
-                        dict(os.environ), Path(temp), lambda line, stream: None,
+                        dict(os.environ),
+                        Path(temp),
+                        lambda line, stream: None,
                         timeout=600,
                     )
             finally:
