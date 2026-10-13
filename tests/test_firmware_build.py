@@ -269,6 +269,7 @@ class FirmwareVerticalTests(unittest.TestCase):
         policy="inherit",
         profile_denied=False,
         toolchain_failed=False,
+        idf_failed=False,
         mutate_during_diagnostics=False,
         node_mode=None,
         source_mode=False,
@@ -382,6 +383,11 @@ class FirmwareVerticalTests(unittest.TestCase):
                         ):
                             emit(line, "stdout")
                     elif args[-1] == "--version":
+                        if idf_failed and args[1] == str(idf_py):
+                            emit("error: Windows- unsupported token=hidden", "stderr")
+                            emit("Bearer synthetic-secret-value", "stdout")
+                            emit("x" * 10000, "stderr")
+                            return 1
                         if mutate_during_diagnostics and args[0] == str(compiler):
                             (project / "CMakeLists.txt").write_text("unapproved changed source")
                         if toolchain_failed and args[0] == str(compiler):
@@ -472,6 +478,22 @@ class FirmwareVerticalTests(unittest.TestCase):
                     self.assertEqual(4, len(calls))
                     self.assertFalse(builder.manifests)
                     return
+                if idf_failed:
+                    from cardputer_mcp.firmware_build import BuildPreflightFailure
+
+                    with self.assertRaises(BuildPreflightFailure) as failure:
+                        builder._execute(plan, lambda _: None)
+                    self.assertEqual(failure.exception.code, "idf_version_diagnostic_failed")
+                    report = builder.read_logs(
+                        SimpleNamespace(job_id="job", **vars(request())), "alice"
+                    )
+                    self.assertIn("Windows- unsupported", str(report))
+                    self.assertNotIn("hidden", str(report))
+                    self.assertNotIn("synthetic-secret-value", str(report))
+                    self.assertTrue(all(len(item["text"]) <= 4096 for item in report["entries"]))
+                    self.assertFalse(builder.manifests)
+                    self.assertEqual(2, len(calls))
+                    return
                 if toolchain_failed:
                     with self.assertRaisesRegex(ValueError, "external_toolchain_diagnostic_failed"):
                         builder._execute(plan, lambda _: None)
@@ -548,6 +570,9 @@ class FirmwareVerticalTests(unittest.TestCase):
 
     def test_profile_policy_rejection_has_fixed_private_diagnostic(self):
         self._exercise_build(profile_denied=True)
+
+    def test_idf_failure_retains_bounded_redacted_diagnostics(self):
+        self._exercise_build(idf_failed=True)
 
     def test_toolchain_failure_prevents_build(self):
         self._exercise_build(toolchain_failed=True)

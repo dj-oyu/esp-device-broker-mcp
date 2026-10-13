@@ -70,6 +70,26 @@ class BuildPreflightFailure(ValueError):
     code: str
 
 
+class FixedDiagnosticFailure(BuildPreflightFailure):
+    """Allowlisted public diagnostic; never accepts native exception text."""
+
+    def __init__(self, code: str) -> None:
+        if code not in {
+            "idf_version_diagnostic_failed",
+            "idf_version_mismatch_no_fallback",
+            "external_python_diagnostic_failed",
+            "external_toolchain_missing",
+            "registered_tool_diagnostic_failed",
+            "registered_tool_version_mismatch",
+            "registered_tool_resolution_ambiguous",
+            "external_toolchain_resolution_changed",
+            "node_requires_explicit_local_registration",
+        }:
+            raise ValueError("invalid_build_diagnostic_code")
+        self.code = code
+        super().__init__(code)
+
+
 class ProfileExportFailure(BuildPreflightFailure):
     """Fixed public diagnostic; no PowerShell stderr or profile path is reflected."""
 
@@ -551,14 +571,19 @@ class FirmwareBuild:
         env["IDF_TARGET"] = project.target
         if provenance is not None:
             env["IDF_COMPONENT_MANAGER"] = "0"
+        logs.redactions += tuple(
+            str(path)
+            for path in (project.project_dir, project.trusted_profile, idf, python.parent.parent)
+        )
         stage("idf_diagnostics")
         version: list[str] = []
 
         def version_output(line: str, stream: str) -> None:
+            logs.append(line, stream)
             if len(version) >= 32:
                 self.process.stop_requested.set()
             else:
-                version.append(line)
+                version.append(line[:4096])
 
         if self.process.run(
             [str(python), str(idf_py), "--version"],
@@ -567,17 +592,17 @@ class FirmwareBuild:
             version_output,
             timeout=30,
         ):
-            raise ValueError("idf_version_diagnostic_failed")
+            raise FixedDiagnosticFailure("idf_version_diagnostic_failed")
         if not any(re.fullmatch(r"ESP-IDF v6\.0\.1", line.strip()) for line in version):
-            raise ValueError("idf_version_mismatch_no_fallback")
+            raise FixedDiagnosticFailure("idf_version_mismatch_no_fallback")
         version.clear()
         if self.process.run(
             [str(python), "--version"], env, project.project_dir, version_output, timeout=30
         ):
-            raise ValueError("external_python_diagnostic_failed")
+            raise FixedDiagnosticFailure("external_python_diagnostic_failed")
         compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
         if compiler is None:
-            raise ValueError("external_toolchain_missing")
+            raise FixedDiagnosticFailure("external_toolchain_missing")
         version.clear()
         if self.process.run(
             [compiler, "--version"], env, project.project_dir, version_output, timeout=30
@@ -596,10 +621,10 @@ class FirmwareBuild:
                 version_output,
                 timeout=30,
             ):
-                raise ValueError("registered_tool_diagnostic_failed")
+                raise FixedDiagnosticFailure("registered_tool_diagnostic_failed")
             self._check_cancelled()
             if version != [tool.version]:
-                raise ValueError("registered_tool_version_mismatch")
+                raise FixedDiagnosticFailure("registered_tool_version_mismatch")
             search_directories.append(str(tool.executable.parent))
             registered_versions[name] = dict(version=tool.version, sha256=tool.sha256)
             logs.append(f"-- Registered {name} version: {tool.version} (SHA-256 verified)")
@@ -610,15 +635,15 @@ class FirmwareBuild:
         for name, tool in registered_tools.items():
             resolved = shutil.which(name + ".exe", path=env["PATH"])
             if resolved is None or Path(resolved).resolve() != tool.executable.resolve():
-                raise ValueError("registered_tool_resolution_ambiguous")
+                raise FixedDiagnosticFailure("registered_tool_resolution_ambiguous")
         resolved_compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
         if (
             resolved_compiler is None
             or Path(resolved_compiler).resolve() != Path(compiler).resolve()
         ):
-            raise ValueError("external_toolchain_resolution_changed")
+            raise FixedDiagnosticFailure("external_toolchain_resolution_changed")
         if "node" not in registered_tools and shutil.which("node.exe", path=env["PATH"]):
-            raise ValueError("node_requires_explicit_local_registration")
+            raise FixedDiagnosticFailure("node_requires_explicit_local_registration")
         environment_fingerprint = hashlib.sha256(
             json.dumps(
                 {
