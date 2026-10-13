@@ -309,10 +309,33 @@ class FirmwareBuild:
             result[name] = tool
         return result
 
-    def prepare(self, project_id: str | None, principal: str) -> dict[str, Any]:
+    def _project(
+        self, project_id: str | None, principal: str, source_receipt: str | None = None
+    ) -> tuple[Any, dict[str, Any] | None]:
         project = self.settings.build_projects.get(project_id)
-        if project is None or not principal:
+        if project is None or project_id is None or not principal:
             raise ValueError("registered_build_project_required")
+        if source_receipt is None:
+            return project, None
+        from .source_snapshot import SourceSnapshots
+
+        root, metadata = SourceSnapshots(self.settings).resolve(
+            project_id, source_receipt, principal
+        )
+        provenance = dict(
+            source_receipt=source_receipt,
+            repository=metadata["repository"],
+            commit=metadata["commit"],
+            tree_sha1=metadata["tree_sha1"],
+            source_sha256=metadata["source_sha256"],
+            dependency_policy="vendored_components_no_fetch",
+        )
+        return project.model_copy(update={"project_dir": root}), provenance
+
+    def prepare(
+        self, project_id: str | None, principal: str, source_receipt: str | None = None
+    ) -> dict[str, Any]:
+        project, provenance = self._project(project_id, principal, source_receipt)
         if hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
             self.settings.state_dir.resolve()
         ):
@@ -320,6 +343,13 @@ class FirmwareBuild:
         if not (project.project_dir / "CMakeLists.txt").is_file():
             raise ValueError("idf_project_required")
         registered_tools = self._registered_tools(project)
+        if (
+            provenance is not None
+            and provenance["repository"].casefold() == "dj-oyu/cardputer-adv-pocketjs"
+        ):
+            node = registered_tools.get("node")
+            if node is None or int(node.version.split(".")[0][1:]) < 16:
+                raise ValueError("registered_node_16_required_for_source_project")
         build_root = getattr(project, "build_root", None)
         if build_root is not None:
             source = project.project_dir.resolve()
@@ -344,6 +374,7 @@ class FirmwareBuild:
                         else (),
                     ),
                     "project_id": project_id,
+                    **({"source_receipt": source_receipt} if source_receipt is not None else {}),
                     "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
                     "profile": hash_file(project.trusted_profile),
                     "version": project.expected_idf,
@@ -371,6 +402,11 @@ class FirmwareBuild:
         ).hexdigest()
         return dict(
             project_id=project_id,
+            **(
+                {"source_receipt": source_receipt, "source_provenance": provenance}
+                if provenance
+                else {}
+            ),
             fingerprint=fingerprint,
             expected_idf=project.expected_idf,
             target=project.target,
@@ -387,6 +423,7 @@ class FirmwareBuild:
                 "registered-idf.py",
                 "-B",
                 "fingerprint-build-directory",
+                *(["-D", "SDKCONFIG=build-output-sdkconfig"] if provenance is not None else []),
                 "build",
             ],
         )
@@ -439,9 +476,14 @@ class FirmwareBuild:
         if os.name != "nt":
             raise ValueError("external_windows_idf_required")
         principal = plan["build_principal"]
-        if self.prepare(plan["project_id"], principal)["fingerprint"] != plan["fingerprint"]:
+        if (
+            self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"]
+            != plan["fingerprint"]
+        ):
             raise ValueError("build_inputs_changed")
-        project = self.settings.build_projects[plan["project_id"]]
+        project, provenance = self._project(
+            plan["project_id"], principal, plan.get("source_receipt")
+        )
         logs = BuildLogs(principal)
         logs.redactions = tuple(
             value
@@ -507,6 +549,8 @@ class FirmwareBuild:
         ):
             raise ValueError("external_idf_environment_invalid")
         env["IDF_TARGET"] = project.target
+        if provenance is not None:
+            env["IDF_COMPONENT_MANAGER"] = "0"
         stage("idf_diagnostics")
         version: list[str] = []
 
@@ -617,18 +661,28 @@ class FirmwareBuild:
         # Diagnostics can take time. Recheck live project/profile/lock inputs
         # immediately before launching build; a changed tree needs a new plan.
         self._check_cancelled()
-        if self.prepare(plan["project_id"], principal)["fingerprint"] != plan["fingerprint"]:
+        if (
+            self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"]
+            != plan["fingerprint"]
+        ):
             logs.append("error: build inputs changed before launch; prepare a new plan")
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
+        build_args = [str(python), str(idf_py), "-B", str(build_dir)]
+        if provenance is not None:
+            build_args += ["-D", "SDKCONFIG=" + str(build_dir / "sdkconfig")]
+        build_args.append("build")
         if self.process.run(
-            [str(python), str(idf_py), "-B", str(build_dir), "build"],
+            build_args,
             env,
             project.project_dir,
             emit,
         ):
             raise ValueError("idf_build_failed_needs_review")
-        if self.prepare(plan["project_id"], principal)["fingerprint"] != plan["fingerprint"]:
+        if (
+            self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"]
+            != plan["fingerprint"]
+        ):
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
         description = json.loads((build_dir / "project_description.json").read_text())
@@ -657,6 +711,7 @@ class FirmwareBuild:
         self._check_cancelled()
         manifest = dict(
             schema_version=1,
+            **({"source_provenance": provenance} if provenance is not None else {}),
             build_job_id=plan["job_id"],
             build_plan_hash=hashlib.sha256(
                 json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()

@@ -1,5 +1,6 @@
 """Dependency-free unit tests; also collected by pytest in Windows/CI."""
 
+import json
 import sys
 import tempfile
 import threading
@@ -270,6 +271,7 @@ class FirmwareVerticalTests(unittest.TestCase):
         toolchain_failed=False,
         mutate_during_diagnostics=False,
         node_mode=None,
+        source_mode=False,
     ):
         try:
             import filelock
@@ -323,7 +325,39 @@ class FirmwareVerticalTests(unittest.TestCase):
                         executable=node, sha256=module.hash_file(node), version="v22.0.0"
                     )
             builder = FirmwareBuild(settings)
-            plan = builder.prepare("cardputer", "alice") | {"job_id": "job"}
+            source_receipt = None
+            if source_mode:
+                import test_source_snapshot as fixture
+
+                from cardputer_mcp.config import BuildProject, SourceRepository
+                from cardputer_mcp.source_snapshot import SourceSnapshots, file_receipt, tree_hash
+
+                registered = settings.build_projects["cardputer"]
+                settings.build_projects["cardputer"] = BuildProject(
+                    **vars(registered),
+                    source_repository=SourceRepository(
+                        github_repository=fixture.REPOSITORY,
+                        cache_root=root / "source-cache",
+                        private_acl_confirmed=True,
+                    ),
+                )
+                tree = tree_hash(
+                    {name: file_receipt(data, "100644") for name, data in fixture.FILES.items()}
+                )
+
+                def transport(url, *args):
+                    if url.startswith("https://api.github.com/"):
+                        return json.dumps({"sha": fixture.COMMIT, "tree": {"sha": tree}}).encode()
+                    return fixture.archive()
+
+                snapshots = SourceSnapshots(settings, transport)
+                fetch_plan = snapshots.prepare("cardputer", fixture.COMMIT, "alice") | {
+                    "job_id": "fetch"
+                }
+                source_receipt = snapshots.fetch(fetch_plan, lambda: True, lambda _: None)[
+                    "source_receipt"
+                ]
+            plan = builder.prepare("cardputer", "alice", source_receipt) | {"job_id": "job"}
             calls = []
             environments = []
 
@@ -475,6 +509,15 @@ class FirmwareVerticalTests(unittest.TestCase):
             self.assertEqual(len(calls), 6 if node_mode else 5)
             report = builder.read_logs(SimpleNamespace(job_id="job", **vars(request())), "alice")
             self.assertFalse(report["manifest"]["flash_authorized"])
+            if source_mode:
+                self.assertEqual(
+                    report["manifest"]["source_provenance"]["source_receipt"], source_receipt
+                )
+                self.assertEqual(report["manifest"]["source_provenance"]["commit"], fixture.COMMIT)
+                self.assertEqual(environments[-1]["IDF_COMPONENT_MANAGER"], "0")
+                config_arg = next(arg for arg in calls[-1] if arg.startswith("SDKCONFIG="))
+                self.assertEqual(Path(config_arg.split("=", 1)[1]).name, "sdkconfig")
+                self.assertEqual((project / "CMakeLists.txt").read_text(), "source")
             self.assertEqual(report["manifest"]["idf_version"], "6.0.1")
             self.assertEqual(report["manifest"]["flash_layout"]["name"], "flasher_args.json")
             self.assertEqual(report["manifest"]["flash_security"]["name"], "config/sdkconfig.json")
@@ -487,6 +530,9 @@ class FirmwareVerticalTests(unittest.TestCase):
             self.assertNotIn("hidden", str(report))
             with self.assertRaises(ValueError):
                 builder.read_logs(SimpleNamespace(job_id="job", **vars(request())), "bob")
+
+    def test_source_receipt_build_records_provenance_and_keeps_config_out_of_source(self):
+        self._exercise_build(source_mode=True)
 
     def test_profile_diagnostics_build_manifest_and_reader_boundary(self):
         self._exercise_build()

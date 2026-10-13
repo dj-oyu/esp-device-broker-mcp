@@ -53,6 +53,29 @@ class RegisteredBuildTool(BaseModel):
         return value
 
 
+class SourceRepository(BaseModel):
+    """Locally trusted public GitHub origin and private snapshot root."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    github_repository: str = Field(pattern=r"^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$")
+    cache_root: Path
+    private_acl_confirmed: bool = Field(default=False, strict=True)
+
+    @field_validator("github_repository")
+    @classmethod
+    def repository_name(cls, value: str) -> str:
+        if any(part in (".", "..") for part in value.split("/")):
+            raise ValueError("registered_github_repository_required")
+        return value
+
+    @field_validator("cache_root")
+    @classmethod
+    def cache_path(cls, value: Path) -> Path:
+        if not value.is_absolute() or ".." in value.parts:
+            raise ValueError("absolute_source_cache_root_required")
+        return value
+
+
 class BuildProject(BaseModel):
     """Trusted local registration, never supplied as an MCP pathname."""
 
@@ -64,6 +87,7 @@ class BuildProject(BaseModel):
     profile_execution_policy: Literal["inherit", "RemoteSigned"] = "inherit"
     node_tool: RegisteredBuildTool | None = None
     git_tool: RegisteredBuildTool | None = None
+    source_repository: SourceRepository | None = None
     expected_idf: Literal["6.0.1"] = "6.0.1"
     target: Literal["esp32s3"] = "esp32s3"
 

@@ -201,6 +201,9 @@ class Broker:
         from .firmware_build import FirmwareBuild
 
         self.firmware_build = FirmwareBuild(settings)
+        from .firmware_source import FirmwareSource
+
+        self.firmware_source = FirmwareSource(settings, self._store)
         from .firmware_flash import FirmwareFlash
 
         self.firmware_flash = FirmwareFlash(
@@ -408,6 +411,7 @@ class Broker:
         return bool(
             self.active_job is not None
             or self.backend.active
+            or self.firmware_source.active
             or self.firmware_build.process.active
             or self.firmware_build.process.uncertain
             or self.firmware_flash.active
@@ -966,7 +970,13 @@ class Broker:
         if (
             request.test
             in (
-                {TestName.CAPTURE, TestName.FIRMWARE, TestName.RESTART, TestName.BUILD}
+                {
+                    TestName.CAPTURE,
+                    TestName.FIRMWARE,
+                    TestName.RESTART,
+                    TestName.BUILD,
+                    TestName.SOURCE,
+                }
                 | FLASH_TESTS
             )
             and session.principal_id is None
@@ -980,9 +990,19 @@ class Broker:
                 details = self.firmware_flash.prepare(
                     request, session.principal_id or "", self.epoch, session.id
                 )
+            elif request.test == TestName.SOURCE:
+                self.firmware_source.settings = self.settings
+                details = self.firmware_source.prepare(request, session.principal_id or "")
+                storage = {
+                    "source_cache": self.firmware_source.snapshots.usage(request.project_id or "")
+                }
             elif request.test == TestName.BUILD:
+                if request.source_receipt is not None:
+                    self.firmware_source.authorize_receipt(
+                        request.project_id or "", request.source_receipt, session.principal_id or ""
+                    )
                 details = self.firmware_build.prepare(
-                    request.project_id, session.principal_id or ""
+                    request.project_id, session.principal_id or "", request.source_receipt
                 )
                 storage = self.firmware_build.storage(request.project_id or "")
             else:
@@ -1028,7 +1048,7 @@ class Broker:
             "plan_hash": digest,
             "plan": payload,
             **({"storage": storage} if storage is not None else {}),
-            "approval_required": request.test in ({TestName.BUILD} | FLASH_TESTS)
+            "approval_required": request.test in ({TestName.BUILD, TestName.SOURCE} | FLASH_TESTS)
             or (not self.settings.allow_mock_execution and not policy_available),
         }
         if request.test == TestName.CAPTURE:
@@ -1103,7 +1123,8 @@ class Broker:
         allow_mock = (
             self.settings.backend == "mock"
             and self.settings.allow_mock_execution
-            and payload["test"] not in ({TestName.BUILD.value} | {t.value for t in FLASH_TESTS})
+            and payload["test"]
+            not in ({TestName.BUILD.value, TestName.SOURCE.value} | {t.value for t in FLASH_TESTS})
         )
         if request.wait_for_approval and not approved and not allow_mock and authorization is None:
             # Policy callbacks must not extend the original request's lifetime
@@ -1204,6 +1225,9 @@ class Broker:
                 raise BrokerError("execution_intent_not_available")
             self._cancel_execution_intent(intent, "client_cancelled_awaiting_approval")
             return self.job(request.job_id)
+        if job["state"] == "running" and plan["test"] == TestName.SOURCE.value:
+            accepted = self.firmware_source.request_stop(request.job_id)
+            return {**job, "stop_requested": accepted, "requires_review": accepted}
         if job["state"] == "running" and plan["test"] in (
             {TestName.BUILD.value} | {t.value for t in FLASH_TESTS}
         ):
@@ -1726,6 +1750,8 @@ class Broker:
                 self._execution_intents.pop(job_id, None)
                 if plan["test"] == TestName.BUILD.value:
                     self.firmware_build.begin()
+                elif plan["test"] == TestName.SOURCE.value:
+                    self.firmware_source.begin()
                 self.active_job = job_id
                 capture_principal = self.session.principal_id
                 store.set_job(job_id, "running")
@@ -1779,6 +1805,29 @@ class Broker:
                             )
 
                         result = await self.firmware_flash.execute(plan, on_stage, flash_live)
+                    elif plan["test"] == TestName.SOURCE.value:
+
+                        def source_live(
+                            lease: Session = lease,
+                            capture_principal: str | None = capture_principal,
+                        ) -> bool:
+                            return (
+                                not self.closing
+                                and self.session is lease
+                                and capture_principal is not None
+                                and lease.principal_id == capture_principal
+                                and math.isfinite(self.clock())
+                                and self.clock() < lease.deadline
+                                and self._device_lock.is_locked
+                                and self._state_lock.is_locked
+                                and self.principal_valid is not None
+                                and self.principal_valid(
+                                    capture_principal, lease.owner, frozenset({"read", "control"})
+                                )
+                                is True
+                            )
+
+                        result = await self.firmware_source.execute(plan, on_stage, source_live)
                     elif plan["test"] == TestName.BUILD.value:
                         if capture_principal != plan.get("build_principal"):
                             raise BrokerError("build_principal_mismatch")
@@ -1886,6 +1935,8 @@ class Broker:
                         completed = result.code if isinstance(result, BackendResult) else result
                         if plan["test"] in {item.value for item in FLASH_TESTS}:
                             self.firmware_flash.commit_success(plan, completed, flash_live)
+                        elif plan["test"] == TestName.SOURCE.value:
+                            self.firmware_source.commit_success(plan, completed, source_live)
                         else:
                             store.set_job(job_id, "succeeded", completed)
                     except Exception:
@@ -1903,6 +1954,7 @@ class Broker:
                     result = ""
                     if (
                         not self.backend.active
+                        and not self.firmware_source.active
                         and not self.firmware_build.process.active
                         and not self.firmware_build.process.uncertain
                         and not self.firmware_flash.active

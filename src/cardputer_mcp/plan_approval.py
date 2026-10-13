@@ -165,6 +165,38 @@ class PlanApprovals:
 
             validate_flash_plan(plan)
             expected_keys = _BASE_KEYS | FLASH_FIELDS
+        elif test == TestName.SOURCE.value:
+            from .source_snapshot import LIMITS
+
+            expected_keys = _BASE_KEYS | {
+                "project_id",
+                "source_commit",
+                "source_principal",
+                "source_repository",
+                "source_registration_sha256",
+                "limits",
+                "effects",
+            }
+            if (
+                backend not in ("mock", "serial")
+                or plan.get("device")
+                != ("mock-cardputer" if backend == "mock" else "configured-cardputer")
+                or not _hex(plan.get("source_commit"), 40)
+                or not _hex(plan.get("source_registration_sha256"), 64)
+                or type(plan.get("project_id")) is not str
+                or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", plan["project_id"]) is None
+                or type(plan.get("source_principal")) is not str
+                or not 1 <= len(plan["source_principal"]) <= 128
+                or type(plan.get("source_repository")) is not str
+                or re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", plan["source_repository"])
+                is None
+                or plan.get("limits") != LIMITS
+                or plan.get("stages") != ["source_download", "source_validate", "source_publish"]
+                or type(plan.get("effects")) is not list
+                or len(plan["effects"]) != 3
+                or any(type(item) is not str or len(item) > 256 for item in plan["effects"])
+            ):
+                raise ValueError
         elif test == TestName.BUILD.value:
             expected_keys = _BASE_KEYS | {
                 "project_id",
@@ -176,6 +208,31 @@ class PlanApprovals:
                 "argv_template",
                 "profile_execution_policy",
             }
+            if "source_receipt" in plan:
+                expected_keys |= {"source_receipt", "source_provenance"}
+                provenance = plan.get("source_provenance")
+                if (
+                    not _hex(plan["source_receipt"], 64)
+                    or type(provenance) is not dict
+                    or set(provenance)
+                    != {
+                        "source_receipt",
+                        "repository",
+                        "commit",
+                        "tree_sha1",
+                        "source_sha256",
+                        "dependency_policy",
+                    }
+                    or provenance["source_receipt"] != plan["source_receipt"]
+                    or not _hex(provenance["commit"], 40)
+                    or not _hex(provenance["tree_sha1"], 40)
+                    or not _hex(provenance["source_sha256"], 64)
+                    or provenance["dependency_policy"] != "vendored_components_no_fetch"
+                    or type(provenance["repository"]) is not str
+                    or re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", provenance["repository"])
+                    is None
+                ):
+                    raise ValueError
             if (
                 backend not in ("mock", "serial")
                 or plan.get("device")
@@ -198,6 +255,11 @@ class PlanApprovals:
                     "registered-idf.py",
                     "-B",
                     "fingerprint-build-directory",
+                    *(
+                        ["-D", "SDKCONFIG=build-output-sdkconfig"]
+                        if "source_receipt" in plan
+                        else []
+                    ),
                     "build",
                 ]
             ):
@@ -660,9 +722,24 @@ class PlanApprovals:
             try:
                 if plan["test"] in {t.value for t in FLASH_TESTS}:
                     details = self.broker.firmware_flash.prepare_plan(plan)
+                elif plan["test"] == TestName.SOURCE.value:
+                    from .models import PrepareRequest
+
+                    request = PrepareRequest(
+                        session=lease.capability,
+                        project_id=plan["project_id"],
+                        job_id=plan["job_id"],
+                        test=TestName.SOURCE,
+                        source_commit=plan["source_commit"],
+                    )
+                    details = self.broker.firmware_source.prepare(request, lease.principal_id or "")
                 elif plan["test"] == TestName.BUILD.value:
+                    if plan.get("source_receipt") is not None:
+                        self.broker.firmware_source.authorize_receipt(
+                            plan["project_id"], plan["source_receipt"], lease.principal_id or ""
+                        )
                     details = self.broker.firmware_build.prepare(
-                        plan["project_id"], lease.principal_id or ""
+                        plan["project_id"], lease.principal_id or "", plan.get("source_receipt")
                     )
                 else:
                     details = self.broker.backend.prepare(TestName(plan["test"]))
