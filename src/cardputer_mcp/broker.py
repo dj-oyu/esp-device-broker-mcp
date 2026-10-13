@@ -966,7 +966,13 @@ class Broker:
         if (
             request.test
             in (
-                {TestName.CAPTURE, TestName.DERBY, TestName.FIRMWARE, TestName.RESTART, TestName.BUILD}
+                {
+                    TestName.CAPTURE,
+                    TestName.DERBY,
+                    TestName.FIRMWARE,
+                    TestName.RESTART,
+                    TestName.BUILD,
+                }
                 | FLASH_TESTS
             )
             and session.principal_id is None
@@ -1809,7 +1815,8 @@ class Broker:
                                 and self.principal_valid is not None
                                 and self.principal_valid(
                                     capture_principal, lease.owner, frozenset({"read", "control"})
-                                ) is True
+                                )
+                                is True
                             )
 
                         result = await self.backend.execute_smoke(plan, on_stage, smoke_live)

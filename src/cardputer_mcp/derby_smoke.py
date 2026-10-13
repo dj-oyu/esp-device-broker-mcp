@@ -84,11 +84,13 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage, str]:
                 consistent = False
             started = True
             reader.emit("derby_demo_start_observed")
-        if started and (match := re.fullmatch(
-            rb"DERBY SCENE (pad|gate|race|photo|res) race=(\d+) "
-            rb"seed=[0-9A-Fa-f]+ plans=\d+ reg=\d+",
-            line,
-        )):
+        if started and (
+            match := re.fullmatch(
+                rb"DERBY SCENE (pad|gate|race|photo|res) race=(\d+) "
+                rb"seed=[0-9A-Fa-f]+ plans=\d+ reg=\d+",
+                line,
+            )
+        ):
             if race_id is not None and race_id != match[2]:
                 consistent = False
             race_id = match[2]

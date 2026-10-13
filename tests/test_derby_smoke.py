@@ -62,7 +62,7 @@ class Wire:
             reply += b"CAPTURE_END\n"
         else:
             raise AssertionError
-        self.queue.extend(reply[at:at + 1024] for at in range(0, len(reply), 1024))
+        self.queue.extend(reply[at : at + 1024] for at in range(0, len(reply), 1024))
         return len(data)
 
     def open(self):
@@ -85,7 +85,9 @@ class DerbyTests(unittest.TestCase):
         wire = Wire()
         image, code = self.run_wire(wire)
         self.assertTrue(image.png)
-        self.assertEqual(wire.writes, [b"\x1b", b"a"] + [b"u"] * 16 + [b"d"] * 12 + [b"e", b"s", b"q"])
+        self.assertEqual(
+            wire.writes, [b"\x1b", b"a"] + [b"u"] * 16 + [b"d"] * 12 + [b"e", b"s", b"q"]
+        )
         self.assertEqual(code, "derby_demo_cycle_observed_render_buffer_lcd_unverified")
 
     def test_owned_worker_checks_authority_on_loop_and_closes_after_revocation(self):

@@ -640,7 +640,11 @@ class SerialBackend:
             return asyncio.run_coroutine_threadsafe(check_on_loop(), loop).result(timeout=5)
 
         worker = loop.run_in_executor(
-            None, self._execute_sync, plan, emit, local_home_probe,
+            None,
+            self._execute_sync,
+            plan,
+            emit,
+            local_home_probe,
             worker_live if live is not None else None,
         )
         interrupted = False
@@ -718,7 +722,8 @@ class SerialBackend:
                 port,
                 emit,
                 self.clock,
-                self.clock() + (18 if test == TestName.CAPTURE else 180 if test == TestName.DERBY else 90),
+                self.clock()
+                + (18 if test == TestName.CAPTURE else 180 if test == TestName.DERBY else 90),
                 local_home_probe,
             )
             emit(test.value)

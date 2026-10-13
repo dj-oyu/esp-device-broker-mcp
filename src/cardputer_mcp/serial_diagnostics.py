@@ -18,7 +18,16 @@ _RESET_REASON = re.compile(rb"^rst:0x[0-9a-fA-F]+(?:[,( \t]|$)")
 _BINARY_CONTROL = re.compile(rb"[^\x09\x20-\x7e]")
 
 _COMMANDS = frozenset(
-    {"none", "home_escape", "home_quit", "select_apps", "select_previous", "select_next", "enter", "capture_frame"}
+    {
+        "none",
+        "home_escape",
+        "home_quit",
+        "select_apps",
+        "select_previous",
+        "select_next",
+        "enter",
+        "capture_frame",
+    }
 )
 _COUNTERS = (
     "bytes",

@@ -437,7 +437,8 @@ async def test_capture_pixels_never_enter_history_logs_or_files(tmp_path: Path) 
         # Windows prevents reading an actively byte-locked lockfile. Its tiny
         # coordination record cannot contain the complete image either.
         assert all(
-            path.stat().st_size <= 1 if path.suffix == ".lockfile"
+            path.stat().st_size <= 1
+            if path.suffix == ".lockfile"
             else image.png not in path.read_bytes()
             for path in files
         )
