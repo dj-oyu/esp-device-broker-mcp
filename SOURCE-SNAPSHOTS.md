@@ -52,11 +52,12 @@ require a new fetch/plan. A receipt cannot be borrowed from another principal.
 Public HTTPS only, fixed api.github.com/codeload.github.com URLs constructed by
 the broker. Redirects are rejected. No caller URL, shell, Git hooks, credentials,
 submodule update or LFS download. The archive's root must name the exact commit.
-Git blob/tree SHA-1 is reconstructed from extracted bytes/modes and matched to
+Fixed allowlisted Git submodules are recursively acquired as described in
+SOURCE-SUBMODULES.md. Git blob/tree SHA-1 is reconstructed from extracted bytes/modes and matched to
 that commit's GitHub tree metadata; SHA-256 receipts additionally protect retained
 bytes. This uses trusted HTTPS GitHub commit metadata, not a GPG signature claim.
 
-Bounds: 64 MiB archive, 1 MiB commit metadata, 256 MiB expanded files, 100,000
+Bounds: 64 MiB total downloads, 1 MiB per commit metadata, 256 MiB expanded files, 100,000
 files/200,000 entries, 180 seconds, 10-second network-read timeout, 8 snapshots
 and 2 GiB cache. Traversal, links/reparse paths, encrypted ZIP entries, Windows
 reserved names/ADS/case aliases, collisions, and long Windows paths are rejected.
@@ -65,10 +66,11 @@ failed fetches grant no build permission. Retained sources are not automatically
 removed. Capacity exhaustion rejects another fetch and reports current usage;
 there is no hidden unbounded cache or forced deletion of referenced sources.
 
-Target checked: cardputer-adv-pocketjs commit
+Historical pre-submodule target checked: cardputer-adv-pocketjs commit
 6a139780b7eeececfaa17cf2ddee576a10a027f5 (1,524 files, about 28 MB). No gitlinks,
 .gitmodules or LFS pointers are required. QuickJS-NG/PocketJS and other components
-are vendored. Node 16+ is required and must already be registered. The tracked
+are tracked for QuickJS-NG/PocketJS; BMI270 and libopus remain external .cache
+requirements (see the firmware clean-checkout inventory). Node 16+ is required and must already be registered. The tracked
 dependencies.lock contains old .cache references: receipt builds explicitly use
 IDF_COMPONENT_MANAGER=0 (no registry fetch) and SDKCONFIG in the build output,
 using tracked sdkconfig.defaults. No source rewrite or SDK 6.1 fallback is used.
@@ -96,3 +98,7 @@ The same flow applies to custom Secure MCP Tunnel connections. A tools/list resu
 or listChanged notification alone does not prove host metadata changed. Host
 Refresh is not callable from this task's tool set; current-conversation refresh
 has not been established. No permissions/authentication/re-registration workaround.
+
+Formal fixed Git submodules are supported with a registered repository allowlist.
+See [SOURCE-SUBMODULES.md](SOURCE-SUBMODULES.md) for the Gitlink contract,
+shared bounds, receipt compatibility and remaining firmware dependencies.

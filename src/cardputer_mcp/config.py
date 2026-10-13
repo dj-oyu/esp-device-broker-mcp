@@ -1,5 +1,6 @@
 """Strict local configuration. Real serial mode additionally requires runtime opt-in."""
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -60,6 +61,18 @@ class SourceRepository(BaseModel):
     github_repository: str = Field(pattern=r"^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$")
     cache_root: Path
     private_acl_confirmed: bool = Field(default=False, strict=True)
+    submodule_repositories: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("submodule_repositories")
+    @classmethod
+    def submodule_allowlist(cls, value: list[str]) -> list[str]:
+        if len({item.casefold() for item in value}) != len(value) or any(
+            re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", item) is None
+            or any(part in (".", "..") for part in item.split("/"))
+            for item in value
+        ):
+            raise ValueError("registered_submodule_repository_required")
+        return value
 
     @field_validator("github_repository")
     @classmethod

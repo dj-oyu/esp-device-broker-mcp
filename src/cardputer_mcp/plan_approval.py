@@ -222,17 +222,26 @@ class PlanApprovals:
                         "tree_sha1",
                         "source_sha256",
                         "dependency_policy",
-                    }
+                    } | ({"submodules"} if "submodules" in provenance else set())
                     or provenance["source_receipt"] != plan["source_receipt"]
                     or not _hex(provenance["commit"], 40)
                     or not _hex(provenance["tree_sha1"], 40)
                     or not _hex(provenance["source_sha256"], 64)
-                    or provenance["dependency_policy"] != "vendored_components_no_fetch"
+                    or provenance["dependency_policy"]
+                    != (
+                        "gitlinks_fixed_commits_no_fetch"
+                        if "submodules" in provenance
+                        else "vendored_components_no_fetch"
+                    )
                     or type(provenance["repository"]) is not str
                     or re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", provenance["repository"])
                     is None
                 ):
                     raise ValueError
+                if "submodules" in provenance:
+                    from .source_snapshot import validate_submodule_provenance
+
+                    validate_submodule_provenance(provenance["submodules"])
             if (
                 backend not in ("mock", "serial")
                 or plan.get("device")

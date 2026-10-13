@@ -18,8 +18,9 @@ from cardputer_mcp.source_snapshot import SourceError, file_receipt, tree_hash
 
 
 @pytest.mark.parametrize("backend_name", ["mock", "serial"])
+@pytest.mark.parametrize("with_submodule", [False, True])
 async def test_explicit_source_approval_then_owned_receipt_build_plan(
-    registry_service, tmp_path, monkeypatch, backend_name
+    registry_service, tmp_path, monkeypatch, backend_name, with_submodule
 ):
     service = registry_service
     monkeypatch.setattr(service.backend, "name", backend_name)
@@ -40,6 +41,7 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
             github_repository=REPOSITORY,
             cache_root=tmp_path / "source-cache",
             private_acl_confirmed=True,
+            submodule_repositories=["lieff/minimp3"] if with_submodule else [],
         ),
     )
     serial = (
@@ -57,16 +59,42 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
     service.resident.firmware_source.settings = settings
     service.resident.firmware_source.snapshots.settings = settings
     calls = []
-    tree = tree_hash({name: file_receipt(data, "100644") for name, data in FILES.items()})
+    root_files = dict(FILES)
+    child_commit = "b" * 40
+    child_files = {"minimp3.h": b"synthetic dependency"}
+    if with_submodule:
+        root_files[".gitmodules"] = (
+            b'[submodule "minimp3"]\npath = third_party/minimp3\n'
+            b'url = https://github.com/lieff/minimp3.git\n'
+        )
+    receipts = {name: file_receipt(data, "100644") for name, data in root_files.items()}
+    if with_submodule:
+        receipts["third_party/minimp3"] = {"mode": "160000", "git_sha1": child_commit}
+    tree = tree_hash(receipts)
+    child_tree = tree_hash(
+        {name: file_receipt(data, "100644") for name, data in child_files.items()}
+    )
 
     def transport(url, deadline, live, limit):
         calls.append(url)
         if not live():
             raise SourceError("source_fetch_interrupted")
-        return (
-            json.dumps({"sha": COMMIT, "tree": {"sha": tree}}).encode()
-            if url.startswith("https://api.github.com/")
-            else archive()
+        if "/git/trees/" in url:
+            return json.dumps({
+                "sha": tree, "truncated": False,
+                "tree": [{"path": "third_party/minimp3", "sha": child_commit,
+                          "mode": "160000", "type": "commit"}],
+            }).encode()
+        child = "lieff/minimp3" in url
+        if "/git/commits/" in url:
+            return json.dumps({
+                "sha": child_commit if child else COMMIT,
+                "tree": {"sha": child_tree if child else tree},
+            }).encode()
+        return archive(
+            child_files if child else root_files,
+            repository="lieff/minimp3" if child else REPOSITORY,
+            commit=child_commit if child else COMMIT,
         )
 
     service.resident.firmware_source.snapshots.transport = transport
@@ -225,6 +253,11 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
                 report["manifest"]["source_provenance"]["source_sha256"]
                 == logs["source"]["source_sha256"]
             )
+            if with_submodule:
+                provenance = report["manifest"]["source_provenance"]
+                assert provenance["submodules"] == logs["source"]["submodules"]
+                assert provenance["submodules"][0]["commit"] == child_commit
+                assert provenance["dependency_policy"] == "gitlinks_fixed_commits_no_fetch"
             assert report["manifest"]["flash_authorized"] is False
             assert service.backend.calls == 0 and not project.project_dir.exists()
         source, _ = service.resident.firmware_source.snapshots.resolve(

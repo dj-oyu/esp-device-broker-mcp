@@ -1,5 +1,6 @@
 """Bounded public GitHub commit archives in broker-owned private snapshots."""
 
+import configparser
 import hashlib
 import io
 import json
@@ -35,6 +36,8 @@ LIMITS = {
     "operation_seconds": 180,
     "cache_snapshots": 8,
     "cache_bytes": 2 * 1024 * 1048576,
+    "submodule_depth": 3,
+    "submodule_count": 16,
 }
 
 
@@ -48,6 +51,82 @@ def digest(data: bytes) -> str:
 
 def canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def registration_digest(registration: Any, *, legacy: bool = False) -> str:
+    # Preserve pre-submodule receipt bindings without rewriting old receipts.
+    excluded = {"submodule_repositories"} if legacy or not registration.submodule_repositories else set()
+    return digest(registration.model_dump_json(exclude=excluded).encode())
+
+
+SUBMODULE_LIMITS = {"depth": 3, "count": 16, "gitmodules_bytes": 65536}
+
+
+def validate_submodule_provenance(value: Any) -> None:
+    if not isinstance(value, list) or not 1 <= len(value) <= SUBMODULE_LIMITS["count"]:
+        raise SourceError("source_submodule_provenance_rejected")
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "path", "repository", "commit", "tree_sha1", "archive_sha256", "source_sha256"
+        }:
+            raise SourceError("source_submodule_provenance_rejected")
+        if (
+            not isinstance(item["path"], str)
+            or not isinstance(item["repository"], str)
+            or re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", item["repository"]) is None
+            or any(
+                not isinstance(item[key], str)
+                or re.fullmatch(r"[a-f0-9]{40}", item[key]) is None
+                for key in ("commit", "tree_sha1")
+            )
+            or any(
+                not isinstance(item[key], str)
+                or re.fullmatch(r"[a-f0-9]{64}", item[key]) is None
+                for key in ("archive_sha256", "source_sha256")
+            )
+            or item["path"].casefold() in seen
+        ):
+            raise SourceError("source_submodule_provenance_rejected")
+        safe_name(item["path"])
+        seen.add(item["path"].casefold())
+
+
+def submodule_paths(data: bytes, allowed: list[str]) -> dict[str, str]:
+    if len(data) > SUBMODULE_LIMITS["gitmodules_bytes"]:
+        raise SourceError("source_gitmodules_limit")
+    parser = configparser.ConfigParser(interpolation=None, strict=True)
+    try:
+        parser.read_string(data.decode("utf-8"))
+        if parser.defaults() or len(parser.sections()) > SUBMODULE_LIMITS["count"]:
+            raise ValueError
+        result: dict[str, str] = {}
+        for section in parser.sections():
+            if re.fullmatch(r'submodule "[^"\x00-\x1f]{1,128}"', section) is None:
+                raise ValueError
+            values = dict(parser[section])
+            if set(values) != {"path", "url"}:
+                raise ValueError
+            path, url = values["path"], values["url"]
+            safe_name(path)
+            match = re.fullmatch(
+                r"https://github\.com/([A-Za-z0-9_-]+/[A-Za-z0-9_.-]+?)(?:\.git)?", url
+            )
+            if match is None or match[1] not in allowed:
+                raise ValueError
+            if any(
+                path.casefold() == other.casefold()
+                or path.casefold().startswith(other.casefold() + "/")
+                or other.casefold().startswith(path.casefold() + "/")
+                for other in result
+            ):
+                raise ValueError
+            result[path] = match[1]
+        return result
+    except SourceError:
+        raise
+    except Exception:
+        raise SourceError("source_gitmodules_rejected") from None
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -142,14 +221,20 @@ def extract(
     prefix: str,
     live: Callable[[], bool],
     published_root: Path | None = None,
+    *,
+    require_idf: bool = True,
+    budget: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     receipts: dict[str, Any] = {}
     seen: set[str] = set()
     spelling: dict[str, str] = {}
     total = 0
+    if budget is None:
+        budget = {"expanded": 0, "files": 0, "entries": 0}
     with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
         entries = zipped.infolist()
-        if len(entries) > LIMITS["files"] * 2:
+        budget["entries"] += len(entries)
+        if budget["entries"] > LIMITS["files"] * 2:
             raise SourceError("source_file_limit")
         for item in entries:
             if live() is not True:
@@ -185,8 +270,8 @@ def extract(
                 target.mkdir(parents=True, exist_ok=True)
                 continue
             if (
-                len(receipts) >= LIMITS["files"]
-                or not 0 <= item.file_size <= LIMITS["expanded_bytes"] - total
+                budget["files"] >= LIMITS["files"]
+                or not 0 <= item.file_size <= LIMITS["expanded_bytes"] - budget["expanded"]
             ):
                 raise SourceError("source_expansion_limit")
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -194,9 +279,7 @@ def extract(
                 data = source.read(item.file_size + 1)
                 if len(data) != item.file_size:
                     raise SourceError("source_archive_size_mismatch")
-                if data.startswith(
-                    b"version https://git-lfs.github.com/spec/v1"
-                ) or name.casefold().endswith(".gitmodules"):
+                if data.startswith(b"version https://git-lfs.github.com/spec/v1"):
                     raise SourceError("source_submodule_or_lfs_not_supported")
                 if name.casefold().endswith(".gitattributes") and b"filter=lfs" in data:
                     raise SourceError("source_submodule_or_lfs_not_supported")
@@ -204,10 +287,150 @@ def extract(
                 output.flush()
                 os.fsync(output.fileno())
             total += len(data)
+            budget["expanded"] += len(data)
+            budget["files"] += 1
             receipts[name] = file_receipt(data, "100755" if mode & 0o111 else "100644")
-    if "CMakeLists.txt" not in receipts:
+    if require_idf and "CMakeLists.txt" not in receipts:
         raise SourceError("source_idf_project_missing")
     return receipts
+
+
+class RepositoryArchives:
+    """Fixed Gitlink recursion; all repositories share one operation budget."""
+
+    def __init__(
+        self,
+        transport: Callable[..., bytes],
+        registration: Any,
+        deadline: float,
+        live: Callable[[], bool],
+        published_root: Path,
+    ) -> None:
+        self.transport, self.registration = transport, registration
+        self.deadline, self.live, self.published_root = deadline, live, published_root
+        self.downloaded = self.count = 0
+        self.budget = {"expanded": 0, "files": 0, "entries": 0}
+        self.submodules: list[dict[str, Any]] = []
+
+    def get(self, url: str, limit: int) -> bytes:
+        remaining = LIMITS["download_bytes"] - self.downloaded
+        if remaining <= 0 or self.live() is not True:
+            raise SourceError("source_fetch_interrupted_or_download_limit")
+        limit = min(limit, remaining)
+        data = self.transport(url, self.deadline, self.live, limit)
+        if len(data) > limit:
+            raise SourceError("source_download_limit")
+        self.downloaded += len(data)
+        if self.live() is not True:
+            raise SourceError("source_fetch_interrupted")
+        return data
+
+    def fetch(
+        self,
+        repository: str,
+        commit: str,
+        root: Path,
+        path: str = "",
+        ancestors: tuple[tuple[str, str], ...] = (),
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        identity = (repository.casefold(), commit)
+        if len(ancestors) > SUBMODULE_LIMITS["depth"] or identity in ancestors:
+            raise SourceError("source_submodule_depth_or_cycle")
+        if path:
+            self.count += 1
+            if self.count > SUBMODULE_LIMITS["count"]:
+                raise SourceError("source_submodule_count_limit")
+            safe_name(path)
+        metadata = json.loads(
+            self.get(f"https://api.github.com/repos/{repository}/git/commits/{commit}", 1048576)
+        )
+        if (
+            metadata.get("sha") != commit
+            or re.fullmatch(r"[a-f0-9]{40}", metadata.get("tree", {}).get("sha", "")) is None
+        ):
+            raise SourceError("source_commit_metadata_mismatch")
+        archive = self.get(
+            f"https://codeload.github.com/{repository}/zip/{commit}", LIMITS["download_bytes"]
+        )
+        root.mkdir(parents=True, exist_ok=True)
+        own_files = extract(
+            archive,
+            root,
+            repository.split("/")[1] + "-" + commit,
+            self.live,
+            self.published_root / path,
+            require_idf=not path,
+            budget=self.budget,
+        )
+        links: dict[str, str] = {}
+        configured: dict[str, str] = {}
+        if ".gitmodules" in own_files:
+            configured = submodule_paths(
+                (root / ".gitmodules").read_bytes(), self.registration.submodule_repositories
+            )
+            tree = json.loads(
+                self.get(
+                    f"https://api.github.com/repos/{repository}/git/trees/{metadata['tree']['sha']}?recursive=1",
+                    8 * 1048576,
+                )
+            )
+            if tree.get("sha") != metadata["tree"]["sha"] or tree.get("truncated") is not False:
+                raise SourceError("source_git_tree_metadata_rejected")
+            entries = tree.get("tree")
+            if not isinstance(entries, list) or len(entries) > LIMITS["files"] * 2:
+                raise SourceError("source_git_tree_metadata_rejected")
+            for item in entries:
+                if item.get("mode") != "160000":
+                    continue
+                name, sha = item.get("path"), item.get("sha")
+                if (
+                    not isinstance(name, str)
+                    or not isinstance(sha, str)
+                    or re.fullmatch(r"[a-f0-9]{40}", sha) is None
+                    or item.get("type") != "commit"
+                    or name in links
+                ):
+                    raise SourceError("source_gitlink_rejected")
+                safe_name(name)
+                links[name] = sha
+            if set(configured) != set(links):
+                raise SourceError("source_gitmodules_gitlink_mismatch")
+        git_files = dict(own_files)
+        for name, sha in links.items():
+            # Reject tracked files, overlapping links, and archive directory aliases.
+            prefixes = {"/".join(name.split("/")[:depth]) for depth in range(1, len(name.split("/")) + 1)}
+            for item in root.rglob("*"):
+                relative = item.relative_to(root).as_posix()
+                if any(relative.casefold() == prefix.casefold() and relative != prefix for prefix in prefixes):
+                    raise SourceError("source_archive_case_alias")
+                if item.is_file() and (
+                    relative == name or relative.startswith(name + "/")
+                    or name.startswith(relative + "/")
+                ):
+                    raise SourceError("source_gitlink_path_conflict")
+            target = root / name
+            if target.exists() and (not target.is_dir() or any(target.iterdir())):
+                raise SourceError("source_gitlink_path_conflict")
+            git_files[name] = {"mode": "160000", "git_sha1": sha}
+        if tree_hash(git_files) != metadata["tree"]["sha"]:
+            raise SourceError("source_git_tree_mismatch")
+        evidence = dict(
+            repository=repository,
+            commit=commit,
+            tree_sha1=metadata["tree"]["sha"],
+            archive_sha256=digest(archive),
+            source_sha256=digest(canonical(own_files)),
+        )
+        if path:
+            self.submodules.append(dict(path=path, **evidence))
+        files = dict(own_files)
+        for name in sorted(links):
+            child_path = path + "/" + name if path else name
+            child, _ = self.fetch(
+                configured[name], links[name], root / name, child_path, (*ancestors, identity)
+            )
+            files.update({name + "/" + key: value for key, value in child.items()})
+        return files, evidence
 
 
 class SourceSnapshots:
@@ -267,11 +490,11 @@ class SourceSnapshots:
             source_commit=commit,
             source_principal=principal,
             source_repository=registration.github_repository,
-            source_registration_sha256=digest(registration.model_dump_json().encode()),
+            source_registration_sha256=registration_digest(registration),
             limits=LIMITS,
             stages=["source_download", "source_validate", "source_publish"],
             effects=[
-                "Fetches one registered public GitHub commit into a private broker snapshot",
+                "Fetches a registered public GitHub commit and fixed allowlisted Gitlinks into a private snapshot",
                 "No user worktree overwrite, build, USB, flash, credential or SDK installation",
                 "Bounded cache; no automatic deletion of retained snapshots",
             ],
@@ -307,50 +530,29 @@ class SourceSnapshots:
         try:
             repository, commit = plan["source_repository"], plan["source_commit"]
             stage("source_download")
-            metadata = json.loads(
-                self.transport(
-                    f"https://api.github.com/repos/{repository}/git/commits/{commit}",
-                    deadline,
-                    valid,
-                    1048576,
-                )
-            )
-            if (
-                metadata.get("sha") != commit
-                or re.fullmatch(r"[a-f0-9]{40}", metadata.get("tree", {}).get("sha", "")) is None
-            ):
-                raise SourceError("source_commit_metadata_mismatch")
-            archive = self.transport(
-                f"https://codeload.github.com/{repository}/zip/{commit}",
-                deadline,
-                valid,
-                LIMITS["download_bytes"],
-            )
             source = pending / "source"
-            source.mkdir()
-            stage("source_validate")
-            files = extract(
-                archive,
-                source,
-                repository.split("/")[1] + "-" + commit,
-                valid,
-                root / ("f" * 64) / "source",
+            archives = RepositoryArchives(
+                self.transport, registration, deadline, valid, root / ("f" * 64) / "source"
             )
-            if tree_hash(files) != metadata["tree"]["sha"]:
-                raise SourceError("source_git_tree_mismatch")
+            stage("source_validate")
+            files, evidence = archives.fetch(repository, commit, source)
             value = dict(
-                schema_version=1,
+                schema_version=2 if archives.submodules else 1,
                 fetch_job_id=plan["job_id"],
                 principal=principal,
                 project_id=project_id,
                 repository=repository,
                 commit=commit,
-                tree_sha1=metadata["tree"]["sha"],
-                archive_sha256=digest(archive),
+                tree_sha1=evidence["tree_sha1"],
+                archive_sha256=evidence["archive_sha256"],
                 source_sha256=digest(canonical(files)),
                 files=files,
                 registration_sha256=plan["source_registration_sha256"],
             )
+            if archives.submodules:
+                validate_submodule_provenance(archives.submodules)
+                value["submodules"] = archives.submodules
+                value["root_source_sha256"] = evidence["source_sha256"]
             encoded = canonical(value)
             if len(encoded) > 32 * 1048576:
                 raise SourceError("source_receipt_limit")
@@ -367,6 +569,7 @@ class SourceSnapshots:
                 raise SourceError("source_snapshot_conflict")
             pending.rename(target)
             return dict(
+                **({"submodules": value["submodules"]} if archives.submodules else {}),
                 source_receipt=receipt,
                 repository=repository,
                 commit=commit,
@@ -398,13 +601,19 @@ class SourceSnapshots:
                 raise SourceError("source_receipt_changed")
             value = json.loads(raw)
             if (
-                value["schema_version"] != 1
+                value["schema_version"] not in (1, 2)
                 or value["principal"] != principal
                 or value["project_id"] != project_id
-                or value["registration_sha256"] != digest(registration.model_dump_json().encode())
+                or value["registration_sha256"] not in (
+                    {registration_digest(registration), registration_digest(registration, legacy=True)}
+                    if value["schema_version"] == 1
+                    else {registration_digest(registration)}
+                )
             ):
                 raise SourceError("source_receipt_not_owned")
             source = root / "source"
+            if value["schema_version"] == 2:
+                validate_submodule_provenance(value.get("submodules"))
             _not_link(source)
             files: dict[str, dict[str, Any]] = {}
             for item in source.rglob("*"):

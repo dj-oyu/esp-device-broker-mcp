@@ -350,6 +350,9 @@ class FirmwareBuild:
             source_sha256=metadata["source_sha256"],
             dependency_policy="vendored_components_no_fetch",
         )
+        if metadata["schema_version"] == 2:
+            provenance["submodules"] = metadata["submodules"]
+            provenance["dependency_policy"] = "gitlinks_fixed_commits_no_fetch"
         return project.model_copy(update={"project_dir": root}), provenance
 
     def prepare(
