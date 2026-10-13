@@ -45,7 +45,10 @@ class ProcessMonitorTests(unittest.TestCase):
             with self.assertRaises(ProcessDeadlineExpired):
                 process.run(
                     [sys.executable, "-c", "import time; time.sleep(60)"],
-                    dict(os.environ), Path(temp), lambda line, stream: None, timeout=0.2,
+                    dict(os.environ),
+                    Path(temp),
+                    lambda line, stream: None,
+                    timeout=0.2,
                 )
         self.assertFalse(process.active)
         self.assertFalse(process.uncertain)

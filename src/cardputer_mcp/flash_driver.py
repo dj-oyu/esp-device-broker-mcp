@@ -273,14 +273,16 @@ class NativeFlashDriver:
             raise FlashFailure("flash_native_failed_needs_review") from None
         except Exception:
             if read_progress is not None:
-                code = (
+                failure_code = (
                     "flash_cancelled_needs_review"
                     if self._stop.is_set() or self.process.stop_requested.is_set()
                     else "flash_native_failed_needs_review"
                 )
                 if self.progress_log is not None:
-                    self.progress_log(f"error: ROM read stopped {code}; {read_progress.summary()}")
-                raise FlashFailure(code) from None
+                    self.progress_log(
+                        f"error: ROM read stopped {failure_code}; {read_progress.summary()}"
+                    )
+                raise FlashFailure(failure_code) from None
             raise FlashFailure("flash_native_failed_needs_review") from None
         finally:
             env.clear()
