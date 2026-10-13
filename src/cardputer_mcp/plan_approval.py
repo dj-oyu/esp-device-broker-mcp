@@ -40,6 +40,7 @@ _SERIAL_KEYS = {
 _ATTESTATIONS = {
     "none": "",
     "flash_device_read_verified": "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ",
+    "flash_device_firmware_recovery_verified": "DEVICE AND FIRMWARE RECOVERY VERIFIED FOR THIS EXACT PLAN",
     "flash_device_backup_verified": "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN",
     "device_free_firmware": "DEVICE FREE AND FIRMWARE VERIFIED",
     "device_home_firmware": "DEVICE HOME AND FIRMWARE VERIFIED",
@@ -420,7 +421,8 @@ class PlanApprovals:
         if plan["test"] == TestName.BACKUP.value:
             return "flash_device_read_verified"
         if plan["test"] in (TestName.FLASH.value, TestName.RESTORE.value):
-            return "flash_device_backup_verified"
+            return ("flash_device_firmware_recovery_verified"
+                    if plan["recovery_kind"] == "artifact_bundle" else "flash_device_backup_verified")
         if plan["backend"] == "serial":
             if plan["test"] == "hello":
                 return "device_free_firmware"

@@ -22,8 +22,13 @@ class PersistenceTests(unittest.TestCase):
     def test_failed_final_authority_check_keeps_old_pointer_and_running_job(self):
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp) / "state.sqlite3")
-            promotion = dict(device_id="fixture", principal="owner", receipt="a" * 64,
-                             kind="artifact_bundle", baseline="initial-backup")
+            promotion = dict(
+                device_id="fixture",
+                principal="owner",
+                receipt="a" * 64,
+                kind="artifact_bundle",
+                baseline="initial-backup",
+            )
             store.put_plan("a" * 64, {})
             store.add_job("one", "a" * 64)
             store.set_job("one", "running")
@@ -33,8 +38,9 @@ class PersistenceTests(unittest.TestCase):
             store.set_job("two", "running")
             checks = iter((True, False))
             with self.assertRaises(ValueError):
-                store.finish_firmware("two", "verified", promotion | {"receipt": "b" * 64},
-                                      lambda: next(checks))
+                store.finish_firmware(
+                    "two", "verified", promotion | {"receipt": "b" * 64}, lambda: next(checks)
+                )
             self.assertEqual(store.firmware_current("fixture", "owner"), before)
             self.assertEqual(store.job("two")["state"], "running")
             store.db.close()

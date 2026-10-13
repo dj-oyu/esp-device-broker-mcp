@@ -1,6 +1,6 @@
 # Last-known-good firmware: implementation in progress
 
-This draft does not yet change the live flash/restore contract.
+Runtime integration is in progress; this PR is not ready for hardware use.
 
 - Keep the existing complete device-bound backup as an immutable initial rescue
   baseline of type `full_backup`; never confuse it with firmware-only recovery.
@@ -21,6 +21,6 @@ This draft does not yet change the live flash/restore contract.
   Unknown/layout/security changes stop for separate validation; no data migration
   mechanism is part of this work. Firmware rollback cannot promise data compatibility.
 
-Completed: independent synthetic single-factory partition validation.
-Pending: persistent hash objects/pins, successful-job transaction, flash/restore
-integration, promotion/cancel/crash/retention regressions, tool/docs updates and CI.
+Implemented: partition fences, private hash objects, atomic successful-job selection,
+frozen recovery targets and the flash/restore vertical path. Remaining: expanded
+failure/retention regression and terminal CI/local review.

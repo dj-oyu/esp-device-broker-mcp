@@ -129,6 +129,7 @@ class FlashLifecycle:
         backup: bytes | None = None,
         recovery: tuple[FlashBundle, tuple[bytes, ...]] | None = None,
         defer_commit: bool = False,
+        recovery_table_offset: int | None = None,
     ) -> tuple[BackupReceipt | None, bytes | None, dict[str, Any]]:
         with self._lock:
             if self.active or self.uncertain or self.driver.active or self.driver.uncertain:
@@ -164,7 +165,10 @@ class FlashLifecycle:
                 )
                 result = receipt, data, {"backup_verified": True, "hardware_write": False}
             else:
-                if plan.operation not in ("flash", "restore") or plan.expected_device_sha256 is None:
+                if (
+                    plan.operation not in ("flash", "restore")
+                    or plan.expected_device_sha256 is None
+                ):
                     raise FlashFailure("verified_device_recovery_required")
                 if plan.recovery_kind == "artifact_bundle":
                     if recovery is None:
@@ -175,7 +179,11 @@ class FlashLifecycle:
                         for item, data in zip(prior.segments, prior_images, strict=True)
                     ):
                         raise FlashFailure("lkg_bytes_changed")
-                elif backup is None or len(backup) != plan.flash_bytes or hashlib.sha256(backup).hexdigest() != plan.backup_sha256:
+                elif (
+                    backup is None
+                    or len(backup) != plan.flash_bytes
+                    or hashlib.sha256(backup).hexdigest() != plan.backup_sha256
+                ):
                     raise FlashFailure("verified_device_backup_required")
                 if plan.operation == "flash":
                     if (
@@ -203,7 +211,10 @@ class FlashLifecycle:
                         for item in bundle.segments:
                             size = ((item.size + 4095) // 4096) * 4096
                             self._live(live)
-                            if self.driver.read(item.offset, size) != backup[item.offset:item.offset + size]:
+                            if (
+                                self.driver.read(item.offset, size)
+                                != backup[item.offset : item.offset + size]
+                            ):
                                 raise FlashFailure("flash_backup_stale_needs_review")
                     segments = tuple(
                         (item.offset, data)
@@ -211,7 +222,17 @@ class FlashLifecycle:
                     )
                 elif recovery is not None:
                     prior, prior_images = recovery
-                    segments = tuple((item.offset, data) for item, data in zip(prior.segments, prior_images, strict=True))
+                    table = next((item for item in prior.segments if item.offset == recovery_table_offset), None)
+                    if table is None:
+                        raise FlashFailure("lkg_restore_layout_evidence_required")
+                    expected = prior_images[prior.segments.index(table)]
+                    self._live(live)
+                    if self.driver.read(table.offset, table.size) != expected:
+                        raise FlashFailure("lkg_restore_partition_changed_needs_review")
+                    segments = tuple(
+                        (item.offset, data)
+                        for item, data in zip(prior.segments, prior_images, strict=True)
+                    )
                 else:
                     assert backup is not None
                     segments = ((0, backup),)

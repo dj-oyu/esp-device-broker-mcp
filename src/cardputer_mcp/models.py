@@ -61,13 +61,22 @@ class PrepareRequest(LeaseRequest):
         if self.test not in FLASH_TESTS:
             if any(
                 value is not None
-                for value in (self.device_id, self.build_job_id, self.backup_job_id, self.lkg_receipt)
+                for value in (
+                    self.device_id,
+                    self.build_job_id,
+                    self.backup_job_id,
+                    self.lkg_receipt,
+                )
             ):
                 raise ValueError("flash_references_only_for_flash_operations")
         elif self.device_id is None or self.project_id is not None:
             raise ValueError("registered_flash_device_required")
         elif self.test == TestName.BACKUP:
-            if self.build_job_id is not None or self.backup_job_id is not None or self.lkg_receipt is not None:
+            if (
+                self.build_job_id is not None
+                or self.backup_job_id is not None
+                or self.lkg_receipt is not None
+            ):
                 raise ValueError("backup_has_no_build_or_backup_input")
         elif self.backup_job_id is not None and self.lkg_receipt is not None:
             raise ValueError("choose_one_recovery_source")

@@ -138,7 +138,10 @@ class Store:
         return dict(row) if row else None
 
     def finish_firmware(
-        self, job_id: str, result: str, promotion: dict[str, str] | None,
+        self,
+        job_id: str,
+        result: str,
+        promotion: dict[str, str] | None,
         guard: Callable[[], bool],
     ) -> None:
         """One durable commit: only a fully validated result can select a receipt."""
@@ -154,16 +157,28 @@ class Store:
             if promotion is not None:
                 self.db.execute(
                     "INSERT OR IGNORE INTO firmware_lkg_history VALUES (?,?,?,?,?,?)",
-                    (promotion["receipt"], promotion["device_id"], promotion["principal"],
-                     promotion["kind"], promotion["baseline"], job_id),
+                    (
+                        promotion["receipt"],
+                        promotion["device_id"],
+                        promotion["principal"],
+                        promotion["kind"],
+                        promotion["baseline"],
+                        job_id,
+                    ),
                 )
                 self.db.execute(
                     "INSERT INTO firmware_lkg VALUES (?,?,?,?,?,?) "
                     "ON CONFLICT(device_id) DO UPDATE SET principal=excluded.principal, "
                     "receipt=excluded.receipt,kind=excluded.kind,baseline=excluded.baseline, "
                     "completed_job=excluded.completed_job",
-                    (promotion["device_id"], promotion["principal"], promotion["receipt"],
-                     promotion["kind"], promotion["baseline"], job_id),
+                    (
+                        promotion["device_id"],
+                        promotion["principal"],
+                        promotion["receipt"],
+                        promotion["kind"],
+                        promotion["baseline"],
+                        job_id,
+                    ),
                 )
             if guard() is not True:
                 raise ValueError("firmware_final_commit_not_authorized")

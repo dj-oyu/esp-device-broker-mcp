@@ -50,7 +50,7 @@ def factory_layout(data: bytes, *, table_offset: int, flash_bytes: int) -> Facto
         if (
             magic != b"\xaa\x50"
             or kind not in (0, 1)
-            or flags != 0
+            or (flags != 0 if kind == 0 else flags not in (0, 2))
             or offset < table_offset + 4096
             or offset % 4096
             or size == 0

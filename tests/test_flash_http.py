@@ -88,7 +88,7 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
     service.resident.firmware_flash.settings = service.resident.settings
     driver = FakeDriver()
     driver.data = bytearray(b"x" * registration.flash_bytes)
-    driver.data[0x8000:0x8000 + len(table_bytes)] = table_bytes
+    driver.data[0x8000 : 0x8000 + len(table_bytes)] = table_bytes
     driver.security = replace(driver.security, flash_bytes=registration.flash_bytes)
     driver.summary["elf_sha256_prefix"] = elf_hash[:16]
     service.resident.firmware_flash.driver_factory = lambda *args: driver
@@ -143,6 +143,8 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
                     if action == "firmware_backup"
                     else "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN"
                 )
+                if prepared["plan"]["recovery_kind"] == "artifact_bundle":
+                    attestation = "DEVICE AND FIRMWARE RECOVERY VERIFIED FOR THIS EXACT PLAN"
                 response = await http.post(
                     "/operator/approve-plan",
                     json={
@@ -187,16 +189,34 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
             # First full restore made its exact rescue target current. A new
             # successful flash replaces it with the immutable firmware bundle.
             prepared = await approve("flash-two", "firmware_flash", build_job_id="build-one")
-            await call(remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]})
+            await call(
+                remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+            )
             await service.resident.queue.join()
             assert service.resident.job("flash-two")["state"] == "succeeded"
             current = store.firmware_current("fixture", principal)
             assert current["kind"] == "artifact_bundle"
             selected = current["receipt"]
+            reads = []
+            original_read = driver.read
+
+            def tracked_read(offset, size):
+                reads.append(size)
+                return original_read(offset, size)
+
+            driver.read = tracked_read
+            prepared = await approve("flash-three", "firmware_flash", build_job_id="build-one")
+            await call(remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]})
+            await service.resident.queue.join()
+            assert service.resident.job("flash-three")["state"] == "succeeded"
+            assert registration.flash_bytes not in reads
+            assert store.firmware_current("fixture", principal)["receipt"] == selected
             # Build retention cannot remove the private recovery bytes.
             service.resident.firmware_build.artifacts._records.clear()
             prepared = await approve("restore-bundle", "firmware_restore", lkg_receipt=selected)
-            await call(remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]})
+            await call(
+                remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+            )
             await service.resident.queue.join()
             assert service.resident.job("restore-bundle")["state"] == "succeeded"
             assert store.firmware_current("fixture", principal)["receipt"] == selected

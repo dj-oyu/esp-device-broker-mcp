@@ -32,18 +32,28 @@ def compatibility(
     boot, table, app = (roles[name] for name in ("bootloader", "partition_table", "app"))
     geometry = factory_layout(files[table.name], table_offset=table.offset, flash_bytes=capacity)
     if (
-        boot.offset != 0 or ((boot.size + 4095) // 4096) * 4096 > table.offset
+        boot.offset != 0
+        or ((boot.size + 4095) // 4096) * 4096 > table.offset
         or app.offset != geometry.app_offset
         or ((app.size + 4095) // 4096) * 4096 > geometry.app_bytes
     ):
         raise FlashFailure("lkg_firmware_range_not_allowed")
-    protected = {key: value for key, value in security.items() if key.startswith(
-        ("SECURE_", "FLASH_ENC", "BOOT_ROM_LOG", "BOOTLOADER_APP_", "ESP_SECURE_")
-    )}
+    protected = {
+        key: value
+        for key, value in security.items()
+        if key.startswith(
+            ("SECURE_", "FLASH_ENC", "BOOT_ROM_LOG", "BOOTLOADER_APP_", "ESP_SECURE_")
+        )
+    }
     return {
-        **asdict(geometry), "table_offset": table.offset,
-        "security_sha256": hashlib.sha256(json.dumps(protected, sort_keys=True).encode()).hexdigest(),
-        "mode": bundle.flash_mode, "frequency": bundle.flash_freq, "size": bundle.flash_size,
+        **asdict(geometry),
+        "table_offset": table.offset,
+        "security_sha256": hashlib.sha256(
+            json.dumps(protected, sort_keys=True).encode()
+        ).hexdigest(),
+        "mode": bundle.flash_mode,
+        "frequency": bundle.flash_freq,
+        "size": bundle.flash_size,
     }
 
 
@@ -54,7 +64,7 @@ def same_layout(old: dict[str, Any], new: dict[str, Any]) -> None:
 
 def baseline_layout(backup: bytes, compat: dict[str, Any], table: bytes) -> None:
     start = compat["table_offset"]
-    if backup[start:start + len(table)] != table:
+    if backup[start : start + len(table)] != table:
         raise FlashFailure("lkg_initial_partition_change_not_allowed")
 
 
@@ -64,7 +74,10 @@ def bundle_record(bundle: FlashBundle) -> dict[str, Any]:
 
 def bundle_from_record(value: dict[str, Any]) -> FlashBundle:
     return FlashBundle(
-        value["manifest_sha256"], value["layout_sha256"],
+        value["manifest_sha256"],
+        value["layout_sha256"],
         tuple(FlashSegment(**item) for item in value["segments"]),
-        value["flash_mode"], value["flash_size"], value["flash_freq"],
+        value["flash_mode"],
+        value["flash_size"],
+        value["flash_freq"],
     )

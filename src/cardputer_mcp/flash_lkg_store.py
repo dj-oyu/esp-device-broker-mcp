@@ -84,7 +84,9 @@ class FirmwareSnapshots:
             with os.fdopen(descriptor, "rb") as handle:
                 opened = os.fstat(handle.fileno())
                 if (opened.st_dev, opened.st_ino, opened.st_size) != (
-                    info.st_dev, info.st_ino, info.st_size
+                    info.st_dev,
+                    info.st_ino,
+                    info.st_size,
                 ):
                     raise ValueError
                 data = handle.read(limit + 1)
@@ -95,7 +97,9 @@ class FirmwareSnapshots:
             raise FlashFailure("lkg_object_missing_or_changed") from None
 
     def stage(self, metadata: dict[str, Any], files: dict[str, bytes]) -> str:
-        if (not files and metadata.get("kind") != "full_backup") or sum(map(len, files.values())) > 100 * 1048576:
+        if (not files and metadata.get("kind") != "full_backup") or sum(
+            map(len, files.values())
+        ) > 100 * 1048576:
             raise FlashFailure("lkg_snapshot_size_invalid")
         receipts = {name: self.put(data) for name, data in files.items()}
         envelope = {"schema_version": 1, "metadata": metadata, "files": receipts}
@@ -104,7 +108,10 @@ class FirmwareSnapshots:
     def load(self, receipt: str) -> tuple[dict[str, Any], dict[str, bytes]]:
         try:
             value = json.loads(self.get(receipt, 1048576))
-            if set(value) != {"schema_version", "metadata", "files"} or value["schema_version"] != 1:
+            if (
+                set(value) != {"schema_version", "metadata", "files"}
+                or value["schema_version"] != 1
+            ):
                 raise ValueError
             return value["metadata"], {
                 name: self.get(digest) for name, digest in value["files"].items()
