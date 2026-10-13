@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx2
+import pytest
 from test_registry_http import registry_service as registry_service
 from test_source_snapshot import COMMIT, FILES, REPOSITORY, archive
 
@@ -15,8 +16,17 @@ from cardputer_mcp.config import BuildProject, SourceRepository
 from cardputer_mcp.source_snapshot import SourceError, file_receipt, tree_hash
 
 
-async def test_explicit_source_approval_then_owned_receipt_build_plan(registry_service, tmp_path):
+@pytest.mark.parametrize("backend_name", ["mock", "serial"])
+async def test_explicit_source_approval_then_owned_receipt_build_plan(
+    registry_service, tmp_path, monkeypatch, backend_name
+):
     service = registry_service
+    monkeypatch.setattr(service.backend, "name", backend_name)
+    monkeypatch.setattr(
+        service.backend,
+        "device",
+        "mock-cardputer" if backend_name == "mock" else "configured-cardputer",
+    )
     key = service.keys["second"]
     profile = tmp_path / "profile.ps1"
     profile.write_text("synthetic")
