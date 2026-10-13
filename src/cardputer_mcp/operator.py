@@ -51,12 +51,14 @@ def approve_plan(
                 "This exact plan may reset/read/write the selected device. Verify the "
                 "device/artifact/backup. Partial writes are not undone; no automatic restore.\n"
             )
-        elif plan.get("test") == "firmware_build":
+        elif plan.get("test") in ("firmware_build", "firmware_fetch_source"):
             from .plan_approval import PlanApprovals
 
             PlanApprovals._schema(plan)
             disclosure = (
-                "Executes trusted local profile and project build scripts as your OS user. "
+                "Fetches one registered public commit; no build, flash, or USB. "
+                if plan["test"] == "firmware_fetch_source"
+                else "Executes trusted local profile and project build scripts as your OS user. "
                 "Output is shared with the requesting principal; redaction is best effort. "
                 "External ESP-IDF must be exactly 6.0.1. No flash or USB operation.\n"
             )

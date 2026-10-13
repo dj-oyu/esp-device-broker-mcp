@@ -24,6 +24,7 @@ class TestName(StrEnum):
     FIRMWARE = "firmware_observe"
     RESTART = "restart_and_observe"
     BUILD = "firmware_build"
+    SOURCE = "firmware_fetch_source"
     BACKUP = "firmware_backup"
     FLASH = "firmware_flash"
     RESTORE = "firmware_restore"
@@ -55,9 +56,18 @@ class PrepareRequest(LeaseRequest):
     build_job_id: Identifier | None = None
     backup_job_id: Identifier | None = None
     lkg_receipt: Digest | None = None
+    source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
+    source_receipt: Digest | None = None
 
     @model_validator(mode="after")
     def flash_references(self) -> "PrepareRequest":
+        if self.test == TestName.SOURCE:
+            if self.project_id is None or self.source_commit is None or self.source_receipt is not None:
+                raise ValueError("source_fetch_requires_registered_project_and_full_commit")
+        elif self.source_commit is not None:
+            raise ValueError("source_commit_only_for_fetch")
+        if self.source_receipt is not None and (self.test != TestName.BUILD or self.project_id is None):
+            raise ValueError("source_receipt_only_for_registered_build")
         if self.test not in FLASH_TESTS:
             if any(
                 value is not None
