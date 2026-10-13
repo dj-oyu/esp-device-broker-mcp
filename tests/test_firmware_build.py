@@ -1,5 +1,6 @@
 """Dependency-free unit tests; also collected by pytest in Windows/CI."""
 
+import json
 import sys
 import tempfile
 import threading
@@ -641,4 +642,3 @@ class BuildLifecycleRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
