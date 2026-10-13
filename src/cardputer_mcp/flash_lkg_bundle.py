@@ -20,7 +20,9 @@ def compatibility(
     segments = {item.name: item for item in bundle.segments}
     roles = {}
     for role in ("bootloader", "partition_table", "app"):
-        value = layout.get(role)
+        value = layout.get("partition-table") if role == "partition_table" else layout.get(role)
+        if value is None and role == "partition_table":
+            value = layout.get("partition_table")
         if not isinstance(value, dict) or value.get("file") not in segments:
             raise FlashFailure("lkg_firmware_roles_required")
         item = segments[value["file"]]

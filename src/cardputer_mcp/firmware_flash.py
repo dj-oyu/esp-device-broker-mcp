@@ -14,15 +14,15 @@ from .build_logs import BuildLogs
 from .flash_backup import BackupStore
 from .flash_driver import NativeFlashDriver, esptool_fingerprint
 from .flash_lifecycle import FlashFailure, FlashLifecycle, Operation, OperationPlan
-from .flash_manifest import _file, verify_bundle
-from .flash_lkg_store import FirmwareSnapshots
 from .flash_lkg_bundle import (
+    baseline_layout,
+    bundle_from_record,
+    bundle_record,
     compatibility,
     same_layout,
-    baseline_layout,
-    bundle_record,
-    bundle_from_record,
 )
+from .flash_lkg_store import FirmwareSnapshots
+from .flash_manifest import _file, verify_bundle
 from .models import TestName
 
 FLASH_ACTIONS: dict[str, Operation] = {
@@ -42,7 +42,10 @@ FLASH_EFFECTS = [
     "Successful flash/restore atomically selects verified recovery bytes with the successful job",
     "Retained LKG may replace full backup input; the exact receipt is frozen at prepare time",
     "Artifact restore targets firmware regions; full_backup restore also rewrites device data",
-    "Firmware may alter NVS/filesystem after boot; firmware recovery cannot promise data compatibility",
+    (
+        "Firmware may alter NVS/filesystem after boot; firmware recovery cannot promise "
+        "data compatibility"
+    ),
     (
         "Executes only the registered external Python/esptool 5.1.0 ROM worker; may "
         "reset the selected device"

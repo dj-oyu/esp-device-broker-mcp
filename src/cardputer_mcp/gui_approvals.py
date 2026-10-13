@@ -75,7 +75,7 @@ RESTART_NOTICE = (
 ATTESTATIONS = {
     "none": "",
     "flash_device_read_verified": "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ",
-    "flash_device_firmware_recovery_verified": "DEVICE AND FIRMWARE RECOVERY VERIFIED FOR THIS EXACT PLAN",
+    "firmware_recovery_verified": "DEVICE AND FIRMWARE RECOVERY VERIFIED FOR THIS EXACT PLAN",
     "flash_device_backup_verified": "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN",
     "device_free_firmware": "DEVICE FREE AND FIRMWARE VERIFIED",
     "device_home_firmware": "DEVICE HOME AND FIRMWARE VERIFIED",
@@ -289,7 +289,7 @@ class PlanReview:
             expected = "flash_device_read_verified"
         elif row.test in (TestName.FLASH.value, TestName.RESTORE.value):
             expected = (
-                "flash_device_firmware_recovery_verified"
+                "firmware_recovery_verified"
                 if plan["recovery_kind"] == "artifact_bundle"
                 else "flash_device_backup_verified"
             )

@@ -28,7 +28,7 @@ class FirmwareSnapshots:
 
     def _publish(self, pending: Path, target: Path) -> None:
         if os.name == "nt":
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel = vars(ctypes)["WinDLL"]("kernel32", use_last_error=True)
             move = kernel.MoveFileExW
             move.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_ulong]
             move.restype = ctypes.c_int

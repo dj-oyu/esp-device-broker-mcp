@@ -227,6 +227,19 @@ class FlashLifecycleTests(unittest.TestCase):
             self.run_plan()
         self.assertEqual(self.driver.writes, 1)
 
+    def test_lkg_restore_rejects_changed_live_table_before_any_write(self):
+        from dataclasses import replace
+        table = self.bundle.segments[0]
+        expected = self.image
+        self.driver.data[table.offset:table.offset + table.size] = b"z" * table.size
+        plan = replace(self.plan, operation="restore", recovery_kind="artifact_bundle")
+        with self.assertRaisesRegex(FlashFailure, "restore_partition_changed"):
+            self.engine.run(plan, plan.digest, live=lambda: True, reader_closed=lambda: True,
+                            stage=lambda name: None, recovery=(self.bundle, (expected,)),
+                            recovery_table_offset=table.offset)
+        self.assertEqual(self.driver.writes, 0)
+        self.assertTrue(self.driver.closed)
+
     def test_restore_requires_its_own_exact_plan_approval(self):
         plan = replace(self.plan, operation="restore", manifest_sha256=None)
         with self.assertRaisesRegex(FlashFailure, "approval_or_handoff"):

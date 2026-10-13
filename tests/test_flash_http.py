@@ -36,7 +36,7 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
     (fixture.root / "partition_table.bin").write_bytes(table_bytes)
     fixture.manifest["artifacts"].append(fixture.receipt("partition_table.bin", table_bytes))
     fixture.layout["bootloader"] = {"offset": "0x0", "file": "boot.bin"}
-    fixture.layout["partition_table"] = {"offset": "0x8000", "file": "partition_table.bin"}
+    fixture.layout["partition-table"] = {"offset": "0x8000", "file": "partition_table.bin"}
     fixture.layout["flash_files"]["0x8000"] = "partition_table.bin"
     fixture.save_layout()
 
