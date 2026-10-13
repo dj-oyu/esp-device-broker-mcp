@@ -11,7 +11,7 @@ from cardputer_mcp.config import BuildProject, RegisteredBuildTool, Settings, So
 from cardputer_mcp.firmware_build import FirmwareBuild, hash_file
 from cardputer_mcp.source_snapshot import SourceSnapshots
 
-COMMIT = "6a139780b7eeececfaa17cf2ddee576a10a027f5"
+COMMIT = "0ba36a4c388a6e5815869cffe51a1d5ad2c1bb9c"
 
 
 def main():
@@ -31,7 +31,7 @@ def main():
             node_tool=registered, build_min_free_bytes=0,
             source_repository=SourceRepository(
                 github_repository="dj-oyu/cardputer-adv-pocketjs", cache_root=root / "cache",
-                private_acl_confirmed=True,
+                private_acl_confirmed=True, submodule_repositories=["lieff/minimp3"],
             ),
         )})
         sources = SourceSnapshots(settings)
@@ -40,7 +40,10 @@ def main():
         source, metadata = sources.resolve("cardputer", result["source_receipt"], "ci-owner")
         for required in ("components/quickjs-ng/CMakeLists.txt", "components/pocketjs_guest/CMakeLists.txt", "tools/make_app_chunks.py", "apps/derby/derby_play.js"):
             assert (source / required).is_file(), required
-        assert metadata["tree_sha1"] == "f3e2d2a5496800dd705b7a02f35a4b9e66801f72"
+        assert metadata["tree_sha1"] == "4843f0a4fac193f9f73ce0d0a3f31dd1491f8a63"
+        assert (source / "third_party/minimp3/minimp3.h").is_file()
+        assert metadata["submodules"][0]["commit"] == "ea99364f61c14656440e8d77e9c233ccf3124633"
+        assert metadata["submodules"][0]["path"] == "third_party/minimp3"
         assert not (root / "worktree").exists()
         if os.name == "nt":
             build = FirmwareBuild(settings).prepare("cardputer", "ci-owner", result["source_receipt"])

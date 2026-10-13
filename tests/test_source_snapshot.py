@@ -29,11 +29,11 @@ FILES = {
 }
 
 
-def archive(files=FILES, *, mode=stat.S_IFREG | 0o644):
+def archive(files=FILES, *, mode=stat.S_IFREG | 0o644, repository=REPOSITORY, commit=COMMIT):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as zipped:
         for name, data in files.items():
-            entry = zipfile.ZipInfo("project-" + COMMIT + "/" + name)
+            entry = zipfile.ZipInfo(repository.split("/")[1] + "-" + commit + "/" + name)
             entry.external_attr = mode << 16
             zipped.writestr(entry, data)
     return stream.getvalue()
@@ -169,6 +169,151 @@ class SourceTests(unittest.TestCase):
                     test=Action.SOURCE,
                     **arguments,
                 )
+
+    def submodule_fixture(self, *, nested=False, modules=None, gitlink=None):
+        child_repo, child_commit = "lieff/minimp3", "b" * 40
+        nested_repo, nested_commit = "fixture/nested", "c" * 40
+        root_files = dict(FILES)
+        root_files[".gitmodules"] = modules or (
+            b'[submodule "minimp3"]\npath = third_party/minimp3\n'
+            b"url = https://github.com/lieff/minimp3.git\n"
+        )
+        child_files = {"minimp3.h": b"synthetic upstream header"}
+        nested_files = {"nested.h": b"nested header"}
+        if nested:
+            child_files[".gitmodules"] = (
+                b'[submodule "nested"]\npath = nested\n'
+                b"url = https://github.com/fixture/nested.git\n"
+            )
+        graph = {
+            (REPOSITORY, COMMIT): (root_files, {"third_party/minimp3": gitlink or child_commit}),
+            (child_repo, child_commit): (child_files, {"nested": nested_commit} if nested else {}),
+            (nested_repo, nested_commit): (nested_files, {}),
+        }
+        trees = {}
+        for identity, (files, links) in graph.items():
+            receipts = {name: file_receipt(data, "100644") for name, data in files.items()}
+            receipts.update(
+                {name: {"mode": "160000", "git_sha1": sha} for name, sha in links.items()}
+            )
+            trees[identity] = tree_hash(receipts)
+        registration = self.settings.build_projects["fixture"].source_repository
+        registered = registration.model_copy(
+            update={"submodule_repositories": [child_repo, nested_repo]}
+        )
+        project = self.settings.build_projects["fixture"].model_copy(
+            update={"source_repository": registered}
+        )
+        self.settings = self.settings.model_copy(update={"build_projects": {"fixture": project}})
+        self.snapshots.settings = self.settings
+
+        def transport(url, deadline, live, limit):
+            self.urls.append(url)
+            if "/git/commits/" in url:
+                repository, commit = url.removeprefix("https://api.github.com/repos/").split(
+                    "/git/commits/"
+                )
+                return json.dumps(
+                    {"sha": commit, "tree": {"sha": trees[repository, commit]}}
+                ).encode()
+            if "/git/trees/" in url:
+                repository, tree = url.removeprefix("https://api.github.com/repos/").split(
+                    "/git/trees/"
+                )
+                tree = tree.removesuffix("?recursive=1")
+                identity = next(key for key in graph if key[0] == repository and trees[key] == tree)
+                links = graph[identity][1]
+                return json.dumps(
+                    {
+                        "sha": tree,
+                        "truncated": False,
+                        "tree": [
+                            {"path": name, "sha": sha, "type": "commit", "mode": "160000"}
+                            for name, sha in links.items()
+                        ],
+                    }
+                ).encode()
+            repository, commit = url.removeprefix("https://codeload.github.com/").split("/zip/")
+            return archive(graph[repository, commit][0], repository=repository, commit=commit)
+
+        self.snapshots.transport = transport
+        return child_commit
+
+    def test_fixed_gitlinks_recursive_receipt_and_build_provenance(self):
+        commit = self.submodule_fixture(nested=True)
+        result = self.fetch()
+        source, metadata = self.snapshots.resolve("fixture", result["source_receipt"], "owner")
+        self.assertEqual(metadata["schema_version"], 2)
+        self.assertEqual(result["submodules"][0]["commit"], commit)
+        self.assertEqual(result["submodules"][0]["path"], "third_party/minimp3")
+        self.assertEqual(len(result["submodules"]), 2)
+        self.assertEqual(
+            (source / "third_party/minimp3/nested/nested.h").read_bytes(), b"nested header"
+        )
+        plan = FirmwareBuild(self.settings).prepare("fixture", "owner", result["source_receipt"])
+        self.assertEqual(plan["source_provenance"]["submodules"], result["submodules"])
+        self.assertEqual(
+            plan["source_provenance"]["dependency_policy"], "gitlinks_fixed_commits_no_fetch"
+        )
+        self.assertFalse(any("heads/" in url for url in self.urls))
+        (source / "third_party/minimp3/minimp3.h").write_bytes(b"changed")
+        with self.assertRaises(SourceError):
+            self.snapshots.resolve("fixture", result["source_receipt"], "owner")
+
+    def test_gitmodules_url_commands_paths_and_link_mismatch_rejected(self):
+        for extra in (
+            b"url = https://example.test/module.git\n",
+            b"url = ../minimp3.git\n",
+            b"url = https://github.com/unregistered/module.git\n",
+            b"url = https://github.com/lieff/minimp3.git\nupdate = !command\n",
+            b"url = https://github.com/lieff/minimp3.git\nbranch = main\n",
+        ):
+            self.submodule_fixture(modules=b'[submodule "m"]\npath = third_party/minimp3\n' + extra)
+            with self.assertRaises(SourceError):
+                self.fetch()
+            self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 0)
+        self.submodule_fixture(
+            modules=b'[submodule "m"]\npath = ../escape\nurl = https://github.com/lieff/minimp3.git\n'
+        )
+        with self.assertRaises(SourceError):
+            self.fetch()
+        self.submodule_fixture(gitlink="d" * 40)
+        with self.assertRaises(SourceError):
+            self.fetch()
+
+    def test_shared_submodule_limits_and_revocation_publish_nothing(self):
+        self.submodule_fixture(nested=True)
+        for limits in ({"count": 1}, {"depth": 0}):
+            with patch.dict("cardputer_mcp.source_snapshot.SUBMODULE_LIMITS", limits):
+                with self.assertRaises(SourceError):
+                    self.fetch()
+            self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 0)
+        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", expanded_bytes=100):
+            with self.assertRaises(SourceError):
+                self.fetch()
+        transport = self.snapshots.transport
+
+        def revoke(url, deadline, live, limit):
+            result = transport(url, deadline, live, limit)
+            if "lieff/minimp3" in url:
+                self.revoked = True
+            return result
+
+        self.revoked = False
+        self.snapshots.transport = revoke
+        plan = self.snapshots.prepare("fixture", COMMIT, "owner") | {"job_id": "revoked"}
+        with self.assertRaises(SourceError):
+            self.snapshots.fetch(plan, lambda: not self.revoked, lambda _: None)
+        self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 0)
+
+    def test_old_receipt_survives_allowlist_addition_without_mutation(self):
+        result = self.fetch()
+        receipt = result["source_receipt"]
+        raw = (self.root / "cache" / receipt / "receipt.json").read_bytes()
+        self.submodule_fixture()
+        _, metadata = self.snapshots.resolve("fixture", receipt, "owner")
+        self.assertEqual(metadata["schema_version"], 1)
+        self.assertEqual((self.root / "cache" / receipt / "receipt.json").read_bytes(), raw)
 
 
 if __name__ == "__main__":
