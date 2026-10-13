@@ -22,7 +22,7 @@ Supported operations:
 - `capture_home`: require physical HOME attestation, send one Esc and confirm HOME,
   receive one bounded render-buffer frame after a fixed s command, close
 
-No flash, arbitrary reset command, JavaScript upload, generic shell, raw serial tool, GRID,
+This fixed serial backend has no flash, arbitrary reset command, JavaScript upload, generic shell, raw serial tool, GRID,
 fault injection, arbitrary current-app screenshot, project build, ESP-IDF subprocess, or Tunnel setup
 is included. See [CAPTURE.md](CAPTURE.md) for capture approval and evidence limits.
 See [DEVICE-LOGS.md](DEVICE-LOGS.md) for log delivery, bounds and firmware identity limits.
@@ -228,3 +228,5 @@ and uncertain close retains ownership/requires review. No arbitrary key, command
 retry/reopen or firmware write API is added. Rendered pixels use the existing
 principal-bound, five-minute image cache and separate image delivery approval;
 raw game logs and unknown text are not persisted or emitted.
+
+Firmware backup/flash/restore are implemented as separate approved broker operations; see FIRMWARE-FLASH.md.

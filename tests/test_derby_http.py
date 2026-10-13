@@ -1,5 +1,7 @@
 """Actual local approval and MCP/image boundaries with a synthetic serial port."""
 
+import json
+
 import httpx2
 from test_derby_smoke import Wire
 from test_registry_http import registry_service as registry_service
@@ -54,7 +56,7 @@ async def test_fixed_smoke_local_approval_then_principal_bound_image(registry_se
         assert result["ok"], result
         await service.resident.queue.join()
         job = service.resident.job("derby-one")
-        assert job["state"] == "succeeded", job
+        assert job["state"] == "succeeded", json.dumps(job, sort_keys=True)
         assert job["result"] == "derby_demo_cycle_observed_render_buffer_lcd_unverified"
         assert wire.closed and wire.writes[-2:] == [b"s", b"q"]
         preview = service.resident.operator_image("derby-one")
