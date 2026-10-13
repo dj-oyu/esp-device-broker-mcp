@@ -1,5 +1,6 @@
 """Offline archives and immutable-source receipts; no downloads or SDK installs."""
 
+import base64
 import io
 import json
 import stat
@@ -230,6 +231,10 @@ class SourceTests(unittest.TestCase):
                         "tree": [
                             {"path": name, "sha": sha, "type": "commit", "mode": "160000"}
                             for name, sha in links.items()
+                        ] + [
+                            {"path": name, "sha": file_receipt(data, "100644")["git_sha1"],
+                             "mode": "100644", "type": "blob", "size": len(data)}
+                            for name, data in graph[identity][0].items()
                         ],
                     }
                 ).encode()
@@ -314,6 +319,102 @@ class SourceTests(unittest.TestCase):
         _, metadata = self.snapshots.resolve("fixture", receipt, "owner")
         self.assertEqual(metadata["schema_version"], 1)
         self.assertEqual((self.root / "cache" / receipt / "receipt.json").read_bytes(), raw)
+
+    def archive_restore_fixture(self, *, corrupt=None, tree_edit=None, archive_extra=False):
+        truth = dict(FILES) | {"missing.dat": b"binary\x00data", "scripts/build.cmd": b"line\n"}
+        receipts = {name: file_receipt(data, "100644") for name, data in truth.items()}
+        tree = tree_hash(receipts)
+        blobs = {receipts[name]["git_sha1"]: data for name, data in truth.items()}
+        entries = [
+            {"path": name, "mode": "100644", "type": "blob", "sha": value["git_sha1"],
+             "size": value["bytes"]}
+            for name, value in receipts.items()
+        ]
+        if tree_edit:
+            tree_edit(entries)
+        exported = {"sdkconfig.defaults": FILES["sdkconfig.defaults"], "scripts/build.cmd": b"line\r\n"}
+        if archive_extra:
+            exported["not-in-git.txt"] = b"extra"
+
+        def transport(url, deadline, live, limit):
+            self.urls.append(url)
+            if "/git/commits/" in url:
+                return json.dumps({"sha": COMMIT, "tree": {"sha": tree}}).encode()
+            if "/git/trees/" in url:
+                return json.dumps({"sha": tree, "truncated": False, "tree": entries}).encode()
+            if "/git/blobs/" in url:
+                sha = url.rsplit("/", 1)[1]
+                data = blobs[sha]
+                response = {"sha": sha, "size": len(data), "encoding": "base64",
+                            "content": base64.b64encode(data).decode(),
+                            "url": "https://untrusted.test/secret?token=private"}
+                if corrupt:
+                    corrupt(response)
+                return json.dumps(response).encode()
+            return archive(exported)
+
+        self.snapshots.transport = transport
+        return truth, tree
+
+    def test_archive_missing_and_transformed_files_restore_exact_tree(self):
+        truth, tree = self.archive_restore_fixture()
+        result = self.fetch()
+        source, metadata = self.snapshots.resolve("fixture", result["source_receipt"], "owner")
+        self.assertEqual(metadata["tree_sha1"], tree)
+        for name, data in truth.items():
+            self.assertEqual((source / name).read_bytes(), data)
+        self.assertEqual(len([url for url in self.urls if "/git/blobs/" in url]), 3)
+        self.assertFalse(any("untrusted.test" in url or "token=" in url for url in self.urls))
+
+    def test_blob_hash_size_encoding_and_untrusted_tree_fail_closed(self):
+        for corrupt in (
+            lambda item: item.update(content=base64.b64encode(b"secret-value").decode()),
+            lambda item: item.update(sha="d" * 40),
+            lambda item: item.update(size=True),
+            lambda item: item.update(encoding="utf-8"),
+            lambda item: item.update(content="not!base64"),
+        ):
+            self.archive_restore_fixture(corrupt=corrupt)
+            with self.assertRaises(SourceError) as failure:
+                self.fetch()
+            self.assertNotIn("secret-value", str(failure.exception))
+            self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 0)
+        for edit in (
+            lambda items: items[0].update(path="../escape"),
+            lambda items: items[0].update(sha="../arbitrary-url"),
+            lambda items: items[0].update(mode="120000"),
+            lambda items: items.append(dict(items[0])),
+        ):
+            self.archive_restore_fixture(tree_edit=edit)
+            with self.assertRaises(SourceError):
+                self.fetch()
+            self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 0)
+        self.archive_restore_fixture(archive_extra=True)
+        with self.assertRaisesRegex(SourceError, "source_archive_untracked_file"):
+            self.fetch()
+
+    def test_restored_files_share_limits_and_revocation(self):
+        self.archive_restore_fixture()
+        for limits in ({"files": 2}, {"expanded_bytes": 60}, {"download_bytes": 100}):
+            with patch.dict("cardputer_mcp.source_snapshot.LIMITS", limits):
+                with self.assertRaises(SourceError):
+                    self.fetch()
+            self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 0)
+        self.archive_restore_fixture()
+        transport = self.snapshots.transport
+        self.revoked = False
+
+        def revoke(url, deadline, live, limit):
+            response = transport(url, deadline, live, limit)
+            if "/git/blobs/" in url:
+                self.revoked = True
+            return response
+
+        self.snapshots.transport = revoke
+        plan = self.snapshots.prepare("fixture", COMMIT, "owner") | {"job_id": "revoked"}
+        with self.assertRaises(SourceError):
+            self.snapshots.fetch(plan, lambda: not self.revoked, lambda _: None)
+        self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 0)
 
 
 if __name__ == "__main__":
