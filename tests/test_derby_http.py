@@ -37,6 +37,9 @@ async def test_fixed_smoke_local_approval_then_principal_bound_image(registry_se
         ) as http,
         connect(service.url, key.token) as remote,
     ):
+        catalog = await remote.list_tools()
+        preparation = next(tool for tool in catalog.tools if tool.name == "prepare_test")
+        assert "derby_smoke" in json.dumps(preparation.input_schema)
         lease = await call(remote, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300})
         prepared = await call(remote, "prepare_test", {
             "session": lease["session"], "job_id": "derby-one", "test": "derby_smoke",
@@ -61,8 +64,9 @@ async def test_fixed_smoke_local_approval_then_principal_bound_image(registry_se
         assert wire.closed and wire.writes[-2:] == [b"s", b"q"]
         preview = service.resident.operator_image("derby-one")
         assert preview["delivery_state"] == "pending"
-        denied_image = await call(remote, "read_capture", {"job_id": "derby-one"})
-        assert denied_image["error"] == "capture_delivery_approval_required"
+        denied_image = await remote.call_tool("read_capture", {"request": {"job_id": "derby-one"}})
+        assert denied_image.is_error
+        assert denied_image.structured_content["error"] == "capture_delivery_approval_required"
         service.resident.operator_decide_image(
             "derby-one", preview["sha256"], preview["delivery_revision"], "approve"
         )

@@ -738,7 +738,7 @@ def create_server(
     async def read_capture(request: JobRequest, ctx: Context[Any, Any]) -> CallToolResult:
         """Read your completed capture from five-minute memory cache; never opens USB.
 
-        Requires the same authenticated principal that requested capture_home, current
+        Requires the same principal that requested capture_home or derby_smoke, current
         read permission, and local image approval or a currently valid image-delivery policy.
         Mock images say TEST / NOT DEVICE. Render-buffer images do not
         prove snapshot coherence or LCD transfer acknowledgement. No automatic recapture.

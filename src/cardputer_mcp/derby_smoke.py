@@ -72,19 +72,26 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage, str]:
     image = None
     photographed = False
     sequence: list[str] = []
+    race_id: bytes | None = None
+    consistent = True
 
     def observe(line: bytes) -> None:
-        nonlocal started, ended
+        nonlocal started, ended, race_id, consistent
         if line.startswith(b"APP_ID"):
             raise reader.failure("unexpected_app_launch")
         if re.fullmatch(rb"DERBY DEMO START [0-9,-]{1,80}", line):
+            if started:
+                consistent = False
             started = True
             reader.emit("derby_demo_start_observed")
         if started and (match := re.fullmatch(
-            rb"DERBY SCENE (pad|gate|race|photo|res) race=\d+ "
+            rb"DERBY SCENE (pad|gate|race|photo|res) race=(\d+) "
             rb"seed=[0-9A-Fa-f]+ plans=\d+ reg=\d+",
             line,
         )):
+            if race_id is not None and race_id != match[2]:
+                consistent = False
+            race_id = match[2]
             phase = match[1].decode()
             if phase not in phases:
                 phases.append(phase)
@@ -108,7 +115,7 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage, str]:
     reader.phase_observer = None
     # Exit is an explicit approved step. Revocation suppresses this write too.
     reader.command(b"q", rb"HOME_READY", timeout=12)
-    complete = started and ended and sequence == ["gate", "race", "photo", "res"]
+    complete = consistent and started and ended and sequence == ["gate", "race", "photo", "res"]
     return image, (
         "derby_demo_cycle_observed_render_buffer_lcd_unverified"
         if complete and photographed

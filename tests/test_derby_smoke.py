@@ -1,11 +1,15 @@
 """Offline fixed-plan smoke fixtures, never real USB."""
 
+import asyncio
 import threading
 import unittest
 from collections import deque
 
+from cardputer_mcp.config import SerialSettings
 from cardputer_mcp.derby_smoke import derby_smoke
-from cardputer_mcp.serial_backend import Reader, SerialFailure
+from cardputer_mcp.models import TestName as Action
+from cardputer_mcp.ports import PortInfo
+from cardputer_mcp.serial_backend import Reader, SerialBackend, SerialFailure
 from cardputer_mcp.smoke_port import SmokePort
 
 
@@ -83,6 +87,45 @@ class DerbyTests(unittest.TestCase):
         self.assertTrue(image.png)
         self.assertEqual(wire.writes, [b"\x1b", b"a"] + [b"u"] * 16 + [b"d"] * 12 + [b"e", b"s", b"q"])
         self.assertEqual(code, "derby_demo_cycle_observed_render_buffer_lcd_unverified")
+
+    def test_owned_worker_checks_authority_on_loop_and_closes_after_revocation(self):
+        async def run():
+            wire = Wire()
+            owner_thread = threading.get_ident()
+            valid = [True]
+            write = wire.write
+
+            def revoked_write(data):
+                count = write(data)
+                if data == b"e":
+                    valid[0] = False
+                return count
+
+            wire.write = revoked_write
+            config = SerialSettings(
+                selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
+                expected_firmware_sha256="a" * 64,
+            )
+            backend = SerialBackend(
+                config,
+                inventory=lambda: [PortInfo(port="COM42", vid=1, pid=2, serial_number="synthetic")],
+                factory=lambda: wire,
+                clock=lambda: wire.now,
+            )
+
+            def live():
+                self.assertEqual(threading.get_ident(), owner_thread)
+                return valid[0]
+
+            plan = {"test": Action.DERBY.value, **backend.prepare(Action.DERBY)}
+            with self.assertRaises(SerialFailure):
+                await backend.execute_smoke(plan, lambda _: None, live)
+            self.assertTrue(wire.closed)
+            self.assertEqual(backend.active, 0)
+            self.assertNotIn(b"s", wire.writes)
+            self.assertNotIn(b"q", wire.writes)
+
+        asyncio.run(run())
 
     def test_wrong_app_never_captures_or_issues_game_inputs(self):
         wire = Wire(identity=b"local.other")
