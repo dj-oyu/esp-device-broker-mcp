@@ -29,6 +29,38 @@ class PersistenceTests(unittest.TestCase):
             with self.assertRaises(FlashFailure):
                 snapshots.load(receipt)
 
+    def test_crash_before_commit_preserves_previous_successful_selection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store(Path(temp) / "state.sqlite3")
+            promotion = dict(
+                device_id="fixture", principal="owner", receipt="a" * 64,
+                kind="artifact_bundle", baseline="initial-backup",
+            )
+            store.put_plan("a" * 64, {})
+            store.add_job("one", "a" * 64)
+            store.set_job("one", "running")
+            store.finish_firmware("one", "verified", promotion, lambda: True)
+            store.add_job("two", "a" * 64)
+            store.set_job("two", "running")
+            calls = 0
+
+            def crash():
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise KeyboardInterrupt
+                return True
+
+            with self.assertRaises(KeyboardInterrupt):
+                store.finish_firmware("two", "verified", promotion | {"receipt": "b" * 64}, crash)
+            store.db.close()
+            restored = Store(Path(temp) / "state.sqlite3")
+            restored.recover()
+            self.assertEqual(restored.firmware_current("fixture", "owner")["receipt"], "a" * 64)
+            self.assertIsNone(restored.firmware_known("fixture", "owner", "b" * 64))
+            self.assertEqual(restored.job("two")["state"], "needs_review")
+            restored.db.close()
+
     def test_failed_final_authority_check_keeps_old_pointer_and_running_job(self):
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp) / "state.sqlite3")

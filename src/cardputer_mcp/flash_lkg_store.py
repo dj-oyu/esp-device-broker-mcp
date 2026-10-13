@@ -20,7 +20,7 @@ class FirmwareSnapshots:
 
     def _directory_barrier(self, directory: Path) -> None:
         if os.name == "posix":
-            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            descriptor = os.open(directory, os.O_RDONLY | int(vars(os)["O_DIRECTORY"]))
             try:
                 os.fsync(descriptor)
             finally:

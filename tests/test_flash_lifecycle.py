@@ -229,14 +229,21 @@ class FlashLifecycleTests(unittest.TestCase):
 
     def test_lkg_restore_rejects_changed_live_table_before_any_write(self):
         from dataclasses import replace
+
         table = self.bundle.segments[0]
         expected = self.image
-        self.driver.data[table.offset:table.offset + table.size] = b"z" * table.size
+        self.driver.data[table.offset : table.offset + table.size] = b"z" * table.size
         plan = replace(self.plan, operation="restore", recovery_kind="artifact_bundle")
         with self.assertRaisesRegex(FlashFailure, "restore_partition_changed"):
-            self.engine.run(plan, plan.digest, live=lambda: True, reader_closed=lambda: True,
-                            stage=lambda name: None, recovery=(self.bundle, (expected,)),
-                            recovery_table_offset=table.offset)
+            self.engine.run(
+                plan,
+                plan.digest,
+                live=lambda: True,
+                reader_closed=lambda: True,
+                stage=lambda name: None,
+                recovery=(self.bundle, (expected,)),
+                recovery_table_offset=table.offset,
+            )
         self.assertEqual(self.driver.writes, 0)
         self.assertTrue(self.driver.closed)
 
