@@ -129,12 +129,15 @@ class SourceTests(unittest.TestCase):
             self.fetch()
 
     def test_typed_contract_has_no_url_path_or_short_commit(self):
+        valid = PrepareRequest(session="c" * 64, job_id="one", project_id="fixture",
+                               test=Action.SOURCE, source_commit=COMMIT)
+        self.assertEqual(valid.source_commit, COMMIT)
         for arguments in (
             {"source_commit": "a" * 8}, {"source_commit": COMMIT, "url": "https://example.test"},
             {"source_commit": COMMIT, "source_receipt": "b" * 64},
         ):
             with self.assertRaises(ValueError):
-                PrepareRequest(session="c" * 32, job_id="one", project_id="fixture", test=Action.SOURCE, **arguments)
+                PrepareRequest(session="c" * 64, job_id="one", project_id="fixture", test=Action.SOURCE, **arguments)
 
 
 if __name__ == "__main__":

@@ -236,6 +236,7 @@ class PlanApprovals:
                     "registered-idf.py",
                     "-B",
                     "fingerprint-build-directory",
+                    *(["-D", "SDKCONFIG=build-output-sdkconfig"] if "source_receipt" in plan else []),
                     "build",
                 ]
             ):
@@ -702,7 +703,7 @@ class PlanApprovals:
                     from .models import PrepareRequest
 
                     request = PrepareRequest(
-                        session=lease.id, project_id=plan["project_id"],
+                        session=lease.capability, project_id=plan["project_id"],
                         job_id=plan["job_id"], test=TestName.SOURCE,
                         source_commit=plan["source_commit"],
                     )

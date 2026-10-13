@@ -85,7 +85,7 @@ def download(url: str, deadline: float, live: Callable[[], bool], limit: int) ->
 def safe_name(name: str) -> None:
     parts = name.split("/")
     if len(name.encode()) > 1024 or len(parts) > 32 or any(
-        not part or part in (".", "..", ".git") or part.endswith((".", " "))
+        not part or part in (".", "..") or part.casefold() == ".git" or part.endswith((".", " "))
         or re.search(r'[\\:<>"|?*\x00-\x1f\x7f]', part)
         or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", part)
         for part in parts
@@ -167,9 +167,9 @@ def extract(archive: bytes, root: Path, prefix: str, live: Callable[[], bool], p
                 data = source.read(item.file_size + 1)
                 if len(data) != item.file_size:
                     raise SourceError("source_archive_size_mismatch")
-                if data.startswith(b"version https://git-lfs.github.com/spec/v1") or name.endswith(".gitmodules"):
+                if data.startswith(b"version https://git-lfs.github.com/spec/v1") or name.casefold().endswith(".gitmodules"):
                     raise SourceError("source_submodule_or_lfs_not_supported")
-                if name.endswith(".gitattributes") and b"filter=lfs" in data:
+                if name.casefold().endswith(".gitattributes") and b"filter=lfs" in data:
                     raise SourceError("source_submodule_or_lfs_not_supported")
                 output.write(data)
                 output.flush()

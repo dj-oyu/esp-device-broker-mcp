@@ -412,6 +412,7 @@ class FirmwareBuild:
                 "registered-idf.py",
                 "-B",
                 "fingerprint-build-directory",
+                *(["-D", "SDKCONFIG=build-output-sdkconfig"] if provenance is not None else []),
                 "build",
             ],
         )
