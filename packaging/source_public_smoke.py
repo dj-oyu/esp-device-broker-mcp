@@ -11,7 +11,7 @@ from cardputer_mcp.config import BuildProject, RegisteredBuildTool, Settings, So
 from cardputer_mcp.firmware_build import FirmwareBuild, hash_file
 from cardputer_mcp.source_snapshot import SourceSnapshots
 
-COMMIT = "0ba36a4c388a6e5815869cffe51a1d5ad2c1bb9c"
+COMMIT = "7cc64ea900b073b874b6bb502765978dee52b195"
 
 
 def main():
@@ -31,7 +31,7 @@ def main():
             node_tool=registered, build_min_free_bytes=0,
             source_repository=SourceRepository(
                 github_repository="dj-oyu/cardputer-adv-pocketjs", cache_root=root / "cache",
-                private_acl_confirmed=True, submodule_repositories=["lieff/minimp3"],
+                private_acl_confirmed=True, submodule_repositories=["boschsensortec/BMI270_SensorAPI", "lieff/minimp3", "xiph/opus"],
             ),
         )})
         sources = SourceSnapshots(settings)
@@ -40,10 +40,16 @@ def main():
         source, metadata = sources.resolve("cardputer", result["source_receipt"], "ci-owner")
         for required in ("components/quickjs-ng/CMakeLists.txt", "components/pocketjs_guest/CMakeLists.txt", "tools/make_app_chunks.py", "apps/derby/derby_play.js"):
             assert (source / required).is_file(), required
-        assert metadata["tree_sha1"] == "4843f0a4fac193f9f73ce0d0a3f31dd1491f8a63"
+        assert metadata["tree_sha1"] == "cf273c0555e812b29c6f30e7442efaf552e458aa"
         assert (source / "third_party/minimp3/minimp3.h").is_file()
-        assert metadata["submodules"][0]["commit"] == "ea99364f61c14656440e8d77e9c233ccf3124633"
-        assert metadata["submodules"][0]["path"] == "third_party/minimp3"
+        modules = {item["path"]: item for item in metadata["submodules"]}
+        assert set(modules) == {"third_party/bmi270", "third_party/minimp3", "third_party/opus"}
+        assert modules["third_party/minimp3"]["commit"] == "ea99364f61c14656440e8d77e9c233ccf3124633"
+        assert modules["third_party/bmi270"]["commit"] == "41129fcfe39c583ee5462d79195741945d51c1fe"
+        assert modules["third_party/opus"]["commit"] == "22244de5a79bd1d6d623c32e72bf1954b56235be"
+        assert (source / "third_party/bmi270/bmi2.c").is_file()
+        assert (source / "third_party/bmi270/bmi270.c").is_file()
+        assert (source / "third_party/opus/include/opus.h").is_file()
         assert not (root / "worktree").exists()
         if os.name == "nt":
             build = FirmwareBuild(settings).prepare("cardputer", "ci-owner", result["source_receipt"])

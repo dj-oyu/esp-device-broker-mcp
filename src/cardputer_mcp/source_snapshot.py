@@ -1,5 +1,6 @@
 """Bounded public GitHub commit archives in broker-owned private snapshots."""
 
+import base64
 import configparser
 import hashlib
 import io
@@ -314,6 +315,7 @@ class RepositoryArchives:
         self.transport, self.registration = transport, registration
         self.deadline, self.live, self.published_root = deadline, live, published_root
         self.downloaded = self.count = 0
+        self.tree_entries = 0
         self.budget = {"expanded": 0, "files": 0, "entries": 0}
         self.submodules: list[dict[str, Any]] = []
 
@@ -329,6 +331,136 @@ class RepositoryArchives:
         if self.live() is not True:
             raise SourceError("source_fetch_interrupted")
         return data
+
+    def restore_archive(
+        self, repository: str, sha: str, root: Path, files: dict[str, Any], path: str
+    ) -> dict[str, str]:
+        tree = json.loads(
+            self.get(
+                f"https://api.github.com/repos/{repository}/git/trees/{sha}?recursive=1",
+                8 * 1048576,
+            )
+        )
+        entries = tree.get("tree")
+        if (
+            tree.get("sha") != sha
+            or tree.get("truncated") is not False
+            or not isinstance(entries, list)
+        ):
+            raise SourceError("source_git_tree_metadata_rejected")
+        self.tree_entries += len(entries)
+        if self.tree_entries > LIMITS["files"] * 2:
+            raise SourceError("source_git_tree_metadata_rejected")
+        regular: dict[str, dict[str, Any]] = {}
+        links: dict[str, str] = {}
+        seen: set[str] = set()
+        spelling: dict[str, str] = {}
+        for item in entries:
+            if not isinstance(item, dict):
+                raise SourceError("source_git_tree_metadata_rejected")
+            name, blob_sha, mode = item.get("path"), item.get("sha"), item.get("mode")
+            if (
+                not isinstance(name, str)
+                or not isinstance(blob_sha, str)
+                or re.fullmatch(r"[a-f0-9]{40}", blob_sha) is None
+                or name.casefold() in seen
+            ):
+                raise SourceError("source_git_tree_metadata_rejected")
+            safe_name(name)
+            safe_name(path + "/" + name if path else name)
+            seen.add(name.casefold())
+            parts = name.split("/")
+            for depth in range(1, len(parts) + 1):
+                ancestor = "/".join(parts[:depth])
+                folded = ancestor.casefold()
+                if folded in spelling and spelling[folded] != ancestor:
+                    raise SourceError("source_archive_case_alias")
+                spelling[folded] = ancestor
+            if mode == "040000" and item.get("type") == "tree":
+                continue
+            if mode == "160000" and item.get("type") == "commit":
+                links[name] = blob_sha
+                continue
+            if (
+                mode not in ("100644", "100755")
+                or item.get("type") != "blob"
+                or type(item.get("size")) is not int
+                or not 0 <= item["size"] <= LIMITS["expanded_bytes"]
+            ):
+                raise SourceError("source_git_tree_metadata_rejected")
+            if name == ".gitmodules" and item["size"] > SUBMODULE_LIMITS["gitmodules_bytes"]:
+                raise SourceError("source_gitmodules_limit")
+            regular[name] = item
+        if set(files) - set(regular):
+            raise SourceError("source_archive_untracked_file")
+        archive_spelling: dict[str, str] = {}
+        for number, target in enumerate(root.rglob("*")):
+            if number % 256 == 0 and self.live() is not True:
+                raise SourceError("source_fetch_interrupted")
+            relative = target.relative_to(root).as_posix()
+            archive_spelling[relative.casefold()] = relative
+        for name, item in regular.items():
+            parts = name.split("/")
+            for depth in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:depth])
+                if archive_spelling.get(prefix.casefold(), prefix) != prefix:
+                    raise SourceError("source_archive_case_alias")
+            current = files.get(name)
+            if current is not None and (
+                current["git_sha1"] == item["sha"] and current["mode"] == item["mode"]
+            ):
+                continue
+            if self.budget["expanded"] + item["size"] > LIMITS["expanded_bytes"] or (
+                current is None and self.budget["files"] >= LIMITS["files"]
+            ):
+                raise SourceError("source_expansion_limit")
+            encoded_limit = item["size"] * 2 + 65536
+            response = json.loads(
+                self.get(
+                    f"https://api.github.com/repos/{repository}/git/blobs/{item['sha']}",
+                    encoded_limit,
+                )
+            )
+            if (
+                response.get("sha") != item["sha"]
+                or response.get("encoding") != "base64"
+                or type(response.get("size")) is not int
+                or response["size"] != item["size"]
+                or not isinstance(response.get("content"), str)
+            ):
+                raise SourceError("source_git_blob_rejected")
+            try:
+                data = base64.b64decode(response["content"].replace("\n", ""), validate=True)
+            except (ValueError, TypeError):
+                raise SourceError("source_git_blob_rejected") from None
+            receipt = file_receipt(data, item["mode"])
+            if len(data) != item["size"] or receipt["git_sha1"] != item["sha"]:
+                raise SourceError("source_git_blob_mismatch")
+            if data.startswith(b"version https://git-lfs.github.com/spec/v1") or (
+                name.casefold().endswith(".gitattributes") and b"filter=lfs" in data
+            ):
+                raise SourceError("source_submodule_or_lfs_not_supported")
+            target = root / name
+            _not_link(target)
+            # Tree paths receive the same private-cache and Windows checks as ZIP paths.
+            relative_path = target.relative_to(root)
+            if (
+                os.name == "nt"
+                and max(len(str(target)), len(str(self.published_root / path / relative_path)))
+                > 240
+            ):
+                raise SourceError("source_windows_path_limit")
+            if self.live() is not True:
+                raise SourceError("source_fetch_interrupted")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("wb" if current is not None else "xb") as output:
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+            self.budget["expanded"] += len(data)
+            self.budget["files"] += int(current is None)
+            files[name] = receipt
+        return links
 
     def fetch(
         self,
@@ -364,42 +496,21 @@ class RepositoryArchives:
             repository.split("/")[1] + "-" + commit,
             self.live,
             self.published_root / path,
-            require_idf=not path,
+            require_idf=False,
             budget=self.budget,
         )
         links: dict[str, str] = {}
         configured: dict[str, str] = {}
+        if ".gitmodules" in own_files or tree_hash(own_files) != metadata["tree"]["sha"]:
+            links = self.restore_archive(repository, metadata["tree"]["sha"], root, own_files, path)
+        if not path and "CMakeLists.txt" not in own_files:
+            raise SourceError("source_idf_project_missing")
         if ".gitmodules" in own_files:
             configured = submodule_paths(
                 (root / ".gitmodules").read_bytes(), self.registration.submodule_repositories
             )
-            tree = json.loads(
-                self.get(
-                    f"https://api.github.com/repos/{repository}/git/trees/{metadata['tree']['sha']}?recursive=1",
-                    8 * 1048576,
-                )
-            )
-            if tree.get("sha") != metadata["tree"]["sha"] or tree.get("truncated") is not False:
-                raise SourceError("source_git_tree_metadata_rejected")
-            entries = tree.get("tree")
-            if not isinstance(entries, list) or len(entries) > LIMITS["files"] * 2:
-                raise SourceError("source_git_tree_metadata_rejected")
-            for item in entries:
-                if item.get("mode") != "160000":
-                    continue
-                name, sha = item.get("path"), item.get("sha")
-                if (
-                    not isinstance(name, str)
-                    or not isinstance(sha, str)
-                    or re.fullmatch(r"[a-f0-9]{40}", sha) is None
-                    or item.get("type") != "commit"
-                    or name in links
-                ):
-                    raise SourceError("source_gitlink_rejected")
-                safe_name(name)
-                links[name] = sha
-            if set(configured) != set(links):
-                raise SourceError("source_gitmodules_gitlink_mismatch")
+        if set(configured) != set(links):
+            raise SourceError("source_gitmodules_gitlink_mismatch")
         git_files = dict(own_files)
         for name, sha in links.items():
             # Reject tracked files, overlapping links, and archive directory aliases.
