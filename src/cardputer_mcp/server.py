@@ -610,6 +610,9 @@ def create_server(
     async def prepare_test(request: PrepareRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Prepare an immutable plan; serial preflight enumerates without opening USB.
 
+        Source fetch is an explicit registered-project/full-commit operation.
+        It returns a principal-bound receipt; build can select it without worktree sync.
+        Source fetch never builds or flashes. No caller-supplied URL/path/shell is accepted.
         Backup, flash and restore are independent exact-approval operations.
         Flash may use a retained verified LKG instead of another full backup.
         Restore binds the exact recovery receipt at prepare time. Artifact recovery
@@ -629,6 +632,7 @@ def create_server(
                 TestName.FIRMWARE,
                 TestName.RESTART,
                 TestName.BUILD,
+                TestName.SOURCE,
                 *FLASH_TESTS,
             ):
                 owner = principal(ctx, "control")
@@ -691,6 +695,10 @@ def create_server(
             store = resident._store()
             job = store.job(request.job_id)
             plan = store.plan(job["plan_hash"]) if job is not None else None
+            if plan is not None and plan.get("test") == TestName.SOURCE.value:
+                if plan.get("source_principal") != owner.principal_id:
+                    raise BrokerError("source_log_not_available")
+                return resident.firmware_source.read_logs(request, owner.principal_id)
             if plan is not None and plan.get("test") in {t.value for t in FLASH_TESTS}:
                 if plan.get("flash_principal") != owner.principal_id:
                     raise BrokerError("flash_log_not_available")

@@ -7,6 +7,10 @@ on:
       - 'src/cardputer_mcp/flash*.py'
       - 'src/cardputer_mcp/firmware_flash.py'
       - 'tests/test_flash*.py'
+      - 'tests/test_source*.py'
+      - 'src/cardputer_mcp/source_snapshot.py'
+      - 'src/cardputer_mcp/firmware_source.py'
+      - 'src/cardputer_mcp/firmware_build.py'
       - 'tests/test_derby*.py'
       - 'src/cardputer_mcp/derby_smoke.py'
       - 'src/cardputer_mcp/smoke_port.py'
@@ -67,7 +71,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Operator HTTP and MCP flash integration without hardware
         run: |
-          .venv/Scripts/python.exe -m pytest -q tests/test_flash_http.py tests/test_derby_smoke.py tests/test_derby_http.py tests/test_serial_backend.py tests/test_capture_broker.py tests/test_plan_approval.py
+          .venv/Scripts/python.exe -m pytest -q tests/test_flash_http.py tests/test_source_http.py tests/test_source_snapshot.py tests/test_build_approval_integration.py tests/test_derby_smoke.py tests/test_derby_http.py tests/test_serial_backend.py tests/test_capture_broker.py tests/test_plan_approval.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Source and build regression
+        run: |
+          .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_firmware_build.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Real public Cardputer archive integrity without build or USB
+        run: |
+          .venv/Scripts/python.exe packaging/source_public_smoke.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Integration style diagnostics
         run: |

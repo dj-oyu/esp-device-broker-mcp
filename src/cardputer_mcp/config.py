@@ -1,5 +1,6 @@
 """Strict local configuration. Real serial mode additionally requires runtime opt-in."""
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -53,6 +54,41 @@ class RegisteredBuildTool(BaseModel):
         return value
 
 
+class SourceRepository(BaseModel):
+    """Locally trusted public GitHub origin and private snapshot root."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    github_repository: str = Field(pattern=r"^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$")
+    cache_root: Path
+    private_acl_confirmed: bool = Field(default=False, strict=True)
+    submodule_repositories: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("submodule_repositories")
+    @classmethod
+    def submodule_allowlist(cls, value: list[str]) -> list[str]:
+        if len({item.casefold() for item in value}) != len(value) or any(
+            re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", item) is None
+            or any(part in (".", "..") for part in item.split("/"))
+            for item in value
+        ):
+            raise ValueError("registered_submodule_repository_required")
+        return value
+
+    @field_validator("github_repository")
+    @classmethod
+    def repository_name(cls, value: str) -> str:
+        if any(part in (".", "..") for part in value.split("/")):
+            raise ValueError("registered_github_repository_required")
+        return value
+
+    @field_validator("cache_root")
+    @classmethod
+    def cache_path(cls, value: Path) -> Path:
+        if not value.is_absolute() or ".." in value.parts:
+            raise ValueError("absolute_source_cache_root_required")
+        return value
+
+
 class BuildProject(BaseModel):
     """Trusted local registration, never supplied as an MCP pathname."""
 
@@ -64,6 +100,7 @@ class BuildProject(BaseModel):
     profile_execution_policy: Literal["inherit", "RemoteSigned"] = "inherit"
     node_tool: RegisteredBuildTool | None = None
     git_tool: RegisteredBuildTool | None = None
+    source_repository: SourceRepository | None = None
     expected_idf: Literal["6.0.1"] = "6.0.1"
     target: Literal["esp32s3"] = "esp32s3"
 

@@ -480,3 +480,11 @@ or performed. ESP-IDF remains 6.0.1. On parent completion, the harness exited 0,
 manager.close() returned true, and the owned serial broker stopped. Both listeners
 were free, and device/broker/Tunnel ownership locks were independently confirmed
 released. User config and pre-existing user processes were maintained.
+
+MCP acceptance requires both real-Tunnel server tools/list and the parent client's
+callable tools to agree on names/input schemas/annotations. Refresh metadata
+at development checkpoints and after updates/reconnections using the official
+ChatGPT Plugins connection Refresh flow, then retest in a new conversation.
+Server listChanged behavior alone does not establish a host metadata refresh.
+No local Codex/agent or external synchronization script is required for normal
+source fetch → receipt build → explicit flash → logs/capture operation.

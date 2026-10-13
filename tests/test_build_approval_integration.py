@@ -154,3 +154,92 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("canceljob", broker.firmware_build.manifests)
                 finally:
                     await broker.close()
+
+    async def test_failed_diagnostic_job_keeps_fixed_code_and_private_logs(self):
+        from cardputer_mcp.broker import Broker
+        from cardputer_mcp.build_logs import BuildLogs
+        from cardputer_mcp.config import BuildProject, Settings
+        from cardputer_mcp.firmware_build import FixedDiagnosticFailure
+        from cardputer_mcp.models import (
+            AcquireRequest,
+            BuildLogRequest,
+            ExecuteRequest,
+            Origin,
+            PrepareRequest,
+        )
+        from cardputer_mcp.plan_approval import PlanApprovals
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = root / "project"
+            project.mkdir()
+            (project / "CMakeLists.txt").write_text("synthetic")
+            profile = root / "profile.ps1"
+            profile.write_text("return")
+            settings = Settings(
+                state_dir=root / "state",
+                build_projects={
+                    "registered": BuildProject(
+                        project_dir=project,
+                        trusted_profile=profile,
+                        build_root=root / "output",
+                    )
+                },
+            )
+            broker = Broker(
+                settings,
+                lock_path=root / "device.lock",
+                principal_valid=lambda who, *_: who == "alice",
+            )
+            await broker.start()
+            try:
+                lease = broker.acquire(AcquireRequest(owner=Origin.REMOTE), principal_id="alice")[
+                    "session"
+                ]
+                prepared = broker.prepare(
+                    PrepareRequest(
+                        session=lease,
+                        job_id="diagnostic-failure",
+                        test="firmware_build",
+                        project_id="registered",
+                    )
+                )
+
+                async def failed_build(plan, stage):
+                    stage("idf_diagnostics")
+                    logs = BuildLogs("alice")
+                    logs.append("error: Windows- unsupported token=synthetic-secret", "stderr")
+                    broker.firmware_build.logs[plan["job_id"]] = logs
+                    raise FixedDiagnosticFailure("idf_version_diagnostic_failed")
+
+                broker.firmware_build.execute = failed_build
+                broker.execute(
+                    ExecuteRequest(
+                        session=lease, plan_hash=prepared["plan_hash"], wait_for_approval=True
+                    )
+                )
+                approvals = PlanApprovals(broker)
+                detail = approvals.detail(prepared["plan_hash"])
+                approvals.approve(prepared["plan_hash"], detail["review_revision"], "")
+                await broker.queue.join()
+                job = broker.job("diagnostic-failure")
+                self.assertEqual(job["state"], "needs_review")
+                self.assertEqual(job["diagnostic"], {"code": "idf_version_diagnostic_failed"})
+                self.assertIn("idf_version_diagnostic_failed", str(job))
+                self.assertNotIn("synthetic-secret", str(job))
+                self.assertFalse(broker.firmware_build.manifests)
+                report = broker.firmware_build.read_logs(
+                    BuildLogRequest(job_id="diagnostic-failure"), "alice"
+                )
+                self.assertIn("Windows- unsupported", str(report))
+                self.assertNotIn("synthetic-secret", str(report))
+                with self.assertRaises(ValueError):
+                    broker.firmware_build.read_logs(
+                        BuildLogRequest(job_id="diagnostic-failure"), "bob"
+                    )
+                self.assertEqual(
+                    broker._store().job("diagnostic-failure")["diagnostic"],
+                    {"code": "idf_version_diagnostic_failed"},
+                )
+            finally:
+                await broker.close()

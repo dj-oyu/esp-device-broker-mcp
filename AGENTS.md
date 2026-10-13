@@ -75,6 +75,23 @@ python -m unittest discover -s tests -p test_windows_release.py -v
 - Record what actually ran and what remains unverified. Do not label physical
   build/flash/device behavior successful based on packaging, mocks or broker readiness.
 
+## MCP metadata checkpoints
+
+At development checkpoints and after server updates/restarts/reconnections, compare
+the actual server tools/list names, input schemas and annotations with the tools
+callable by the parent cloud client. Server-only discovery is not acceptance.
+The repository's stdio adapter currently advertises tools.listChanged=false; no
+dynamic tool-list notification path is implemented here. That does not refresh
+a host's imported metadata.
+
+For a custom ChatGPT MCP connection (including Secure MCP Tunnel), the official
+flow is: deploy/restart server, open its connection in ChatGPT Plugins, select
+Refresh, verify changed metadata, then start a new conversation and retest.
+https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata
+Do not claim the current conversation refreshed or that refresh is automatic.
+Host Refresh is not exposed by the tools in this cloud task. Do not change
+permissions, authentication, or re-register a connection as a workaround.
+
 ## Updating an existing Windows installation
 
 - Locate the installed application before changing the source checkout. Check
