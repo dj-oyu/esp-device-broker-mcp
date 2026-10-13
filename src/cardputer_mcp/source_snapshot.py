@@ -443,10 +443,10 @@ class RepositoryArchives:
             target = root / name
             _not_link(target)
             # Tree paths receive the same private-cache and Windows checks as ZIP paths.
-            relative = target.relative_to(root)
+            relative_path = target.relative_to(root)
             if (
                 os.name == "nt"
-                and max(len(str(target)), len(str(self.published_root / path / relative))) > 240
+                and max(len(str(target)), len(str(self.published_root / path / relative_path))) > 240
             ):
                 raise SourceError("source_windows_path_limit")
             if self.live() is not True:
