@@ -33,8 +33,11 @@ class PersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp) / "state.sqlite3")
             promotion = dict(
-                device_id="fixture", principal="owner", receipt="a" * 64,
-                kind="artifact_bundle", baseline="initial-backup",
+                device_id="fixture",
+                principal="owner",
+                receipt="a" * 64,
+                kind="artifact_bundle",
+                baseline="initial-backup",
             )
             store.put_plan("a" * 64, {})
             store.add_job("one", "a" * 64)
