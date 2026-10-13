@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 from cardputer_mcp.config import BuildProject, Settings, SourceRepository
 from cardputer_mcp.firmware_build import FirmwareBuild
-from cardputer_mcp.models import PrepareRequest, TestName as Action
+from cardputer_mcp.models import PrepareRequest
+from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.source_snapshot import (
     SourceError,
     SourceSnapshots,
