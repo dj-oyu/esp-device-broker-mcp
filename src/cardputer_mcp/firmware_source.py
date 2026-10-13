@@ -38,9 +38,12 @@ class FirmwareSource:
         job = self.store().job(metadata["fetch_job_id"])
         plan = self.store().plan(job["plan_hash"]) if job is not None else None
         if (
-            job is None or job["state"] != "succeeded" or plan is None
+            job is None
+            or job["state"] != "succeeded"
+            or plan is None
             or plan.get("test") != "firmware_fetch_source"
-            or plan.get("source_principal") != principal or plan.get("project_id") != project_id
+            or plan.get("source_principal") != principal
+            or plan.get("project_id") != project_id
             or plan.get("source_commit") != metadata["commit"]
             or (job.get("diagnostic") or {}).get("source", {}).get("source_receipt") != receipt
         ):
@@ -95,8 +98,13 @@ class FirmwareSource:
     def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
         logs = self.logs.get(request.job_id)
         if logs is None:
-            result = dict(entries=[], expired=True, gap=True, has_more=False,
-                          next_cursor=dict(epoch="0" * 32, sequence=0))
+            result = dict(
+                entries=[],
+                expired=True,
+                gap=True,
+                has_more=False,
+                next_cursor=dict(epoch="0" * 32, sequence=0),
+            )
         else:
             result = logs.read(principal, request)
         job = self.store().job(request.job_id)

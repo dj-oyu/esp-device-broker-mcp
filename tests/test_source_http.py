@@ -21,10 +21,13 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(registry_s
     profile = tmp_path / "profile.ps1"
     profile.write_text("synthetic")
     project = BuildProject(
-        project_dir=tmp_path / "user-worktree", trusted_profile=profile,
-        build_root=tmp_path / "builds", build_min_free_bytes=0,
+        project_dir=tmp_path / "user-worktree",
+        trusted_profile=profile,
+        build_root=tmp_path / "builds",
+        build_min_free_bytes=0,
         source_repository=SourceRepository(
-            github_repository=REPOSITORY, cache_root=tmp_path / "source-cache",
+            github_repository=REPOSITORY,
+            cache_root=tmp_path / "source-cache",
             private_acl_confirmed=True,
         ),
     )
@@ -40,13 +43,17 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(registry_s
         calls.append(url)
         if not live():
             raise SourceError("source_fetch_interrupted")
-        return (json.dumps({"sha": COMMIT, "tree": {"sha": tree}}).encode()
-                if url.startswith("https://api.github.com/") else archive())
+        return (
+            json.dumps({"sha": COMMIT, "tree": {"sha": tree}}).encode()
+            if url.startswith("https://api.github.com/")
+            else archive()
+        )
 
     service.resident.firmware_source.snapshots.transport = transport
     async with (
         httpx2.AsyncClient(
-            base_url=service.url.removesuffix("/mcp"), trust_env=False,
+            base_url=service.url.removesuffix("/mcp"),
+            trust_env=False,
             headers={"Authorization": "Bearer " + "a" * 64},
         ) as http,
         connect(service.url, key.token) as remote,
@@ -56,21 +63,36 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(registry_s
         assert "firmware_fetch_source" in json.dumps(schema)
         assert "source_commit" in json.dumps(schema) and "source_receipt" in json.dumps(schema)
         lease = await call(remote, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300})
-        prepared = await call(remote, "prepare_test", {
-            "session": lease["session"], "job_id": "fetch-one", "test": "firmware_fetch_source",
-            "project_id": "fixture", "source_commit": COMMIT,
-        })
+        prepared = await call(
+            remote,
+            "prepare_test",
+            {
+                "session": lease["session"],
+                "job_id": "fetch-one",
+                "test": "firmware_fetch_source",
+                "project_id": "fixture",
+                "source_commit": COMMIT,
+            },
+        )
         assert prepared["ok"] and prepared["approval_required"], prepared
         assert prepared["storage"]["source_cache"]["snapshots"] == 0
         assert not calls
         execution = {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
-        assert (await call(remote, "execute_test", execution))["error"] == "operator_approval_required"
-        detail = (await http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})).json()
+        assert (await call(remote, "execute_test", execution))[
+            "error"
+        ] == "operator_approval_required"
+        detail = (
+            await http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})
+        ).json()
         assert detail["attestation"] == "none"
-        approved = await http.post("/operator/approve-plan", json={
-            "plan_hash": prepared["plan_hash"], "review_revision": detail["review_revision"],
-            "attestation": "",
-        })
+        approved = await http.post(
+            "/operator/approve-plan",
+            json={
+                "plan_hash": prepared["plan_hash"],
+                "review_revision": detail["review_revision"],
+                "attestation": "",
+            },
+        )
         assert approved.status_code == 200 and approved.json()["ok"], approved.text
         assert (await call(remote, "execute_test", execution))["ok"]
         await service.resident.queue.join()
@@ -82,10 +104,17 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(registry_s
         receipt = logs["source"]["source_receipt"]
         assert service.backend.calls == 0 and not service.resident.firmware_build.manifests
         assert not project.project_dir.exists()
-        built = await call(remote, "prepare_test", {
-            "session": lease["session"], "job_id": "build-one", "test": "firmware_build",
-            "project_id": "fixture", "source_receipt": receipt,
-        })
+        built = await call(
+            remote,
+            "prepare_test",
+            {
+                "session": lease["session"],
+                "job_id": "build-one",
+                "test": "firmware_build",
+                "project_id": "fixture",
+                "source_receipt": receipt,
+            },
+        )
         assert built["ok"] and built["approval_required"], built
         assert built["plan"]["source_provenance"]["commit"] == COMMIT
         sdk = tmp_path / "sdk"
@@ -119,15 +148,25 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(registry_s
                     assert "SDKCONFIG=" + str(directory / "sdkconfig") in args
                     (directory / "project_description.json").write_text('{"target":"esp32s3"}')
                     (directory / "firmware.bin").write_bytes(b"synthetic firmware")
-                    (directory / "flasher_args.json").write_text(json.dumps({
-                        "flash_files": {"0x10000": "firmware.bin"},
-                        "extra_esptool_args": {"chip": "esp32s3"},
-                    }))
+                    (directory / "flasher_args.json").write_text(
+                        json.dumps(
+                            {
+                                "flash_files": {"0x10000": "firmware.bin"},
+                                "extra_esptool_args": {"chip": "esp32s3"},
+                            }
+                        )
+                    )
                     (directory / "config").mkdir(exist_ok=True)
-                    (directory / "config/sdkconfig.json").write_text(json.dumps({
-                        "IDF_TARGET": "esp32s3", "SECURE_BOOT": False,
-                        "SECURE_FLASH_ENC_ENABLED": False, "BOOTLOADER_APP_ROLLBACK_ENABLE": False,
-                    }))
+                    (directory / "config/sdkconfig.json").write_text(
+                        json.dumps(
+                            {
+                                "IDF_TARGET": "esp32s3",
+                                "SECURE_BOOT": False,
+                                "SECURE_FLASH_ENC_ENABLED": False,
+                                "BOOTLOADER_APP_ROLLBACK_ENABLE": False,
+                            }
+                        )
+                    )
                 else:
                     raise AssertionError("unexpected SDK command")
                 return 0
@@ -135,15 +174,26 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(registry_s
         service.resident.firmware_build.process = FakeIdf()
         native = SimpleNamespace(name="nt", environ={"SYSTEMROOT": str(system)})
         with patch.object(build_module, "os", native):
-            detail = (await http.post("/operator/plan", json={"plan_hash": built["plan_hash"]})).json()
-            approved = await http.post("/operator/approve-plan", json={
-                "plan_hash": built["plan_hash"], "review_revision": detail["review_revision"],
-                "attestation": "",
-            })
+            detail = (
+                await http.post("/operator/plan", json={"plan_hash": built["plan_hash"]})
+            ).json()
+            approved = await http.post(
+                "/operator/approve-plan",
+                json={
+                    "plan_hash": built["plan_hash"],
+                    "review_revision": detail["review_revision"],
+                    "attestation": "",
+                },
+            )
             assert approved.json()["ok"], approved.text
-            executed = await call(remote, "execute_test", {
-                "session": lease["session"], "plan_hash": built["plan_hash"],
-            })
+            executed = await call(
+                remote,
+                "execute_test",
+                {
+                    "session": lease["session"],
+                    "plan_hash": built["plan_hash"],
+                },
+            )
             assert executed["ok"], executed
             await service.resident.queue.join()
             job = service.resident.job("build-one")
@@ -151,13 +201,25 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(registry_s
             report = await call(remote, "read_build_logs", {"job_id": "build-one"})
             assert report["manifest"]["source_provenance"]["source_receipt"] == receipt
             assert report["manifest"]["source_provenance"]["commit"] == COMMIT
-            assert report["manifest"]["source_provenance"]["source_sha256"] == logs["source"]["source_sha256"]
+            assert (
+                report["manifest"]["source_provenance"]["source_sha256"]
+                == logs["source"]["source_sha256"]
+            )
             assert report["manifest"]["flash_authorized"] is False
             assert service.backend.calls == 0 and not project.project_dir.exists()
-        source, _ = service.resident.firmware_source.snapshots.resolve("fixture", receipt, key.metadata.principal_id)
+        source, _ = service.resident.firmware_source.snapshots.resolve(
+            "fixture", receipt, key.metadata.principal_id
+        )
         (source / "CMakeLists.txt").write_bytes(b"modified after prepare")
-        changed = await call(remote, "prepare_test", {
-            "session": lease["session"], "job_id": "changed-build", "test": "firmware_build",
-            "project_id": "fixture", "source_receipt": receipt,
-        })
+        changed = await call(
+            remote,
+            "prepare_test",
+            {
+                "session": lease["session"],
+                "job_id": "changed-build",
+                "test": "firmware_build",
+                "project_id": "fixture",
+                "source_receipt": receipt,
+            },
+        )
         assert not changed["ok"]

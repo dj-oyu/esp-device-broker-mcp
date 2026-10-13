@@ -62,11 +62,17 @@ class PrepareRequest(LeaseRequest):
     @model_validator(mode="after")
     def flash_references(self) -> "PrepareRequest":
         if self.test == TestName.SOURCE:
-            if self.project_id is None or self.source_commit is None or self.source_receipt is not None:
+            if (
+                self.project_id is None
+                or self.source_commit is None
+                or self.source_receipt is not None
+            ):
                 raise ValueError("source_fetch_requires_registered_project_and_full_commit")
         elif self.source_commit is not None:
             raise ValueError("source_commit_only_for_fetch")
-        if self.source_receipt is not None and (self.test != TestName.BUILD or self.project_id is None):
+        if self.source_receipt is not None and (
+            self.test != TestName.BUILD or self.project_id is None
+        ):
             raise ValueError("source_receipt_only_for_registered_build")
         if self.test not in FLASH_TESTS:
             if any(

@@ -12,11 +12,20 @@ from unittest.mock import patch
 from cardputer_mcp.config import BuildProject, Settings, SourceRepository
 from cardputer_mcp.firmware_build import FirmwareBuild
 from cardputer_mcp.models import PrepareRequest, TestName as Action
-from cardputer_mcp.source_snapshot import SourceError, SourceSnapshots, extract, file_receipt, tree_hash
+from cardputer_mcp.source_snapshot import (
+    SourceError,
+    SourceSnapshots,
+    extract,
+    file_receipt,
+    tree_hash,
+)
 
 COMMIT = "a" * 40
 REPOSITORY = "fixture/project"
-FILES = {"CMakeLists.txt": b"project(synthetic)\n", "sdkconfig.defaults": b"CONFIG_IDF_TARGET=esp32s3\n"}
+FILES = {
+    "CMakeLists.txt": b"project(synthetic)\n",
+    "sdkconfig.defaults": b"CONFIG_IDF_TARGET=esp32s3\n",
+}
 
 
 def archive(files=FILES, *, mode=stat.S_IFREG | 0o644):
@@ -37,14 +46,19 @@ class SourceTests(unittest.TestCase):
         self.profile.write_text("synthetic profile")
         self.settings = Settings(
             state_dir=self.root / "state",
-            build_projects={"fixture": BuildProject(
-                project_dir=self.root / "user-worktree", trusted_profile=self.profile,
-                build_root=self.root / "build-output", build_min_free_bytes=0,
-                source_repository=SourceRepository(
-                    github_repository=REPOSITORY, cache_root=self.root / "cache",
-                    private_acl_confirmed=True,
-                ),
-            )},
+            build_projects={
+                "fixture": BuildProject(
+                    project_dir=self.root / "user-worktree",
+                    trusted_profile=self.profile,
+                    build_root=self.root / "build-output",
+                    build_min_free_bytes=0,
+                    source_repository=SourceRepository(
+                        github_repository=REPOSITORY,
+                        cache_root=self.root / "cache",
+                        private_acl_confirmed=True,
+                    ),
+                )
+            },
         )
         receipts = {name: file_receipt(data, "100644") for name, data in FILES.items()}
         self.tree = tree_hash(receipts)
@@ -108,15 +122,19 @@ class SourceTests(unittest.TestCase):
 
     def test_traversal_windows_aliases_symlinks_and_lfs_are_rejected(self):
         for files in (
-            {"../outside": b"escape"}, {"CON.txt": b"alias"},
-            {"a": b"one", "A": b"two"}, {".gitmodules": b"module"},
+            {"../outside": b"escape"},
+            {"CON.txt": b"alias"},
+            {"a": b"one", "A": b"two"},
+            {".gitmodules": b"module"},
             {"large.bin": b"version https://git-lfs.github.com/spec/v1\n"},
         ):
             with tempfile.TemporaryDirectory() as folder:
                 with self.assertRaises(SourceError):
                     extract(archive(files), Path(folder), "project-" + COMMIT, lambda: True)
         with self.assertRaises(SourceError):
-            extract(archive(mode=stat.S_IFLNK | 0o777), self.root, "project-" + COMMIT, lambda: True)
+            extract(
+                archive(mode=stat.S_IFLNK | 0o777), self.root, "project-" + COMMIT, lambda: True
+            )
 
     def test_expansion_and_cache_limits_fail_closed(self):
         with patch.dict("cardputer_mcp.source_snapshot.LIMITS", expanded_bytes=3):
@@ -129,15 +147,27 @@ class SourceTests(unittest.TestCase):
             self.fetch()
 
     def test_typed_contract_has_no_url_path_or_short_commit(self):
-        valid = PrepareRequest(session="c" * 64, job_id="one", project_id="fixture",
-                               test=Action.SOURCE, source_commit=COMMIT)
+        valid = PrepareRequest(
+            session="c" * 64,
+            job_id="one",
+            project_id="fixture",
+            test=Action.SOURCE,
+            source_commit=COMMIT,
+        )
         self.assertEqual(valid.source_commit, COMMIT)
         for arguments in (
-            {"source_commit": "a" * 8}, {"source_commit": COMMIT, "url": "https://example.test"},
+            {"source_commit": "a" * 8},
+            {"source_commit": COMMIT, "url": "https://example.test"},
             {"source_commit": COMMIT, "source_receipt": "b" * 64},
         ):
             with self.assertRaises(ValueError):
-                PrepareRequest(session="c" * 64, job_id="one", project_id="fixture", test=Action.SOURCE, **arguments)
+                PrepareRequest(
+                    session="c" * 64,
+                    job_id="one",
+                    project_id="fixture",
+                    test=Action.SOURCE,
+                    **arguments,
+                )
 
 
 if __name__ == "__main__":

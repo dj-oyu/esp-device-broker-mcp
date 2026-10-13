@@ -1,5 +1,6 @@
 """Bounded public GitHub commit archives in broker-owned private snapshots."""
 
+
 import hashlib
 import io
 import json
@@ -26,6 +27,7 @@ def _not_link(path: Path) -> None:
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
             raise SourceError("source_linked_path_rejected")
 
+
 LIMITS = {
     "download_bytes": 64 * 1048576,
     "expanded_bytes": 256 * 1048576,
@@ -49,7 +51,9 @@ def canonical(value: Any) -> bytes:
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> None:
         raise SourceError("source_redirect_rejected")
 
 
@@ -84,11 +88,18 @@ def download(url: str, deadline: float, live: Callable[[], bool], limit: int) ->
 
 def safe_name(name: str) -> None:
     parts = name.split("/")
-    if len(name.encode()) > 1024 or len(parts) > 32 or any(
-        not part or part in (".", "..") or part.casefold() == ".git" or part.endswith((".", " "))
-        or re.search(r'[\\:<>"|?*\x00-\x1f\x7f]', part)
-        or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", part)
-        for part in parts
+    if (
+        len(name.encode()) > 1024
+        or len(parts) > 32
+        or any(
+            not part
+            or part in (".", "..")
+            or part.casefold() == ".git"
+            or part.endswith((".", " "))
+            or re.search(r'[\\:<>"|?*\x00-\x1f\x7f]', part)
+            or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", part)
+            for part in parts
+        )
     ):
         raise SourceError("source_archive_path_rejected")
 
@@ -117,11 +128,21 @@ def tree_hash(files: dict[str, dict[str, Any]]) -> str:
 
 
 def file_receipt(data: bytes, mode: str) -> dict[str, Any]:
-    return dict(bytes=len(data), sha256=digest(data), mode=mode,
-                git_sha1=hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest())
+    return dict(
+        bytes=len(data),
+        sha256=digest(data),
+        mode=mode,
+        git_sha1=hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest(),
+    )
 
 
-def extract(archive: bytes, root: Path, prefix: str, live: Callable[[], bool], published_root: Path | None = None) -> dict[str, Any]:
+def extract(
+    archive: bytes,
+    root: Path,
+    prefix: str,
+    live: Callable[[], bool],
+    published_root: Path | None = None,
+) -> dict[str, Any]:
     receipts: dict[str, Any] = {}
     seen: set[str] = set()
     spelling: dict[str, str] = {}
@@ -135,7 +156,7 @@ def extract(archive: bytes, root: Path, prefix: str, live: Callable[[], bool], p
                 raise SourceError("source_fetch_interrupted")
             if not item.filename.startswith(prefix + "/"):
                 raise SourceError("source_archive_commit_mismatch")
-            name = item.filename[len(prefix) + 1:].rstrip("/")
+            name = item.filename[len(prefix) + 1 :].rstrip("/")
             if not name:
                 continue
             safe_name(name)
@@ -155,19 +176,27 @@ def extract(archive: bytes, root: Path, prefix: str, live: Callable[[], bool], p
             if kind not in (0, stat.S_IFREG, stat.S_IFDIR) or item.flag_bits & 1:
                 raise SourceError("source_archive_link_or_encryption_rejected")
             target = root / name
-            if os.name == "nt" and max(len(str(target)), len(str((published_root or root) / name))) > 240:
+            if (
+                os.name == "nt"
+                and max(len(str(target)), len(str((published_root or root) / name))) > 240
+            ):
                 raise SourceError("source_windows_path_limit")
             if item.is_dir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue
-            if len(receipts) >= LIMITS["files"] or not 0 <= item.file_size <= LIMITS["expanded_bytes"] - total:
+            if (
+                len(receipts) >= LIMITS["files"]
+                or not 0 <= item.file_size <= LIMITS["expanded_bytes"] - total
+            ):
                 raise SourceError("source_expansion_limit")
             target.parent.mkdir(parents=True, exist_ok=True)
             with zipped.open(item) as source, target.open("xb") as output:
                 data = source.read(item.file_size + 1)
                 if len(data) != item.file_size:
                     raise SourceError("source_archive_size_mismatch")
-                if data.startswith(b"version https://git-lfs.github.com/spec/v1") or name.casefold().endswith(".gitmodules"):
+                if data.startswith(
+                    b"version https://git-lfs.github.com/spec/v1"
+                ) or name.casefold().endswith(".gitmodules"):
                     raise SourceError("source_submodule_or_lfs_not_supported")
                 if name.casefold().endswith(".gitattributes") and b"filter=lfs" in data:
                     raise SourceError("source_submodule_or_lfs_not_supported")
@@ -192,7 +221,11 @@ class SourceSnapshots:
             raise SourceError("registered_source_repository_required")
         root = registration.cache_root.resolve()
         work = project.project_dir.resolve()
-        if root.is_relative_to(work) or work.is_relative_to(root) or root.is_relative_to(self.settings.state_dir.resolve()):
+        if (
+            root.is_relative_to(work)
+            or work.is_relative_to(root)
+            or root.is_relative_to(self.settings.state_dir.resolve())
+        ):
             raise SourceError("source_cache_root_conflict")
         if project.build_root is not None:
             output = project.build_root.resolve()
@@ -230,25 +263,38 @@ class SourceSnapshots:
         if not principal or re.fullmatch(r"[a-f0-9]{40}", commit) is None:
             raise SourceError("source_full_commit_required")
         return dict(
-            project_id=project_id, source_commit=commit, source_principal=principal,
+            project_id=project_id,
+            source_commit=commit,
+            source_principal=principal,
             source_repository=registration.github_repository,
             source_registration_sha256=digest(registration.model_dump_json().encode()),
-            limits=LIMITS, stages=["source_download", "source_validate", "source_publish"],
-            effects=["Fetches one registered public GitHub commit into a private broker snapshot",
-                     "No user worktree overwrite, build, USB, flash, credential or SDK installation",
-                     "Bounded cache; no automatic deletion of retained snapshots"],
+            limits=LIMITS,
+            stages=["source_download", "source_validate", "source_publish"],
+            effects=[
+                "Fetches one registered public GitHub commit into a private broker snapshot",
+                "No user worktree overwrite, build, USB, flash, credential or SDK installation",
+                "Bounded cache; no automatic deletion of retained snapshots",
+            ],
         )
 
-    def fetch(self, plan: dict[str, Any], live: Callable[[], bool], stage: Callable[[str], None]) -> dict[str, Any]:
+    def fetch(
+        self, plan: dict[str, Any], live: Callable[[], bool], stage: Callable[[str], None]
+    ) -> dict[str, Any]:
         project_id, principal = plan["project_id"], plan["source_principal"]
         expected = self.prepare(project_id, plan["source_commit"], principal)
         if any(plan.get(key) != value for key, value in expected.items()):
             raise SourceError("source_plan_changed")
         _, registration = self.registration(project_id)
         usage = self.usage(project_id)
-        if usage["snapshots"] >= 8 or usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 > LIMITS["cache_bytes"]:
+        if (
+            usage["snapshots"] >= 8
+            or usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 > LIMITS["cache_bytes"]
+        ):
             raise SourceError("source_cache_full")
-        root = BackupStore(registration.cache_root, windows_private_acl_confirmed=registration.private_acl_confirmed).directory
+        root = BackupStore(
+            registration.cache_root,
+            windows_private_acl_confirmed=registration.private_acl_confirmed,
+        ).directory
         if shutil.disk_usage(root).free < LIMITS["expanded_bytes"] + 512 * 1048576:
             raise SourceError("source_disk_reserve_required")
         deadline = time.monotonic() + LIMITS["operation_seconds"]
@@ -261,23 +307,50 @@ class SourceSnapshots:
         try:
             repository, commit = plan["source_repository"], plan["source_commit"]
             stage("source_download")
-            metadata = json.loads(self.transport(
-                f"https://api.github.com/repos/{repository}/git/commits/{commit}", deadline, valid, 1048576
-            ))
-            if metadata.get("sha") != commit or re.fullmatch(r"[a-f0-9]{40}", metadata.get("tree", {}).get("sha", "")) is None:
+            metadata = json.loads(
+                self.transport(
+                    f"https://api.github.com/repos/{repository}/git/commits/{commit}",
+                    deadline,
+                    valid,
+                    1048576,
+                )
+            )
+            if (
+                metadata.get("sha") != commit
+                or re.fullmatch(r"[a-f0-9]{40}", metadata.get("tree", {}).get("sha", "")) is None
+            ):
                 raise SourceError("source_commit_metadata_mismatch")
-            archive = self.transport(f"https://codeload.github.com/{repository}/zip/{commit}", deadline, valid, LIMITS["download_bytes"])
+            archive = self.transport(
+                f"https://codeload.github.com/{repository}/zip/{commit}",
+                deadline,
+                valid,
+                LIMITS["download_bytes"],
+            )
             source = pending / "source"
             source.mkdir()
             stage("source_validate")
-            files = extract(archive, source, repository.split("/")[1] + "-" + commit, valid, root / ("f" * 64) / "source")
+            files = extract(
+                archive,
+                source,
+                repository.split("/")[1] + "-" + commit,
+                valid,
+                root / ("f" * 64) / "source",
+            )
             if tree_hash(files) != metadata["tree"]["sha"]:
                 raise SourceError("source_git_tree_mismatch")
-            value = dict(schema_version=1, fetch_job_id=plan["job_id"], principal=principal,
-                         project_id=project_id, repository=repository, commit=commit,
-                         tree_sha1=metadata["tree"]["sha"], archive_sha256=digest(archive),
-                         source_sha256=digest(canonical(files)), files=files,
-                         registration_sha256=plan["source_registration_sha256"])
+            value = dict(
+                schema_version=1,
+                fetch_job_id=plan["job_id"],
+                principal=principal,
+                project_id=project_id,
+                repository=repository,
+                commit=commit,
+                tree_sha1=metadata["tree"]["sha"],
+                archive_sha256=digest(archive),
+                source_sha256=digest(canonical(files)),
+                files=files,
+                registration_sha256=plan["source_registration_sha256"],
+            )
             encoded = canonical(value)
             if len(encoded) > 32 * 1048576:
                 raise SourceError("source_receipt_limit")
@@ -293,9 +366,15 @@ class SourceSnapshots:
             if target.exists():
                 raise SourceError("source_snapshot_conflict")
             pending.rename(target)
-            return dict(source_receipt=receipt, repository=repository, commit=commit,
-                        tree_sha1=value["tree_sha1"], source_sha256=value["source_sha256"],
-                        files=len(files), bytes=sum(item["bytes"] for item in files.values()))
+            return dict(
+                source_receipt=receipt,
+                repository=repository,
+                commit=commit,
+                tree_sha1=value["tree_sha1"],
+                source_sha256=value["source_sha256"],
+                files=len(files),
+                bytes=sum(item["bytes"] for item in files.values()),
+            )
         except SourceError:
             raise
         except Exception:
@@ -318,7 +397,12 @@ class SourceSnapshots:
             if digest(raw) != receipt:
                 raise SourceError("source_receipt_changed")
             value = json.loads(raw)
-            if value["schema_version"] != 1 or value["principal"] != principal or value["project_id"] != project_id or value["registration_sha256"] != digest(registration.model_dump_json().encode()):
+            if (
+                value["schema_version"] != 1
+                or value["principal"] != principal
+                or value["project_id"] != project_id
+                or value["registration_sha256"] != digest(registration.model_dump_json().encode())
+            ):
                 raise SourceError("source_receipt_not_owned")
             source = root / "source"
             _not_link(source)
@@ -329,7 +413,11 @@ class SourceSnapshots:
                     continue
                 name = item.relative_to(source).as_posix()
                 entry = value["files"].get(name)
-                if entry is None or item.stat().st_size != entry["bytes"] or len(files) >= LIMITS["files"]:
+                if (
+                    entry is None
+                    or item.stat().st_size != entry["bytes"]
+                    or len(files) >= LIMITS["files"]
+                ):
                     raise SourceError("source_snapshot_changed")
                 files[name] = file_receipt(item.read_bytes(), entry["mode"])
             if files != value["files"] or digest(canonical(files)) != value["source_sha256"]:

@@ -328,6 +328,7 @@ class FirmwareVerticalTests(unittest.TestCase):
             source_receipt = None
             if source_mode:
                 import test_source_snapshot as fixture
+
                 from cardputer_mcp.config import BuildProject, SourceRepository
                 from cardputer_mcp.source_snapshot import SourceSnapshots, file_receipt, tree_hash
 
