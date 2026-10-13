@@ -10,7 +10,11 @@ from .flash_lifecycle import FlashFailure
 
 class ReadProgress:
     def __init__(
-        self, size: int, hard_seconds: float, *, idle_seconds: float = 30,
+        self,
+        size: int,
+        hard_seconds: float,
+        *,
+        idle_seconds: float = 30,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.size = size
@@ -27,9 +31,12 @@ class ReadProgress:
             try:
                 value = json.loads(line)
                 if (
-                    not isinstance(value, dict) or set(value) != {"bytes", "total"}
-                    or type(value["bytes"]) is not int or type(value["total"]) is not int
-                    or value["total"] != self.size or not self.done < value["bytes"] <= self.size
+                    not isinstance(value, dict)
+                    or set(value) != {"bytes", "total"}
+                    or type(value["bytes"]) is not int
+                    or type(value["total"]) is not int
+                    or value["total"] != self.size
+                    or not self.done < value["bytes"] <= self.size
                 ):
                     raise ValueError
                 self.done = value["bytes"]

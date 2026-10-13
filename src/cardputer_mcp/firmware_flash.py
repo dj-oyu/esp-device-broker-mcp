@@ -414,6 +414,12 @@ class FirmwareFlash:
             self.results.pop(oldest, None)
         self.logs[self.job_id] = log
 
+        def progress_log(message: str) -> None:
+            with self._lock:
+                log.append(message)
+
+        driver.progress_log = progress_log
+
         def emit(name: str) -> None:
             with self._lock:
                 log.append("-- " + name)

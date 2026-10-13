@@ -33,7 +33,9 @@ def _inside(root: Path, name: str) -> Path:
 
 
 def run_job(
-    job: dict[str, Any], root: Path, tool: Any,
+    job: dict[str, Any],
+    root: Path,
+    tool: Any,
     progress_emit: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     if tool.__version__ != "5.1.0" or job.get("action") not in ("probe", "read", "write"):
@@ -122,14 +124,17 @@ def run_job(
                     def progress(done: int, total: int, address: int) -> None:
                         nonlocal last_emitted, previous
                         if (
-                            type(done) is not int or type(total) is not int
-                            or total != size or not previous < done <= total
+                            type(done) is not int
+                            or type(total) is not int
+                            or total != size
+                            or not previous < done <= total
                         ):
                             raise ValueError("invalid_rom_read_progress")
                         previous = done
                         now = time.monotonic()
                         if done == total or now - last_emitted >= 5:
-                            progress_emit(done, total)
+                            if progress_emit is not None:
+                                progress_emit(done, total)
                             last_emitted = now
 
                     def monitored_read(address: int, length: int, ignored: Any = None) -> bytes:
@@ -239,7 +244,8 @@ def main() -> None:
         def emit_progress(done: int, total: int) -> None:
             print(
                 "FLASH_PROGRESS=" + json.dumps({"bytes": done, "total": total}),
-                file=structured_output, flush=True,
+                file=structured_output,
+                flush=True,
             )
 
         result = run_job(job, path.parent, esptool, emit_progress)

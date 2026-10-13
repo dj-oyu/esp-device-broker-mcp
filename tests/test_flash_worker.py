@@ -143,15 +143,23 @@ class WorkerTests(unittest.TestCase):
         from unittest.mock import patch
 
         updates = []
+
         def native_read(offset, size, callback):
             for done in range(1024, size + 1, 1024):
                 callback(done, size, offset)
             return b"x" * size
+
         self.chip.read_flash = native_read
-        self.tool.cmds.read_flash = lambda chip, offset, size, **kwargs: chip.read_flash(offset, size)
+        self.tool.cmds.read_flash = lambda chip, offset, size, **kwargs: chip.read_flash(
+            offset, size
+        )
         with patch("cardputer_mcp.flash_worker.time.monotonic", side_effect=[0, 6, 12, 18, 24]):
-            result = run_job(dict(self.job, action="read", offset=4096, size=4096), self.root,
-                             self.tool, lambda done, total: updates.append((done, total)))
+            result = run_job(
+                dict(self.job, action="read", offset=4096, size=4096),
+                self.root,
+                self.tool,
+                lambda done, total: updates.append((done, total)),
+            )
         self.assertEqual(updates, [(1024, 4096), (2048, 4096), (3072, 4096), (4096, 4096)])
         self.assertEqual(result["bytes"], 4096)
         self.assertNotIn("data", result)
@@ -162,11 +170,18 @@ class WorkerTests(unittest.TestCase):
         def native_read(offset, size, callback):
             callback(size + 1, size, offset)
             return b"x" * size
+
         self.chip.read_flash = native_read
-        self.tool.cmds.read_flash = lambda chip, offset, size, **kwargs: chip.read_flash(offset, size)
+        self.tool.cmds.read_flash = lambda chip, offset, size, **kwargs: chip.read_flash(
+            offset, size
+        )
         with self.assertRaisesRegex(ValueError, "read_progress"):
-            run_job(dict(self.job, action="read", offset=0, size=1024), self.root, self.tool,
-                    lambda done, total: None)
+            run_job(
+                dict(self.job, action="read", offset=0, size=1024),
+                self.root,
+                self.tool,
+                lambda done, total: None,
+            )
         self.assertFalse((self.root / "read.bin").exists())
         self.assertFalse(self.chip._port.is_open)
 

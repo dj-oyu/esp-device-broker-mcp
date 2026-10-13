@@ -15,6 +15,7 @@ from .backend import BackendResult
 from .build_process import BuildProcess
 from .firmware_build import OS_ENV, hash_file
 from .flash_lifecycle import FlashFailure, SecurityReceipt
+from .flash_read_progress import ReadProgress
 from .models import TestName
 from .ports import resolve_port
 from .serial_backend import SerialBackend, fingerprint
@@ -99,6 +100,7 @@ class NativeFlashDriver:
         self.expected_app_bin_sha256 = expected_app_bin_sha256
         self.expected_elf_sha256 = expected_elf_sha256
         self.live = live
+        self.progress_log: Callable[[str], None] | None = None
         self._observation_backend: Any = None
 
     @property
@@ -187,9 +189,19 @@ class NativeFlashDriver:
         if os.name == "posix":
             job.chmod(0o600)
         lines: list[str] = []
+        read_progress = ReadProgress(size, 300) if action == "read" else None
+
+        def monitor() -> None:
+            self._authority()
+            if read_progress is not None:
+                read_progress.check()
 
         def output(line: str, stream: str) -> None:
-            if stream == "stdout" and line.startswith("FLASH_RESULT=") and len(lines) < 2:
+            if stream == "stdout" and read_progress is not None and line.startswith("FLASH_PROGRESS="):
+                message = read_progress.accept(line.removeprefix("FLASH_PROGRESS="))
+                if message is not None and self.progress_log is not None:
+                    self.progress_log(message)
+            elif stream == "stdout" and line.startswith("FLASH_RESULT=") and len(lines) < 2:
                 lines.append(line.removeprefix("FLASH_RESULT="))
 
         env = {key.upper(): value for key, value in os.environ.items() if key.upper() in OS_ENV}
@@ -209,7 +221,10 @@ class NativeFlashDriver:
                 temporary,
                 output,
                 timeout=300,
+                monitor=monitor if read_progress is not None else None,
             )
+            if read_progress is not None:
+                monitor()
             if code or len(lines) != 1:
                 raise FlashFailure("flash_native_failed_needs_review")
             result = json.loads(lines[0])
