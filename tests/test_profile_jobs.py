@@ -11,9 +11,10 @@ from test_registry_http import registry_service as registry_service
 from cardputer_mcp.broker import BrokerError
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.client import call, connect
-from cardputer_mcp.config import BuildProject
+from cardputer_mcp.config import BuildProject, SourceRepository
 from cardputer_mcp.models import AcquireRequest, CancelRequest, ExecuteRequest, Origin, PrepareRequest
 from cardputer_mcp.models import TestName as Action
+from cardputer_mcp.source_snapshot import SourceError
 from cardputer_mcp.store import Store
 
 
@@ -272,3 +273,57 @@ async def test_transport_disconnect_and_expired_device_lease_do_not_end_build(
     await broker.profile_jobs.queue.join()
     assert broker.job("long-build")["state"] == "failed"
     assert not broker._store().needs_review()
+
+
+async def test_source_pending_cleanup_refusal_is_durable_uncertainty(
+    registry_service, tmp_path, monkeypatch
+):
+    service = registry_service
+    project = register(service, tmp_path)
+    broker = service.resident
+    key = service.keys["second"]
+    cache = tmp_path / "source-cache"
+    project = project.model_copy(update={"source_repository": SourceRepository(
+        github_repository="synthetic/firmware",
+        cache_root=cache,
+        private_acl_confirmed=True,
+    )})
+    broker.settings = broker.settings.model_copy(update={"build_projects": {"fixture": project}})
+
+    def failed_transport(*args):
+        raise SourceError("source_download_failed")
+
+    broker.firmware_source.snapshots.transport = failed_transport
+    from cardputer_mcp import source_snapshot as source_module
+
+    def denied_cleanup(path):
+        raise PermissionError("synthetic private cleanup detail " + str(path))
+
+    async with connect(service.url, key.token) as remote:
+        prepared = await call(remote, "prepare_test", {
+            "job_id": "cleanup-refused", "test": "firmware_fetch_source",
+            "project_id": "fixture", "source_commit": "a" * 40,
+        })
+        assert prepared["ok"]
+        with monkeypatch.context() as refusal:
+            refusal.setattr(source_module.shutil, "rmtree", denied_cleanup)
+            assert (await call(remote, "execute_test", {
+                "plan_hash": prepared["plan_hash"],
+            }))["ok"]
+            await broker.profile_jobs.queue.join()
+        job = broker.job("cleanup-refused")
+        assert job["state"] == "needs_review"
+        assert job["result"] == "source_cleanup_unconfirmed"
+        assert job["diagnostic"] == {"code": "source_cleanup_unconfirmed"}
+        assert broker.firmware_source.snapshots.uncertain
+        assert broker._store().needs_review()
+        assert list(cache.glob("pending-*"))
+        assert not broker.firmware_source.results
+        assert "private cleanup detail" not in json.dumps(job)
+        assert str(cache) not in json.dumps(job)
+        denied = await call(remote, "prepare_test", {
+            "job_id": "cannot-follow-cleanup", "test": "firmware_fetch_source",
+            "project_id": "fixture", "source_commit": "b" * 40,
+        })
+        assert denied["error"] == "recovery_review_required"
+        assert list(cache.glob("pending-*"))

@@ -509,14 +509,12 @@ class FirmwareBuild:
                 getattr(self.process, "active", False) or getattr(self.process, "uncertain", False)
             ):
                 try:
-                    self._build_lock.release()
-                except Exception:
-                    self.output_uncertain = True
+                    self._release_output_lock()
+                except BuildLocationError:
                     with self._lock:
                         self.manifests.pop(plan.get("job_id", ""), None)
                         self._committed_job = None
-                    raise BuildLocationError("build_output_release_unconfirmed") from None
-                self._build_lock = None
+                    raise
 
     def _execute_inner(
         self, plan: dict[str, Any], stage: Any, defer_publish: bool = False
@@ -702,7 +700,8 @@ class FirmwareBuild:
             self.settings.state_dir, build_root, plan["fingerprint"], environment_fingerprint
         )
         lock_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        lock = FileLock(str(lock_path), timeout=0)
+        # The worker acquires; deferred success/discard releases on the broker loop.
+        lock = FileLock(str(lock_path), timeout=0, thread_local=False)
         try:
             lock.acquire()
         except Timeout:
@@ -826,13 +825,7 @@ class FirmwareBuild:
             raise ValueError("build_final_commit_not_authorized")
         self._check_cancelled()
         (root / "broker-manifest.pending.json").replace(root / "broker-manifest.json")
-        if self._build_lock is not None:
-            try:
-                self._build_lock.release()
-            except Exception:
-                self.output_uncertain = True
-                raise BuildLocationError("build_output_release_unconfirmed") from None
-            self._build_lock = None
+        self._release_output_lock()
         self.artifacts.publish(plan["job_id"], principal, root, manifest)
         self.manifests[plan["job_id"]] = (principal, manifest)
         self._pending.pop(plan["job_id"])
@@ -858,11 +851,21 @@ class FirmwareBuild:
             and not self.output_uncertain
         ):
             try:
-                self._build_lock.release()
-            except Exception:
-                self.output_uncertain = True
-            else:
-                self._build_lock = None
+                self._release_output_lock()
+            except BuildLocationError:
+                pass
+
+    def _release_output_lock(self) -> None:
+        if self._build_lock is None:
+            return
+        try:
+            self._build_lock.release()
+            if self._build_lock.is_locked:
+                raise ValueError("build_output_release_unconfirmed")
+        except Exception:
+            self.output_uncertain = True
+            raise BuildLocationError("build_output_release_unconfirmed") from None
+        self._build_lock = None
 
     def storage(self, project_id: str) -> dict[str, Any]:
         project = self.settings.build_projects.get(project_id)

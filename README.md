@@ -225,22 +225,23 @@ Future authenticated Tunnel ingress (not connected) --------^
 - A non-blocking process lock excludes cooperating brokers for the same OS user
   in the same OS temporary-directory namespace, across worktrees, HTTP ports and
   state directories. Another state lock protects database recovery/review
-- One session owns the entire operation sequence. Builds may eventually run in
-  parallel outside this broker; physical flash/boot/test ownership must not be
-  split between those stages
+- One physical session owns a device operation sequence. Registered source/build
+  jobs have their own serial execution lane and require no physical session
 - Leases use monotonic time. Expiry cancels queued work and blocks further lease
   operations, but retains the active owner's device until the active adapter
   returns. A client disconnect does not cancel the worker
-- Active jobs cannot be forcibly cancelled through MCP. Queued jobs can be
-  cancelled by their lease owner. This release starts no child processes; future
-  flash adapters must wait for the entire subprocess tree to exit before unlock
+- Queued device jobs are cancelled by their lease owner. Source/build cancellation
+  uses the authenticated original control principal and requests owned-worker
+  shutdown. No process/lock is released until teardown is confirmed
 - Job IDs are unique within the retained database. Retries of one immutable plan
   return its original job; a conflicting reuse is rejected. After lease expiry,
   read `job_status` instead of trying to execute an old capability
-- Restart converts both `queued` and `running` jobs to `needs_review`. Nothing is
-  replayed. New sessions are blocked while any unacknowledged review is present
-- Disconnects and unexpected adapter errors quarantine work for review. There is
-  no implicit retry, port substitution, reset, flash, or recovery operation
+- Restart cancels unstarted registered-profile jobs and quarantines interrupted
+  running jobs and legacy device work as needs_review. Nothing is replayed.
+  Existing unacknowledged reviews remain blocking; installation clears none
+- Device disconnects and uncertain adapter errors quarantine work for review.
+  Ordinary source/build failure with confirmed cleanup is terminal without review.
+  There is no implicit retry, port substitution, reset, flash or recovery operation
 - Cache reads use `{epoch, sequence}` cursors. Different clients read identical
   events without consuming them. Gaps caused by eviction or restart are explicit
 - There is one device/session, up to 32 queued jobs by default, 256 cached events,
@@ -274,7 +275,7 @@ The endpoint is `http://127.0.0.1:8765/mcp`. Tools with arguments accept a neste
 | `renew_session` | session, lease_seconds | Extend an unexpired lease |
 | `release_session` | session | Release idle ownership, cancel queued work |
 | `prepare_test` | session, job_id, test | Persist immutable allowlisted plan |
-| `execute_test` | session, plan_hash, optional wait_for_approval | Execute an approved plan, or explicitly submit it for local approval |
+| `execute_test` | plan_hash, optional session / wait_for_approval | Run a registered source/build plan; device operations retain lease and approval |
 | `job_status` | job_id | Read durable job result |
 | `read_capture` | job_id | Read your completed PNG from five-minute memory cache |
 | `cancel_job` | session, job_id | Cancel queued work only |
@@ -362,9 +363,9 @@ verified in a user-run Windows 11 setup. One user-run HOME render-buffer capture
 has also succeeded. General driver control-line behavior, the new firmware/log
 restart/log workflow, physical display evidence, and flash remain **unvalidated**.
 A user-run passive device log observation has returned real telemetry. Existing
-firmware projects, GUI, IDF environment and build worktrees are unchanged and are
-not yet wired into this broker. Optional project/IDF paths belong in future private
-local configuration, not public examples.
+firmware projects and external IDF environments are registered through private
+local build profiles; MCP never supplies arbitrary project/profile paths. Paths
+and output-root overrides stay in that private configuration.
 
 The capture API returns a bounded, authenticated MCP ImageContent after a
 `capture_home` job succeeds. Pixels remain only in the broker's bounded memory

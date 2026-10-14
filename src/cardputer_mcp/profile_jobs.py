@@ -31,6 +31,14 @@ class ProfileJobs:
         self.deadline = 0.0
         self.uncertain = False
 
+    def _uncertain(self) -> bool:
+        return bool(
+            self.uncertain
+            or self.broker.firmware_source.snapshots.uncertain
+            or self.broker.firmware_build.output_uncertain
+            or self.broker.firmware_build.process.uncertain
+        )
+
     def start(self) -> None:
         self.worker = asyncio.create_task(self._work(), name="registered-project-worker")
 
@@ -60,7 +68,7 @@ class ProfileJobs:
         broker, store = self.broker, self.broker._store()
         if broker.closing or not self._authorized(principal, origin):
             raise BrokerError("principal_not_authorized")
-        if self.uncertain or store.needs_review():
+        if self._uncertain() or store.needs_review():
             raise BrokerError("recovery_review_required")
         if request.test.value not in PROFILE_TESTS or request.project_id is None:
             raise BrokerError("registered_build_project_required")
@@ -150,7 +158,7 @@ class ProfileJobs:
             return {**existing, "deduplicated": True}
         if not self._binding_live(plan):
             raise BrokerError("profile_or_principal_no_longer_valid")
-        if self.uncertain or store.needs_review():
+        if self._uncertain() or store.needs_review():
             raise BrokerError("recovery_review_required")
         if self.queue.qsize() >= self.broker.settings.max_queue:
             raise BrokerError("queue_full")
@@ -219,7 +227,7 @@ class ProfileJobs:
                 if plan is None or digest_plan(plan) != job["plan_hash"]:
                     store.set_job(job_id, "needs_review", "profile_plan_inconsistent")
                     continue
-                if self.uncertain or store.needs_review() or not self._binding_live(plan):
+                if self._uncertain() or store.needs_review() or not self._binding_live(plan):
                     store.set_job(job_id, "cancelled", "profile_or_principal_no_longer_valid")
                     continue
                 self._sync_settings()
@@ -277,13 +285,23 @@ class ProfileJobs:
                     uncertain = (
                         (committing and reason is None and not isinstance(failure, BuildPreflightFailure))
                         or isinstance(failure, sqlite3.Error)
+                        or broker.firmware_source.snapshots.uncertain
                         or broker.firmware_source.active
                         or broker.firmware_build.process.active
                         or broker.firmware_build.process.uncertain
                         or broker.firmware_build.output_uncertain
                     )
+                    if broker.firmware_source.snapshots.uncertain:
+                        code = "source_cleanup_unconfirmed"
+                    elif broker.firmware_build.process.uncertain:
+                        code = "build_process_exit_unconfirmed"
+                    elif broker.firmware_build.output_uncertain:
+                        code = "build_output_release_unconfirmed"
+                    elif isinstance(failure, sqlite3.Error):
+                        code = "registered_project_state_inconsistent"
                     state = "needs_review" if uncertain else "cancelled" if reason else "failed"
-                    store.set_job(job_id, state, reason or code, {"code": reason or code})
+                    outcome = code if uncertain else reason or code
+                    store.set_job(job_id, state, outcome, {"code": outcome})
                     if uncertain:
                         broker.logs.append(Event.REVIEW)
                 finally:

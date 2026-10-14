@@ -1,15 +1,18 @@
 """Authenticated unattended source/build loop with synthetic transport."""
 
+import asyncio
 import json
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from filelock import FileLock
 from test_registry_http import registry_service as registry_service
 from test_source_snapshot import COMMIT, FILES, REPOSITORY, archive
 
 from cardputer_mcp import firmware_build as build_module
+from cardputer_mcp.build_locations import slot_lock_path
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import BuildProject, SerialSettings, SourceRepository
 from cardputer_mcp.models import BuildLogRequest
@@ -265,6 +268,20 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
             assert service.resident.job("build-failed")["state"] == "failed"
             assert not service.resident._store().needs_review()
             assert "build-failed" not in service.resident.firmware_build.manifests
+            assert service.resident.firmware_build._build_lock is None
+            assert not service.resident.firmware_build.output_uncertain
+            lock_path = slot_lock_path(
+                settings.state_dir, project.build_root, report["manifest"]["fingerprint"],
+                report["manifest"]["environment_fingerprint"],
+            )
+
+            def acquire_released_slot():
+                # A fresh thread must acquire the actual OS lock after both
+                # success publication and ordinary compile-failure cleanup.
+                with FileLock(str(lock_path), timeout=0):
+                    return True
+
+            assert await asyncio.to_thread(acquire_released_slot)
             fail_build = False
             retry = await call(remote, "prepare_test", {
                 "job_id": "build-corrected", "test": "firmware_build",

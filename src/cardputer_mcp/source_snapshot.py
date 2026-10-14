@@ -57,6 +57,7 @@ SOURCE_ERROR_CODES = frozenset(
         "source_cache_root_conflict",
         "source_cache_unknown_entry",
         "source_commit_metadata_mismatch",
+        "source_cleanup_unconfirmed",
         "source_disk_reserve_required",
         "source_download_failed",
         "source_download_limit",
@@ -630,6 +631,7 @@ class RepositoryArchives:
 class SourceSnapshots:
     def __init__(self, settings: Any, transport: Callable[..., bytes] = download) -> None:
         self.settings, self.transport = settings, transport
+        self.uncertain = False
 
     def registration(self, project_id: str) -> tuple[Any, Any]:
         project = self.settings.build_projects.get(project_id)
@@ -778,8 +780,12 @@ class SourceSnapshots:
         except Exception:
             raise SourceError("source_fetch_failed") from None
         finally:
-            if pending.exists():
-                shutil.rmtree(pending)
+            try:
+                if pending.exists():
+                    shutil.rmtree(pending)
+            except Exception:
+                self.uncertain = True
+                raise SourceError("source_cleanup_unconfirmed") from None
 
     def resolve(self, project_id: str, receipt: str, principal: str) -> tuple[Path, dict[str, Any]]:
         _, registration = self.registration(project_id)

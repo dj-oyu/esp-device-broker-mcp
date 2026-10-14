@@ -61,21 +61,29 @@ import json
 import os
 from cardputer_mcp.client import call, connect
 
+phase = 10
+
 async def probe():
+    global phase
     async with connect(os.environ['CARDPUTER_SMOKE_URL'],
                        os.environ['CARDPUTER_REMOTE_TOKEN']) as client:
+        phase = 11
         catalog = await client.list_tools()
         names = {tool.name for tool in catalog.tools}
         assert {'prepare_test', 'execute_test', 'read_build_logs'} <= names
+        phase = 12
         prepared_tool = next(tool for tool in catalog.tools if tool.name == 'prepare_test')
         assert 'firmware_build' in json.dumps(prepared_tool.model_dump())
         logs_tool = next(tool for tool in catalog.tools if tool.name == 'read_build_logs')
         assert logs_tool.annotations.read_only_hint is True
+        phase = 13
         identity = await call(client, 'client_identity')
         assert identity['ok'] is True and identity['authenticated'] is True
         assert identity['origin'] == 'remote_mcp'
+        phase = 14
         logs = await call(client, 'read_build_logs', {'job_id': 'unstarted-smoke'})
         assert logs['ok'] is False and logs['error'] == 'build_log_not_available'
+        phase = 15
         assert 'session' not in prepared_tool.input_schema.get('required', [])
         result = await call(client, 'prepare_test', {
             'job_id': 'build-api-smoke', 'test': 'firmware_build',
@@ -87,7 +95,10 @@ async def probe():
 async def main():
     async with asyncio.timeout(30):
         await probe()
-asyncio.run(main())
+try:
+    asyncio.run(main())
+except Exception:
+    raise SystemExit(phase)
 """
     child_env = dict(env)
     child_env["CARDPUTER_SMOKE_URL"] = url
@@ -98,7 +109,11 @@ asyncio.run(main())
             timeout=45, check=False,
         )
         if completed.returncode != 0:
-            raise RuntimeError("packaged_build_api_probe_failed")
+            phase = {
+                10: "connect", 11: "catalog", 12: "schema", 13: "identity",
+                14: "logs", 15: "registered_project",
+            }.get(completed.returncode, "unknown")
+            raise RuntimeError("packaged_build_api_probe_failed_at_" + phase)
     finally:
         child_env.clear()
     print("PASS: extracted EXE authenticated catalog/build/log API boundaries; no build executed")

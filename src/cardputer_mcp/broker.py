@@ -578,6 +578,7 @@ class Broker:
             "active_job": self.active_job,
             "profile_active_job": self.profile_jobs.active,
             "profile_queue_depth": self.profile_jobs.queue.qsize(),
+            "profile_uncertain": self.profile_jobs._uncertain(),
             "profile_approval_policy": "registered_project",
             "owner": session.owner if session else None,
             "lease_remaining_seconds": max(0, round(session.deadline - self.clock(), 3))
