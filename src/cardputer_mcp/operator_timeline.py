@@ -242,6 +242,14 @@ class OperatorTimeline:
             return self.plans._plan(str(plan_hash))
         except Exception:
             try:
+                # Preserve the existing 16 KiB read bound for profile display too.
+                db = self.broker._store().db
+                bounded = db.execute(
+                    "SELECT 1 FROM plans WHERE hash=? AND length(CAST(payload AS BLOB))<=?",
+                    (str(plan_hash), 16 * 1024),
+                ).fetchone()
+                if bounded is None:
+                    return None
                 raw = self.broker._store().plan(str(plan_hash))
                 if raw is None:
                     return None
