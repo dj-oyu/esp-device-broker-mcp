@@ -481,6 +481,7 @@ class FirmwareBuild:
     ) -> str:
         self._check_cancelled()
         loop = asyncio.get_running_loop()
+
         async def authorized() -> bool:
             return self.authority is not None and self.authority() is True
 
@@ -492,21 +493,27 @@ class FirmwareBuild:
         self._authority_monitor = monitor if defer_publish else None
         try:
             return await asyncio.to_thread(
-                self._execute, plan, lambda name: loop.call_soon_threadsafe(stage, name), defer_publish
+                self._execute,
+                plan,
+                lambda name: loop.call_soon_threadsafe(stage, name),
+                defer_publish,
             )
         finally:
             self._authority_monitor = None
 
-    def _execute(
-        self, plan: dict[str, Any], stage: Any, defer_publish: bool = False
-    ) -> str:
+    def _execute(self, plan: dict[str, Any], stage: Any, defer_publish: bool = False) -> str:
         if self._build_lock is not None:
             raise BuildLocationError("build_output_in_use")
         try:
             return self._execute_inner(plan, stage, defer_publish)
         finally:
-            if self._build_lock is not None and not self._pending and not (
-                getattr(self.process, "active", False) or getattr(self.process, "uncertain", False)
+            if (
+                self._build_lock is not None
+                and not self._pending
+                and not (
+                    getattr(self.process, "active", False)
+                    or getattr(self.process, "uncertain", False)
+                )
             ):
                 try:
                     self._release_output_lock()
@@ -516,9 +523,7 @@ class FirmwareBuild:
                         self._committed_job = None
                     raise
 
-    def _execute_inner(
-        self, plan: dict[str, Any], stage: Any, defer_publish: bool = False
-    ) -> str:
+    def _execute_inner(self, plan: dict[str, Any], stage: Any, defer_publish: bool = False) -> str:
         self._check_cancelled()
         if os.name != "nt":
             raise ValueError("external_windows_idf_required")
@@ -574,9 +579,7 @@ class FirmwareBuild:
             profile_args.extend(["-ExecutionPolicy", "RemoteSigned"])
         profile_args.extend(["-File", str(project.trusted_profile), "-e"])
         try:
-            code = run(
-                profile_args, env, project.project_dir, profile_output, timeout=30
-            )
+            code = run(profile_args, env, project.project_dir, profile_output, timeout=30)
         except ValueError:
             if stderr_seen:
                 logs.append("error: trusted profile export rejected or failed")
@@ -628,17 +631,13 @@ class FirmwareBuild:
         if not any(re.fullmatch(r"ESP-IDF v6\.0\.1", line.strip()) for line in version):
             raise FixedDiagnosticFailure("idf_version_mismatch_no_fallback")
         version.clear()
-        if run(
-            [str(python), "--version"], env, project.project_dir, version_output, timeout=30
-        ):
+        if run([str(python), "--version"], env, project.project_dir, version_output, timeout=30):
             raise FixedDiagnosticFailure("external_python_diagnostic_failed")
         compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
         if compiler is None:
             raise FixedDiagnosticFailure("external_toolchain_missing")
         version.clear()
-        if run(
-            [compiler, "--version"], env, project.project_dir, version_output, timeout=30
-        ):
+        if run([compiler, "--version"], env, project.project_dir, version_output, timeout=30):
             logs.append("error: external toolchain diagnostic failed; build not started")
             raise ToolchainDiagnosticFailure()
         registered_versions: dict[str, dict[str, str]] = {}
@@ -813,13 +812,12 @@ class FirmwareBuild:
         """Called on the broker loop after worker exit, with no await before job commit."""
         self._check_cancelled()
         principal, root, manifest = self._pending[plan["job_id"]]
-        if (
-            self.process.active
-            or self.process.uncertain
-            or not live()
-        ):
+        if self.process.active or self.process.uncertain or not live():
             raise ValueError("build_final_commit_not_authorized")
-        if self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"] != plan["fingerprint"]:
+        if (
+            self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"]
+            != plan["fingerprint"]
+        ):
             raise FixedDiagnosticFailure("build_inputs_changed")
         if not live():
             raise ValueError("build_final_commit_not_authorized")

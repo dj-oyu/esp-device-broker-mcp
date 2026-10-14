@@ -285,7 +285,11 @@ class Broker:
             # Never cancel the device task or release its lock during an active workflow.
             await self.queue.put(None)
             await asyncio.shield(self.worker)
-        if self._physical_busy() or self.firmware_build.process.uncertain or self.profile_jobs.uncertain:
+        if (
+            self._physical_busy()
+            or self.firmware_build.process.uncertain
+            or self.profile_jobs.uncertain
+        ):
             # An unconfirmed serial close must not advertise a free device or
             # release the broker lock. Only OS process teardown ends this hold.
             raise BrokerError("device_close_unconfirmed")
@@ -559,7 +563,11 @@ class Broker:
         self._expire()
         if self.closing:
             raise BrokerError("broker_closing")
-        if capability is None or self.session is None or not secrets.compare_digest(self.session.capability, capability):
+        if (
+            capability is None
+            or self.session is None
+            or not secrets.compare_digest(self.session.capability, capability)
+        ):
             raise BrokerError("invalid_session")
         if self.clock() >= self.session.deadline:
             raise BrokerError("lease_expired_active_job_retains_ownership")
