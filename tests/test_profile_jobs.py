@@ -3,6 +3,8 @@
 import asyncio
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -327,3 +329,91 @@ async def test_source_pending_cleanup_refusal_is_durable_uncertainty(
         })
         assert denied["error"] == "recovery_review_required"
         assert list(cache.glob("pending-*"))
+
+
+@pytest.mark.parametrize("stop", ["cancel", "revoke", "config"])
+async def test_source_stop_confirms_pending_cleanup_without_usb_lease(
+    registry_service, tmp_path, stop
+):
+    service = registry_service
+    project = register(service, tmp_path)
+    broker = service.resident
+    key = service.keys["second"].metadata
+    cache = tmp_path / "source-cache"
+    project = project.model_copy(update={"source_repository": SourceRepository(
+        github_repository="synthetic/firmware", cache_root=cache, private_acl_confirmed=True,
+    )})
+    broker.settings = broker.settings.model_copy(update={"build_projects": {"fixture": project}})
+    started = threading.Event()
+
+    def transport(url, deadline, live, limit):
+        started.set()
+        while live():
+            time.sleep(0.01)
+        raise SourceError("source_fetch_interrupted")
+
+    broker.firmware_source.snapshots.transport = transport
+    prepared = broker.profile_jobs.prepare(
+        PrepareRequest(job_id="source-stop", test=Action.SOURCE, project_id="fixture",
+                       source_commit="a" * 40),
+        key.principal_id, key.origin.value,
+    )
+    broker.profile_jobs.execute(
+        ExecuteRequest(plan_hash=prepared["plan_hash"]), key.principal_id, key.origin.value,
+    )
+    assert await asyncio.to_thread(started.wait, 2)
+    if stop == "cancel":
+        broker.profile_jobs.cancel(
+            CancelRequest(job_id="source-stop"), key.principal_id, key.origin.value,
+        )
+    elif stop == "revoke":
+        service.registry.revoke(key.key_id)
+    else:
+        broker.settings = broker.settings.model_copy(update={"build_projects": {}})
+    await asyncio.wait_for(broker.profile_jobs.queue.join(), 2)
+    assert broker.job("source-stop")["state"] == "cancelled"
+    assert not broker._store().needs_review()
+    assert not broker.firmware_source.snapshots.uncertain
+    assert not list(cache.glob("pending-*"))
+    assert broker.session is None and service.backend.calls == 0
+
+
+@pytest.mark.parametrize("release", ["raise", "still_locked"])
+async def test_unconfirmed_output_release_retains_lock_reference_and_review(
+    registry_service, tmp_path, monkeypatch, release
+):
+    service = registry_service
+    register(service, tmp_path)
+    broker = service.resident
+    key = service.keys["second"].metadata
+
+    class UnconfirmedLock:
+        is_locked = True
+        calls = 0
+
+        def release(self):
+            self.calls += 1
+            if release == "raise":
+                raise OSError("synthetic private lock detail")
+
+    held = UnconfirmedLock()
+
+    async def build(plan, stage, *, defer_publish):
+        broker.firmware_build._build_lock = held
+        raise ValueError("synthetic compiler failure")
+
+    monkeypatch.setattr(broker.firmware_build, "execute", build)
+    prepared = prepare(service, "release-uncertain")
+    broker.profile_jobs.execute(
+        ExecuteRequest(plan_hash=prepared["plan_hash"]), key.principal_id, key.origin.value,
+    )
+    await broker.profile_jobs.queue.join()
+    assert broker.job("release-uncertain")["state"] == "needs_review"
+    assert broker.job("release-uncertain")["result"] == "build_output_release_unconfirmed"
+    assert broker.firmware_build.output_uncertain
+    assert broker.firmware_build._build_lock is held and held.calls == 1
+    assert broker._store().needs_review()
+    with pytest.raises(BrokerError, match="recovery_review_required"):
+        prepare(service, "after-uncertain-release")
+    broker.firmware_build._build_lock = None
+    broker.firmware_build.output_uncertain = False

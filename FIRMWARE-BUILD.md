@@ -314,3 +314,15 @@ Windows output directories over 200 UTF-16 code units fail early with
 preflight does not guarantee that every external project-generated path fits
 its toolchain. Output slot locks are held through build, hashing and publication,
 and remain held when owned process termination is uncertain.
+
+## Upgrade with existing registrations
+
+Existing local profiles become the execution scope of current control principals;
+there is no new grant database, first-run screen or automatic profile registration.
+Deploying this behavior is a separate operator action. Retain private SDK/tool,
+cache/output-root settings. No production configuration is edited by this change.
+Old one-job source/build approvals stay recorded but are not converted into new
+plans or reused; prepare a fresh registered-project plan. Old needs_review records
+still require their existing explicit acknowledgement and are never cleared by
+upgrade. New normal failures/cancellations need no acknowledgement. No source,
+build artifact, backup or durable history GC is introduced.
