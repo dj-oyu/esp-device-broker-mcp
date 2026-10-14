@@ -31,7 +31,7 @@ permissions:
 jobs:
   checks:
     concurrency:
-      group: flash-contract-checks-${{ github.ref }}
+      group: flash-contract-checks-${{ github.ref }}-${{ github.sha }}
       cancel-in-progress: true
     runs-on: windows-2022
     timeout-minutes: 20

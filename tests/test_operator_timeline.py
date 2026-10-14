@@ -288,7 +288,11 @@ async def test_reviewed_history_does_not_mask_another_current_review_or_guard(tm
         assert broker.backend.calls == 0 and broker.queue.empty()
 
 
-@pytest.mark.parametrize("value", [2, -1, 1.5, "true", "PRIVATE" * 100_000, b"\x01"])
+@pytest.mark.parametrize(
+    "value",
+    [2, -1, 1.5, "true", "PRIVATE" * 100_000, b"\x01"],
+    ids=["integer", "negative", "float", "text", "oversized-text", "bytes"],
+)
 async def test_malformed_stored_reviewed_flag_is_bounded_and_never_acknowledged(tmp_path, value):
     async with running(tmp_path) as (broker, _, timeline, _):
         store = broker._store()
