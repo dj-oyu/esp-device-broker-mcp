@@ -5,7 +5,7 @@ import threading
 from typing import Any
 
 from .build_logs import BuildLogs
-from .source_snapshot import SourceError, SourceSnapshots
+from .source_snapshot import SOURCE_ERROR_CODES, SourceError, SourceSnapshots
 
 
 class FirmwareSource:
@@ -85,8 +85,24 @@ class FirmwareSource:
                 raise SourceError("source_fetch_interrupted")
             self.results[plan["job_id"]] = result
             return "source_snapshot_fetched_no_build_no_flash"
+        except Exception as failure:
+            code = failure.code if isinstance(failure, SourceError) else "source_fetch_failed"
+            self.record_failure(plan, code)
+            raise SourceError(code) from None
         finally:
             self.active = False
+
+    def record_failure(self, plan: dict[str, Any], code: str) -> None:
+        code = SourceError(code).code
+        self.results.pop(plan["job_id"], None)
+        logs = self.logs.get(plan["job_id"])
+        if logs is None:
+            while len(self.logs) >= 8:
+                del self.logs[next(iter(self.logs))]
+            logs = self.logs[plan["job_id"]] = BuildLogs(plan["source_principal"])
+        message = "error: source fetch failed: " + code
+        if not logs.entries or logs.entries[-1]["text"] != message:
+            logs.append(message)
 
     def commit_success(self, plan: dict[str, Any], result: str, live: Any) -> None:
         if self.stop.is_set() or live() is not True or self.active:
@@ -113,5 +129,23 @@ class FirmwareSource:
             raise SourceError("source_log_not_available")
         if job is not None and job["state"] == "succeeded":
             result["source"] = job["diagnostic"]["source"]
-        result["source_cache"] = self.snapshots.usage(plan["project_id"])
+        diagnostic = job.get("diagnostic") if job is not None else None
+        failure_code = diagnostic.get("code") if isinstance(diagnostic, dict) else None
+        failed = (
+            job is not None
+            and job["state"] == "needs_review"
+            and type(failure_code) is str
+            and failure_code in SOURCE_ERROR_CODES
+        )
+        if failed:
+            result["diagnostic"] = {"code": failure_code}
+        try:
+            result["source_cache"] = self.snapshots.usage(plan["project_id"])
+        except Exception as failure:
+            if not failed:
+                raise
+            result["source_cache"] = {
+                "available": False,
+                "code": failure.code if isinstance(failure, SourceError) else "source_fetch_failed",
+            }
         return result
