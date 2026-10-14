@@ -85,10 +85,12 @@ jobs:
           .venv/Scripts/python.exe packaging/source_public_smoke.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Integration style diagnostics
+        if: always()
         run: |
           .venv/Scripts/python.exe packaging/check_flash_style.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Native Windows type checks against the same base
+        if: always()
         env:
           FLASH_BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
         run: |

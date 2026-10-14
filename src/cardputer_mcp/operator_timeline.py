@@ -241,7 +241,17 @@ class OperatorTimeline:
             # public schema. It does not prepare/open a hardware backend.
             return self.plans._plan(str(plan_hash))
         except Exception:
-            return None
+            try:
+                raw = self.broker._store().plan(str(plan_hash))
+                if raw is None:
+                    return None
+                plan = self.broker.profile_jobs._plan(
+                    str(plan_hash), raw.get("principal_id", ""), raw.get("origin", "")
+                )
+                # Display projection only: this never authorizes execution or approval.
+                return {**plan, "backend": "registered_project", "session_id": ""}
+            except Exception:
+                return None
 
     def _images(self) -> dict[str, dict[str, Any]]:
         images: dict[str, dict[str, Any]] = {}

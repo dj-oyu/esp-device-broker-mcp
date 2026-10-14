@@ -177,7 +177,9 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
             active = uncertain = False
             stop_requested = threading.Event()
 
-            def run(self, args, env, cwd, emit, timeout=1800):
+            def run(self, args, env, cwd, emit, timeout=1800, monitor=None):
+                if monitor is not None:
+                    monitor()
                 if "-e" in args:
                     for line in (
                         "IDF_PATH=" + str(sdk / "idf"),
@@ -323,6 +325,8 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
     )
     settings = service.resident.settings.model_copy(update={"build_projects": {"fixture": project}})
     source = service.resident.firmware_source
+    original_fetch = source.snapshots.fetch
+    original_usage = source.snapshots.usage
     service.resident.settings = settings
     source.settings = source.snapshots.settings = settings
     secret = "synthetic-private-token-123456"
@@ -415,3 +419,30 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         assert recovered["diagnostic"] == {"code": expected}
         assert recovered["source_cache"] == {"available": False, "code": "source_fetch_failed"}
         assert secret not in json.dumps(recovered) and private_path not in json.dumps(recovered)
+
+        if not failure_kind.startswith("commit_"):
+            # A failed fetch grants no receipt, but does not prevent a corrected
+            # fresh fetch under the same registration/principal.
+            monkeypatch.setattr(source.snapshots, "fetch", original_fetch)
+            monkeypatch.setattr(source.snapshots, "usage", original_usage)
+            tree = tree_hash({name: file_receipt(data, "100644") for name, data in FILES.items()})
+
+            def corrected_transport(url, deadline, live, limit):
+                return (
+                    json.dumps({"sha": COMMIT, "tree": {"sha": tree}}).encode()
+                    if url.startswith("https://api.github.com/")
+                    else archive()
+                )
+
+            source.snapshots.transport = corrected_transport
+            corrected = await call(remote, "prepare_test", {
+                "job_id": "source-corrected", "test": "firmware_fetch_source",
+                "project_id": "fixture", "source_commit": COMMIT,
+            })
+            assert corrected["ok"]
+            assert (await call(remote, "execute_test", {
+                "plan_hash": corrected["plan_hash"],
+            }))["ok"]
+            await service.resident.profile_jobs.queue.join()
+            assert service.resident.job("source-corrected")["state"] == "succeeded"
+            assert not service.resident._store().needs_review()

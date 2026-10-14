@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 import threading
+from functools import partial
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -309,6 +310,8 @@ class FirmwareBuild:
         self._build_lock: Any = None
         self._pending: dict[str, tuple[str, Path, dict[str, Any]]] = {}
         self.output_uncertain = False
+        self.authority: Callable[[], bool] | None = None
+        self._authority_monitor: Callable[[], None] | None = None
 
     @staticmethod
     def _registered_tools(project: Any) -> dict[str, Any]:
@@ -477,9 +480,21 @@ class FirmwareBuild:
     ) -> str:
         self._check_cancelled()
         loop = asyncio.get_running_loop()
-        return await asyncio.to_thread(
-            self._execute, plan, lambda name: loop.call_soon_threadsafe(stage, name), defer_publish
-        )
+        async def authorized() -> bool:
+            return self.authority is not None and self.authority() is True
+
+        def monitor() -> None:
+            if asyncio.run_coroutine_threadsafe(authorized(), loop).result(timeout=5) is not True:
+                self.process.stop_requested.set()
+                raise ValueError("profile_or_principal_no_longer_valid")
+
+        self._authority_monitor = monitor if defer_publish else None
+        try:
+            return await asyncio.to_thread(
+                self._execute, plan, lambda name: loop.call_soon_threadsafe(stage, name), defer_publish
+            )
+        finally:
+            self._authority_monitor = None
 
     def _execute(
         self, plan: dict[str, Any], stage: Any, defer_publish: bool = False
@@ -535,6 +550,11 @@ class FirmwareBuild:
         if not system.is_absolute() or not powershell.is_file():
             raise ValueError("trusted_powershell_missing")
         stage("idf_profile")
+        run = (
+            partial(self.process.run, monitor=self._authority_monitor)
+            if self._authority_monitor is not None
+            else self.process.run
+        )
         output: list[str] = []
         output_bytes = 0
         stderr_seen = False
@@ -555,7 +575,7 @@ class FirmwareBuild:
             profile_args.extend(["-ExecutionPolicy", "RemoteSigned"])
         profile_args.extend(["-File", str(project.trusted_profile), "-e"])
         try:
-            code = self.process.run(
+            code = run(
                 profile_args, env, project.project_dir, profile_output, timeout=30
             )
         except ValueError:
@@ -598,7 +618,7 @@ class FirmwareBuild:
             else:
                 version.append(line[:4096])
 
-        if self.process.run(
+        if run(
             [str(python), str(idf_py), "--version"],
             env,
             project.project_dir,
@@ -609,7 +629,7 @@ class FirmwareBuild:
         if not any(re.fullmatch(r"ESP-IDF v6\.0\.1", line.strip()) for line in version):
             raise FixedDiagnosticFailure("idf_version_mismatch_no_fallback")
         version.clear()
-        if self.process.run(
+        if run(
             [str(python), "--version"], env, project.project_dir, version_output, timeout=30
         ):
             raise FixedDiagnosticFailure("external_python_diagnostic_failed")
@@ -617,7 +637,7 @@ class FirmwareBuild:
         if compiler is None:
             raise FixedDiagnosticFailure("external_toolchain_missing")
         version.clear()
-        if self.process.run(
+        if run(
             [compiler, "--version"], env, project.project_dir, version_output, timeout=30
         ):
             logs.append("error: external toolchain diagnostic failed; build not started")
@@ -627,7 +647,7 @@ class FirmwareBuild:
         search_directories: list[str] = []
         for name, tool in registered_tools.items():
             version.clear()
-            if self.process.run(
+            if run(
                 [str(tool.executable), "--version"],
                 env,
                 project.project_dir,
@@ -710,7 +730,7 @@ class FirmwareBuild:
         if provenance is not None:
             build_args += ["-D", "SDKCONFIG=" + str(build_dir / "sdkconfig")]
         build_args.append("build")
-        if self.process.run(
+        if run(
             build_args,
             env,
             project.project_dir,

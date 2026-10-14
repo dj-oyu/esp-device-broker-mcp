@@ -12,7 +12,7 @@ from cardputer_mcp.broker import BrokerError
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import BuildProject
-from cardputer_mcp.models import CancelRequest, ExecuteRequest, PrepareRequest
+from cardputer_mcp.models import AcquireRequest, CancelRequest, ExecuteRequest, Origin, PrepareRequest
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.store import Store
 
@@ -44,7 +44,7 @@ def prepare(service, job):
     )
 
 
-@pytest.mark.parametrize("stop", ["cancel", "revoke", "expire_key", "config", "deadline"])
+@pytest.mark.parametrize("stop", ["cancel", "revoke", "expire_key", "config", "profile", "deadline"])
 async def test_running_profile_stop_is_terminal_without_review(
     registry_service, tmp_path, monkeypatch, stop
 ):
@@ -77,6 +77,8 @@ async def test_running_profile_stop_is_terminal_without_review(
             service.registry.revoke(key.metadata.key_id)
         elif stop == "expire_key":
             service.now[0] = key.metadata.expires_at + 1
+        elif stop == "profile":
+            broker.settings.build_projects["fixture"].trusted_profile.write_text("changed profile")
         elif stop == "config":
             broker.settings = broker.settings.model_copy(update={"build_projects": {}})
         else:
@@ -232,3 +234,41 @@ def test_restart_does_not_replay_or_clear_old_review(tmp_path: Path):
         assert store.needs_review()
     finally:
         store.close()
+
+
+async def test_transport_disconnect_and_expired_device_lease_do_not_end_build(
+    registry_service, tmp_path, monkeypatch
+):
+    service = registry_service
+    register(service, tmp_path)
+    broker = service.resident
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def build(plan, stage, *, defer_publish):
+        started.set()
+        await finish.wait()
+        broker.firmware_build._check_cancelled()
+        raise ValueError("synthetic ordinary compile failure")
+
+    monkeypatch.setattr(broker.firmware_build, "execute", build)
+    async with connect(service.url, service.keys["second"].token) as remote:
+        plan = await call(remote, "prepare_test", {
+            "job_id": "long-build", "test": "firmware_build", "project_id": "fixture",
+        })
+        assert (await call(remote, "execute_test", {"plan_hash": plan["plan_hash"]}))["ok"]
+        await asyncio.wait_for(started.wait(), 2)
+    # Client transport has closed; no cancellation or implicit replay.
+    broker.acquire(
+        AcquireRequest(owner=Origin.REMOTE, lease_seconds=1),
+        principal_id=service.keys["first"].metadata.principal_id,
+    )
+    later = broker.clock() + 301
+    monkeypatch.setattr(broker, "clock", lambda: later)
+    broker.maintenance_tick()
+    assert broker.session is None
+    assert broker.job("long-build")["state"] == "running"
+    assert broker.profile_jobs.deadline > later
+    finish.set()
+    await broker.profile_jobs.queue.join()
+    assert broker.job("long-build")["state"] == "failed"
+    assert not broker._store().needs_review()

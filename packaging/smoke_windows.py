@@ -76,17 +76,13 @@ async def probe():
         assert identity['origin'] == 'remote_mcp'
         logs = await call(client, 'read_build_logs', {'job_id': 'unstarted-smoke'})
         assert logs['ok'] is False and logs['error'] == 'build_log_not_available'
-        acquired = await call(client, 'acquire_session', {'owner': 'remote_mcp'})
-        assert acquired['ok'] is True
-        try:
-            result = await call(client, 'prepare_test', {
-                'session': acquired['session'], 'job_id': 'build-api-smoke',
-                'test': 'firmware_build', 'project_id': 'unregistered-smoke',
-            })
-            assert result['ok'] is False and result['error'] == 'backend_preflight_failed'
-        finally:
-            released = await call(client, 'release_session', {'session': acquired['session']})
-            assert released['ok'] is True
+        assert 'session' not in prepared_tool.input_schema.get('required', [])
+        result = await call(client, 'prepare_test', {
+            'job_id': 'build-api-smoke', 'test': 'firmware_build',
+            'project_id': 'unregistered-smoke',
+        })
+        assert result['ok'] is False
+        assert result['error'] == 'registered_build_project_required'
 
 async def main():
     async with asyncio.timeout(30):

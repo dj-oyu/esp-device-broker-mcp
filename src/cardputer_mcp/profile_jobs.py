@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from .broker import BrokerError, digest_plan
 from .build_locations import BuildLocationError
 from .build_process import ProcessDeadlineExpired
-from .firmware_build import BuildPreflightFailure
+from .firmware_build import BuildPreflightFailure, hash_file
 from .logs import Event
 from .models import CancelRequest, ExecuteRequest, PrepareRequest, TestName
 from .source_snapshot import SourceError
@@ -89,6 +89,9 @@ class ProfileJobs:
             registration_sha256=registration,
             execution_seconds=PROFILE_SECONDS[request.test.value],
             **details,
+            **({"profile_sha256": hash_file(
+                broker.settings.build_projects[request.project_id].trusted_profile
+            )} if request.test == TestName.BUILD else {}),
         )
         digest = digest_plan(plan)
         existing = store.job(request.job_id)
@@ -128,6 +131,9 @@ class ProfileJobs:
                 and plan["broker_epoch"] == broker.epoch
                 and registration == plan["registration_sha256"]
                 and self._registration(plan["project_id"]) == registration
+                and (plan["test"] != TestName.BUILD.value or hash_file(
+                    broker.settings.build_projects[plan["project_id"]].trusted_profile
+                ) == plan["profile_sha256"])
             )
         except Exception:
             return False
@@ -175,10 +181,17 @@ class ProfileJobs:
             self.broker.firmware_build.request_stop(plan["job_id"])
 
     def _live(self, plan: dict[str, Any]) -> bool:
+        if (
+            plan["job_id"] in self.stops
+            or self.broker.clock() >= self.deadline
+            or not self._binding_live(plan)
+        ):
+            return False
+        job = self.broker._store().job(plan["job_id"])
         return bool(
-            plan["job_id"] not in self.stops
-            and self.broker.clock() < self.deadline
-            and self._binding_live(plan)
+            job is not None
+            and job["state"] == "running"
+            and job["plan_hash"] == digest_plan(plan)
             and self.broker.clock() < self.deadline
             and plan["job_id"] not in self.stops
         )
@@ -228,6 +241,7 @@ class ProfileJobs:
                         )
                     else:
                         broker.firmware_build.begin()
+                        broker.firmware_build.authority = lambda: self._live(plan)
                         result = await broker.firmware_build.execute(plan, stage, defer_publish=True)
                     if not self._live(plan):
                         self._stop(plan, "profile_or_principal_no_longer_valid")
@@ -253,7 +267,9 @@ class ProfileJobs:
                     else:
                         broker.firmware_build.discard_deferred(job_id)
                     if not self._live(plan):
-                        self._stop(plan, "profile_or_principal_no_longer_valid")
+                        self._stop(plan, "execution_deadline_expired" if
+                                   broker.clock() >= self.deadline else
+                                   "profile_or_principal_no_longer_valid")
                     reason = self.stops.get(job_id)
                     uncertain = (
                         (committing and reason is None)
@@ -270,6 +286,7 @@ class ProfileJobs:
                 finally:
                     watch.cancel()
                     await asyncio.gather(watch, return_exceptions=True)
+                    broker.firmware_build.authority = None
                     self.stops.pop(job_id, None)
                     self.active = None
             except Exception:
