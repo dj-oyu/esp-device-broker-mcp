@@ -14,6 +14,13 @@ from cardputer_mcp.broker import BrokerError
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import BuildProject, SourceRepository
+from cardputer_mcp.models import (
+    AcquireRequest,
+    CancelRequest,
+    ExecuteRequest,
+    Origin,
+    PrepareRequest,
+)
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.source_snapshot import SourceError
 from cardputer_mcp.store import Store
@@ -46,6 +53,9 @@ def prepare(service, job):
     )
 
 
+@pytest.mark.parametrize(
+    "stop", ["cancel", "revoke", "expire_key", "config", "profile", "deadline"]
+)
 async def test_running_profile_stop_is_terminal_without_review(
     registry_service, tmp_path, monkeypatch, stop
 ):
@@ -65,6 +75,15 @@ async def test_running_profile_stop_is_terminal_without_review(
 
     monkeypatch.setattr(broker.firmware_build, "execute", build)
     async with connect(service.url, key.token) as remote:
+        plan = await call(
+            remote,
+            "prepare_test",
+            {
+                "job_id": "stopped",
+                "test": "firmware_build",
+                "project_id": "fixture",
+            },
+        )
         assert plan["ok"] and not plan["approval_required"]
         assert (await call(remote, "execute_test", {"plan_hash": plan["plan_hash"]}))["ok"]
         await asyncio.wait_for(started.wait(), 2)
