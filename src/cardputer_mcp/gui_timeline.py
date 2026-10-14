@@ -334,7 +334,8 @@ class TimelineCard:
             if backend not in ("mock", "serial", "registered_project"):
                 raise ValueError(INVALID_TIMELINE)
             if backend == "registered_project" and test not in (
-                "firmware_build", "firmware_fetch_source"
+                "firmware_build",
+                "firmware_fetch_source",
             ):
                 raise ValueError(INVALID_TIMELINE)
         review = None

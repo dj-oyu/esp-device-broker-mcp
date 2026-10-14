@@ -8,8 +8,8 @@ import re
 import shutil
 import stat
 import threading
-from functools import partial
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -788,11 +788,14 @@ class FirmwareBuild:
         # Write an inert candidate first. Accepted cancellation must never publish
         # a success manifest, including cancellation during hashing or serialization.
         candidate = build_dir / "broker-manifest.pending.json"
+        if defer_publish:
+            # Register cleanup ownership before the candidate write can fail or
+            # cancellation can win; the broker loop confirms cleanup and unlock.
+            with self._lock:
+                self._pending[plan["job_id"]] = (principal, build_dir, manifest)
         candidate.write_text(json.dumps(manifest, indent=2))
         if defer_publish:
-            with self._lock:
-                self._check_cancelled()
-                self._pending[plan["job_id"]] = (principal, build_dir, manifest)
+            self._check_cancelled()
             return "firmware_build_succeeded_no_flash"
         try:
             with self._lock:

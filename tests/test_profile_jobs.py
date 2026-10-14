@@ -14,7 +14,6 @@ from cardputer_mcp.broker import BrokerError
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import BuildProject, SourceRepository
-from cardputer_mcp.models import AcquireRequest, CancelRequest, ExecuteRequest, Origin, PrepareRequest
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.source_snapshot import SourceError
 from cardputer_mcp.store import Store
@@ -47,7 +46,6 @@ def prepare(service, job):
     )
 
 
-@pytest.mark.parametrize("stop", ["cancel", "revoke", "expire_key", "config", "profile", "deadline"])
 async def test_running_profile_stop_is_terminal_without_review(
     registry_service, tmp_path, monkeypatch, stop
 ):
@@ -67,9 +65,6 @@ async def test_running_profile_stop_is_terminal_without_review(
 
     monkeypatch.setattr(broker.firmware_build, "execute", build)
     async with connect(service.url, key.token) as remote:
-        plan = await call(remote, "prepare_test", {
-            "job_id": "stopped", "test": "firmware_build", "project_id": "fixture",
-        })
         assert plan["ok"] and not plan["approval_required"]
         assert (await call(remote, "execute_test", {"plan_hash": plan["plan_hash"]}))["ok"]
         await asyncio.wait_for(started.wait(), 2)
@@ -163,17 +158,27 @@ async def test_queue_cancel_read_scope_config_and_old_review_boundaries(
     await broker.profile_jobs.queue.join()
     assert broker.job("queued-cancel")["state"] == "cancelled" and not calls
     prepared = prepare(service, "changed-config")
-    broker.settings = broker.settings.model_copy(update={
-        "build_projects": {"fixture": project.model_copy(update={"build_root": tmp_path / "other"})}
-    })
+    broker.settings = broker.settings.model_copy(
+        update={
+            "build_projects": {
+                "fixture": project.model_copy(update={"build_root": tmp_path / "other"})
+            }
+        }
+    )
     with pytest.raises(BrokerError, match="profile_or_principal_no_longer_valid"):
         broker.profile_jobs.execute(
             ExecuteRequest(plan_hash=prepared["plan_hash"]), key.principal_id, key.origin.value
         )
     async with connect(service.url, service.keys["reader"].token) as reader:
-        denied = await call(reader, "prepare_test", {
-            "job_id": "read-denied", "test": "firmware_build", "project_id": "fixture",
-        })
+        denied = await call(
+            reader,
+            "prepare_test",
+            {
+                "job_id": "read-denied",
+                "test": "firmware_build",
+                "project_id": "fixture",
+            },
+        )
         assert denied["error"] == "insufficient_scope"
     old_hash = "a" * 64
     broker._store().put_plan(old_hash, {"job_id": "old-review"})
@@ -255,9 +260,15 @@ async def test_transport_disconnect_and_expired_device_lease_do_not_end_build(
 
     monkeypatch.setattr(broker.firmware_build, "execute", build)
     async with connect(service.url, service.keys["second"].token) as remote:
-        plan = await call(remote, "prepare_test", {
-            "job_id": "long-build", "test": "firmware_build", "project_id": "fixture",
-        })
+        plan = await call(
+            remote,
+            "prepare_test",
+            {
+                "job_id": "long-build",
+                "test": "firmware_build",
+                "project_id": "fixture",
+            },
+        )
         assert (await call(remote, "execute_test", {"plan_hash": plan["plan_hash"]}))["ok"]
         await asyncio.wait_for(started.wait(), 2)
     # Client transport has closed; no cancellation or implicit replay.
@@ -285,11 +296,15 @@ async def test_source_pending_cleanup_refusal_is_durable_uncertainty(
     broker = service.resident
     key = service.keys["second"]
     cache = tmp_path / "source-cache"
-    project = project.model_copy(update={"source_repository": SourceRepository(
-        github_repository="synthetic/firmware",
-        cache_root=cache,
-        private_acl_confirmed=True,
-    )})
+    project = project.model_copy(
+        update={
+            "source_repository": SourceRepository(
+                github_repository="synthetic/firmware",
+                cache_root=cache,
+                private_acl_confirmed=True,
+            )
+        }
+    )
     broker.settings = broker.settings.model_copy(update={"build_projects": {"fixture": project}})
 
     def failed_transport(*args):
@@ -302,16 +317,28 @@ async def test_source_pending_cleanup_refusal_is_durable_uncertainty(
         raise PermissionError("synthetic private cleanup detail " + str(path))
 
     async with connect(service.url, key.token) as remote:
-        prepared = await call(remote, "prepare_test", {
-            "job_id": "cleanup-refused", "test": "firmware_fetch_source",
-            "project_id": "fixture", "source_commit": "a" * 40,
-        })
+        prepared = await call(
+            remote,
+            "prepare_test",
+            {
+                "job_id": "cleanup-refused",
+                "test": "firmware_fetch_source",
+                "project_id": "fixture",
+                "source_commit": "a" * 40,
+            },
+        )
         assert prepared["ok"]
         with monkeypatch.context() as refusal:
             refusal.setattr(source_module.shutil, "rmtree", denied_cleanup)
-            assert (await call(remote, "execute_test", {
-                "plan_hash": prepared["plan_hash"],
-            }))["ok"]
+            assert (
+                await call(
+                    remote,
+                    "execute_test",
+                    {
+                        "plan_hash": prepared["plan_hash"],
+                    },
+                )
+            )["ok"]
             await broker.profile_jobs.queue.join()
         job = broker.job("cleanup-refused")
         assert job["state"] == "needs_review"
@@ -323,10 +350,16 @@ async def test_source_pending_cleanup_refusal_is_durable_uncertainty(
         assert not broker.firmware_source.results
         assert "private cleanup detail" not in json.dumps(job)
         assert str(cache) not in json.dumps(job)
-        denied = await call(remote, "prepare_test", {
-            "job_id": "cannot-follow-cleanup", "test": "firmware_fetch_source",
-            "project_id": "fixture", "source_commit": "b" * 40,
-        })
+        denied = await call(
+            remote,
+            "prepare_test",
+            {
+                "job_id": "cannot-follow-cleanup",
+                "test": "firmware_fetch_source",
+                "project_id": "fixture",
+                "source_commit": "b" * 40,
+            },
+        )
         assert denied["error"] == "recovery_review_required"
         assert list(cache.glob("pending-*"))
 
@@ -340,9 +373,15 @@ async def test_source_stop_confirms_pending_cleanup_without_usb_lease(
     broker = service.resident
     key = service.keys["second"].metadata
     cache = tmp_path / "source-cache"
-    project = project.model_copy(update={"source_repository": SourceRepository(
-        github_repository="synthetic/firmware", cache_root=cache, private_acl_confirmed=True,
-    )})
+    project = project.model_copy(
+        update={
+            "source_repository": SourceRepository(
+                github_repository="synthetic/firmware",
+                cache_root=cache,
+                private_acl_confirmed=True,
+            )
+        }
+    )
     broker.settings = broker.settings.model_copy(update={"build_projects": {"fixture": project}})
     started = threading.Event()
 
@@ -354,17 +393,23 @@ async def test_source_stop_confirms_pending_cleanup_without_usb_lease(
 
     broker.firmware_source.snapshots.transport = transport
     prepared = broker.profile_jobs.prepare(
-        PrepareRequest(job_id="source-stop", test=Action.SOURCE, project_id="fixture",
-                       source_commit="a" * 40),
-        key.principal_id, key.origin.value,
+        PrepareRequest(
+            job_id="source-stop", test=Action.SOURCE, project_id="fixture", source_commit="a" * 40
+        ),
+        key.principal_id,
+        key.origin.value,
     )
     broker.profile_jobs.execute(
-        ExecuteRequest(plan_hash=prepared["plan_hash"]), key.principal_id, key.origin.value,
+        ExecuteRequest(plan_hash=prepared["plan_hash"]),
+        key.principal_id,
+        key.origin.value,
     )
     assert await asyncio.to_thread(started.wait, 2)
     if stop == "cancel":
         broker.profile_jobs.cancel(
-            CancelRequest(job_id="source-stop"), key.principal_id, key.origin.value,
+            CancelRequest(job_id="source-stop"),
+            key.principal_id,
+            key.origin.value,
         )
     elif stop == "revoke":
         service.registry.revoke(key.key_id)
@@ -405,7 +450,9 @@ async def test_unconfirmed_output_release_retains_lock_reference_and_review(
     monkeypatch.setattr(broker.firmware_build, "execute", build)
     prepared = prepare(service, "release-uncertain")
     broker.profile_jobs.execute(
-        ExecuteRequest(plan_hash=prepared["plan_hash"]), key.principal_id, key.origin.value,
+        ExecuteRequest(plan_hash=prepared["plan_hash"]),
+        key.principal_id,
+        key.origin.value,
     )
     await broker.profile_jobs.queue.join()
     assert broker.job("release-uncertain")["state"] == "needs_review"

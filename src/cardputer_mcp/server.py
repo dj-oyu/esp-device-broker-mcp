@@ -473,7 +473,8 @@ def create_server(
 
     def owned(
         request: LeaseRequest | PrepareRequest | ExecuteRequest | CancelRequest,
-        ctx: Context[Any, Any], action: Callable[[], dict[str, Any]]
+        ctx: Context[Any, Any],
+        action: Callable[[], dict[str, Any]],
     ) -> dict[str, Any]:
         if auth_required:
             owner = principal(ctx, "control")
@@ -632,7 +633,9 @@ def create_server(
         def prepare() -> dict[str, Any]:
             if request.test in (TestName.BUILD, TestName.SOURCE):
                 owner = principal(ctx, "control")
-                return resident.profile_jobs.prepare(request, owner.principal_id, owner.origin.value)
+                return resident.profile_jobs.prepare(
+                    request, owner.principal_id, owner.origin.value
+                )
             if request.test in (
                 TestName.CAPTURE,
                 TestName.DERBY,
@@ -677,20 +680,25 @@ def create_server(
         registration stops work; confirmed normal failure permits a new job.
         Same job ID never replays. Flash/restore authorization remains separate.
 
-        For device operations, set wait_for_approval=true to submit before manual approval. When approval
+        For device operations, set wait_for_approval=true to submit before manual
+        approval. When approval
         is still required it returns awaiting_approval immediately; local GUI
         approval then queues that exact submitted job without another client call.
         An already valid permit can queue immediately. Waiting ends with the original
         lease deadline, cancellation, revocation or broker restart. Preparation
         alone never submits execution. False preserves approve-then-execute mode.
         """
+
         def execute() -> dict[str, Any]:
             plan = resident._store().plan(request.plan_hash)
             if plan is not None and plan.get("test") in (
-                TestName.BUILD.value, TestName.SOURCE.value
+                TestName.BUILD.value,
+                TestName.SOURCE.value,
             ):
                 owner = principal(ctx, "control")
-                return resident.profile_jobs.execute(request, owner.principal_id, owner.origin.value)
+                return resident.profile_jobs.execute(
+                    request, owner.principal_id, owner.origin.value
+                )
             return owned(request, ctx, lambda: resident.execute(request))
 
         return _result(execute)
@@ -698,6 +706,7 @@ def create_server(
     @server.tool(annotations=read_only)
     async def job_status(request: JobRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read persisted job state after reconnecting. Interrupted work is never replayed."""
+
         def get_job() -> dict[str, Any]:
             job = resident.job(request.job_id)
             plan = resident._store().plan(job["plan_hash"])
@@ -812,11 +821,13 @@ def create_server(
         Source/build cancellation uses current control principal, no USB lease.
         Device operation approval, ownership and interruption rules are unchanged.
         """
+
         def cancel() -> dict[str, Any]:
             job = resident._store().job(request.job_id)
             plan = resident._store().plan(job["plan_hash"]) if job is not None else None
             if plan is not None and plan.get("test") in (
-                TestName.BUILD.value, TestName.SOURCE.value
+                TestName.BUILD.value,
+                TestName.SOURCE.value,
             ):
                 owner = principal(ctx, "control")
                 return resident.profile_jobs.cancel(request, owner.principal_id, owner.origin.value)

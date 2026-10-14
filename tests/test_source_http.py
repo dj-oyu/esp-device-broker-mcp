@@ -231,7 +231,7 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
                 remote,
                 "execute_test",
                 {
-                        "plan_hash": built["plan_hash"],
+                    "plan_hash": built["plan_hash"],
                 },
             )
             assert executed["ok"], executed
@@ -256,14 +256,26 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
             # A normal compiler failure ends safely, then the same registered
             # profile accepts a corrected new job without review/restart.
             fail_build = True
-            failed_plan = await call(remote, "prepare_test", {
-                "job_id": "build-failed", "test": "firmware_build",
-                "project_id": "fixture", "source_receipt": receipt,
-            })
+            failed_plan = await call(
+                remote,
+                "prepare_test",
+                {
+                    "job_id": "build-failed",
+                    "test": "firmware_build",
+                    "project_id": "fixture",
+                    "source_receipt": receipt,
+                },
+            )
             assert failed_plan["ok"] and not failed_plan["approval_required"]
-            assert (await call(remote, "execute_test", {
-                "plan_hash": failed_plan["plan_hash"],
-            }))["ok"]
+            assert (
+                await call(
+                    remote,
+                    "execute_test",
+                    {
+                        "plan_hash": failed_plan["plan_hash"],
+                    },
+                )
+            )["ok"]
             await service.resident.profile_jobs.queue.join()
             assert service.resident.job("build-failed")["state"] == "failed"
             assert not service.resident._store().needs_review()
@@ -271,7 +283,9 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
             assert service.resident.firmware_build._build_lock is None
             assert not service.resident.firmware_build.output_uncertain
             lock_path = slot_lock_path(
-                settings.state_dir, project.build_root, report["manifest"]["fingerprint"],
+                settings.state_dir,
+                project.build_root,
+                report["manifest"]["fingerprint"],
                 report["manifest"]["environment_fingerprint"],
             )
 
@@ -283,10 +297,16 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
 
             assert await asyncio.to_thread(acquire_released_slot)
             fail_build = False
-            retry = await call(remote, "prepare_test", {
-                "job_id": "build-corrected", "test": "firmware_build",
-                "project_id": "fixture", "source_receipt": receipt,
-            })
+            retry = await call(
+                remote,
+                "prepare_test",
+                {
+                    "job_id": "build-corrected",
+                    "test": "firmware_build",
+                    "project_id": "fixture",
+                    "source_receipt": receipt,
+                },
+            )
             assert retry["ok"]
             request = {"plan_hash": retry["plan_hash"]}
             assert (await call(remote, "execute_test", request))["ok"]
@@ -452,14 +472,26 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
                 )
 
             source.snapshots.transport = corrected_transport
-            corrected = await call(remote, "prepare_test", {
-                "job_id": "source-corrected", "test": "firmware_fetch_source",
-                "project_id": "fixture", "source_commit": COMMIT,
-            })
+            corrected = await call(
+                remote,
+                "prepare_test",
+                {
+                    "job_id": "source-corrected",
+                    "test": "firmware_fetch_source",
+                    "project_id": "fixture",
+                    "source_commit": COMMIT,
+                },
+            )
             assert corrected["ok"]
-            assert (await call(remote, "execute_test", {
-                "plan_hash": corrected["plan_hash"],
-            }))["ok"]
+            assert (
+                await call(
+                    remote,
+                    "execute_test",
+                    {
+                        "plan_hash": corrected["plan_hash"],
+                    },
+                )
+            )["ok"]
             await service.resident.profile_jobs.queue.join()
             assert service.resident.job("source-corrected")["state"] == "succeeded"
             assert not service.resident._store().needs_review()
