@@ -328,8 +328,10 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
     private_path = str(tmp_path / "synthetic-private-fixture")
     native_message = secret + " https://example.test/?token=" + key.token + " " + private_path
     expected = (
-        "source_git_tree_mismatch" if failure_kind == "known"
-        else "source_final_commit_not_authorized" if failure_kind == "commit_known"
+        "source_git_tree_mismatch"
+        if failure_kind == "known"
+        else "source_final_commit_not_authorized"
+        if failure_kind == "commit_known"
         else "source_fetch_failed"
     )
 
@@ -372,20 +374,31 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
     ):
         lease = await call(remote, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300})
         prepared = await call(
-            remote, "prepare_test",
-            {"session": lease["session"], "job_id": "source-failure",
-             "test": "firmware_fetch_source", "project_id": "fixture", "source_commit": COMMIT},
+            remote,
+            "prepare_test",
+            {
+                "session": lease["session"],
+                "job_id": "source-failure",
+                "test": "firmware_fetch_source",
+                "project_id": "fixture",
+                "source_commit": COMMIT,
+            },
         )
         assert prepared["ok"], prepared
         execution = {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
-        assert (await call(remote, "execute_test", execution))["error"] == "operator_approval_required"
+        assert (await call(remote, "execute_test", execution))[
+            "error"
+        ] == "operator_approval_required"
         detail = (
             await http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})
         ).json()
         approved = await http.post(
             "/operator/approve-plan",
-            json={"plan_hash": prepared["plan_hash"], "review_revision": detail["review_revision"],
-                  "attestation": ""},
+            json={
+                "plan_hash": prepared["plan_hash"],
+                "review_revision": detail["review_revision"],
+                "attestation": "",
+            },
         )
         assert approved.json()["ok"], approved.text
         assert (await call(remote, "execute_test", execution))["ok"]
@@ -395,7 +408,9 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         assert job["result"] == expected
         assert job["diagnostic"] == {"code": expected}
         assert service.resident._store().needs_review()
-        report = await call(remote, "read_build_logs", {"job_id": "source-failure", "levels": ["error"]})
+        report = await call(
+            remote, "read_build_logs", {"job_id": "source-failure", "levels": ["error"]}
+        )
         assert report["diagnostic"] == {"code": expected}
         assert any(expected in item["text"] for item in report["entries"])
         for value in (secret, key.token, private_path, "https://example.test/"):
@@ -404,17 +419,22 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         assert service.backend.calls == 0 and not project.project_dir.exists()
         with pytest.raises(ValueError):
             source.read_logs(
-                BuildLogRequest(job_id="source-failure"), service.keys["first"].metadata.principal_id
+                BuildLogRequest(job_id="source-failure"),
+                service.keys["first"].metadata.principal_id,
             )
         source.logs.clear()
-        recovered = source.read_logs(BuildLogRequest(job_id="source-failure"), key.metadata.principal_id)
+        recovered = source.read_logs(
+            BuildLogRequest(job_id="source-failure"), key.metadata.principal_id
+        )
         assert recovered["expired"] and recovered["diagnostic"] == {"code": expected}
 
         def unavailable_cache(project_id):
             raise RuntimeError(native_message)
 
         monkeypatch.setattr(source.snapshots, "usage", unavailable_cache)
-        recovered = source.read_logs(BuildLogRequest(job_id="source-failure"), key.metadata.principal_id)
+        recovered = source.read_logs(
+            BuildLogRequest(job_id="source-failure"), key.metadata.principal_id
+        )
         assert recovered["diagnostic"] == {"code": expected}
         assert recovered["source_cache"] == {"available": False, "code": "source_fetch_failed"}
         assert secret not in json.dumps(recovered) and private_path not in json.dumps(recovered)

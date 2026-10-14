@@ -1976,7 +1976,10 @@ class Broker:
                     if plan["test"] == TestName.SOURCE.value:
                         self.firmware_source.record_failure(plan, "source_fetch_failed")
                         store.set_job(
-                            job_id, "needs_review", "source_fetch_failed", {"code": "source_fetch_failed"}
+                            job_id,
+                            "needs_review",
+                            "source_fetch_failed",
+                            {"code": "source_fetch_failed"},
                         )
                     else:
                         store.set_job(job_id, "needs_review", "backend_error_no_retry")
@@ -1995,7 +1998,11 @@ class Broker:
                             store.set_job(job_id, "succeeded", completed)
                     except Exception as failure:
                         if plan["test"] == TestName.SOURCE.value:
-                            code = failure.code if isinstance(failure, SourceError) else "source_fetch_failed"
+                            code = (
+                                failure.code
+                                if isinstance(failure, SourceError)
+                                else "source_fetch_failed"
+                            )
                             self.firmware_source.record_failure(plan, code)
                             store.set_job(job_id, "needs_review", code, {"code": code})
                         else:
