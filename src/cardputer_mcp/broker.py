@@ -44,6 +44,7 @@ from .models import (
     ResumeWorkSessionRequest,
     TestName,
 )
+from .source_snapshot import SourceError
 from .store import Store
 
 
@@ -1948,6 +1949,13 @@ class Broker:
                     store.set_job(job_id, "needs_review", failure.code, {"code": failure.code})
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
+                except SourceError as failure:
+                    self.firmware_source.record_failure(plan, failure.code)
+                    store.set_job(job_id, "needs_review", failure.code, {"code": failure.code})
+                    if self.capture_policies is not None:
+                        self.capture_policies.invalidate_session()
+                    self.logs.append(Event.REVIEW)
+                    self._cancel_queued("recovery_review_required")
                 except DeviceOperationFailure as failure:
                     store.set_job(job_id, "needs_review", failure.code, failure.diagnostic)
                     if self.capture_policies is not None:
@@ -1962,7 +1970,13 @@ class Broker:
                     self._cancel_queued("recovery_review_required")
                 except Exception:
                     # Never persist the exception string (may contain credentials).
-                    store.set_job(job_id, "needs_review", "backend_error_no_retry")
+                    if plan["test"] == TestName.SOURCE.value:
+                        self.firmware_source.record_failure(plan, "source_fetch_failed")
+                        store.set_job(
+                            job_id, "needs_review", "source_fetch_failed", {"code": "source_fetch_failed"}
+                        )
+                    else:
+                        store.set_job(job_id, "needs_review", "backend_error_no_retry")
                     if self.capture_policies is not None:
                         self.capture_policies.invalidate_session()
                     self.logs.append(Event.REVIEW)
@@ -1976,8 +1990,13 @@ class Broker:
                             self.firmware_source.commit_success(plan, completed, source_live)
                         else:
                             store.set_job(job_id, "succeeded", completed)
-                    except Exception:
-                        store.set_job(job_id, "needs_review", "firmware_final_commit_failed")
+                    except Exception as failure:
+                        if plan["test"] == TestName.SOURCE.value:
+                            code = failure.code if isinstance(failure, SourceError) else "source_fetch_failed"
+                            self.firmware_source.record_failure(plan, code)
+                            store.set_job(job_id, "needs_review", code, {"code": code})
+                        else:
+                            store.set_job(job_id, "needs_review", "firmware_final_commit_failed")
                         self.logs.append(Event.REVIEW)
                         self._cancel_queued("recovery_review_required")
                     else:

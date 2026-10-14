@@ -13,6 +13,7 @@ from test_source_snapshot import COMMIT, FILES, REPOSITORY, archive
 from cardputer_mcp import firmware_build as build_module
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import BuildProject, SerialSettings, SourceRepository
+from cardputer_mcp.models import BuildLogRequest
 from cardputer_mcp.ports import DeviceSelector
 from cardputer_mcp.source_snapshot import SourceError, file_receipt, tree_hash
 
@@ -297,3 +298,123 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
             },
         )
         assert not changed["ok"]
+
+
+@pytest.mark.parametrize(
+    "failure_kind", ["known", "unknown", "unsafe_source_error", "commit_known", "commit_unknown"]
+)
+async def test_failed_source_retains_safe_diagnostic_through_broker(
+    registry_service, tmp_path, monkeypatch, failure_kind
+):
+    service = registry_service
+    key = service.keys["second"]
+    profile = tmp_path / "profile.ps1"
+    profile.write_text("synthetic profile")
+    project = BuildProject(
+        project_dir=tmp_path / "unused-worktree",
+        trusted_profile=profile,
+        build_root=tmp_path / "unused-build",
+        source_repository=SourceRepository(
+            github_repository=REPOSITORY,
+            cache_root=tmp_path / "private-source-cache",
+            private_acl_confirmed=True,
+        ),
+    )
+    settings = service.resident.settings.model_copy(update={"build_projects": {"fixture": project}})
+    source = service.resident.firmware_source
+    service.resident.settings = settings
+    source.settings = source.snapshots.settings = settings
+    secret = "synthetic-private-token-123456"
+    private_path = str(tmp_path / "synthetic-private-fixture")
+    native_message = secret + " https://example.test/?token=" + key.token + " " + private_path
+    expected = (
+        "source_git_tree_mismatch" if failure_kind == "known"
+        else "source_final_commit_not_authorized" if failure_kind == "commit_known"
+        else "source_fetch_failed"
+    )
+
+    def failed_fetch(plan, live, stage):
+        stage("source_validate")
+        if failure_kind == "known":
+            raise SourceError("source_git_tree_mismatch")
+        if failure_kind == "unsafe_source_error":
+            raise SourceError(native_message)
+        raise RuntimeError(native_message)
+
+    if failure_kind.startswith("commit_"):
+        tree = tree_hash({name: file_receipt(data, "100644") for name, data in FILES.items()})
+
+        def transport(url, deadline, live, limit):
+            return (
+                json.dumps({"sha": COMMIT, "tree": {"sha": tree}}).encode()
+                if url.startswith("https://api.github.com/")
+                else archive()
+            )
+
+        source.snapshots.transport = transport
+
+        def failed_commit(plan, result, live):
+            if failure_kind == "commit_known":
+                raise SourceError("source_final_commit_not_authorized")
+            raise RuntimeError(native_message)
+
+        monkeypatch.setattr(source, "commit_success", failed_commit)
+    else:
+        monkeypatch.setattr(source.snapshots, "fetch", failed_fetch)
+
+    async with (
+        httpx2.AsyncClient(
+            base_url=service.url.removesuffix("/mcp"),
+            trust_env=False,
+            headers={"Authorization": "Bearer " + "a" * 64},
+        ) as http,
+        connect(service.url, key.token) as remote,
+    ):
+        lease = await call(remote, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300})
+        prepared = await call(
+            remote, "prepare_test",
+            {"session": lease["session"], "job_id": "source-failure",
+             "test": "firmware_fetch_source", "project_id": "fixture", "source_commit": COMMIT},
+        )
+        assert prepared["ok"], prepared
+        execution = {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
+        assert (await call(remote, "execute_test", execution))["error"] == "operator_approval_required"
+        detail = (
+            await http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})
+        ).json()
+        approved = await http.post(
+            "/operator/approve-plan",
+            json={"plan_hash": prepared["plan_hash"], "review_revision": detail["review_revision"],
+                  "attestation": ""},
+        )
+        assert approved.json()["ok"], approved.text
+        assert (await call(remote, "execute_test", execution))["ok"]
+        await service.resident.queue.join()
+        job = service.resident.job("source-failure")
+        assert job["state"] == "needs_review"
+        assert job["result"] == expected
+        assert job["diagnostic"] == {"code": expected}
+        assert service.resident._store().needs_review()
+        report = await call(remote, "read_build_logs", {"job_id": "source-failure", "levels": ["error"]})
+        assert report["diagnostic"] == {"code": expected}
+        assert any(expected in item["text"] for item in report["entries"])
+        for value in (secret, key.token, private_path, "https://example.test/"):
+            assert value not in json.dumps(job | {"logs": report})
+        assert not source.active and not source.results
+        assert service.backend.calls == 0 and not project.project_dir.exists()
+        with pytest.raises(ValueError):
+            source.read_logs(
+                BuildLogRequest(job_id="source-failure"), service.keys["first"].metadata.principal_id
+            )
+        source.logs.clear()
+        recovered = source.read_logs(BuildLogRequest(job_id="source-failure"), key.metadata.principal_id)
+        assert recovered["expired"] and recovered["diagnostic"] == {"code": expected}
+
+        def unavailable_cache(project_id):
+            raise RuntimeError(native_message)
+
+        monkeypatch.setattr(source.snapshots, "usage", unavailable_cache)
+        recovered = source.read_logs(BuildLogRequest(job_id="source-failure"), key.metadata.principal_id)
+        assert recovered["diagnostic"] == {"code": expected}
+        assert recovered["source_cache"] == {"available": False, "code": "source_fetch_failed"}
+        assert secret not in json.dumps(recovered) and private_path not in json.dumps(recovered)

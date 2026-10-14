@@ -42,8 +42,80 @@ LIMITS = {
 }
 
 
+SOURCE_ERROR_CODES = frozenset(
+    {
+        "registered_source_repository_required",
+        "source_archive_case_alias",
+        "source_archive_commit_mismatch",
+        "source_archive_duplicate_path",
+        "source_archive_link_or_encryption_rejected",
+        "source_archive_path_rejected",
+        "source_archive_size_mismatch",
+        "source_archive_untracked_file",
+        "source_cache_full",
+        "source_cache_limit",
+        "source_cache_root_conflict",
+        "source_cache_unknown_entry",
+        "source_commit_metadata_mismatch",
+        "source_disk_reserve_required",
+        "source_download_failed",
+        "source_download_limit",
+        "source_expansion_limit",
+        "source_fetch_busy",
+        "source_fetch_failed",
+        "source_fetch_interrupted",
+        "source_fetch_interrupted_or_download_limit",
+        "source_file_limit",
+        "source_final_commit_not_authorized",
+        "source_full_commit_required",
+        "source_git_blob_mismatch",
+        "source_git_blob_rejected",
+        "source_git_tree_metadata_rejected",
+        "source_git_tree_mismatch",
+        "source_gitlink_path_conflict",
+        "source_gitmodules_gitlink_mismatch",
+        "source_gitmodules_limit",
+        "source_gitmodules_rejected",
+        "source_http_rejected",
+        "source_idf_project_missing",
+        "source_linked_path_rejected",
+        "source_log_not_available",
+        "source_plan_changed",
+        "source_private_acl_confirmation_required",
+        "source_private_cache_required",
+        "source_receipt_changed",
+        "source_receipt_invalid",
+        "source_receipt_limit",
+        "source_receipt_not_owned",
+        "source_redirect_rejected",
+        "source_snapshot_changed",
+        "source_snapshot_conflict",
+        "source_snapshot_unavailable",
+        "source_submodule_count_limit",
+        "source_submodule_depth_or_cycle",
+        "source_submodule_or_lfs_not_supported",
+        "source_submodule_provenance_rejected",
+        "source_windows_path_limit",
+        "successful_owned_source_fetch_required",
+    }
+)
+
+
+def safe_source_code(value: object) -> str:
+    if type(value) is str and len(value) <= 96 and value in SOURCE_ERROR_CODES:
+        return value
+    return "source_fetch_failed"
+
+
 class SourceError(ValueError):
-    """Fixed safe diagnostics, never upstream URLs, paths or response bodies."""
+    """Allowlisted diagnostics; native exception text never becomes a code."""
+
+    def __init__(self, code: object = "source_fetch_failed") -> None:
+        super().__init__(safe_source_code(code))
+
+    @property
+    def code(self) -> str:
+        return safe_source_code(self.args[0] if len(self.args) == 1 else None)
 
 
 def digest(data: bytes) -> str:
