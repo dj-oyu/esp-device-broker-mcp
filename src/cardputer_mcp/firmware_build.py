@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 import threading
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -306,6 +307,8 @@ class FirmwareBuild:
         self._lock = threading.RLock()
         self._committed_job: str | None = None
         self._build_lock: Any = None
+        self._pending: dict[str, tuple[str, Path, dict[str, Any]]] = {}
+        self.output_uncertain = False
 
     @staticmethod
     def _registered_tools(project: Any) -> dict[str, Any]:
@@ -469,32 +472,39 @@ class FirmwareBuild:
             self._committed_job = None
             self.process.stop_requested.clear()
 
-    async def execute(self, plan: dict[str, Any], stage: Any) -> str:
+    async def execute(
+        self, plan: dict[str, Any], stage: Any, *, defer_publish: bool = False
+    ) -> str:
         self._check_cancelled()
         loop = asyncio.get_running_loop()
         return await asyncio.to_thread(
-            self._execute, plan, lambda name: loop.call_soon_threadsafe(stage, name)
+            self._execute, plan, lambda name: loop.call_soon_threadsafe(stage, name), defer_publish
         )
 
-    def _execute(self, plan: dict[str, Any], stage: Any) -> str:
+    def _execute(
+        self, plan: dict[str, Any], stage: Any, defer_publish: bool = False
+    ) -> str:
         if self._build_lock is not None:
             raise BuildLocationError("build_output_in_use")
         try:
-            return self._execute_inner(plan, stage)
+            return self._execute_inner(plan, stage, defer_publish)
         finally:
-            if self._build_lock is not None and not (
+            if self._build_lock is not None and not self._pending and not (
                 getattr(self.process, "active", False) or getattr(self.process, "uncertain", False)
             ):
                 try:
                     self._build_lock.release()
                 except Exception:
+                    self.output_uncertain = True
                     with self._lock:
                         self.manifests.pop(plan.get("job_id", ""), None)
                         self._committed_job = None
                     raise BuildLocationError("build_output_release_unconfirmed") from None
                 self._build_lock = None
 
-    def _execute_inner(self, plan: dict[str, Any], stage: Any) -> str:
+    def _execute_inner(
+        self, plan: dict[str, Any], stage: Any, defer_publish: bool = False
+    ) -> str:
         self._check_cancelled()
         if os.name != "nt":
             raise ValueError("external_windows_idf_required")
@@ -760,6 +770,11 @@ class FirmwareBuild:
         # a success manifest, including cancellation during hashing or serialization.
         candidate = build_dir / "broker-manifest.pending.json"
         candidate.write_text(json.dumps(manifest, indent=2))
+        if defer_publish:
+            with self._lock:
+                self._check_cancelled()
+                self._pending[plan["job_id"]] = (principal, build_dir, manifest)
+            return "firmware_build_succeeded_no_flash"
         try:
             with self._lock:
                 self._check_cancelled()
@@ -773,6 +788,54 @@ class FirmwareBuild:
         finally:
             candidate.unlink(missing_ok=True)
         return "firmware_build_succeeded_no_flash"
+
+    def commit_deferred(self, plan: dict[str, Any], live: Callable[[], bool]) -> None:
+        """Called on the broker loop after worker exit, with no await before job commit."""
+        self._check_cancelled()
+        principal, root, manifest = self._pending[plan["job_id"]]
+        if (
+            self.process.active
+            or self.process.uncertain
+            or not live()
+            or self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"]
+            != plan["fingerprint"]
+            or not live()
+        ):
+            raise ValueError("build_final_commit_not_authorized")
+        self._check_cancelled()
+        (root / "broker-manifest.pending.json").replace(root / "broker-manifest.json")
+        if self._build_lock is not None:
+            try:
+                self._build_lock.release()
+            except Exception:
+                self.output_uncertain = True
+                raise BuildLocationError("build_output_release_unconfirmed") from None
+            self._build_lock = None
+        self.artifacts.publish(plan["job_id"], principal, root, manifest)
+        self.manifests[plan["job_id"]] = (principal, manifest)
+        self._pending.pop(plan["job_id"])
+        self._committed_job = plan["job_id"]
+        self.logs[plan["job_id"]].append(
+            "Build complete; artifact hashes recorded; flash requires separate approval"
+        )
+
+    def discard_deferred(self, job_id: str) -> None:
+        """Discard only this job's unpublished candidate; never delete source/artifact data."""
+        self.manifests.pop(job_id, None)
+        self.artifacts.discard(job_id)
+        pending = self._pending.pop(job_id, None)
+        if pending is not None:
+            try:
+                (pending[1] / "broker-manifest.pending.json").unlink(missing_ok=True)
+            except Exception:
+                self.output_uncertain = True
+        if self._build_lock is not None and not self.process.active and not self.process.uncertain:
+            try:
+                self._build_lock.release()
+            except Exception:
+                self.output_uncertain = True
+            else:
+                self._build_lock = None
 
     def storage(self, project_id: str) -> dict[str, Any]:
         project = self.settings.build_projects.get(project_id)

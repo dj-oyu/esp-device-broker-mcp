@@ -205,6 +205,9 @@ class Broker:
         from .firmware_source import FirmwareSource
 
         self.firmware_source = FirmwareSource(settings, self._store)
+        from .profile_jobs import ProfileJobs
+
+        self.profile_jobs = ProfileJobs(self)
         from .firmware_flash import FirmwareFlash
 
         self.firmware_flash = FirmwareFlash(
@@ -245,6 +248,7 @@ class Broker:
             self.store.recover()
             self.logs.append(Event.STARTED)
             self.worker = asyncio.create_task(self._work(), name="single-device-worker")
+            self.profile_jobs.start()
             self.maintenance = asyncio.create_task(
                 self._maintain(), name="single-device-maintenance"
             )
@@ -260,6 +264,7 @@ class Broker:
         if self.store is None:
             return
         self.closing = True
+        await self.profile_jobs.close()
         self.firmware_build.request_stop()
         self.firmware_flash.request_stop()
         self._clear_local_home_diagnostic()
@@ -280,7 +285,7 @@ class Broker:
             # Never cancel the device task or release its lock during an active workflow.
             await self.queue.put(None)
             await asyncio.shield(self.worker)
-        if self._physical_busy() or self.firmware_build.process.uncertain:
+        if self._physical_busy() or self.firmware_build.process.uncertain or self.profile_jobs.uncertain:
             # An unconfirmed serial close must not advertise a free device or
             # release the broker lock. Only OS process teardown ends this hold.
             raise BrokerError("device_close_unconfirmed")
@@ -412,9 +417,11 @@ class Broker:
         return bool(
             self.active_job is not None
             or self.backend.active
-            or self.firmware_source.active
-            or self.firmware_build.process.active
+            or (self.profile_jobs.active is None and self.firmware_source.active)
+            or (self.profile_jobs.active is None and self.firmware_build.process.active)
             or self.firmware_build.process.uncertain
+            or self.firmware_build.output_uncertain
+            or self.profile_jobs.uncertain
             or self.firmware_flash.active
             or self.firmware_flash.uncertain
             or getattr(self.backend, "ownership_uncertain", False)
@@ -548,11 +555,11 @@ class Broker:
     def _expire(self) -> None:
         self.maintenance_tick()
 
-    def _lease(self, capability: str) -> Session:
+    def _lease(self, capability: str | None) -> Session:
         self._expire()
         if self.closing:
             raise BrokerError("broker_closing")
-        if self.session is None or not secrets.compare_digest(self.session.capability, capability):
+        if capability is None or self.session is None or not secrets.compare_digest(self.session.capability, capability):
             raise BrokerError("invalid_session")
         if self.clock() >= self.session.deadline:
             raise BrokerError("lease_expired_active_job_retains_ownership")
@@ -569,6 +576,9 @@ class Broker:
             "device": self.backend.device,
             "broker_epoch": self.epoch,
             "active_job": self.active_job,
+            "profile_active_job": self.profile_jobs.active,
+            "profile_queue_depth": self.profile_jobs.queue.qsize(),
+            "profile_approval_policy": "registered_project",
             "owner": session.owner if session else None,
             "lease_remaining_seconds": max(0, round(session.deadline - self.clock(), 3))
             if session
@@ -624,7 +634,7 @@ class Broker:
         }
 
     def require_owner(
-        self, capability: str, owner: str, *, principal_id: str | None = None
+        self, capability: str | None, owner: str, *, principal_id: str | None = None
     ) -> None:
         session = self._lease(capability)
         if session.owner != owner or (

@@ -58,6 +58,13 @@ class Store:
         self.db.execute("""UPDATE jobs SET state='cancelled',
             result='broker_restart_no_replay', finished=CURRENT_TIMESTAMP
             WHERE state='awaiting_approval'""")
+        self.db.execute("""UPDATE jobs SET state='cancelled',
+            result='broker_restart_no_replay', finished=CURRENT_TIMESTAMP
+            WHERE state='queued' AND EXISTS (
+                SELECT 1 FROM plans WHERE plans.hash=jobs.plan_hash
+                AND CASE WHEN json_valid(plans.payload) THEN
+                    json_extract(plans.payload,'$.execution_context')='registered_project'
+                ELSE 0 END)""")
         self.db.execute("""UPDATE jobs SET state='needs_review',
             result='broker_restart_no_replay', finished=CURRENT_TIMESTAMP
             WHERE state IN ('queued','running')""")

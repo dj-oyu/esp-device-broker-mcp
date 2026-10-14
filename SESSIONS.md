@@ -5,6 +5,14 @@ physical lease are different objects. A shared API key is one security principal
 regardless of how many terminals use it. One principal may create several work
 sessions, each with an independent unguessable resume token.
 
+Source fetch and build use their exact principal-bound registered-project plans,
+not the physical lease below. They accept prepare/execute/cancel without session.
+They do not hold USB ownership and a 300-second device lease is not their execution
+deadline or a human approval timer. Device requests retain their existing FIFO,
+lease generation and exact approval rules. For those manual device requests,
+approval waiting still uses the original lease-bound intent deadline; this update
+does not silently extend it.
+
 ## New authenticated tools
 
 1. `create_work_session({owner, ttl_seconds})`: creates a logical session; returns

@@ -28,6 +28,20 @@ are now implemented and mock-tested. The optional [Windows Tunnel preparation](T
 and [local scoped-key management](KEYS.md) are available. A user-run Windows mock Tunnel registration and read-only MCP calls
 were verified; cloud lifecycle remains external to broker status. Nothing opens USB automatically at startup.
 
+## Registered source/build loop
+
+A locally registered project/profile is the execution scope for authenticated
+control principals. Prepare source fetch with project_id and the full commit SHA,
+execute its exact plan_hash, then prepare/execute build with the owned source_receipt.
+Omit session for these operations. There is no per-job operator approval, additional
+grant registration, USB lease or local Codex execution intermediary. Normal
+fetch/compiler failure or confirmed cancellation permits a corrected new job;
+uncertain process/lock/durable state still stops for review. A connection loss
+does not cancel or replay a job. Build executes trusted project code as the local
+OS user, not in a sandbox. See [source snapshots](SOURCE-SNAPSHOTS.md) and
+[external builds](FIRMWARE-BUILD.md). Device flash/restore/backup remain separately
+approved and never follow automatically from successful build.
+
 ## Windows queue GUI
 
 Version 0.12 lets a client submit an exact plan before local approval. Call

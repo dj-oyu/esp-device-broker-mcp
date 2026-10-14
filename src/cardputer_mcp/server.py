@@ -472,7 +472,8 @@ def create_server(
         return action()
 
     def owned(
-        request: LeaseRequest, ctx: Context[Any, Any], action: Callable[[], dict[str, Any]]
+        request: LeaseRequest | PrepareRequest | ExecuteRequest | CancelRequest,
+        ctx: Context[Any, Any], action: Callable[[], dict[str, Any]]
     ) -> dict[str, Any]:
         if auth_required:
             owner = principal(ctx, "control")
@@ -612,6 +613,9 @@ def create_server(
 
         Source fetch is an explicit registered-project/full-commit operation.
         It returns a principal-bound receipt; build can select it without worktree sync.
+        Registered source/build plans require current control authorization, not
+        operator approval or a physical lease. Omit session for these jobs.
+        Registered build scripts run as the local OS user; this is not a sandbox.
         Source fetch never builds or flashes. No caller-supplied URL/path/shell is accepted.
         Backup, flash and restore are independent exact-approval operations.
         Flash may use a retained verified LKG instead of another full backup.
@@ -626,6 +630,9 @@ def create_server(
         """
 
         def prepare() -> dict[str, Any]:
+            if request.test in (TestName.BUILD, TestName.SOURCE):
+                owner = principal(ctx, "control")
+                return resident.profile_jobs.prepare(request, owner.principal_id, owner.origin.value)
             if request.test in (
                 TestName.CAPTURE,
                 TestName.DERBY,
@@ -664,19 +671,43 @@ def create_server(
         without another reset pulse. Failure stops for review without retry or
         automatic restore. HELLO remains a separate approved request.
 
-        Set wait_for_approval=true to submit before manual approval. When approval
+        Source/build execute within locally registered project settings without
+        manual approval or USB lease. Execution deadlines are independent of
+        connection lifetime. Cancellation, principal revocation/expiry or changed
+        registration stops work; confirmed normal failure permits a new job.
+        Same job ID never replays. Flash/restore authorization remains separate.
+
+        For device operations, set wait_for_approval=true to submit before manual approval. When approval
         is still required it returns awaiting_approval immediately; local GUI
         approval then queues that exact submitted job without another client call.
         An already valid permit can queue immediately. Waiting ends with the original
         lease deadline, cancellation, revocation or broker restart. Preparation
         alone never submits execution. False preserves approve-then-execute mode.
         """
-        return _result(lambda: owned(request, ctx, lambda: resident.execute(request)))
+        def execute() -> dict[str, Any]:
+            plan = resident._store().plan(request.plan_hash)
+            if plan is not None and plan.get("test") in (
+                TestName.BUILD.value, TestName.SOURCE.value
+            ):
+                owner = principal(ctx, "control")
+                return resident.profile_jobs.execute(request, owner.principal_id, owner.origin.value)
+            return owned(request, ctx, lambda: resident.execute(request))
+
+        return _result(execute)
 
     @server.tool(annotations=read_only)
     async def job_status(request: JobRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read persisted job state after reconnecting. Interrupted work is never replayed."""
-        return _result(lambda: read(ctx, lambda: resident.job(request.job_id)))
+        def get_job() -> dict[str, Any]:
+            job = resident.job(request.job_id)
+            plan = resident._store().plan(job["plan_hash"])
+            if plan is not None and plan.get("execution_context") == "registered_project":
+                owner = principal(ctx, "read")
+                if plan.get("principal_id") != owner.principal_id:
+                    raise BrokerError("owned_registered_project_job_required")
+            return job
+
+        return _result(lambda: read(ctx, get_job))
 
     @server.tool(annotations=read_only)
     async def read_build_logs(request: BuildLogRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -776,8 +807,22 @@ def create_server(
 
     @server.tool(annotations=mutating)
     async def cancel_job(request: CancelRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
-        """Cancel your awaiting-approval or queued job; never interrupt running work."""
-        return _result(lambda: owned(request, ctx, lambda: resident.cancel(request)))
+        """Cancel owned work. Source/build stops wait for confirmed worker/process exit.
+
+        Source/build cancellation uses current control principal, no USB lease.
+        Device operation approval, ownership and interruption rules are unchanged.
+        """
+        def cancel() -> dict[str, Any]:
+            job = resident._store().job(request.job_id)
+            plan = resident._store().plan(job["plan_hash"]) if job is not None else None
+            if plan is not None and plan.get("test") in (
+                TestName.BUILD.value, TestName.SOURCE.value
+            ):
+                owner = principal(ctx, "control")
+                return resident.profile_jobs.cancel(request, owner.principal_id, owner.origin.value)
+            return owned(request, ctx, lambda: resident.cancel(request))
+
+        return _result(cancel)
 
     @server.tool(annotations=mutating)
     async def create_work_session(
