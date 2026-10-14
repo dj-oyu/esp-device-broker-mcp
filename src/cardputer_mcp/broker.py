@@ -1950,8 +1950,11 @@ class Broker:
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except SourceError as failure:
-                    self.firmware_source.record_failure(plan, failure.code)
-                    store.set_job(job_id, "needs_review", failure.code, {"code": failure.code})
+                    if plan["test"] == TestName.SOURCE.value:
+                        self.firmware_source.record_failure(plan, failure.code)
+                        store.set_job(job_id, "needs_review", failure.code, {"code": failure.code})
+                    else:
+                        store.set_job(job_id, "needs_review", "backend_error_no_retry")
                     if self.capture_policies is not None:
                         self.capture_policies.invalidate_session()
                     self.logs.append(Event.REVIEW)
