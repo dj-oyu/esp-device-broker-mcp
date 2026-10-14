@@ -86,6 +86,7 @@ class FixedDiagnosticFailure(BuildPreflightFailure):
             "registered_tool_resolution_ambiguous",
             "external_toolchain_resolution_changed",
             "node_requires_explicit_local_registration",
+            "build_inputs_changed",
         }:
             raise ValueError("invalid_build_diagnostic_code")
         self.code = code
@@ -817,10 +818,11 @@ class FirmwareBuild:
             self.process.active
             or self.process.uncertain
             or not live()
-            or self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"]
-            != plan["fingerprint"]
-            or not live()
         ):
+            raise ValueError("build_final_commit_not_authorized")
+        if self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"] != plan["fingerprint"]:
+            raise FixedDiagnosticFailure("build_inputs_changed")
+        if not live():
             raise ValueError("build_final_commit_not_authorized")
         self._check_cancelled()
         (root / "broker-manifest.pending.json").replace(root / "broker-manifest.json")
@@ -849,7 +851,12 @@ class FirmwareBuild:
                 (pending[1] / "broker-manifest.pending.json").unlink(missing_ok=True)
             except Exception:
                 self.output_uncertain = True
-        if self._build_lock is not None and not self.process.active and not self.process.uncertain:
+        if (
+            self._build_lock is not None
+            and not self.process.active
+            and not self.process.uncertain
+            and not self.output_uncertain
+        ):
             try:
                 self._build_lock.release()
             except Exception:

@@ -232,16 +232,19 @@ class ProfileJobs:
                 def stage(name: str, job: str = job_id) -> None:
                     store.set_stage(job, name)
 
+                def live(prepared: dict[str, Any] = plan) -> bool:
+                    return self._live(prepared)
+
                 committing = False
                 try:
                     if source:
                         broker.firmware_source.begin()
                         result = await broker.firmware_source.execute(
-                            plan, stage, lambda: self._live(plan)
+                            plan, stage, live
                         )
                     else:
                         broker.firmware_build.begin()
-                        broker.firmware_build.authority = lambda: self._live(plan)
+                        broker.firmware_build.authority = live
                         result = await broker.firmware_build.execute(plan, stage, defer_publish=True)
                     if not self._live(plan):
                         self._stop(plan, "profile_or_principal_no_longer_valid")
@@ -249,10 +252,10 @@ class ProfileJobs:
                     committing = True
                     if source:
                         broker.firmware_source.commit_success(
-                            plan, result, lambda: self._live(plan)
+                            plan, result, live
                         )
                     else:
-                        broker.firmware_build.commit_deferred(plan, lambda: self._live(plan))
+                        broker.firmware_build.commit_deferred(plan, live)
                         store.set_job(job_id, "succeeded", result)
                 except Exception as failure:
                     code = (
@@ -272,7 +275,7 @@ class ProfileJobs:
                                    "profile_or_principal_no_longer_valid")
                     reason = self.stops.get(job_id)
                     uncertain = (
-                        (committing and reason is None)
+                        (committing and reason is None and not isinstance(failure, BuildPreflightFailure))
                         or isinstance(failure, sqlite3.Error)
                         or broker.firmware_source.active
                         or broker.firmware_build.process.active
