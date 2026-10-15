@@ -140,3 +140,28 @@ GUI は同じ resident broker の状態を読むだけで、別のシリアル�
 GUI 操作用のローカル token は公式 Tunnel client に渡しません。
 GUI の operator API は local_cli + control の認証だけを受け付け、Tunnel 用 remote_mcp では操作できません。
 クラウド側での接続可否は、実際の tools/list と device_status が成功するまで未確認です。
+
+## Cancel a registered-project job
+
+A queued/running source or build card can show **Cancel job <exact job ID>** in
+its header. An authenticated local operator with control can stop a registered
+project's source/build job regardless of its requesting principal/origin. This is
+a dedicated local stop authority; the plan owner remains unchanged. Cancellation
+uses the existing profile worker/process cleanup path. A first operator stop records
+operator_cancelled after confirmed cleanup; earlier stop reasons and uncertain
+cleanup codes remain unchanged.
+
+Remote clients still require their own job's principal/origin for MCP cancel_job;
+they cannot use the local operator route. This stop authority grants no execution,
+artifact-use, lease-acquisition or flash/restore/device-operation permission.
+Legacy lease-bound work, unregistered projects and other job types are rejected.
+No credential, capability or lease is copied into the GUI.
+
+One click sends one exact job/plan/broker-epoch request. Repeated clicks, refreshes
+and lost responses do not replay cancellation. An accepted request displays a
+cleanup wait, not a completed stop or released USB device. The current job remains
+running until the broker confirms its terminal state. If completion wins the race,
+the GUI displays the completed result without rollback. Cleanup uncertainty stays
+**Review required**, and device release is never inferred from a cancel response.
+Rejected/unknown requests use fixed messages and fresh status; raw errors are not
+shown. Closing the GUI does not cancel another job or stop the broker.

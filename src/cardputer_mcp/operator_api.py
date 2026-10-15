@@ -18,6 +18,9 @@ _MAX_BODY = 2048
 
 class OperatorPrincipal(Protocol):
     @property
+    def principal_id(self) -> str: ...
+
+    @property
     def origin(self) -> Origin: ...
 
     @property
@@ -27,6 +30,13 @@ class OperatorPrincipal(Protocol):
 class CancelWait(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     request_id: Identifier
+
+
+class CancelJob(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    job_id: Identifier
+    plan_hash: Digest
+    broker_epoch: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
 class ReorderWait(CancelWait):
@@ -138,6 +148,11 @@ class OperatorAPI:
         self.plans = PlanApprovals(broker)
         self.timeline = OperatorTimeline(broker, self.plans)
 
+    def _operator_profile(self, plan: dict[str, Any] | None, principal: OperatorPrincipal) -> bool:
+        return self.broker.profile_jobs.operator_cancellable(
+            plan, principal.principal_id, principal.origin.value
+        )
+
     @staticmethod
     async def _respond(send: Send, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -179,6 +194,7 @@ class OperatorAPI:
             "/operator/state": "GET",
             "/operator/timeline": "GET",
             "/operator/cancel": "POST",
+            "/operator/job-cancel": "POST",
             "/operator/reorder": "POST",
             "/operator/release": "POST",
             "/operator/plans": "GET",
@@ -275,6 +291,29 @@ class OperatorAPI:
                     result = {"arming": policies.arm(**arm.model_dump())}
             elif path == "/operator/timeline":
                 result = self.timeline.snapshot()
+                for card in result["cards"]:
+                    job = self.broker._store().job(card["job_id"])
+                    plan = self.broker._store().plan(job["plan_hash"]) if job else None
+                    card["cancel_available"] = bool(
+                        card["state"] in ("queued", "running")
+                        and self._operator_profile(plan, principal)
+                    )
+            elif path == "/operator/job-cancel":
+                cancel_job = CancelJob.model_validate(payload)
+                cancelled = self.broker.profile_jobs.operator_cancel(
+                    cancel_job.job_id,
+                    cancel_job.plan_hash,
+                    cancel_job.broker_epoch,
+                    principal.principal_id,
+                    principal.origin.value,
+                )
+                result = {
+                    "job_id": cancel_job.job_id,
+                    "plan_hash": cancel_job.plan_hash,
+                    "broker_epoch": self.broker.epoch,
+                    "state": cancelled["state"],
+                    "stop_requested": cancelled.get("stop_requested", False),
+                }
             elif path == "/operator/plans":
                 result = self.plans.list_pending()
             elif path == "/operator/plan":
