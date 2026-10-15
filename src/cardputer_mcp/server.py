@@ -31,6 +31,7 @@ from .http_diagnostics import (
     request_context,
     route_category,
 )
+from .input_diagnostics import invalid_arguments, validate_arguments
 from .key_registry import KeyRegistry, KeyRegistryError
 from .key_registry import Scope as KeyScope
 from .models import (
@@ -53,6 +54,7 @@ from .models import (
     TestName,
 )
 from .operator_api import OperatorAPI
+from .source_snapshot import SourceError
 
 
 class Authenticator(Protocol):
@@ -159,12 +161,20 @@ class SafeMCPServer(MCPServer[Any]):
         context: Context[Any, Any] | None = None,
     ) -> CallToolResult | InputRequiredResult:
         try:
+            diagnostic = validate_arguments(name, arguments)
+            if diagnostic is not None:
+                return self._invalid(diagnostic)
             return await super().call_tool(name, arguments, context)
         except Exception:
-            return CallToolResult(
-                content=[TextContent(type="text", text="invalid_tool_request")],
-                is_error=True,
-            )
+            return self._invalid(invalid_arguments())
+
+    @staticmethod
+    def _invalid(diagnostic: dict[str, Any]) -> CallToolResult:
+        return CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(diagnostic, sort_keys=True))],
+            structured_content=diagnostic,
+            is_error=True,
+        )
 
 
 class LoopbackOnly:
@@ -425,6 +435,8 @@ def _result(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         return {"ok": True, **call()}
     except BrokerError as exc:
         return {"ok": False, "error": str(exc)}
+    except SourceError as exc:
+        return {"ok": False, "error": exc.code}
     except ValueError:
         return {"ok": False, "error": "invalid_request"}
 
@@ -618,6 +630,15 @@ def create_server(
         operator approval or a physical lease. Omit session for these jobs.
         Registered build scripts run as the local OS user; this is not a sandbox.
         Source fetch never builds or flashes. No caller-supplied URL/path/shell is accepted.
+        firmware_flash requires request.job_id, test=firmware_flash, a live owned
+        request.session, registered request.device_id and successful owned
+        request.build_job_id. Do not pass project_id: the registered device selects
+        its project. backup_job_id and lkg_receipt are mutually exclusive; verified
+        retained LKG may be used when both are omitted. Missing recovery is rejected.
+        firmware_backup requires session/device_id, with no build/recovery inputs.
+        firmware_restore requires session/device_id and verified recovery, with no
+        build_job_id or project_id. Explicit null optional references are allowed.
+        All use request={...}; no caller-supplied port, path or raw flash arguments.
         Backup, flash and restore are independent exact-approval operations.
         Flash may use a retained verified LKG instead of another full backup.
         Restore binds the exact recovery receipt at prepare time. Artifact recovery

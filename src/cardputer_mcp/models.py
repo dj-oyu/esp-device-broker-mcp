@@ -50,14 +50,81 @@ class RenewRequest(LeaseRequest):
 
 
 class PrepareRequest(StrictModel):
-    session: Capability | None = None
+    model_config = ConfigDict(
+        extra="forbid", frozen=True,
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {"properties": {"test": {"const": operation}}, "required": ["test"]},
+                    "then": {
+                        "required": ["session", "device_id", *required],
+                        "not": {
+                            "required": ["backup_job_id", "lkg_receipt"],
+                            "properties": {
+                                "backup_job_id": {"type": "string"},
+                                "lkg_receipt": {"type": "string"},
+                            },
+                        },
+                        "properties": {
+                            "session": {"type": "string"},
+                            "device_id": {"type": "string"},
+                            "build_job_id": {"type": "string" if required else "null"},
+                            "project_id": {"type": "null"},
+                            "source_commit": {"type": "null"},
+                            "source_receipt": {"type": "null"},
+                            **(
+                                {"backup_job_id": {"type": "null"}, "lkg_receipt": {"type": "null"}}
+                                if operation == "firmware_backup" else {}
+                            ),
+                        },
+                    },
+                }
+                for operation, required in (
+                    ("firmware_backup", []), ("firmware_flash", ["build_job_id"]),
+                    ("firmware_restore", []),
+                )
+            ]
+        },
+    )
+    session: Capability | None = Field(
+        default=None, description=(
+            "Owned live device lease required for backup/flash/restore and device "
+            "jobs. Omit for registered source/build."
+        )
+    )
     job_id: Identifier
     test: TestName = TestName.DIAGNOSTICS
-    project_id: Identifier | None = None
-    device_id: Identifier | None = None
-    build_job_id: Identifier | None = None
-    backup_job_id: Identifier | None = None
-    lkg_receipt: Digest | None = None
+    project_id: Identifier | None = Field(
+        default=None, description=(
+            "Registered source/build project. Do not supply for backup/flash/restore; "
+            "the registered device selects its project (null is allowed)."
+        )
+    )
+    device_id: Identifier | None = Field(
+        default=None, description=(
+            "Required registered device ID for backup/flash/restore; not a port/path. "
+            "Forbidden for other tests."
+        )
+    )
+    build_job_id: Identifier | None = Field(
+        default=None, description=(
+            "Required successful owned firmware_build job for firmware_flash. Omit "
+            "for backup/restore and other tests."
+        )
+    )
+    backup_job_id: Identifier | None = Field(
+        default=None, description=(
+            "Owned successful backup input for flash/restore; mutually exclusive with "
+            "lkg_receipt. Omit for firmware_backup."
+        )
+    )
+    lkg_receipt: Digest | None = Field(
+        default=None, description=(
+            "Verified recovery receipt for flash/restore, mutually exclusive with "
+            "backup_job_id. A retained verified LKG may be selected when both are "
+            "omitted."
+        )
+    )
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
     source_receipt: Digest | None = None
 
@@ -89,8 +156,10 @@ class PrepareRequest(StrictModel):
                 )
             ):
                 raise ValueError("flash_references_only_for_flash_operations")
-        elif self.device_id is None or self.project_id is not None:
+        elif self.device_id is None:
             raise ValueError("registered_flash_device_required")
+        elif self.project_id is not None:
+            raise ValueError("project_id_not_allowed_for_flash_operations")
         elif self.test == TestName.BACKUP:
             if (
                 self.build_job_id is not None
