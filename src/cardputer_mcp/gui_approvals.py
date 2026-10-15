@@ -421,11 +421,16 @@ def _review_effects(review: PlanReview) -> str:
             "configured firmware hashes are not evidence of running firmware.\n\n" + notice
         )
     if review.test in {t.value for t in FLASH_TESTS}:
+        effects = (
+            "BACKUP enters ROM download mode and reads full plaintext flash into private local "
+            "storage. This operation does not write flash. "
+            if review.test == TestName.BACKUP.value
+            else "FLASH writes the exact displayed artifact and erases affected sectors. "
+            if review.test == TestName.FLASH.value
+            else "RESTORE writes the exact displayed recovery target and erases affected sectors. "
+        )
         return (
-            "BACKUP enters ROM download mode and reads full plaintext flash into "
-            "private local storage. "
-            "FLASH/RESTORE write the exact displayed artifact/backup and erase affected sectors. "
-            "Verify the registered device, build security policy and recovery "
+            effects + "Verify the registered device, build security policy and recovery "
             "backup before this exact approval. "
             "Reset and passive boot checks may exit the current app and lose unsaved state. "
             "Cancellation or failure does not undo partial writes; needs_review "

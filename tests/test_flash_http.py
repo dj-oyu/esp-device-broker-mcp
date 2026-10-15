@@ -164,8 +164,15 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
                     assert prepared["plan"]["lkg_receipt"] in effects
                 if prepared["plan"].get("backup_job_id"):
                     assert prepared["plan"]["backup_job_id"] in effects
-                assert "write the exact displayed artifact/backup" in effects
-                assert "reads full plaintext flash" in effects
+                if action == "firmware_backup":
+                    assert "reads full plaintext flash" in effects
+                    assert "does not write flash" in effects
+                elif action == "firmware_flash":
+                    assert "FLASH writes the exact displayed artifact" in effects
+                    assert "erases affected sectors" in effects
+                else:
+                    assert "RESTORE writes the exact displayed recovery target" in effects
+                    assert "erases affected sectors" in effects
                 assert "Observes serial output without sending commands" not in effects
                 attestation = (
                     "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ"

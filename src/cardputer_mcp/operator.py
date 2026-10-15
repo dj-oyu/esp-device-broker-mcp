@@ -110,10 +110,21 @@ def approve_plan(
                     + "Device opening/closing may reset it due to driver control-line glitches. "
                     "Verify the configured firmware is running and other serial tools are closed. "
                 )
+        target = {key: plan[key] for key in ("device", "device_id", "port") if key in plan}
+        recovery = {
+            key: plan[key]
+            for key in ("recovery_kind", "backup_job_id", "lkg_receipt")
+            if plan.get(key) is not None
+        }
+        context = (
+            f"Target: {json.dumps(target, sort_keys=True, ensure_ascii=True)}\n"
+            f"Recovery: {json.dumps(recovery, sort_keys=True, ensure_ascii=True)}\n"
+            "Approve records consent; it does not prove the physical device or running firmware.\n"
+        )
         summary = json.dumps(plan, indent=2, sort_keys=True)
         submission_notice = "This approval alone does not submit execution.\n"
         answer = confirm(
-            f"{disclosure}{submission_notice}{summary}\nPlan SHA-256: {digest}\n"
+            f"{context}{disclosure}{submission_notice}{summary}\nPlan SHA-256: {digest}\n"
             "Type APPROVE to approve this displayed plan: "
         )
         if answer.strip() not in ("APPROVE", f"APPROVE {digest}"):
