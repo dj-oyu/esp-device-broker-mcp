@@ -25,6 +25,7 @@ class FlashAuthorization:
     build_hash: str = ""
     fetch_job_id: str = ""
     fetch_hash: str = ""
+    fetch_receipt: str = ""
 
 
 class FlashPolicies:
@@ -148,6 +149,15 @@ class FlashPolicies:
                 or digest_plan(saved) != digest
             ):
                 return False
+            if job_id == token.fetch_job_id:
+                diagnostic = job.get("diagnostic")
+                source = diagnostic.get("source") if isinstance(diagnostic, dict) else None
+                if (
+                    not token.fetch_receipt
+                    or not isinstance(source, dict)
+                    or source.get("source_receipt") != token.fetch_receipt
+                ):
+                    return False
         return True
 
     def live(
@@ -223,6 +233,7 @@ class FlashPolicies:
                 build_hash=job["plan_hash"],
                 fetch_job_id=metadata["fetch_job_id"],
                 fetch_hash=fetch_job["plan_hash"],
+                fetch_receipt=policy.source_receipt,
             )
             if (
                 broker.principal_valid is None
@@ -245,5 +256,6 @@ class FlashPolicies:
             and current.plan_hash == token.plan_hash
             and current.registration_sha256 == token.registration_sha256
             and current.project_sha256 == token.project_sha256
+            and current.fetch_receipt == token.fetch_receipt
             and self.live(token, plan)
         )

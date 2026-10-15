@@ -105,3 +105,10 @@ recognizes that provisional successful job only inside the open transaction;
 normal device-work checks reject completed jobs. Both checks still revalidate
 policy and current authority. Tests cover second-guard revocation rolling back
 both updates and rejection of a completed job outside that transaction.
+
+The transient permission also pins the successful fetch diagnostic's exact
+`source.source_receipt`. Live checks re-read this binding after auth callbacks,
+before writes and in both final commit guards. Replacing or deleting the receipt
+invalidates permission even when the fetch remains succeeded and its plan hash is
+unchanged. This adds only callback-free checks on the existing small DB records;
+it does not rehash the source tree on progress events.

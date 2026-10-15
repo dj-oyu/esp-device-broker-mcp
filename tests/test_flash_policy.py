@@ -489,9 +489,7 @@ async def test_last_auth_callback_cannot_replace_owned_fetch_receipt(env, phase,
                 if replacement == "replace"
                 else None
             )
-            env.store.db.execute(
-                "UPDATE jobs SET diagnostic=? WHERE id='fetch-one'", (diagnostic,)
-            )
+            env.store.db.execute("UPDATE jobs SET diagnostic=? WHERE id='fetch-one'", (diagnostic,))
             if phase != "commit":
                 env.store.db.commit()
             fetched = env.store.job("fetch-one")
