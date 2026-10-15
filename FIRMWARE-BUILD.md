@@ -343,11 +343,27 @@ output can still contain application secrets that existing redaction cannot
 recognize. Console output is local diagnostic data, not a new durable audit log;
 MCP log filtering, ownership, cursors, bounds and retention remain authoritative.
 
-## Separate follow-up: durable artifact lookup
+## Durable successful-build references
 
-Successful build artifact resolution currently depends on RAM records for the
-latest eight builds. Job history and files can survive while those references are
-evicted or lost on restart, so an older successful job may no longer resolve for a
-later explicitly approved flash. A separate PR should restore principal-bound,
-hash-verified artifact lookup from durable success metadata. This PR does not
-adopt old files, change artifact retention, delete data or relax flash admission.
+New successful builds retain a bounded reference per job in the existing private
+history.sqlite3 state database. The reference binds the owner, project and build
+plan to the output location identity and canonical manifest SHA-256; it stores no
+absolute output path or artifact bytes. The RAM cache remains limited to eight
+builds, but cache eviction and broker restart no longer invalidate a retained
+reference. Publication before job completion is inert: only a durable succeeded
+build job with the same owned plan can resolve it. Interrupted, failed, cancelled
+and needs_review jobs cannot become flash inputs through this reference.
+
+Every lookup uses the currently registered project/output root, checks the stored
+location identity and disk manifest digest, and rehashes all recorded binary/ELF,
+flash-layout and security-config files. Missing, changed, linked or out-of-scope
+files fail closed. Existing flash admission, security/device checks and separate
+approval still apply; lookup never opens USB or starts a build/flash/restore.
+
+Only builds published with this reference support restart lookup. Historical
+success rows and arbitrary old manifests are not adopted; explicitly rebuild an
+older job if it has no reference. Rebuilding in the same output slot can supersede
+the old bytes; old references then fail hash/manifest validation. References do not
+promise immutable artifact storage. No rollback, retry, GC, retention migration or
+file deletion is added. Preserve the existing state working directory and local
+project/output registrations across upgrades. ESP-IDF remains external 6.0.1.
