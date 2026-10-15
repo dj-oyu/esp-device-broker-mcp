@@ -10,6 +10,7 @@ from test_registry_http import registry_service as registry_service
 
 from cardputer_mcp.broker import digest_plan
 from cardputer_mcp.client import call, connect
+from cardputer_mcp.gui_timeline import TimelineSnapshot
 from cardputer_mcp.models import Origin, PrepareRequest
 from cardputer_mcp.models import TestName as Action
 
@@ -20,8 +21,8 @@ def assert_refused(response):
     )
 
 
-def owner(service):
-    return service.registry.issue("Synthetic local build owner", Origin.LOCAL, scopes={"control"})
+def local_operator(service):
+    return service.registry.issue("Synthetic local stop operator", Origin.LOCAL, scopes={"control"})
 
 
 def headers(key):
@@ -39,7 +40,7 @@ async def test_actual_cancel_http_waits_for_cleanup_and_retains_uncertainty(
     service = registry_service
     register(service, tmp_path)
     broker, key = service.resident, service.keys["second"]
-    actor = owner(service)
+    actor = local_operator(service)
     started, finish = asyncio.Event(), asyncio.Event()
 
     async def build(plan, stage, *, defer_publish):
@@ -90,9 +91,14 @@ async def test_actual_cancel_http_waits_for_cleanup_and_retains_uncertainty(
         listing = (await http.get("/operator/timeline")).json()
         row = next(row for row in listing["cards"] if row["job_id"] == "cancel-job")
         assert row["state"] == status["state"] and not row["cancel_available"]
+        parsed = TimelineSnapshot.parse(listing, broker.clock())
+        shown = next(card for card in parsed.cards if card.job_id == "cancel-job")
+        assert shown.state == status["state"] and shown.result == status["result"]
         assert "private cleanup" not in json.dumps(row)
         assert not broker.firmware_build.manifests
-        assert broker._store().plan(prepared["plan_hash"])["principal_id"] == key.metadata.principal_id
+        assert (
+            broker._store().plan(prepared["plan_hash"])["principal_id"] == key.metadata.principal_id
+        )
         assert broker._store().plan(prepared["plan_hash"])["origin"] == Origin.REMOTE.value
         if not uncertain:
             assert status["result"] == "operator_cancelled"
@@ -106,7 +112,7 @@ async def test_completion_race_is_a_read_of_current_terminal_job(
     service = registry_service
     register(service, tmp_path)
     broker, key = service.resident, service.keys["second"]
-    actor = owner(service)
+    actor = local_operator(service)
     prepared = broker.profile_jobs.prepare(
         PrepareRequest(job_id="cancel-job", test=Action.BUILD, project_id="fixture"),
         key.metadata.principal_id,
@@ -128,13 +134,11 @@ async def test_completion_race_is_a_read_of_current_terminal_job(
     assert not broker.profile_jobs.stops and service.backend.calls == 0
 
 
-async def test_endpoint_rejects_remote_scope_epoch_plan_and_device_jobs(
-    registry_service, tmp_path
-):
+async def test_endpoint_rejects_remote_scope_epoch_plan_and_device_jobs(registry_service, tmp_path):
     service = registry_service
     register(service, tmp_path)
     broker, key = service.resident, service.keys["second"]
-    actor = owner(service)
+    actor = local_operator(service)
     prepared = broker.profile_jobs.prepare(
         PrepareRequest(job_id="cancel-job", test=Action.BUILD, project_id="fixture"),
         key.metadata.principal_id,
@@ -202,7 +206,7 @@ async def test_source_job_uses_existing_stop_path_across_principals(
     service = registry_service
     register(service, tmp_path)
     broker, key = service.resident, service.keys["second"]
-    actor = owner(service)
+    actor = local_operator(service)
     prepared = broker.profile_jobs.prepare(
         PrepareRequest(job_id="cancel-job", test=Action.BUILD, project_id="fixture"),
         key.metadata.principal_id,
@@ -232,17 +236,22 @@ async def test_source_job_uses_existing_stop_path_across_principals(
     store.set_job("cancel-job", "cancelled")
 
 
-@pytest.mark.parametrize("test", [
-    "firmware_flash", "firmware_restore", "firmware_backup", "diagnostics",
-    "capture_home", "restart_and_observe",
-])
-async def test_local_operator_stop_grant_excludes_other_job_types(
-    registry_service, tmp_path, test
-):
+@pytest.mark.parametrize(
+    "test",
+    [
+        "firmware_flash",
+        "firmware_restore",
+        "firmware_backup",
+        "diagnostics",
+        "capture_home",
+        "restart_and_observe",
+    ],
+)
+async def test_local_operator_stop_grant_excludes_other_job_types(registry_service, tmp_path, test):
     service = registry_service
     register(service, tmp_path)
     broker, key = service.resident, service.keys["second"]
-    actor = owner(service)
+    actor = local_operator(service)
     prepared = broker.profile_jobs.prepare(
         PrepareRequest(job_id="cancel-job", test=Action.BUILD, project_id="fixture"),
         key.metadata.principal_id,
@@ -269,7 +278,7 @@ async def test_operator_stop_requires_current_project_registration(registry_serv
     service = registry_service
     register(service, tmp_path)
     broker, key = service.resident, service.keys["second"]
-    actor = owner(service)
+    actor = local_operator(service)
     prepared = broker.profile_jobs.prepare(
         PrepareRequest(job_id="cancel-job", test=Action.BUILD, project_id="fixture"),
         key.metadata.principal_id,

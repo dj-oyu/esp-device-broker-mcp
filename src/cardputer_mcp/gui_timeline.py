@@ -114,9 +114,7 @@ CANCEL_REQUESTED = (
 CANCEL_UNCERTAIN = (
     "Cancellation outcome unknown. Refresh status; no automatic retry or device release."
 )
-CANCEL_REJECTED = (
-    "Cancellation was rejected. Local operator control is required; refresh status."
-)
+CANCEL_REJECTED = "Cancellation was rejected. Local operator control is required; refresh status."
 CANCEL_REVIEW = (
     "Cleanup or device state requires review. Stop completion and device release are not confirmed."
 )

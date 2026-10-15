@@ -147,8 +147,9 @@ A queued/running source or build card can show **Cancel job <exact job ID>** in
 its header. An authenticated local operator with control can stop a registered
 project's source/build job regardless of its requesting principal/origin. This is
 a dedicated local stop authority; the plan owner remains unchanged. Cancellation
-uses the existing profile worker/process cleanup path and records operator_cancelled
-when cleanup is confirmed. Uncertain cleanup retains its original needs_review code.
+uses the existing profile worker/process cleanup path. A first operator stop records
+operator_cancelled after confirmed cleanup; earlier stop reasons and uncertain
+cleanup codes remain unchanged.
 
 Remote clients still require their own job's principal/origin for MCP cancel_job;
 they cannot use the local operator route. This stop authority grants no execution,
