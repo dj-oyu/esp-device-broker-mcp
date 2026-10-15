@@ -1021,7 +1021,7 @@ class TimelineController:
                     )
                 elif card.state == "failed":
                     self.cancel_messages[card.job_id] = (
-                        "Job ended with failure; inspect its result. Device release is not confirmed."
+                        "Job failed; inspect its result. Device release is not confirmed."
                     )
             elif card.job_id in self.cancel_attempts:
                 self.cancel_attempts.pop(card.job_id, None)
