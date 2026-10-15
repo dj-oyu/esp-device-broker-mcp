@@ -177,7 +177,6 @@ async def test_endpoint_rejects_wrong_owner_scope_epoch_plan_and_device_jobs(
         assert cancelled["stop_requested"] is False
 
 
-
 async def test_source_job_uses_existing_stop_path_for_same_owner(
     registry_service, tmp_path, monkeypatch
 ):
