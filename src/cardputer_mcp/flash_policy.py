@@ -109,7 +109,11 @@ class FlashPolicies:
             and digest_plan(saved) == token.plan_hash
             and (
                 job is None
-                or (job["plan_hash"] == token.plan_hash and job["state"] in ("queued", "running"))
+                or (
+                    job["plan_hash"] == token.plan_hash
+                    and job["state"] in ("queued", "running")
+                    and (job["state"] != "running" or broker.active_job == token.intent.job_id)
+                )
             )
         )
 

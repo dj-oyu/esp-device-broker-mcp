@@ -37,7 +37,7 @@ remote policy edits or silent enablement. A policy mismatch falls back to manual
 review before enqueue; revocation after enqueue cancels rather than falling back
 to another approval or retry.
 
-Eligibility must prove a successful owned source fetch receipt, its currently
+Eligibility proves a successful owned source fetch receipt, its currently
 verified repository/commit/tree/content digest, the same owner's successful build
 from that receipt, and the retained manifest/artifact hashes. A build from an
 arbitrary local worktree is ineligible. Pin the current local project/device
@@ -53,18 +53,17 @@ success only after readback, expected boot, confirmed close and final authority.
 Failure, cancellation, crash or uncertainty preserves the previous LKG and the
 existing stop/review behavior.
 
-Implementation must bind a transient authorization to the exact plan, broker
-epoch, original lease/principal and registered provenance. Recheck complete
-provenance before enqueue and dispatch; recheck live authority and policy after
-callbacks and immediately before final atomic success. Do not rehash an entire
-source tree on each progress event. Restart cannot replay transient permission.
+The implementation binds a transient authorization to the exact plan, broker
+epoch, original lease/principal and registered provenance. Complete provenance is rechecked before enqueue and dispatch; live authority and
+policy are rechecked after callbacks and immediately before final atomic success.
+The source tree is not rehashed on each progress event. Restart cannot replay
+transient permission.
 
-Required fake-device coverage: default manual despite `allow_flash`; exact-match
+Fake-device coverage: default manual despite `allow_flash`; exact-match
 success without an approval row; every pin/receipt-owner/provenance mismatch;
 local-worktree and backup/restore exclusions; tampered bytes/regions; revoked
 policy or principal, expired/replaced lease and callback reentrancy; failed or
-cancelled write/readback/close retaining LKG and stopping further work. CI must
-exercise those boundaries before this option is exposed in a settings schema.
+cancelled write/readback/close retaining LKG and stopping further work. CI exercises these cases with synthetic ROM drivers and private temporary state.
 No production configuration, deployment or device operation is part of this work.
 
 ## Local configuration shape

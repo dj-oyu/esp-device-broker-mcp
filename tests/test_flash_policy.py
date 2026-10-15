@@ -407,3 +407,15 @@ async def test_missing_lkg_never_becomes_unattended(env):
     env.store.db.commit()
     with pytest.raises(BrokerError, match="verified_lkg_or_initial_backup_required"):
         env.prepare("missing-recovery", build_job_id="build-one")
+
+
+async def test_draining_cancelled_queue_discards_transient_permission(env):
+    env.configure()
+    prepared = env.prepare("drained", build_job_id="build-one")
+    env.execute(prepared)
+    before = env.driver.writes
+    env.broker._cancel_queued("session_released")
+    assert env.broker.job("drained")["state"] == "cancelled"
+    assert not env.broker.flash_policy_jobs and env.broker.queue.empty()
+    assert env.driver.writes == before
+    assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected

@@ -343,6 +343,7 @@ class Broker:
             self._store().set_job(intent.job_id, "cancelled", reason)
             self.logs.append(Event.CANCELLED)
         self._execution_intents.pop(intent.job_id, None)
+        self.flash_policy_jobs.pop(intent.job_id, None)
 
     def _execution_intent_binding_live(self, intent: ExecutionIntent) -> bool:
         """Final callback-free identity/deadline checks; never extend an intent."""
