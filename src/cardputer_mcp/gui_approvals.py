@@ -402,13 +402,11 @@ def review_warning(review: PlanReview) -> str:
         f"Recovery: {recovery_text}\n"
     )
     return (
-        summary
-        + "Approve records your consent to this displayed plan. It does not prove the "
+        summary + "Approve records your consent to this displayed plan. It does not prove the "
         "physical target or running firmware identity. The broker separately rechecks "
         "the exact plan, current authorization, lease and exclusive ownership. "
         "Flash also requires artifact hashes, allowed regions and a bound recovery target; "
-        "failure stops work without automatic restore.\n\n"
-        + _review_effects(review)
+        "failure stops work without automatic restore.\n\n" + _review_effects(review)
     )
 
 

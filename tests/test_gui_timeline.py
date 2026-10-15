@@ -1241,8 +1241,11 @@ def test_image_final_state_survives_expiry_in_collapsed_summary(
     assert not panel.controller.can_decide("job-a")
 
 
-def test_focus_pending_expands_same_card_without_submitting(monkeypatch: Any) -> None:
-    panel, _api, _clock, _ = panel_fixture(monkeypatch, card())
+@pytest.mark.parametrize("backend", ["mock", "serial"])
+def test_focus_pending_expands_same_card_without_submitting(
+    monkeypatch: Any, backend: str
+) -> None:
+    panel, _api, _clock, _ = panel_fixture(monkeypatch, card(backend=backend))
     view = panel.views["job-a"]
     view._toggle_card()
     panel.focus_pending()

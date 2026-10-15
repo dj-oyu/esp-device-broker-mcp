@@ -2212,9 +2212,7 @@ class TimelinePanel:
             height = max(1, self.cards_frame.winfo_height())
             self.canvas.yview_moveto(view.frame.winfo_y() / height)
             if target.review:
-                (
-                    view.attestation if target.review.attestation != "none" else view.approve_button
-                ).focus_set()
+                view.approve_button.focus_set()
             else:
                 view.send_button.focus_set()
         else:

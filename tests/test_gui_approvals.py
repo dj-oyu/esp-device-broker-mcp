@@ -733,9 +733,17 @@ def test_consent_explains_target_effects_and_separate_machine_checks() -> None:
     review = PlanReview.parse(detail(backend="serial", test="capture_home"), 100)
     warning = review_warning(review)
     for expected in (
-        "configured-cardputer", "capture_home", "job-a", "Recovery:",
-        "no recovery action", "consent", "does not prove", "current authorization",
-        "exclusive ownership", "Esc", "unsaved",
+        "configured-cardputer",
+        "capture_home",
+        "job-a",
+        "Recovery:",
+        "no recovery action",
+        "consent",
+        "does not prove",
+        "current authorization",
+        "exclusive ownership",
+        "Esc",
+        "unsaved",
     ):
         assert expected in warning
     assert "Type exactly" not in warning
