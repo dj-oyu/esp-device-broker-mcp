@@ -217,6 +217,7 @@ async def test_exact_owned_source_receipt_auto_flash_commits_lkg_once(env):
     prepared = env.prepare("automatic", build_job_id="build-one")
     assert not prepared["approval_required"]
     assert not env.execute(prepared)["deduplicated"]
+    token = env.broker.flash_policy_jobs["automatic"]
     await env.broker.queue.join()
     assert env.broker.job("automatic")["state"] == "succeeded", env.broker.job("automatic")
     assert env.store.firmware_current("fixture", "alice")["completed_job"] == "automatic"
@@ -224,6 +225,8 @@ async def test_exact_owned_source_receipt_auto_flash_commits_lkg_once(env):
     assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
     assert env.execute(prepared)["deduplicated"]
     assert not env.broker.flash_policy_jobs and env.driver.closed
+    assert not env.broker.flash_policies.live(token, prepared["plan"])
+    assert not env.broker.flash_policies.live(token, prepared["plan"], committing=True)
 
 
 @pytest.mark.parametrize(

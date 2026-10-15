@@ -98,3 +98,10 @@ A queued invalidation cancels with no device writes; a running invalidation stop
 through the existing flash lifecycle and may require review for partial writes.
 No fallback to manual consent occurs after an unattended job was queued. Existing
 manually approved jobs retain their manual approval semantics.
+
+The existing atomic success transaction invokes its authority guard twice: before
+updates and after the provisional job/LKG updates. A private commit-only check
+recognizes that provisional successful job only inside the open transaction;
+normal device-work checks reject completed jobs. Both checks still revalidate
+policy and current authority. Tests cover second-guard revocation rolling back
+both updates and rejection of a completed job outside that transaction.

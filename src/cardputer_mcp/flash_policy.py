@@ -202,6 +202,12 @@ class FlashPolicies:
                 or provenance.get("source_receipt") != policy.source_receipt
                 or metadata["repository"] != policy.source_repository
                 or metadata["commit"] != policy.source_commit
+                or provenance.get("submodules") != metadata.get("submodules")
+                or provenance.get("dependency_policy") != (
+                    "gitlinks_fixed_commits_no_fetch"
+                    if metadata["schema_version"] == 2
+                    else "vendored_components_no_fetch"
+                )
                 or any(
                     provenance.get(key) != metadata[key]
                     for key in ("repository", "commit", "tree_sha1", "source_sha256")
