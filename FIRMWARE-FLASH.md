@@ -116,3 +116,35 @@ readback plus boot prefix. These fields survive shared-log expiry and broker res
 `boot_text_identity_verified=false` remains for compatibility: serial boot text
 alone is not authenticated identity or cryptographic proof. No raw boot log is
 retained, and no verification criterion or USB behavior changes.
+
+## MCP prepare input and safe diagnostics
+
+All prepare fields are nested under request. firmware_flash requires job_id,
+test=firmware_flash, the caller's live owned session, registered device_id and a
+successful owned build_job_id. Do not pass project_id: the registered device
+selects its project. The public schema expresses these conditional requirements.
+Optional project_id=null remains accepted. backup_job_id and lkg_receipt are
+mutually exclusive; leaving both absent may select a retained verified LKG, and
+preflight rejects unavailable recovery. No URL, port, path or raw argv is accepted.
+firmware_backup requires session/device_id and no build/recovery inputs;
+firmware_restore requires session/device_id and verified recovery, no build_job_id.
+Existing exact approval and all principal/device/security checks still apply.
+
+Malformed tool input returns is_error with a bounded structured response:
+{ok:false,error:invalid_tool_request,reason:<fixed code>,fields:[<safe field names>]}.
+Only fixed model/type reasons and schema-owned field names are returned; values,
+unknown extra-key names, patterns, raw exception messages and credentials are not.
+Unknown validation failures retain a generic fixed diagnostic. This is diagnostic
+metadata, not permission to retry or execute. Valid input still follows normal SDK
+parsing and backend authorization.
+
+Preflight distinguishes registered_flash_device_required (no matching registered
+device) from registered_flash_operation_not_enabled (operation disabled). A build
+whose source receipt lacks a matching successful owned fetch returns the fixed
+successful_owned_source_fetch_required code rather than invalid_request. Source
+errors expose only the existing fixed allowlist; arbitrary ValueError stays masked.
+
+The tools/list descriptions and prepare schema change. After a separately
+coordinated deployment, refresh the ChatGPT connection metadata and verify it in a
+new conversation as documented in AGENTS.md. A server-side catalog test does not
+prove that an existing host conversation refreshed its imported tool definitions.

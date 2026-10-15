@@ -235,6 +235,7 @@ RESULTS = (
             "registered_build_project_required",
             "registered_esptool_limit",
             "registered_esptool_missing",
+            "registered_flash_device_required",
             "registered_flash_operation_not_enabled",
             "registered_flash_tools_changed",
             "registered_private_backup_directory_required",

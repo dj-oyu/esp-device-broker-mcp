@@ -205,7 +205,9 @@ class FirmwareFlash:
 
     def _registration(self, device_id: str, operation: str) -> Any:
         registration = self.settings.flash_devices.get(device_id)
-        if registration is None or getattr(registration, "allow_" + operation) is not True:
+        if registration is None:
+            raise FlashFailure("registered_flash_device_required")
+        if getattr(registration, "allow_" + operation) is not True:
             raise FlashFailure("registered_flash_operation_not_enabled")
         if self.driver_factory is None:
             if self.backend.name != "serial" or self.settings.serial is None:
