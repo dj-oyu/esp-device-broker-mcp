@@ -221,6 +221,10 @@ class Broker:
         self.device_observations: dict[str, RetainedDeviceObservation] = {}
         self.capture_policies: Any = None
         self.policy_jobs: dict[str, Any] = {}
+        from .flash_policy import FlashAuthorization, FlashPolicies
+
+        self.flash_policies = FlashPolicies(self)
+        self.flash_policy_jobs: dict[str, FlashAuthorization] = {}
         self._execution_intents: dict[str, ExecutionIntent] = {}
         self.local_home_diagnostic: LocalHomeDiagnostic | None = None
         self._device_lock = FileLock(
@@ -271,6 +275,7 @@ class Broker:
         self.captures.clear()
         self.device_observations.clear()
         self.policy_jobs.clear()
+        self.flash_policy_jobs.clear()
         if self.maintenance:
             self.maintenance.cancel()
             try:
@@ -322,6 +327,7 @@ class Broker:
                 if job and job["state"] == "queued":
                     store.set_job(job_id, "cancelled", reason)
                     self.policy_jobs.pop(job_id, None)
+                    self.flash_policy_jobs.pop(job_id, None)
                     self.logs.append(Event.CANCELLED)
         if stopping:
             self.queue.put_nowait(None)
@@ -1065,12 +1071,18 @@ class Broker:
                 )
             except Exception:
                 policy_available = False
+        flash_available = (
+            request.test == TestName.FLASH
+            and self.flash_policies.authorize(payload) is not None
+        )
         result = {
             "plan_hash": digest,
             "plan": payload,
             **({"storage": storage} if storage is not None else {}),
-            "approval_required": request.test in ({TestName.BUILD, TestName.SOURCE} | FLASH_TESTS)
-            or (not self.settings.allow_mock_execution and not policy_available),
+            "approval_required": not flash_available and (
+                request.test in ({TestName.BUILD, TestName.SOURCE} | FLASH_TESTS)
+                or (not self.settings.allow_mock_execution and not policy_available)
+            ),
         }
         if request.test == TestName.CAPTURE:
             result["policy_permit_available"] = policy_available
@@ -1141,13 +1153,21 @@ class Broker:
                 authorization, payload
             ):
                 raise BrokerError("capture_policy_no_longer_valid")
+        flash_authorization = (
+            self.flash_policies.authorize(payload)
+            if not approved and payload["test"] == TestName.FLASH.value
+            else None
+        )
         allow_mock = (
             self.settings.backend == "mock"
             and self.settings.allow_mock_execution
             and payload["test"]
             not in ({TestName.BUILD.value, TestName.SOURCE.value} | {t.value for t in FLASH_TESTS})
         )
-        if request.wait_for_approval and not approved and not allow_mock and authorization is None:
+        if (
+            request.wait_for_approval and not approved and not allow_mock
+            and authorization is None and flash_authorization is None
+        ):
             # Policy callbacks must not extend the original request's lifetime
             # or register work under a replacement lease/principal.
             current = self._lease(request.session)
@@ -1163,12 +1183,19 @@ class Broker:
             store.add_awaiting_job(job_id, request.plan_hash)
             self._execution_intents[job_id] = intent
             return {**self.job(job_id), "deduplicated": False}
+        if flash_authorization is not None and (
+            self.session is not session
+            or not self._execution_intent_binding_live(intent)
+            or not self.flash_policies.live(flash_authorization, payload)
+            or self._execution_capacity_full()
+        ):
+            raise BrokerError("flash_policy_no_longer_valid")
         try:
             store.approved_enqueue(
                 job_id,
                 request.plan_hash,
                 allow_mock,
-                policy_authorized=authorization is not None,
+                policy_authorized=authorization is not None or flash_authorization is not None,
             )
         except ValueError as exc:
             raise BrokerError("operator_approval_required") from exc
@@ -1176,6 +1203,9 @@ class Broker:
         # recovered to needs_review; it never causes replay.
         if authorization is not None:
             self.policy_jobs[job_id] = authorization
+        if flash_authorization is not None:
+            self.flash_policy_jobs[job_id] = flash_authorization
+            self._execution_intents[job_id] = intent
         self.queue.put_nowait(job_id)
         self.logs.append(Event.QUEUED)
         return {**self.job(job_id), "deduplicated": False}
@@ -1709,6 +1739,13 @@ class Broker:
                         store.set_job(job_id, "cancelled", "capture_policy_no_longer_valid")
                         self.logs.append(Event.CANCELLED)
                         continue
+                flash_authorization = self.flash_policy_jobs.get(job_id)
+                if flash_authorization is not None and not self.flash_policies.validate(
+                    flash_authorization, plan
+                ):
+                    store.set_job(job_id, "cancelled", "flash_policy_no_longer_valid")
+                    self.logs.append(Event.CANCELLED)
+                    continue
                 try:
                     local_home_probe = self._take_local_home_probe(
                         plan, lease, policy_authorized=authorization is not None
@@ -1746,6 +1783,10 @@ class Broker:
                 if (
                     current_job is None
                     or not current_authorized
+                    or (
+                        flash_authorization is not None
+                        and not self.flash_policies.live(flash_authorization, plan)
+                    )
                     or current_job["state"] != "queued"
                     or current_job["plan_hash"] != job["plan_hash"]
                     or current_plan != plan
@@ -1825,11 +1866,15 @@ class Broker:
                                 return False
                             if self.principal_valid is None:
                                 return False
-                            return (
-                                self.principal_valid(
-                                    capture_principal, current.owner, frozenset({"read", "control"})
+                            authorized = self.principal_valid(
+                                capture_principal, current.owner, frozenset({"read", "control"})
+                            ) is True
+                            return authorized and (
+                                flash_authorization is None
+                                or (
+                                    self.flash_policy_jobs.get(plan["job_id"]) is flash_authorization
+                                    and self.flash_policies.live(flash_authorization, plan)
                                 )
-                                is True
                             )
 
                         result = await self.firmware_flash.execute(plan, on_stage, flash_live)
@@ -2050,5 +2095,6 @@ class Broker:
             finally:
                 if job_id is not None:
                     self.policy_jobs.pop(job_id, None)
+                    self.flash_policy_jobs.pop(job_id, None)
                     self._execution_intents.pop(job_id, None)
                 self.queue.task_done()

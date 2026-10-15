@@ -105,6 +105,7 @@ RESULTS = (
             "plan_not_available",
             "principal_or_lease_no_longer_valid",
             "capture_policy_no_longer_valid",
+            "flash_policy_no_longer_valid",
             "local_home_diagnostic_no_longer_valid",
             "device_disconnected_no_retry",
             "backend_error_no_retry",
