@@ -41,9 +41,7 @@ class DurableBuildArtifactTests(unittest.TestCase):
         )
         self.builder = FirmwareBuild(self.settings, self.history)
 
-    def publish(
-        self, job="build-0", *, finish=True, publish=True, worker=False, elf_bytes=None
-    ):
+    def publish(self, job="build-0", *, finish=True, publish=True, worker=False, elf_bytes=None):
         fingerprint = hashlib.sha256(job.encode()).hexdigest()
         environment = "e" * 64
         plan = dict(
