@@ -47,7 +47,10 @@ MODEL_REASONS = {
     "source_commit_only_for_fetch": ["source_commit"],
     "source_receipt_only_for_registered_build": ["source_receipt", "project_id"],
     "flash_references_only_for_flash_operations": [
-        "device_id", "build_job_id", "backup_job_id", "lkg_receipt"
+        "device_id",
+        "build_job_id",
+        "backup_job_id",
+        "lkg_receipt",
     ],
     "registered_flash_device_required": ["device_id"],
     "project_id_not_allowed_for_flash_operations": ["project_id"],
@@ -72,10 +75,14 @@ SAFE_FIELDS = frozenset(
 )
 
 
-def invalid_arguments(reason: str = "invalid_arguments", fields: list[str] | None = None) -> dict[str, Any]:
+def invalid_arguments(
+    reason: str = "invalid_arguments", fields: list[str] | None = None
+) -> dict[str, Any]:
     return {
-        "ok": False, "error": "invalid_tool_request",
-        "reason": reason, "fields": fields or [],
+        "ok": False,
+        "error": "invalid_tool_request",
+        "reason": reason,
+        "fields": fields or [],
     }
 
 
@@ -106,7 +113,9 @@ def validate_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any] |
         if kind.endswith("_type") or kind.endswith("_parsing"):
             reason = "invalid_field_type"
         # Unknown extra keys and caller-chosen dictionary names are never echoed.
-        fields = [part for part in issue.get("loc", ()) if type(part) is str and part in SAFE_FIELDS]
+        fields = [
+            part for part in issue.get("loc", ()) if type(part) is str and part in SAFE_FIELDS
+        ]
         return invalid_arguments(reason, fields[:4] or ["request"])
     except (TypeError, ValueError):
         return invalid_arguments()

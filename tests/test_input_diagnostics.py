@@ -12,8 +12,12 @@ from cardputer_mcp.models import PrepareRequest
 class InputDiagnosticTests(unittest.TestCase):
     def flash(self, **changes):
         return dict(
-            job_id="synthetic-job", test="firmware_flash", session="a" * 64,
-            device_id="synthetic-device", build_job_id="synthetic-build", **changes,
+            job_id="synthetic-job",
+            test="firmware_flash",
+            session="a" * 64,
+            device_id="synthetic-device",
+            build_job_id="synthetic-build",
+            **changes,
         )
 
     def test_field_and_model_failures_use_only_fixed_reasons_and_fields(self):
@@ -21,26 +25,50 @@ class InputDiagnosticTests(unittest.TestCase):
         cases = [
             ({**valid, "session": None}, "device_session_required", ["session"]),
             ({**valid, "device_id": None}, "registered_flash_device_required", ["device_id"]),
-            ({**valid, "project_id": "SYNTHETIC_PRIVATE"}, "project_id_not_allowed_for_flash_operations", ["project_id"]),
+            (
+                {**valid, "project_id": "SYNTHETIC_PRIVATE"},
+                "project_id_not_allowed_for_flash_operations",
+                ["project_id"],
+            ),
             ({**valid, "build_job_id": None}, "successful_build_job_required", ["build_job_id"]),
-            ({**valid, "job_id": "https://SYNTHETIC_SECRET.invalid"}, "invalid_field_format", ["job_id"]),
+            (
+                {**valid, "job_id": "https://SYNTHETIC_SECRET.invalid"},
+                "invalid_field_format",
+                ["job_id"],
+            ),
             ({**valid, "test": "SYNTHETIC_SECRET"}, "invalid_field_value", ["test"]),
-            ({**valid, "SYNTHETIC_SECRET_FIELD": "SYNTHETIC_SECRET_VALUE"}, "unexpected_field", ["request"]),
+            (
+                {**valid, "SYNTHETIC_SECRET_FIELD": "SYNTHETIC_SECRET_VALUE"},
+                "unexpected_field",
+                ["request"],
+            ),
         ]
         for request, reason, fields in cases:
             with self.subTest(reason=reason):
                 result = validate_arguments("prepare_test", {"request": request})
-                self.assertEqual(result, dict(
-                    ok=False, error="invalid_tool_request", reason=reason, fields=fields,
-                ))
+                self.assertEqual(
+                    result,
+                    dict(
+                        ok=False,
+                        error="invalid_tool_request",
+                        reason=reason,
+                        fields=fields,
+                    ),
+                )
                 self.assertNotIn("SYNTHETIC", json.dumps(result))
                 self.assertNotIn("https://", json.dumps(result))
 
     def test_other_tools_and_missing_request_have_safe_field_diagnostics(self):
         self.assertEqual(validate_arguments("prepare_test", {})["fields"], ["request"])
-        result = validate_arguments("read_build_logs", {"request": {
-            "job_id": "safe", "cursor": {"epoch": "SYNTHETIC_PRIVATE", "sequence": 0}
-        }})
+        result = validate_arguments(
+            "read_build_logs",
+            {
+                "request": {
+                    "job_id": "safe",
+                    "cursor": {"epoch": "SYNTHETIC_PRIVATE", "sequence": 0},
+                }
+            },
+        )
         self.assertEqual(result["fields"], ["cursor", "epoch"])
         self.assertNotIn("SYNTHETIC", json.dumps(result))
 

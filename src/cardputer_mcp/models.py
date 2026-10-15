@@ -51,7 +51,8 @@ class RenewRequest(LeaseRequest):
 
 class PrepareRequest(StrictModel):
     model_config = ConfigDict(
-        extra="forbid", frozen=True,
+        extra="forbid",
+        frozen=True,
         json_schema_extra={
             "allOf": [
                 {
@@ -74,56 +75,64 @@ class PrepareRequest(StrictModel):
                             "source_receipt": {"type": "null"},
                             **(
                                 {"backup_job_id": {"type": "null"}, "lkg_receipt": {"type": "null"}}
-                                if operation == "firmware_backup" else {}
+                                if operation == "firmware_backup"
+                                else {}
                             ),
                         },
                     },
                 }
                 for operation, required in (
-                    ("firmware_backup", []), ("firmware_flash", ["build_job_id"]),
+                    ("firmware_backup", []),
+                    ("firmware_flash", ["build_job_id"]),
                     ("firmware_restore", []),
                 )
             ]
         },
     )
     session: Capability | None = Field(
-        default=None, description=(
+        default=None,
+        description=(
             "Owned live device lease required for backup/flash/restore and device "
             "jobs. Omit for registered source/build."
-        )
+        ),
     )
     job_id: Identifier
     test: TestName = TestName.DIAGNOSTICS
     project_id: Identifier | None = Field(
-        default=None, description=(
+        default=None,
+        description=(
             "Registered source/build project. Do not supply for backup/flash/restore; "
             "the registered device selects its project (null is allowed)."
-        )
+        ),
     )
     device_id: Identifier | None = Field(
-        default=None, description=(
+        default=None,
+        description=(
             "Required registered device ID for backup/flash/restore; not a port/path. "
             "Forbidden for other tests."
-        )
+        ),
     )
     build_job_id: Identifier | None = Field(
-        default=None, description=(
+        default=None,
+        description=(
             "Required successful owned firmware_build job for firmware_flash. Omit "
             "for backup/restore and other tests."
-        )
+        ),
     )
     backup_job_id: Identifier | None = Field(
-        default=None, description=(
+        default=None,
+        description=(
             "Owned successful backup input for flash/restore; mutually exclusive with "
             "lkg_receipt. Omit for firmware_backup."
-        )
+        ),
     )
     lkg_receipt: Digest | None = Field(
-        default=None, description=(
+        default=None,
+        description=(
             "Verified recovery receipt for flash/restore, mutually exclusive with "
             "backup_job_id. A retained verified LKG may be selected when both are "
             "omitted."
-        )
+        ),
     )
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
     source_receipt: Digest | None = None
