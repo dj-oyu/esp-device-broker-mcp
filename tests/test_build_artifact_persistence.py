@@ -64,7 +64,9 @@ class DurableBuildArtifactTests(unittest.TestCase):
                 json.dumps(identity_receipt(self.state, None, fingerprint, environment))
             )
         else:
-            root = claim_build_directory(self.state, self.project.build_root, fingerprint, environment)
+            root = claim_build_directory(
+                self.state, self.project.build_root, fingerprint, environment
+            )
 
         def receipt(name, data):
             path = root / name
