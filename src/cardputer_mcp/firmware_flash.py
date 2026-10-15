@@ -585,7 +585,7 @@ class FirmwareFlash:
                 raise FlashFailure("flash_cancelled_needs_review")
             self.engine = FlashLifecycle(driver)
             self.job_id = plan["job_id"]
-        log = BuildLogs(plan["flash_principal"])
+        log = BuildLogs(plan["flash_principal"], job_id=plan["job_id"])
         log.redactions = tuple(
             value
             for key, value in os.environ.items()

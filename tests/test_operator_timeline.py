@@ -1,8 +1,10 @@
 """One operator card follows a job; history never becomes an authorization."""
 
+import ast
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -497,3 +499,57 @@ async def test_unavailable_store_uses_fixed_error(tmp_path):
         await broker.close()
         with pytest.raises(BrokerError, match="^operator_timeline_unavailable$"):
             timeline.snapshot()
+
+
+def test_fixed_execution_failure_codes_have_bounded_timeline_representations():
+    """Catch drift between actual producers and the presentation allowlist."""
+    root = Path(__file__).resolve().parents[1] / "src/cardputer_mcp"
+    constructors = {
+        "FlashFailure",
+        "FlashAdmissionError",
+        "BuildLocationError",
+        "FixedDiagnosticFailure",
+        "BackendResult",
+    }
+    emitted = set()
+    for path in root.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.args:
+                if node.func.id in constructors or (
+                    path.name == "flash_manifest.py" and node.func.id == "_fail"
+                ):
+                    code = node.args[0]
+                    if isinstance(code, ast.Constant) and isinstance(code.value, str):
+                        emitted.add(code.value)
+            if isinstance(node, ast.ClassDef):
+                bases = {base.id for base in node.bases if isinstance(base, ast.Name)}
+                if "BuildPreflightFailure" in bases:
+                    for statement in node.body:
+                        if (
+                            isinstance(statement, ast.Assign)
+                            and any(
+                                isinstance(x, ast.Name) and x.id == "code"
+                                for x in statement.targets
+                            )
+                            and isinstance(statement.value, ast.Constant)
+                            and isinstance(statement.value.value, str)
+                        ):
+                            emitted.add(statement.value.value)
+    assert emitted
+    assert emitted <= RESULTS, sorted(emitted - RESULTS)
+
+
+async def test_unrecognized_native_failure_text_remains_private_in_timeline_and_gui(tmp_path):
+    async with running(tmp_path) as (broker, _plans, timeline, _clock):
+        prepared = prepare(broker, job="private-failure")
+        history = broker._store()
+        history.add_job("private-failure", prepared["plan_hash"])
+        history.set_job("private-failure", "running")
+        secret = "synthetic-private-native-output token=do-not-display"
+        history.set_job("private-failure", "needs_review", secret)
+        listing = timeline.snapshot()
+        row = next(x for x in listing["cards"] if x["job_id"] == "private-failure")
+        assert row["result"] is None and secret not in json.dumps(listing)
+        shown = TimelineSnapshot.parse({"ok": True, **listing}, 0).cards[0]
+        assert shown.result is None

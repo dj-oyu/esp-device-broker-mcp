@@ -6,6 +6,8 @@ from collections import deque
 from typing import Any
 from uuid import uuid4
 
+from .console_logs import console_line
+
 _SECRETS = re.compile(
     r"(?i)(?:cpk_[a-f0-9]{32}\.[a-f0-9]{64}|bearer\s+\S+|"
     r"(?:password|token|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+)"
@@ -20,6 +22,7 @@ class BuildLogs:
         max_bytes: int = 262144,
         max_lines: int = 2048,
         retention: float = 300,
+        job_id: str | None = None,
     ) -> None:
         self.principal = principal
         self.epoch = uuid4().hex
@@ -31,6 +34,8 @@ class BuildLogs:
         self.deadline = time.monotonic() + retention
         self.retention = retention
         self.redactions: tuple[str, ...] = ()
+        self.job_id = job_id
+        self._console_progress_at = float("-inf")
 
     def append(self, line: str, stream: str = "stdout") -> None:
         # Bound the original line too; never retain raw output or stream buffers.
@@ -43,7 +48,12 @@ class BuildLogs:
             if re.search(r"\b" + candidate + r"\b", text, re.I):
                 level = candidate
                 break
-        progress = bool(re.match(r"\[\d+/\d+\]|(?:-- |Executing action|Build complete)", text))
+        progress = bool(
+            re.match(
+                r"\[\d+/\d+\]|(?:-- |Executing action|Build complete|info: ROM read \d+/\d+ bytes)",
+                text,
+            )
+        )
         self.sequence += 1
         entry = dict(
             sequence=self.sequence, text=text, level=level, stream=stream, progress=progress
@@ -54,7 +64,17 @@ class BuildLogs:
             self.bytes += size
         while self.bytes > self.max_bytes or len(self.entries) > self.max_lines:
             self.bytes -= len(self.entries.popleft()["text"].encode("utf-8"))
-        self.deadline = time.monotonic() + self.retention
+        now = time.monotonic()
+        self.deadline = now + self.retention
+        if self.job_id is not None and (
+            level in ("warning", "error") or (progress and now - self._console_progress_at >= 2)
+        ):
+            if progress:
+                self._console_progress_at = now
+            try:
+                console_line(self.job_id, text)
+            except Exception:
+                pass
 
     def read(self, principal: str, request: Any) -> dict[str, Any]:
         if principal != self.principal:

@@ -82,6 +82,11 @@ REQUESTS = {
     "restart_and_observe": "Restart and observe boot logs",
     "hello": "Run HELLO navigation",
     "capture_home": "Capture the HOME screen",
+    "firmware_fetch_source": "Fetch registered source",
+    "firmware_build": "Build registered firmware",
+    "firmware_backup": "Back up device flash",
+    "firmware_flash": "Flash verified firmware",
+    "firmware_restore": "Restore verified recovery firmware",
 }
 STATE_LABELS = {
     "prepared": "Prepared",
@@ -1450,7 +1455,14 @@ class _CardView:
     def _effects(review: PlanReview) -> str:
         # Keep every consequential effect beside approval; longer explanation and
         # exact payload remain inspectable in the nested technical details.
-        if review.test in ("firmware_observe", "restart_and_observe"):
+        if review.test in (
+            "firmware_observe",
+            "restart_and_observe",
+            "firmware_build",
+            "firmware_backup",
+            "firmware_flash",
+            "firmware_restore",
+        ):
             return review_warning(review)
         if review.backend == "mock":
             effects = "Synthetic test only; no physical device is connected."
@@ -1580,7 +1592,11 @@ class _CardView:
         if card.state in ("approved", "ready"):
             return "Waiting for the requesting client to start"
         if card.state == "queued":
-            return "Waiting for the device"
+            return (
+                "Waiting for the registered project worker"
+                if card.backend == "registered_project"
+                else "Waiting for the device"
+            )
         if card.state == "running":
             return "In progress · Results will appear here"
         if card.test == "capture_home" and card.state == "succeeded":

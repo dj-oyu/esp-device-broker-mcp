@@ -326,3 +326,28 @@ plans or reused; prepare a fresh registered-project plan. Old needs_review recor
 still require their existing explicit acknowledgement and are never cleared by
 upgrade. New normal failures/cancellations need no acknowledgement. No source,
 build artifact, backup or durable history GC is introduced.
+
+## Console diagnostics
+
+The broker also emits job start, terminal state and elapsed time, plus redacted
+BuildLogs warnings/errors and progress sampled at most once every two seconds per
+job. Structured ROM read progress is included. Output is UTF-8 on stderr only;
+stdio stdout remains JSON-RPC. This adds no authorization or execution action.
+
+Console output is best effort: one daemon writer uses a queue of at most 64
+messages, each at most 2 KiB. A full queue drops older console messages to keep recent status; a closed/broken
+stderr disables this writer. Slow or unread stderr cannot hold up a job or process
+shutdown. No raw exception, plan, environment or result payload is printed.
+Control characters are escaped after existing BuildLogs redaction. Native project
+output can still contain application secrets that existing redaction cannot
+recognize. Console output is local diagnostic data, not a new durable audit log;
+MCP log filtering, ownership, cursors, bounds and retention remain authoritative.
+
+## Separate follow-up: durable artifact lookup
+
+Successful build artifact resolution currently depends on RAM records for the
+latest eight builds. Job history and files can survive while those references are
+evicted or lost on restart, so an older successful job may no longer resolve for a
+later explicitly approved flash. A separate PR should restore principal-bound,
+hash-verified artifact lookup from durable success metadata. This PR does not
+adopt old files, change artifact retention, delete data or relax flash admission.

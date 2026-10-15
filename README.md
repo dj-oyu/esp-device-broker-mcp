@@ -28,6 +28,14 @@ are now implemented and mock-tested. The optional [Windows Tunnel preparation](T
 and [local scoped-key management](KEYS.md) are available. A user-run Windows mock Tunnel registration and read-only MCP calls
 were verified; cloud lifecycle remains external to broker status. Nothing opens USB automatically at startup.
 
+## Console and job visibility
+
+The broker sends bounded, best-effort job lifecycle and redacted warning/error/
+progress diagnostics to stderr. Slow or closed consoles do not stop jobs; stdio
+stdout stays JSON-RPC only. GUI firmware cards retain their operation, stage,
+result and exact approval review, with explicit backup/write/restore effects.
+See [console diagnostics and the artifact-lookup follow-up](FIRMWARE-BUILD.md#console-diagnostics).
+
 ## Registered source/build loop
 
 A locally registered project/profile is the execution scope for authenticated

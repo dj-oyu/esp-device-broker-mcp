@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import threading
+import time
 from dataclasses import replace
 
 import httpx2
@@ -18,6 +19,8 @@ from cardputer_mcp.build_locations import build_location, claim_build_directory
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import BuildProject
 from cardputer_mcp.flash_models import FlashDevice
+from cardputer_mcp.gui_approvals import review_warning
+from cardputer_mcp.gui_timeline import TimelineSnapshot, _CardView
 
 
 async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
@@ -138,6 +141,17 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
                 detail = (
                     await http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})
                 ).json()
+                timeline = (await http.get("/operator/timeline")).json()
+                assert timeline["ok"] and timeline["plans_available"], timeline
+                parsed = TimelineSnapshot.parse(timeline, time.monotonic())
+                pending = next(card for card in parsed.cards if card.job_id == job)
+                assert pending.review is not None
+                assert pending.review.attestation == detail["attestation"]
+                effects = _CardView._effects(pending.review)
+                assert effects == review_warning(pending.review)
+                assert "write the exact displayed artifact/backup" in effects
+                assert "reads full plaintext flash" in effects
+                assert "Observes serial output without sending commands" not in effects
                 attestation = (
                     "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ"
                     if action == "firmware_backup"

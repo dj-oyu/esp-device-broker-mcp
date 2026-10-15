@@ -22,6 +22,12 @@ on:
       - 'src/cardputer_mcp/plan_approval.py'
       - 'src/cardputer_mcp/profile_jobs.py'
       - 'src/cardputer_mcp/store.py'
+      - 'src/cardputer_mcp/build_logs.py'
+      - 'src/cardputer_mcp/console_logs.py'
+      - 'src/cardputer_mcp/operator_timeline.py'
+      - 'src/cardputer_mcp/gui_timeline.py'
+      - 'tests/test_console_logs.py'
+      - 'tests/test_gui_timeline.py'
       - 'tests/test_profile_jobs.py'
   workflow_dispatch:
 
@@ -74,7 +80,7 @@ jobs:
       - name: Source/build, authorization and device integration without hardware
         timeout-minutes: 5
         run: |
-          .venv/Scripts/python.exe -m pytest -vv --tb=short -o faulthandler_timeout=60 tests/test_flash_http.py tests/test_source_http.py tests/test_source_snapshot.py tests/test_profile_jobs.py tests/test_build_approval_integration.py tests/test_derby_smoke.py tests/test_derby_http.py tests/test_serial_backend.py tests/test_capture_broker.py tests/test_plan_approval.py tests/test_broker.py tests/test_review_invariants.py tests/test_session_safety_review.py tests/test_queued_principal_recheck.py tests/test_pending_execution.py tests/test_pending_execution_http.py tests/test_http_security.py tests/test_registry_http.py tests/test_work_sessions.py tests/test_operator_timeline.py tests/test_operator_timeline_http.py tests/test_gui_timeline.py tests/test_gui_timeline_state.py
+          .venv/Scripts/python.exe -m pytest -vv --tb=short -o faulthandler_timeout=60 tests/test_flash_http.py tests/test_source_http.py tests/test_source_snapshot.py tests/test_profile_jobs.py tests/test_build_approval_integration.py tests/test_derby_smoke.py tests/test_derby_http.py tests/test_serial_backend.py tests/test_capture_broker.py tests/test_plan_approval.py tests/test_broker.py tests/test_review_invariants.py tests/test_session_safety_review.py tests/test_queued_principal_recheck.py tests/test_pending_execution.py tests/test_pending_execution_http.py tests/test_http_security.py tests/test_registry_http.py tests/test_work_sessions.py tests/test_operator_timeline.py tests/test_operator_timeline_http.py tests/test_gui_timeline.py tests/test_gui_timeline_state.py tests/test_console_logs.py tests/test_stdio_adapter.py tests/test_stdio_cli.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Source and build regression
         run: |
