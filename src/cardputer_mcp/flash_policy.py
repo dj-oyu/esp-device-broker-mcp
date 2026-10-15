@@ -65,8 +65,14 @@ class FlashPolicies:
             return None
         digest = digest_plan(plan)
         intent = ExecutionIntent(
-            broker.epoch, digest, plan["job_id"], lease.id, lease.principal_id,
-            lease.owner, lease.work_session_id, lease.deadline,
+            broker.epoch,
+            digest,
+            plan["job_id"],
+            lease.id,
+            lease.principal_id,
+            lease.owner,
+            lease.work_session_id,
+            lease.deadline,
         )
         return FlashAuthorization(digest, _digest(registration), _digest(project), lease, intent)
 
@@ -101,13 +107,13 @@ class FlashPolicies:
             saved is not None
             and saved == plan
             and digest_plan(saved) == token.plan_hash
-            and (job is None or (
-                job["plan_hash"] == token.plan_hash
-                and job["state"] in ("queued", "running")
-            ))
+            and (
+                job is None
+                or (job["plan_hash"] == token.plan_hash and job["state"] in ("queued", "running"))
+            )
         )
 
-    def live(self, token: FlashAuthorization, plan: dict[str, Any]) -> bool:
+    def _live(self, token: FlashAuthorization, plan: dict[str, Any]) -> bool:
         from .broker import digest_plan
 
         if not self._binding_live(token, plan):
@@ -119,11 +125,20 @@ class FlashPolicies:
             job = self.broker._store().job(job_id)
             saved = self.broker._store().plan(digest) if digest else None
             if (
-                job is None or job["state"] != "succeeded" or job["plan_hash"] != digest
-                or saved is None or digest_plan(saved) != digest
+                job is None
+                or job["state"] != "succeeded"
+                or job["plan_hash"] != digest
+                or saved is None
+                or digest_plan(saved) != digest
             ):
                 return False
         return True
+
+    def live(self, token: FlashAuthorization, plan: dict[str, Any]) -> bool:
+        try:
+            return self._live(token, plan)
+        except Exception:
+            return False
 
     def authorize(self, plan: dict[str, Any]) -> FlashAuthorization | None:
         """Full disk provenance/preflight, then current authority and final binding."""
@@ -144,7 +159,9 @@ class FlashPolicies:
             job = broker._store().job(plan["build_job_id"])
             build = broker._store().plan(job["plan_hash"]) if job else None
             if (
-                job is None or job["state"] != "succeeded" or build is None
+                job is None
+                or job["state"] != "succeeded"
+                or build is None
                 or build.get("test") != TestName.BUILD.value
                 or build.get("project_id") != policy.project_id
                 or build.get("build_principal") != policy.principal_id
@@ -167,21 +184,28 @@ class FlashPolicies:
                 or provenance.get("source_receipt") != policy.source_receipt
                 or metadata["repository"] != policy.source_repository
                 or metadata["commit"] != policy.source_commit
-                or any(provenance.get(key) != metadata[key] for key in (
-                    "repository", "commit", "tree_sha1", "source_sha256"
-                ))
+                or any(
+                    provenance.get(key) != metadata[key]
+                    for key in ("repository", "commit", "tree_sha1", "source_sha256")
+                )
             ):
                 return None
             fetch_job = broker._store().job(metadata["fetch_job_id"])
             if fetch_job is None:
                 return None
             token = replace(
-                token, build_hash=job["plan_hash"], fetch_job_id=metadata["fetch_job_id"],
+                token,
+                build_hash=job["plan_hash"],
+                fetch_job_id=metadata["fetch_job_id"],
                 fetch_hash=fetch_job["plan_hash"],
             )
-            if broker.principal_valid is None or broker.principal_valid(
-                policy.principal_id, token.intent.owner, frozenset({"read", "control"})
-            ) is not True:
+            if (
+                broker.principal_valid is None
+                or broker.principal_valid(
+                    policy.principal_id, token.intent.owner, frozenset({"read", "control"})
+                )
+                is not True
+            ):
                 return None
             return token if self.live(token, plan) else None
         except Exception:

@@ -44,67 +44,99 @@ async def env(tmp_path):
         fixture.save_layout()
         registration = FlashDevice(
             selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
-            flash_bytes=8388608, project_id="fixture",
-            python_tool={"executable": tmp_path / "python.exe", "sha256": "a" * 64,
-                         "version": "Python 3.13.16"},
-            esptool_directory=tmp_path / "tools", esptool_sha256="b" * 64,
-            backup_directory=tmp_path / "backups", private_backup_acl_confirmed=True,
-            original_elf_sha256=elf_hash, allow_backup=True, allow_flash=True, allow_restore=True,
+            flash_bytes=8388608,
+            project_id="fixture",
+            python_tool={
+                "executable": tmp_path / "python.exe",
+                "sha256": "a" * 64,
+                "version": "Python 3.13.16",
+            },
+            esptool_directory=tmp_path / "tools",
+            esptool_sha256="b" * 64,
+            backup_directory=tmp_path / "backups",
+            private_backup_acl_confirmed=True,
+            original_elf_sha256=elf_hash,
+            allow_backup=True,
+            allow_flash=True,
+            allow_restore=True,
         )
         broker = Broker(
-            source.settings.model_copy(update={
-                "flash_devices": {"fixture": registration}, "allow_mock_execution": True,
-            }), lock_path=tmp_path / "device.lockfile", principal_valid=lambda *args: True,
+            source.settings.model_copy(
+                update={
+                    "flash_devices": {"fixture": registration},
+                    "allow_mock_execution": True,
+                }
+            ),
+            lock_path=tmp_path / "device.lockfile",
+            principal_valid=lambda *args: True,
         )
         driver = FakeDriver()
         driver.data = bytearray(b"x" * registration.flash_bytes)
-        driver.data[0x8000:0x8000 + len(table)] = table
+        driver.data[0x8000 : 0x8000 + len(table)] = table
         driver.security = replace(driver.security, flash_bytes=registration.flash_bytes)
         driver.summary["elf_sha256_prefix"] = elf_hash[:16]
         broker.firmware_flash.driver_factory = lambda *args: driver
         await broker.start()
-        session = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="alice")["session"]
+        session = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="alice")[
+            "session"
+        ]
         store = broker._store()
         fetch_plan = source.snapshots.prepare("fixture", source_tests.COMMIT, "alice") | {
-            "job_id": "fetch-one", "test": Action.SOURCE.value,
+            "job_id": "fetch-one",
+            "test": Action.SOURCE.value,
         }
         fetch_hash = digest_plan(fetch_plan)
         store.put_plan(fetch_hash, fetch_plan)
         store.add_job("fetch-one", fetch_hash)
         store.set_job("fetch-one", "succeeded", diagnostic={"source": fetched})
         _, metadata = source.snapshots.resolve("fixture", receipt, "alice")
-        provenance = {key: metadata[key] for key in (
-            "repository", "commit", "tree_sha1", "source_sha256"
-        )} | {"source_receipt": receipt, "dependency_policy": "vendored_components_no_fetch"}
+        provenance = {
+            key: metadata[key] for key in ("repository", "commit", "tree_sha1", "source_sha256")
+        } | {"source_receipt": receipt, "dependency_policy": "vendored_components_no_fetch"}
         project = broker.settings.build_projects["fixture"]
         output = claim_build_directory(
-            broker.settings.state_dir, project.build_root, fixture.manifest["fingerprint"],
+            broker.settings.state_dir,
+            project.build_root,
+            fixture.manifest["fingerprint"],
             fixture.manifest["environment_fingerprint"],
         )
         shutil.copytree(fixture.root, output, dirs_exist_ok=True)
         fixture.manifest["build_location"] = build_location(
-            fixture.manifest["fingerprint"], fixture.manifest["environment_fingerprint"],
+            fixture.manifest["fingerprint"],
+            fixture.manifest["environment_fingerprint"],
             project.build_root,
         )
         build_plan = {
-            "job_id": "build-one", "test": Action.BUILD.value, "build_principal": "alice",
-            "project_id": "fixture", "fingerprint": fixture.manifest["fingerprint"],
-            "source_receipt": receipt, "source_provenance": provenance,
+            "job_id": "build-one",
+            "test": Action.BUILD.value,
+            "build_principal": "alice",
+            "project_id": "fixture",
+            "fingerprint": fixture.manifest["fingerprint"],
+            "source_receipt": receipt,
+            "source_provenance": provenance,
         }
         build_hash = digest_plan(build_plan)
         store.put_plan(build_hash, build_plan)
         store.add_job("build-one", build_hash)
         fixture.manifest.update(
-            build_job_id="build-one", build_plan_hash=build_hash, source_provenance=provenance,
+            build_job_id="build-one",
+            build_plan_hash=build_hash,
+            source_provenance=provenance,
         )
         (output / "broker-manifest.json").write_text(json.dumps(fixture.manifest))
         broker.firmware_build.artifacts.publish("build-one", "alice", output, fixture.manifest)
         store.set_job("build-one", "succeeded")
 
         def prepare(job, action=Action.FLASH, **references):
-            return broker.prepare(PrepareRequest(
-                session=session, job_id=job, test=action, device_id="fixture", **references,
-            ))
+            return broker.prepare(
+                PrepareRequest(
+                    session=session,
+                    job_id=job,
+                    test=action,
+                    device_id="fixture",
+                    **references,
+                )
+            )
 
         def execute(prepared):
             return broker.execute(ExecuteRequest(session=session, plan_hash=prepared["plan_hash"]))
@@ -112,8 +144,11 @@ async def env(tmp_path):
         def approve(prepared):
             service = PlanApprovals(broker)
             detail = service.detail(prepared["plan_hash"])
-            service.approve(prepared["plan_hash"], detail["review_revision"],
-                            ATTESTATIONS[detail["attestation"]])
+            service.approve(
+                prepared["plan_hash"],
+                detail["review_revision"],
+                ATTESTATIONS[detail["attestation"]],
+            )
 
         # Existing explicit manual bootstrap; unattended never authorizes this full backup.
         initial = prepare("backup-one", Action.BACKUP)
@@ -128,20 +163,36 @@ async def env(tmp_path):
         assert broker.job("flash-one")["state"] == "succeeded"
         selected = store.firmware_current("fixture", "alice")["receipt"]
         policy = UnattendedFlash(
-            enabled=True, principal_id="alice", device_id="fixture", project_id="fixture",
-            operation="firmware_flash", source_receipt=receipt,
-            source_repository=source_tests.REPOSITORY, source_commit=source_tests.COMMIT,
+            enabled=True,
+            principal_id="alice",
+            device_id="fixture",
+            project_id="fixture",
+            operation="firmware_flash",
+            source_receipt=receipt,
+            source_repository=source_tests.REPOSITORY,
+            source_commit=source_tests.COMMIT,
         )
 
         def configure(value=policy, **changes):
             updated = registration.model_copy(update={"unattended_flash": value, **changes})
-            broker.settings = broker.settings.model_copy(update={"flash_devices": {"fixture": updated}})
+            broker.settings = broker.settings.model_copy(
+                update={"flash_devices": {"fixture": updated}}
+            )
             broker.firmware_flash.settings = broker.settings
 
         yield SimpleNamespace(
-            broker=broker, driver=driver, store=store, policy=policy, receipt=receipt,
-            configure=configure, prepare=prepare, execute=execute, approve=approve,
-            selected=selected, output=output, source=source,
+            broker=broker,
+            driver=driver,
+            store=store,
+            policy=policy,
+            receipt=receipt,
+            configure=configure,
+            prepare=prepare,
+            execute=execute,
+            approve=approve,
+            selected=selected,
+            output=output,
+            source=source,
         )
     finally:
         if broker is not None:
@@ -173,11 +224,17 @@ async def test_exact_owned_source_receipt_auto_flash_commits_lkg_once(env):
     assert not env.broker.flash_policy_jobs and env.driver.closed
 
 
-@pytest.mark.parametrize("field,value", [
-    ("principal_id", "bob"), ("device_id", "other"), ("project_id", "other"),
-    ("source_receipt", "b" * 64), ("source_repository", "fixture/other"),
-    ("source_commit", "b" * 40),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("principal_id", "bob"),
+        ("device_id", "other"),
+        ("project_id", "other"),
+        ("source_receipt", "b" * 64),
+        ("source_repository", "fixture/other"),
+        ("source_commit", "b" * 40),
+    ],
+)
 async def test_policy_scope_mismatch_requires_manual_without_writes(env, field, value):
     env.configure(env.policy.model_copy(update={field: value}))
     before = env.driver.writes
@@ -188,11 +245,14 @@ async def test_policy_scope_mismatch_requires_manual_without_writes(env, field, 
     assert env.driver.writes == before
 
 
-@pytest.mark.parametrize("action,references", [
-    (Action.BACKUP, {}),
-    (Action.RESTORE, {}),
-    (Action.FLASH, {"build_job_id": "build-one", "backup_job_id": "backup-one"}),
-])
+@pytest.mark.parametrize(
+    "action,references",
+    [
+        (Action.BACKUP, {}),
+        (Action.RESTORE, {}),
+        (Action.FLASH, {"build_job_id": "build-one", "backup_job_id": "backup-one"}),
+    ],
+)
 async def test_backup_restore_and_full_backup_inputs_remain_manual(env, action, references):
     env.configure()
     prepared = env.prepare("excluded", action, **references)
@@ -201,7 +261,9 @@ async def test_backup_restore_and_full_backup_inputs_remain_manual(env, action, 
         env.execute(prepared)
 
 
-@pytest.mark.parametrize("which", ["source_failed", "source_other_owner", "worktree_build", "source_bytes"])
+@pytest.mark.parametrize(
+    "which", ["source_failed", "source_other_owner", "worktree_build", "source_bytes"]
+)
 async def test_successful_owned_source_provenance_is_required(env, which):
     env.configure()
     if which == "source_failed":
@@ -214,7 +276,9 @@ async def test_successful_owned_source_provenance_is_required(env, which):
             plan["source_principal"] = "bob"
         else:
             plan.pop("source_receipt")
-        env.store.db.execute("UPDATE plans SET payload=? WHERE hash=?", (json.dumps(plan), job["plan_hash"]))
+        env.store.db.execute(
+            "UPDATE plans SET payload=? WHERE hash=?", (json.dumps(plan), job["plan_hash"])
+        )
         env.store.db.commit()
     else:
         root, _ = env.source.snapshots.resolve("fixture", env.receipt, "alice")
@@ -225,7 +289,9 @@ async def test_successful_owned_source_provenance_is_required(env, which):
         env.execute(prepared)
 
 
-@pytest.mark.parametrize("change", ["policy", "project", "principal", "lease", "artifact", "source"])
+@pytest.mark.parametrize(
+    "change", ["policy", "project", "principal", "lease", "artifact", "source"]
+)
 async def test_queued_authorization_is_rechecked_before_device_writes(env, change):
     env.configure()
     prepared = env.prepare("queued", build_job_id="build-one")
@@ -235,9 +301,15 @@ async def test_queued_authorization_is_rechecked_before_device_writes(env, chang
         env.configure(env.policy.model_copy(update={"enabled": False}))
     elif change == "project":
         project = env.broker.settings.build_projects["fixture"]
-        env.broker.settings = env.broker.settings.model_copy(update={"build_projects": {
-            "fixture": project.model_copy(update={"profile_execution_policy": "RemoteSigned"})
-        }})
+        env.broker.settings = env.broker.settings.model_copy(
+            update={
+                "build_projects": {
+                    "fixture": project.model_copy(
+                        update={"profile_execution_policy": "RemoteSigned"}
+                    )
+                }
+            }
+        )
     elif change == "principal":
         env.broker.principal_valid = lambda *args: False
     elif change == "lease":
@@ -258,6 +330,7 @@ async def test_revocation_in_last_auth_callback_cannot_start_device(env):
     prepared = env.prepare("reentrant", build_job_id="build-one")
     env.execute(prepared)
     calls = 0
+
     def current(*args):
         nonlocal calls
         calls += 1
@@ -265,6 +338,7 @@ async def test_revocation_in_last_auth_callback_cannot_start_device(env):
         if calls == 3:
             env.configure(env.policy.model_copy(update={"enabled": False}))
         return True
+
     env.broker.principal_valid = current
     before = env.driver.writes
     await env.broker.queue.join()
@@ -278,13 +352,17 @@ async def test_failed_or_late_revoked_flash_preserves_lkg_and_halts(env, late_re
     prepared = env.prepare("uncertain", build_job_id="build-one")
     original = env.broker.firmware_flash.commit_success
     if late_revoke:
+
         def commit(plan, result, live):
             env.configure(env.policy.model_copy(update={"enabled": False}))
             return original(plan, result, live)
+
         env.broker.firmware_flash.commit_success = commit
     else:
+
         def failed_write(segments):
             raise ValueError("synthetic write failure")
+
         env.driver.write = failed_write
     env.execute(prepared)
     await env.broker.queue.join()
@@ -296,11 +374,35 @@ async def test_failed_or_late_revoked_flash_preserves_lkg_and_halts(env, late_re
 
 
 def test_registration_is_explicit_strict_and_flash_only():
-    data = dict(principal_id="alice", device_id="fixture", project_id="fixture",
-                operation="firmware_flash", source_receipt="a" * 64,
-                source_repository="fixture/project", source_commit="a" * 40)
+    data = dict(
+        principal_id="alice",
+        device_id="fixture",
+        project_id="fixture",
+        operation="firmware_flash",
+        source_receipt="a" * 64,
+        source_repository="fixture/project",
+        source_commit="a" * 40,
+    )
     assert UnattendedFlash(**data).enabled is False
-    for update in ({"enabled": "true"}, {"operation": "firmware_restore"},
-                   {"operation": "firmware_backup"}, {"principal_id": "*"}):
+    for update in (
+        {"enabled": "true"},
+        {"operation": "firmware_restore"},
+        {"operation": "firmware_backup"},
+        {"principal_id": "*"},
+    ):
         with pytest.raises(ValueError):
             UnattendedFlash(**(data | update))
+
+
+async def test_allow_flash_still_gates_operation(env):
+    env.configure(allow_flash=False)
+    with pytest.raises(BrokerError, match="registered_flash_operation_not_enabled"):
+        env.prepare("disabled-operation", build_job_id="build-one")
+
+
+async def test_missing_lkg_never_becomes_unattended(env):
+    env.configure()
+    env.store.db.execute("DELETE FROM firmware_lkg")
+    env.store.db.commit()
+    with pytest.raises(BrokerError, match="verified_lkg_or_initial_backup_required"):
+        env.prepare("missing-recovery", build_job_id="build-one")

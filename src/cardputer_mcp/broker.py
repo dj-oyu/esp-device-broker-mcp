@@ -1072,14 +1072,14 @@ class Broker:
             except Exception:
                 policy_available = False
         flash_available = (
-            request.test == TestName.FLASH
-            and self.flash_policies.authorize(payload) is not None
+            request.test == TestName.FLASH and self.flash_policies.authorize(payload) is not None
         )
         result = {
             "plan_hash": digest,
             "plan": payload,
             **({"storage": storage} if storage is not None else {}),
-            "approval_required": not flash_available and (
+            "approval_required": not flash_available
+            and (
                 request.test in ({TestName.BUILD, TestName.SOURCE} | FLASH_TESTS)
                 or (not self.settings.allow_mock_execution and not policy_available)
             ),
@@ -1165,8 +1165,11 @@ class Broker:
             not in ({TestName.BUILD.value, TestName.SOURCE.value} | {t.value for t in FLASH_TESTS})
         )
         if (
-            request.wait_for_approval and not approved and not allow_mock
-            and authorization is None and flash_authorization is None
+            request.wait_for_approval
+            and not approved
+            and not allow_mock
+            and authorization is None
+            and flash_authorization is None
         ):
             # Policy callbacks must not extend the original request's lifetime
             # or register work under a replacement lease/principal.
@@ -1785,7 +1788,10 @@ class Broker:
                     or not current_authorized
                     or (
                         flash_authorization is not None
-                        and not self.flash_policies.live(flash_authorization, plan)
+                        and (
+                            self.flash_policy_jobs.get(job_id) is not flash_authorization
+                            or not self.flash_policies.live(flash_authorization, plan)
+                        )
                     )
                     or current_job["state"] != "queued"
                     or current_job["plan_hash"] != job["plan_hash"]
@@ -1866,13 +1872,17 @@ class Broker:
                                 return False
                             if self.principal_valid is None:
                                 return False
-                            authorized = self.principal_valid(
-                                capture_principal, current.owner, frozenset({"read", "control"})
-                            ) is True
+                            authorized = (
+                                self.principal_valid(
+                                    capture_principal, current.owner, frozenset({"read", "control"})
+                                )
+                                is True
+                            )
                             return authorized and (
                                 flash_authorization is None
                                 or (
-                                    self.flash_policy_jobs.get(plan["job_id"]) is flash_authorization
+                                    self.flash_policy_jobs.get(plan["job_id"])
+                                    is flash_authorization
                                     and self.flash_policies.live(flash_authorization, plan)
                                 )
                             )
