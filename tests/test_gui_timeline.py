@@ -1397,10 +1397,13 @@ def test_review_target_text_escapes_control_and_bidi_characters(monkeypatch: Any
 @pytest.mark.parametrize(
     "test,backend,stage,result",
     [
-        ("firmware_fetch_source", "registered_project", "source_publish",
-         "source_snapshot_fetched_no_build_no_flash"),
-        ("firmware_build", "registered_project", "idf_build",
-         "firmware_build_succeeded_no_flash"),
+        (
+            "firmware_fetch_source",
+            "registered_project",
+            "source_publish",
+            "source_snapshot_fetched_no_build_no_flash",
+        ),
+        ("firmware_build", "registered_project", "idf_build", "firmware_build_succeeded_no_flash"),
         ("firmware_backup", "serial", "flash_backup_read", "firmware_backup_completed"),
         ("firmware_flash", "serial", "flash_readback_verify", "firmware_flash_completed"),
         ("firmware_restore", "serial", "flash_restore_write", "firmware_restore_completed"),

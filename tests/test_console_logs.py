@@ -51,6 +51,7 @@ def test_slow_console_never_blocks_producers_and_queue_is_bounded():
         def produce():
             for number in range(1000):
                 sink.emit(f"progress {number}")
+            sink.emit("completed")
             published.set()
 
         producer = threading.Thread(target=produce, daemon=True)
@@ -59,6 +60,7 @@ def test_slow_console_never_blocks_producers_and_queue_is_bounded():
         producer.join(2)
         assert not producer.is_alive()
         assert sink._queue.qsize() <= 2 and sink.dropped > 0
+        assert list(sink._queue.queue)[-1] == "completed"
     finally:
         release.set()
 
@@ -106,9 +108,7 @@ def test_job_lifecycle_is_after_commit_and_never_prints_raw_result(tmp_path, mon
         history.set_job("build-one", "running")
         now[0] = 13.5
         history.set_job("build-one", "failed", "synthetic-private-native-error")
-        assert emitted == [
-            ("build-one", "started"), ("build-one", "failed; elapsed 3.5s")
-        ]
+        assert emitted == [("build-one", "started"), ("build-one", "failed; elapsed 3.5s")]
         history.add_job("flash-one", "a" * 64)
         history.set_job("flash-one", "running")
         try:

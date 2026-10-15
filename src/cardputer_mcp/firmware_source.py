@@ -55,7 +55,9 @@ class FirmwareSource:
         self.active = True
         while len(self.logs) >= 8:
             del self.logs[next(iter(self.logs))]
-        logs = self.logs[plan["job_id"]] = BuildLogs(plan["source_principal"], job_id=plan["job_id"])
+        logs = self.logs[plan["job_id"]] = BuildLogs(
+            plan["source_principal"], job_id=plan["job_id"]
+        )
         loop = asyncio.get_running_loop()
 
         async def check() -> bool:
@@ -99,7 +101,9 @@ class FirmwareSource:
         if logs is None:
             while len(self.logs) >= 8:
                 del self.logs[next(iter(self.logs))]
-            logs = self.logs[plan["job_id"]] = BuildLogs(plan["source_principal"], job_id=plan["job_id"])
+            logs = self.logs[plan["job_id"]] = BuildLogs(
+                plan["source_principal"], job_id=plan["job_id"]
+            )
         message = "error: source fetch failed: " + code
         if not logs.entries or logs.entries[-1]["text"] != message:
             logs.append(message)

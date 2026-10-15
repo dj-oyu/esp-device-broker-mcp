@@ -67,8 +67,7 @@ class BuildLogs:
         now = time.monotonic()
         self.deadline = now + self.retention
         if self.job_id is not None and (
-            level in ("warning", "error")
-            or (progress and now - self._console_progress_at >= 2)
+            level in ("warning", "error") or (progress and now - self._console_progress_at >= 2)
         ):
             if progress:
                 self._console_progress_at = now

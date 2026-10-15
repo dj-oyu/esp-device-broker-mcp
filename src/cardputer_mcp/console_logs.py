@@ -15,9 +15,7 @@ def _stderr(message: str) -> None:
 class ConsoleOutput:
     """One lossy daemon writer; slow/closed consoles cannot hold a job open."""
 
-    def __init__(
-        self, writer: Callable[[str], None] = _stderr, *, capacity: int = 64
-    ) -> None:
+    def __init__(self, writer: Callable[[str], None] = _stderr, *, capacity: int = 64) -> None:
         self._queue: queue.Queue[str] = queue.Queue(max(1, min(capacity, 64)))
         self._writer = writer
         self._disabled = False
@@ -34,13 +32,23 @@ class ConsoleOutput:
         try:
             # Escape terminal controls AFTER BuildLogs redaction, before clipping.
             text = "".join(
-                char if char.isprintable() else f"\\x{ord(char):02x}"
-                for char in message[:4096]
+                char if char.isprintable() else f"\\x{ord(char):02x}" for char in message[:4096]
             )[:2048]
             text = text.encode("utf-8")[:2048].decode("utf-8", errors="ignore")
             self._queue.put_nowait(text)
         except queue.Full:
+            # Prefer recent status (especially completion) over stale queued output.
             self.dropped = min(self.dropped + 1, 1000000)
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            else:
+                self._queue.task_done()
+            try:
+                self._queue.put_nowait(text)
+            except queue.Full:
+                pass
         except Exception:
             pass
 

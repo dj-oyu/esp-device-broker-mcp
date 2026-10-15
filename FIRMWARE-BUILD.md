@@ -335,7 +335,7 @@ job. Structured ROM read progress is included. Output is UTF-8 on stderr only;
 stdio stdout remains JSON-RPC. This adds no authorization or execution action.
 
 Console output is best effort: one daemon writer uses a queue of at most 64
-messages, each at most 2 KiB. A full queue drops console messages; a closed/broken
+messages, each at most 2 KiB. A full queue drops older console messages to keep recent status; a closed/broken
 stderr disables this writer. Slow or unread stderr cannot hold up a job or process
 shutdown. No raw exception, plan, environment or result payload is printed.
 Control characters are escaped after existing BuildLogs redaction. Native project
