@@ -13,9 +13,10 @@ from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .build_artifacts import BuildArtifacts
+from .build_artifacts import BuildArtifacts, manifest_digest
 from .build_locations import (
     BuildLocationError,
+    _json,
     build_directory,
     build_location,
     check_storage_before_write,
@@ -300,9 +301,9 @@ def hash_file(path: Path) -> str:
 
 
 class FirmwareBuild:
-    def __init__(self, settings: Any) -> None:
+    def __init__(self, settings: Any, history: Path | None = None) -> None:
         self.settings = settings
-        self.artifacts = BuildArtifacts()
+        self.artifacts = BuildArtifacts(history)
         self.process = BuildProcess()
         self.logs: dict[str, BuildLogs] = {}
         self.manifests: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -881,14 +882,76 @@ class FirmwareBuild:
     def resolve_flash_manifest(
         self, job_id: str, principal: str, project_id: str
     ) -> tuple[Path, dict[str, Any]]:
-        cached_root, manifest = self.artifacts.resolve(job_id, principal)
         project = self.settings.build_projects.get(project_id)
         if project is None:
             raise BuildLocationError("registered_build_project_required")
-        root = resolve_build_manifest(self.settings.state_dir, project.build_root, manifest)
+        if self.artifacts.history is None:
+            cached_root, manifest = self.artifacts.resolve(job_id, principal)
+        else:
+            reference = self.artifacts.reference(job_id, principal, project_id)
+            fingerprint = reference.get("fingerprint")
+            environment = reference.get("environment_fingerprint")
+            if not isinstance(fingerprint, str) or not isinstance(environment, str):
+                raise BuildLocationError("build_output_identity_mismatch")
+            build_root = getattr(project, "build_root", None)
+            if reference.get("build_location") != build_location(
+                fingerprint, environment, build_root
+            ):
+                raise BuildLocationError("build_output_identity_mismatch")
+            cached_root = build_directory(
+                self.settings.state_dir, build_root, fingerprint, environment
+            )
+            if hashlib.sha256(str(cached_root.resolve()).encode()).hexdigest() != reference.get(
+                "root_sha256"
+            ):
+                raise BuildLocationError("build_output_identity_mismatch")
+            manifest = _json(cached_root / "broker-manifest.json")
+            if (
+                manifest_digest(manifest) != reference.get("manifest_sha256")
+                or manifest.get("build_job_id") != job_id
+                or manifest.get("build_plan_hash") != reference.get("build_plan_hash")
+                or manifest.get("idf_version") != "6.0.1"
+                or manifest.get("target") != project.target
+                or manifest.get("flash_authorized") is not False
+            ):
+                raise BuildLocationError("build_output_identity_mismatch")
+        root = resolve_build_manifest(
+            self.settings.state_dir, getattr(project, "build_root", None), manifest
+        )
         if root.resolve() != cached_root:
             raise BuildLocationError("build_output_identity_mismatch")
+        if self.artifacts.history is not None:
+            self._verify_owned_artifacts(root, manifest)
         return root, manifest
+
+    @staticmethod
+    def _verify_owned_artifacts(root: Path, manifest: dict[str, Any]) -> None:
+        artifacts = manifest.get("artifacts")
+        if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= 32:
+            raise BuildLocationError("build_output_identity_mismatch")
+        seen = set()
+        receipts: list[tuple[Any, int | None]] = [(receipt, None) for receipt in artifacts]
+        receipts.extend(
+            [(manifest.get("flash_layout"), 65536), (manifest.get("flash_security"), 1048576)]
+        )
+        for receipt, limit in receipts:
+            if not isinstance(receipt, dict) or not isinstance(receipt.get("name"), str):
+                raise BuildLocationError("build_output_identity_mismatch")
+            name = receipt["name"]
+            if name in seen:
+                raise BuildLocationError("build_output_identity_mismatch")
+            seen.add(name)
+            path = _checked_build_artifact(root, name)
+            size = receipt.get("bytes")
+            if limit is None:
+                limit = (64 if name.endswith(".elf") else 32) * 1024 * 1024
+            if (
+                type(size) is not int
+                or not 0 < size <= limit
+                or path.stat().st_size != size
+                or hash_file(path) != receipt.get("sha256")
+            ):
+                raise BuildLocationError("build_output_identity_mismatch")
 
     def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
         with self._lock:

@@ -87,7 +87,6 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
         fixture.manifest["environment_fingerprint"],
         tmp_path / "short",
     )
-    (output / "broker-manifest.json").write_text(json.dumps(fixture.manifest))
     service.resident.firmware_flash.settings = service.resident.settings
     driver = FakeDriver()
     driver.data = bytearray(b"x" * registration.flash_bytes)
@@ -96,14 +95,23 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
     driver.summary["elf_sha256_prefix"] = elf_hash[:16]
     service.resident.firmware_flash.driver_factory = lambda *args: driver
     store = service.resident._store()
-    build_plan = {"test": "firmware_build", "build_principal": principal, "project_id": "fixture"}
+    build_plan = {
+        "job_id": "build-one",
+        "test": "firmware_build",
+        "build_principal": principal,
+        "project_id": "fixture",
+        "fingerprint": fixture.manifest["fingerprint"],
+    }
     digest = digest_plan(build_plan)
     store.put_plan(digest, build_plan)
     store.add_job("build-one", digest)
-    store.set_job("build-one", "succeeded")
+    store.set_job("build-one", "running")
+    fixture.manifest.update(build_job_id="build-one", build_plan_hash=digest)
+    (output / "broker-manifest.json").write_text(json.dumps(fixture.manifest))
     service.resident.firmware_build.artifacts.publish(
         "build-one", principal, output, fixture.manifest
     )
+    store.set_job("build-one", "succeeded")
     release = threading.Event()
     try:
         async with (

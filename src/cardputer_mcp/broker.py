@@ -201,7 +201,7 @@ class Broker:
         self.logs = LogBook(settings.log_capacity)
         from .firmware_build import FirmwareBuild
 
-        self.firmware_build = FirmwareBuild(settings)
+        self.firmware_build = FirmwareBuild(settings, settings.state_dir / "history.sqlite3")
         from .firmware_source import FirmwareSource
 
         self.firmware_source = FirmwareSource(settings, self._store)

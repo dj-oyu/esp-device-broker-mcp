@@ -18,6 +18,9 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS build_artifact_references (
+            job_id TEXT PRIMARY KEY, principal TEXT NOT NULL, payload TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS firmware_job_summaries (
             job_id TEXT PRIMARY KEY, principal TEXT NOT NULL, payload TEXT NOT NULL
         );
