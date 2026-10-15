@@ -103,13 +103,22 @@ STATE_LABELS = {
     "expired": "Expired",
     "unknown": "State unavailable",
 }
-Action = Literal["refresh", "preview", "home_line", "approve_plan", "approve_image", "reject_image"]
+Action = Literal[
+    "refresh", "preview", "home_line", "approve_plan", "approve_image", "reject_image", "cancel_job"
+]
+CancelKey = tuple[str, str, str]
+CANCEL_PENDING = "Cancellation request pending; cleanup and device release are not confirmed."
+CANCEL_REQUESTED = "Cancellation requested; waiting for worker/process cleanup. Device release is not confirmed."
+CANCEL_UNCERTAIN = "Cancellation outcome unknown. Refresh status; no automatic retry or device release."
+CANCEL_REJECTED = "Cancellation was rejected. Existing owner authorization is required; refresh status."
+CANCEL_REVIEW = "Cleanup or device state requires review. Stop completion and device release are not confirmed."
 ReviewKey = tuple[str, str, str, str, str, str, str, str, bool]
 ImageKey = tuple[str, str, str, str, str, str, bool]
 
 
 class TimelineAPI(Protocol):
     def timeline(self) -> dict[str, Any]: ...
+    def cancel_job(self, job_id: str, plan_hash: str, broker_epoch: str) -> dict[str, Any]: ...
     def approve(
         self,
         plan_hash: str,
@@ -307,6 +316,7 @@ class TimelineCard:
     reviewed: bool = False
     local_home_line: HomeLineRow | None = None
     device_observation: DeviceObservationRow | None = None
+    cancel_available: bool = False
 
     @property
     def needs_device_review(self) -> bool:
@@ -327,6 +337,11 @@ class TimelineCard:
         reviewed = data.get("reviewed", False)
         if type(reviewed) is not bool:
             raise ValueError(INVALID_TIMELINE)
+        cancel_available = data.get("cancel_available", False)
+        if type(cancel_available) is not bool or (
+            cancel_available and state not in ("queued", "running")
+        ):
+            raise ValueError(INVALID_TIMELINE)
         plan_hash, test, backend = data["plan_hash"], data["test"], data["backend"]
         if test is None and backend is None:
             if plan_hash is not None:
@@ -343,6 +358,10 @@ class TimelineCard:
                 "firmware_fetch_source",
             ):
                 raise ValueError(INVALID_TIMELINE)
+        if cancel_available and (
+            backend != "registered_project" or test not in ("firmware_build", "firmware_fetch_source")
+        ):
+            raise ValueError(INVALID_TIMELINE)
         review = None
         if data["review"] is not None:
             review = PlanReview.parse({**data["review"], "ok": True}, started_at)
@@ -402,6 +421,7 @@ class TimelineCard:
             reviewed,
             local_home_line,
             observation,
+            cancel_available,
         )
 
 
@@ -450,10 +470,11 @@ class TimelineOperation:
     attestation: str = ""
     retain_local_home_line: bool = False
     home_line_row: HomeLineRow | None = None
+    plan_hash: str = ""
 
     @property
     def mutates(self) -> bool:
-        return self.action in ("approve_plan", "approve_image", "reject_image")
+        return self.action in ("approve_plan", "approve_image", "reject_image", "cancel_job")
 
 
 @dataclass(frozen=True)
@@ -466,6 +487,8 @@ class TimelineOutcome:
     error: str = ""
     home_line_preview: HomeLinePreview | None = field(default=None, repr=False)
     execution_submitted: bool = False
+    cancel_state: str = ""
+    stop_requested: bool = False
 
 
 def perform_timeline(
@@ -476,6 +499,30 @@ def perform_timeline(
         if operation.action == "refresh":
             return TimelineOutcome(
                 operation, snapshot=TimelineSnapshot.parse(api.timeline(), operation.started_at)
+            )
+        if operation.action == "cancel_job":
+            _hex(operation.broker_epoch, 32)
+            _hex(operation.plan_hash, 64)
+            if re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", operation.job_id) is None:
+                raise ValueError(CANCEL_UNCERTAIN)
+            if clock() >= operation.started_at + 10:
+                return TimelineOutcome(operation, error=CANCEL_UNCERTAIN)
+            response = api.cancel_job(operation.job_id, operation.plan_hash, operation.broker_epoch)
+            if response.get("ok") is False:
+                return TimelineOutcome(operation, error=CANCEL_REJECTED)
+            if (
+                response.get("ok") is not True
+                or response.get("job_id") != operation.job_id
+                or response.get("plan_hash") != operation.plan_hash
+                or response.get("broker_epoch") != operation.broker_epoch
+                or response.get("state") not in (
+                    "queued", "running", "succeeded", "failed", "cancelled", "needs_review"
+                )
+                or type(response.get("stop_requested")) is not bool
+            ):
+                raise ValueError(CANCEL_UNCERTAIN)
+            return TimelineOutcome(
+                operation, cancel_state=response["state"], stop_requested=response["stop_requested"]
             )
         if operation.action == "approve_plan":
             review = operation.review
@@ -574,7 +621,9 @@ def perform_timeline(
         )
     except Exception:
         error = (
-            APPROVAL_UNCERTAIN
+            CANCEL_UNCERTAIN
+            if operation.action == "cancel_job"
+            else APPROVAL_UNCERTAIN
             if operation.action == "approve_plan"
             else DECISION_FAILED
             if operation.mutates
@@ -609,6 +658,8 @@ class TimelineController:
         self.preview_attempts: set[ImageKey] = set()
         self.plan_attempts: dict[str, ReviewKey] = {}
         self.decision_attempts: dict[str, tuple[ImageKey, str]] = {}
+        self.cancel_attempts: dict[str, CancelKey] = {}
+        self.cancel_messages: dict[str, str] = {}
         self.card_messages: dict[str, str] = {}
         self.message = "Loading the job timeline..."
 
@@ -697,6 +748,30 @@ class TimelineController:
                 if card.review.execution_submitted
                 else "Plan approval pending; this click will not execute it."
             )
+        return operation
+
+    def cancel_key(self, job_id: str) -> CancelKey | None:
+        card = self.card(job_id)
+        if self.snapshot is None or card is None or card.plan_hash is None:
+            return None
+        return self.snapshot.broker_epoch, job_id, card.plan_hash
+
+    def can_cancel(self, job_id: str) -> bool:
+        card, key = self.card(job_id), self.cancel_key(job_id)
+        return bool(
+            not (self.closed or self.busy) and self.fresh
+            and card is not None and card.cancel_available
+            and card.state in ("queued", "running") and key is not None
+            and self.cancel_attempts.get(job_id) != key
+        )
+
+    def cancel_job(self, job_id: str, expected: CancelKey) -> TimelineOperation | None:
+        if not self.can_cancel(job_id) or self.cancel_key(job_id) != expected:
+            return None
+        operation = self._begin("cancel_job", job_id=job_id, plan_hash=expected[2])
+        if operation is not None:
+            self.cancel_attempts[job_id] = expected
+            self.cancel_messages[job_id] = CANCEL_PENDING
         return operation
 
     def next_home_line(self) -> TimelineOperation | None:
@@ -832,6 +907,8 @@ class TimelineController:
             self.plan_attempts.clear()
             self.decision_attempts.clear()
             self.card_messages.clear()
+            self.cancel_attempts.clear()
+            self.cancel_messages.clear()
             self.home_line_preview = None
             self.home_line_attempts.clear()
         cards = []
@@ -900,6 +977,8 @@ class TimelineController:
             self.plan_attempts,
             self.decision_attempts,
             self.card_messages,
+            self.cancel_attempts,
+            self.cancel_messages,
         ):
             for job_id in set(mapping) - ids:
                 del mapping[job_id]
@@ -918,6 +997,24 @@ class TimelineController:
                 self.previews.pop(job_id, None)
                 self.displayed.pop(job_id, None)
         for card in cards:
+            if self.cancel_attempts.get(card.job_id) == self.cancel_key(card.job_id):
+                if card.state == "needs_review":
+                    self.cancel_messages[card.job_id] = CANCEL_REVIEW
+                elif card.state == "cancelled":
+                    self.cancel_messages[card.job_id] = (
+                        "Broker reports this job cancelled. Device release is a separate state."
+                    )
+                elif card.state == "succeeded":
+                    self.cancel_messages[card.job_id] = (
+                        "Job completed before cancellation took effect. No rollback was requested."
+                    )
+                elif card.state == "failed":
+                    self.cancel_messages[card.job_id] = (
+                        "Job ended with failure; inspect its result. Device release is not confirmed."
+                    )
+            elif card.job_id in self.cancel_attempts:
+                self.cancel_attempts.pop(card.job_id, None)
+                self.cancel_messages.pop(card.job_id, None)
             if self.card_messages.get(card.job_id) == PLAN_APPROVED and card.state != "approved":
                 self.card_messages.pop(card.job_id, None)
             if self.card_messages.get(card.job_id) == EXECUTION_QUEUED and card.state != "queued":
@@ -960,6 +1057,8 @@ class TimelineController:
             self.message = "The broker or review changed. Waiting for a fresh timeline."
             return True
         if outcome.error:
+            if operation.action == "cancel_job":
+                self.cancel_messages[operation.job_id] = outcome.error
             self.failed = True
             if operation.action == "preview":
                 self.card_messages[operation.job_id] = PREVIEW_FAILED
@@ -1024,7 +1123,12 @@ class TimelineController:
             self.displayed_reviews.clear()
             self.displayed.clear()
             self.next_refresh = self.clock()
-            if outcome.approved and operation.action == "approve_plan":
+            if operation.action == "cancel_job":
+                self.cancel_messages[operation.job_id] = (
+                    CANCEL_REQUESTED if outcome.stop_requested else
+                    "Cancellation was not accepted or the job already ended. Refresh status."
+                )
+            elif outcome.approved and operation.action == "approve_plan":
                 self.card_messages[operation.job_id] = (
                     EXECUTION_QUEUED if outcome.execution_submitted else PLAN_APPROVED
                 )
@@ -1142,6 +1246,7 @@ class _CardView:
         self.review_identity: ReviewKey | None = None
         self.plan_activation: tuple[ReviewKey, bool] | None = None
         self.image_activation: dict[Decision, ImagePreview] = {}
+        self.cancel_activation: CancelKey | None = None
         self.last_review: PlanReview | None = None
         self.rendered: ImagePreview | None = None
         self.photo: tk.PhotoImage | None = None
@@ -1204,6 +1309,10 @@ class _CardView:
             wraplength=720,
         )
         self.next_label.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.cancel_button = ttk.Button(self.header, command=self._cancel_job)
+        self.cancel_button.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        for event in ("<ButtonPress-1>", "<KeyPress-space>", "<KeyPress-Return>", "<<Invoke>>"):
+            self.cancel_button.bind(event, self._arm_cancel)
         self.body = tk.Frame(self.frame, background=self.BACKGROUND)
         self.body.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         self.body.columnconfigure(0, weight=1)
@@ -1338,6 +1447,15 @@ class _CardView:
     def _arm_image(self, decision: Decision) -> None:
         if self.expanded and self.rendered is not None:
             self.image_activation[decision] = self.rendered
+
+    def _arm_cancel(self, _event: Any = None) -> None:
+        model = self.panel.controller
+        self.cancel_activation = model.cancel_key(self.job_id) if model.can_cancel(self.job_id) else None
+
+    def _cancel_job(self) -> None:
+        expected, self.cancel_activation = self.cancel_activation, None
+        if expected is not None:
+            self.panel._submit(self.panel.controller.cancel_job(self.job_id, expected))
 
     def _approve(self) -> None:
         activation, self.plan_activation = self.plan_activation, None
@@ -1675,9 +1793,22 @@ class _CardView:
             if stamp
             else ""
         )
+        key = model.cancel_key(card.job_id)
+        if self.cancel_activation is not None and self.cancel_activation != key:
+            self.cancel_activation = None
+        self.cancel_button.configure(
+            text=f"Cancel job {card.job_id}",
+            state="normal" if model.can_cancel(card.job_id) else "disabled",
+        )
+        if card.cancel_available or card.job_id in model.cancel_attempts:
+            self.cancel_button.grid()
+        else:
+            self.cancel_button.grid_remove()
         context = SOURCES[row.source] + " · " if row else ""
         self.next_var.set(
-            context + self._next_action(card, now)
+            (f"Job {card.job_id}: " + model.cancel_messages[card.job_id])
+            if card.job_id in model.cancel_messages
+            else context + self._next_action(card, now)
             if model.fresh
             else "Awaiting a verified update · Decisions disabled"
         )

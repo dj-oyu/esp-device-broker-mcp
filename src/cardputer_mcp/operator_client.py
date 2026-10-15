@@ -189,6 +189,13 @@ class OperatorClient:
             data,
         )
 
+    def cancel_job(self, job_id: str, plan_hash: str, broker_epoch: str) -> dict[str, Any]:
+        return self._request(
+            "POST", "/operator/job-cancel",
+            {"job_id": job_id, "plan_hash": plan_hash, "broker_epoch": broker_epoch},
+            allow_refusal=True,
+        )
+
     def local_home_line(self, job_id: str, plan_hash: str, diagnostic_id: str) -> dict[str, Any]:
         return self._request(
             "POST",
@@ -247,7 +254,8 @@ class OperatorClient:
         return self._request("POST", "/operator/release", {"lease_id": lease_id})
 
     def _request(
-        self, method: str, path: str, payload: dict[str, Any] | None = None
+        self, method: str, path: str, payload: dict[str, Any] | None = None,
+        *, allow_refusal: bool = False,
     ) -> dict[str, Any]:
         try:
             # Explicitly disable environment proxies and redirects. A redirect must
@@ -278,6 +286,8 @@ class OperatorClient:
         if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
             raise OperatorClientError("The broker returned an invalid operator response.")
         if not data["ok"]:
+            if allow_refusal:
+                return {"ok": False}
             # Never display server-controlled strings, response bodies, URLs, or
             # exception text. The next state refresh supplies the current facts.
             raise OperatorClientError(
