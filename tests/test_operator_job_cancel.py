@@ -142,7 +142,8 @@ async def test_endpoint_rejects_wrong_owner_scope_epoch_plan_and_device_jobs(
             {**target(broker, prepared), "principal_id": key.metadata.principal_id},
             {**target(broker, prepared), "session": "synthetic-lease"},
         ):
-            assert (await http.post("/operator/job-cancel", json=invalid)).json()["ok"] is False
+            rejected = await http.post("/operator/job-cancel", json=invalid)
+            assert rejected.status_code in (400, 403) or rejected.json().get("ok") is False
             assert broker.job("cancel-job")["state"] == "queued"
         for credential in (owner(service), service.keys["second"], read_only):
             response = await http.post(
@@ -171,6 +172,9 @@ async def test_endpoint_rejects_wrong_owner_scope_epoch_plan_and_device_jobs(
         assert response.json()["ok"] is False
         assert broker.job("device-job")["state"] == "queued"
         assert service.backend.calls == 0 and not broker.profile_jobs.stops
+        cancelled = (await http.post("/operator/job-cancel", json=target(broker, prepared))).json()
+        assert cancelled["ok"] and cancelled["state"] == "cancelled"
+        assert cancelled["stop_requested"] is False
 
 
 
