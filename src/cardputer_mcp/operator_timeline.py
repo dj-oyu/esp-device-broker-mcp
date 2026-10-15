@@ -134,6 +134,7 @@ RESULTS = (
             "profile_export_rejected_or_failed",
             "external_toolchain_diagnostic_failed",
             "build_flash_layout_invalid",
+            "build_flash_security_invalid",
             "flash_cancelled_needs_review",
             "flash_authority_changed_needs_review",
             "flash_inputs_changed_needs_review",

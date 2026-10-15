@@ -505,8 +505,11 @@ def test_fixed_execution_failure_codes_have_bounded_timeline_representations():
     """Catch drift between actual producers and the presentation allowlist."""
     root = Path(__file__).resolve().parents[1] / "src/cardputer_mcp"
     constructors = {
-        "FlashFailure", "FlashAdmissionError", "BuildLocationError",
-        "FixedDiagnosticFailure", "BackendResult",
+        "FlashFailure",
+        "FlashAdmissionError",
+        "BuildLocationError",
+        "FixedDiagnosticFailure",
+        "BackendResult",
     }
     emitted = set()
     for path in root.glob("*.py"):
@@ -525,8 +528,10 @@ def test_fixed_execution_failure_codes_have_bounded_timeline_representations():
                     for statement in node.body:
                         if (
                             isinstance(statement, ast.Assign)
-                            and any(isinstance(x, ast.Name) and x.id == "code"
-                                    for x in statement.targets)
+                            and any(
+                                isinstance(x, ast.Name) and x.id == "code"
+                                for x in statement.targets
+                            )
                             and isinstance(statement.value, ast.Constant)
                             and isinstance(statement.value.value, str)
                         ):

@@ -111,7 +111,6 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-
     async def test_native_failure_survives_broker_timeline_and_gui(self):
         from cardputer_mcp.flash_lifecycle import FlashFailure
         from cardputer_mcp.gui_timeline import TimelineSnapshot
@@ -125,14 +124,17 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.driver.read = fail_read
         result = self.broker.prepare(
             PrepareRequest(
-                session=self.token, job_id="native-failed",
-                test=TestName.BACKUP, device_id="fixture",
+                session=self.token,
+                job_id="native-failed",
+                test=TestName.BACKUP,
+                device_id="fixture",
             )
         )
         approvals = PlanApprovals(self.broker)
         detail = approvals.detail(result["plan_hash"])
         approvals.approve(
-            result["plan_hash"], detail["review_revision"],
+            result["plan_hash"],
+            detail["review_revision"],
             "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ",
         )
         self.broker.execute(ExecuteRequest(session=self.token, plan_hash=result["plan_hash"]))
