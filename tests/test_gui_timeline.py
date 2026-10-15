@@ -1392,3 +1392,28 @@ def test_review_target_text_escapes_control_and_bidi_characters(monkeypatch: Any
     assert 'Port: "COM7\\nUNTRUSTED\\u202e"' in view.summary_var.get()
     assert "\nUNTRUSTED" not in view.summary_var.get() and "\u202e" not in view.summary_var.get()
     assert ATTESTATIONS["device_home_firmware"] in view.phrase.config["text"]
+
+
+@pytest.mark.parametrize(
+    "test,backend,stage,result",
+    [
+        ("firmware_fetch_source", "registered_project", "source_publish",
+         "source_snapshot_fetched_no_build_no_flash"),
+        ("firmware_build", "registered_project", "idf_build",
+         "firmware_build_succeeded_no_flash"),
+        ("firmware_backup", "serial", "flash_backup_read", "firmware_backup_completed"),
+        ("firmware_flash", "serial", "flash_readback_verify", "firmware_flash_completed"),
+        ("firmware_restore", "serial", "flash_restore_write", "firmware_restore_completed"),
+    ],
+)
+def test_firmware_operation_names_stages_and_results_survive_timeline_parse(
+    test, backend, stage, result
+):
+    row = card("firmware-job", backend=backend, test=test)
+    row.update(state="succeeded", review=None, stage=stage, result=result)
+    parsed = TimelineSnapshot.parse(snapshot(row), 1000).cards[0]
+    assert parsed.stage == stage and parsed.result == result
+    assert test in gui_timeline.REQUESTS
+    if backend == "registered_project":
+        queued = replace(parsed, state="queued")
+        assert "device" not in gui_timeline._CardView._next_action(queued, 1000).lower()

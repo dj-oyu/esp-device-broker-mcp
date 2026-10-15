@@ -536,7 +536,7 @@ class FirmwareBuild:
         project, provenance = self._project(
             plan["project_id"], principal, plan.get("source_receipt")
         )
-        logs = BuildLogs(principal)
+        logs = BuildLogs(principal, job_id=plan["job_id"])
         logs.redactions = tuple(
             value
             for key, value in os.environ.items()

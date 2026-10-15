@@ -13,6 +13,7 @@ from .backend import DeviceOperationFailure
 from .broker import Broker, BrokerError
 from .device_observation import FIRMWARE_LIMITATIONS, REDACTION_LIMITATIONS
 from .plan_approval import PlanApprovals
+from .source_snapshot import SOURCE_ERROR_CODES
 
 MAX_CARDS = 32
 STATES = frozenset(
@@ -59,9 +60,25 @@ STAGES = frozenset(
         "serial_hello_count_one",
         "serial_frame_presented",
         "serial_app_stopped",
+        "source_download",
+        "source_validate",
+        "source_publish",
+        "idf_profile",
+        "idf_diagnostics",
+        "idf_build",
+        "flash_security_probe",
+        "flash_backup_or_verify",
+        "flash_backup_read",
+        "flash_backup_prewrite_check",
+        "flash_write_or_restore",
+        "flash_write",
+        "flash_restore_write",
+        "flash_readback_verify",
+        "flash_boot_observe",
+        "flash_close",
     }
 ) | frozenset("serial_wait_" + step for step in DeviceOperationFailure.STEPS)
-RESULTS = DeviceOperationFailure.CODES | frozenset(
+RESULTS = DeviceOperationFailure.CODES | SOURCE_ERROR_CODES | frozenset(
     {
         "mock_pass",
         "synthetic_capture_not_device",
@@ -88,6 +105,47 @@ RESULTS = DeviceOperationFailure.CODES | frozenset(
         "local_home_diagnostic_no_longer_valid",
         "device_disconnected_no_retry",
         "backend_error_no_retry",
+        "source_snapshot_fetched_no_build_no_flash",
+        "firmware_build_succeeded_no_flash",
+        "firmware_build_failed",
+        "firmware_backup_completed",
+        "firmware_flash_completed",
+        "firmware_restore_completed",
+        "client_cancelled",
+        "execution_deadline_expired",
+        "profile_or_principal_no_longer_valid",
+        "profile_plan_inconsistent",
+        "build_process_exit_unconfirmed",
+        "build_output_release_unconfirmed",
+        "registered_project_state_inconsistent",
+        "idf_version_diagnostic_failed",
+        "idf_version_mismatch_no_fallback",
+        "external_python_diagnostic_failed",
+        "external_toolchain_missing",
+        "registered_tool_diagnostic_failed",
+        "registered_tool_version_mismatch",
+        "registered_tool_resolution_ambiguous",
+        "external_toolchain_resolution_changed",
+        "node_requires_explicit_local_registration",
+        "build_inputs_changed",
+        "profile_export_rejected_or_failed",
+        "external_toolchain_diagnostic_failed",
+        "build_flash_layout_invalid",
+        "flash_cancelled_needs_review",
+        "flash_authority_changed_needs_review",
+        "flash_inputs_changed_needs_review",
+        "flash_device_busy_or_uncertain",
+        "flash_backup_incomplete_needs_review",
+        "flash_backup_stale_needs_review",
+        "flash_readback_mismatch_needs_review",
+        "flash_boot_unverified_needs_review",
+        "flash_timeout_needs_review",
+        "flash_failed_needs_review",
+        "flash_shutdown_uncertain_needs_review",
+        "flash_read_progress_invalid_needs_review",
+        "flash_read_deadline_needs_review",
+        "flash_read_stalled_needs_review",
+        "firmware_final_commit_failed",
     }
 )
 _JOB_STATES = frozenset(
@@ -511,7 +569,14 @@ class OperatorTimeline:
                     or not math.isfinite(detail["lease_remaining_seconds"])
                     or not 0 < detail["lease_remaining_seconds"] <= 300
                     or detail["attestation"]
-                    not in ("none", "device_free_firmware", "device_home_firmware")
+                    not in (
+                        "none",
+                        "device_free_firmware",
+                        "device_home_firmware",
+                        "flash_device_read_verified",
+                        "flash_device_backup_verified",
+                        "firmware_recovery_verified",
+                    )
                     or type(submitted) is not bool
                     or submitted != (card["state"] == "awaiting_approval")
                     or (

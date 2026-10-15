@@ -4,11 +4,15 @@ import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from time import monotonic
 from typing import Any
+
+from .console_logs import console_line
 
 
 class Store:
     def __init__(self, path: Path) -> None:
+        self._console_jobs: dict[str, float] = {}
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -132,6 +136,23 @@ class Store:
             (state, result, json.dumps(diagnostic) if diagnostic else None, terminal, job_id),
         )
         self.db.commit()
+        self._console_state(job_id, state)
+
+    def _console_state(self, job_id: str, state: str) -> None:
+        # Observability must never affect a committed job or its authorization.
+        try:
+            if state == "running" and job_id not in self._console_jobs:
+                if len(self._console_jobs) >= 64:
+                    self._console_jobs.pop(next(iter(self._console_jobs)))
+                self._console_jobs[job_id] = monotonic()
+                console_line(job_id, "started")
+            elif state in ("succeeded", "failed", "cancelled", "needs_review"):
+                started = self._console_jobs.pop(job_id, None)
+                if started is not None:
+                    elapsed = max(0.0, monotonic() - started)
+                    console_line(job_id, f"{state}; elapsed {elapsed:.1f}s")
+        except Exception:
+            pass
 
     def firmware_current(self, device_id: str, principal: str) -> dict[str, Any] | None:
         row = self.db.execute(
@@ -203,6 +224,7 @@ class Store:
             if guard() is not True:
                 raise ValueError("firmware_final_commit_not_authorized")
             self.db.commit()
+            self._console_state(job_id, "succeeded")
         except BaseException:
             self.db.rollback()
             raise
