@@ -9,7 +9,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
-from cardputer_mcp.build_locations import build_location, claim_build_directory
+from cardputer_mcp.build_locations import (
+    build_directory,
+    build_location,
+    claim_build_directory,
+    identity_receipt,
+)
 from cardputer_mcp.firmware_build import FirmwareBuild
 from cardputer_mcp.store import Store
 
@@ -50,7 +55,16 @@ class DurableBuildArtifactTests(unittest.TestCase):
         self.store.put_plan(plan_hash, plan)
         self.store.add_job(job, plan_hash)
         self.store.set_job(job, "running")
-        root = claim_build_directory(self.state, self.project.build_root, fingerprint, environment)
+        if self.project.build_root is None:
+            # Reconstruct an existing legacy slot; current Windows path limits
+            # apply to new builds, not read-only resolution of old receipts.
+            root = build_directory(self.state, None, fingerprint, environment)
+            root.mkdir(parents=True)
+            (root / "broker-build-identity.json").write_text(
+                json.dumps(identity_receipt(self.state, None, fingerprint, environment))
+            )
+        else:
+            root = claim_build_directory(self.state, self.project.build_root, fingerprint, environment)
 
         def receipt(name, data):
             path = root / name
