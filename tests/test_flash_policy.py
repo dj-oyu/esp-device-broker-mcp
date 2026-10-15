@@ -118,6 +118,7 @@ async def env(tmp_path):
         build_hash = digest_plan(build_plan)
         store.put_plan(build_hash, build_plan)
         store.add_job("build-one", build_hash)
+        store.set_job("build-one", "running")
         fixture.manifest.update(
             build_job_id="build-one",
             build_plan_hash=build_hash,

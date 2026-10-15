@@ -26,6 +26,7 @@ from .device_observation import DeviceObservation
 from .firmware_build import BuildPreflightFailure
 from .flash_lifecycle import FlashFailure
 from .flash_manifest import FlashAdmissionError
+from .flash_policy import FlashAuthorization
 from .home_line import HomeLineProbe
 from .logs import Event, LogBook
 from .models import (
@@ -221,7 +222,7 @@ class Broker:
         self.device_observations: dict[str, RetainedDeviceObservation] = {}
         self.capture_policies: Any = None
         self.policy_jobs: dict[str, Any] = {}
-        from .flash_policy import FlashAuthorization, FlashPolicies
+        from .flash_policy import FlashPolicies
 
         self.flash_policies = FlashPolicies(self)
         self.flash_policy_jobs: dict[str, FlashAuthorization] = {}
@@ -1191,6 +1192,8 @@ class Broker:
             or not self._execution_intent_binding_live(intent)
             or not self.flash_policies.live(flash_authorization, payload)
             or self._execution_capacity_full()
+            or store.record_count("jobs") >= 10000
+            or store.job(job_id) is not None
         ):
             raise BrokerError("flash_policy_no_longer_valid")
         try:
@@ -1845,6 +1848,7 @@ class Broker:
                             plan: dict[str, Any] = plan,
                             lease: Session = lease,
                             capture_principal: str | None = capture_principal,
+                            flash_authorization: FlashAuthorization | None = flash_authorization,
                         ) -> bool:
                             current = self.session
                             if (
