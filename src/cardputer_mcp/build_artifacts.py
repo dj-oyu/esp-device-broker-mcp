@@ -22,18 +22,28 @@ class BuildArtifacts:
         self._records: dict[str, tuple[str, Path, dict[str, Any]]] = {}
         self._lock = threading.RLock()
 
+    def _connect(self, mode: str) -> sqlite3.Connection:
+        if self.history is None:
+            raise ValueError("owned_build_artifact_not_available")
+        return sqlite3.connect(self.history.resolve().as_uri() + "?mode=" + mode, uri=True)
+
     @staticmethod
-    def _plan(db: sqlite3.Connection, job_id: str, principal: str) -> tuple[str, dict[str, Any], str]:
+    def _plan(
+        db: sqlite3.Connection, job_id: str, principal: str
+    ) -> tuple[str, dict[str, Any], str]:
         row = db.execute(
             "SELECT j.plan_hash,p.payload,j.state FROM jobs j JOIN plans p ON p.hash=j.plan_hash "
-            "WHERE j.id=?", (job_id,),
+            "WHERE j.id=?",
+            (job_id,),
         ).fetchone()
         if row is None:
             raise ValueError("owned_build_artifact_not_available")
         plan = json.loads(row[1])
         if (
-            not principal or plan.get("build_principal") != principal
-            or plan.get("test") != "firmware_build" or plan.get("job_id") != job_id
+            not principal
+            or plan.get("build_principal") != principal
+            or plan.get("test") != "firmware_build"
+            or plan.get("job_id") != job_id
         ):
             raise ValueError("owned_build_artifact_not_available")
         return row[0], plan, row[2]
@@ -45,10 +55,11 @@ class BuildArtifacts:
             if self.history is not None:
                 # Workers use a short-lived connection, never the loop-owned Store connection.
                 # The reference is inert until the existing job success commit completes.
-                with closing(sqlite3.connect(self.history)) as db, db:
+                with closing(self._connect("rw")) as db, db:
                     digest, plan, state = self._plan(db, job_id, principal)
                     if (
-                        state != "running" or manifest.get("build_job_id") != job_id
+                        state != "running"
+                        or manifest.get("build_job_id") != job_id
                         or manifest.get("build_plan_hash") != digest
                         or manifest.get("fingerprint") != plan.get("fingerprint")
                     ):
@@ -76,20 +87,23 @@ class BuildArtifacts:
     def reference(self, job_id: str, principal: str, project_id: str) -> dict[str, Any]:
         if self.history is None:
             raise ValueError("owned_build_artifact_not_available")
-        with closing(sqlite3.connect(self.history)) as db:
+        with closing(self._connect("ro")) as db:
             digest, plan, state = self._plan(db, job_id, principal)
             row = db.execute(
                 "SELECT payload FROM build_artifact_references WHERE job_id=? AND principal=?",
                 (job_id, principal),
             ).fetchone()
             if (
-                state != "succeeded" or plan.get("project_id") != project_id
-                or row is None or len(row[0].encode()) > 4096
+                state != "succeeded"
+                or plan.get("project_id") != project_id
+                or row is None
+                or len(row[0].encode()) > 4096
             ):
                 raise ValueError("owned_build_artifact_not_available")
             reference = json.loads(row[0])
             if (
-                not isinstance(reference, dict) or reference.get("project_id") != project_id
+                not isinstance(reference, dict)
+                or reference.get("project_id") != project_id
                 or reference.get("build_plan_hash") != digest
                 or reference.get("fingerprint") != plan.get("fingerprint")
             ):
@@ -99,7 +113,7 @@ class BuildArtifacts:
     def discard(self, job_id: str) -> None:
         with self._lock:
             if self.history is not None:
-                with closing(sqlite3.connect(self.history)) as db, db:
+                with closing(self._connect("rw")) as db, db:
                     db.execute(
                         "DELETE FROM build_artifact_references WHERE job_id=? AND NOT EXISTS "
                         "(SELECT 1 FROM jobs WHERE id=? AND state='succeeded')",

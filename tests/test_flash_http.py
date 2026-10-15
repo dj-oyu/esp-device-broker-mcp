@@ -96,8 +96,11 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
     service.resident.firmware_flash.driver_factory = lambda *args: driver
     store = service.resident._store()
     build_plan = {
-        "job_id": "build-one", "test": "firmware_build", "build_principal": principal,
-        "project_id": "fixture", "fingerprint": fixture.manifest["fingerprint"],
+        "job_id": "build-one",
+        "test": "firmware_build",
+        "build_principal": principal,
+        "project_id": "fixture",
+        "fingerprint": fixture.manifest["fingerprint"],
     }
     digest = digest_plan(build_plan)
     store.put_plan(digest, build_plan)

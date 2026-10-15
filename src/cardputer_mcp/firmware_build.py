@@ -891,8 +891,12 @@ class FirmwareBuild:
             reference = self.artifacts.reference(job_id, principal, project_id)
             fingerprint = reference.get("fingerprint")
             environment = reference.get("environment_fingerprint")
+            if not isinstance(fingerprint, str) or not isinstance(environment, str):
+                raise BuildLocationError("build_output_identity_mismatch")
             build_root = getattr(project, "build_root", None)
-            if reference.get("build_location") != build_location(fingerprint, environment, build_root):
+            if reference.get("build_location") != build_location(
+                fingerprint, environment, build_root
+            ):
                 raise BuildLocationError("build_output_identity_mismatch")
             cached_root = build_directory(
                 self.settings.state_dir, build_root, fingerprint, environment
@@ -936,8 +940,10 @@ class FirmwareBuild:
             path = _checked_build_artifact(root, name)
             size = receipt.get("bytes")
             if (
-                type(size) is not int or not 0 < size <= 32 * 1024 * 1024
-                or path.stat().st_size != size or hash_file(path) != receipt.get("sha256")
+                type(size) is not int
+                or not 0 < size <= 32 * 1024 * 1024
+                or path.stat().st_size != size
+                or hash_file(path) != receipt.get("sha256")
             ):
                 raise BuildLocationError("build_output_identity_mismatch")
 
