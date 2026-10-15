@@ -930,7 +930,11 @@ class FirmwareBuild:
         if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= 32:
             raise BuildLocationError("build_output_identity_mismatch")
         seen = set()
-        for receipt in [*artifacts, manifest.get("flash_layout"), manifest.get("flash_security")]:
+        receipts: list[tuple[Any, int | None]] = [(receipt, None) for receipt in artifacts]
+        receipts.extend(
+            [(manifest.get("flash_layout"), 65536), (manifest.get("flash_security"), 1048576)]
+        )
+        for receipt, limit in receipts:
             if not isinstance(receipt, dict) or not isinstance(receipt.get("name"), str):
                 raise BuildLocationError("build_output_identity_mismatch")
             name = receipt["name"]
@@ -939,9 +943,11 @@ class FirmwareBuild:
             seen.add(name)
             path = _checked_build_artifact(root, name)
             size = receipt.get("bytes")
+            if limit is None:
+                limit = (64 if name.endswith(".elf") else 32) * 1024 * 1024
             if (
                 type(size) is not int
-                or not 0 < size <= 32 * 1024 * 1024
+                or not 0 < size <= limit
                 or path.stat().st_size != size
                 or hash_file(path) != receipt.get("sha256")
             ):

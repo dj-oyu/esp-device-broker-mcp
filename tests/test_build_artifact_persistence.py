@@ -41,7 +41,9 @@ class DurableBuildArtifactTests(unittest.TestCase):
         )
         self.builder = FirmwareBuild(self.settings, self.history)
 
-    def publish(self, job="build-0", *, finish=True, publish=True, worker=False):
+    def publish(
+        self, job="build-0", *, finish=True, publish=True, worker=False, elf_bytes=None
+    ):
         fingerprint = hashlib.sha256(job.encode()).hexdigest()
         environment = "e" * 64
         plan = dict(
@@ -74,7 +76,10 @@ class DurableBuildArtifactTests(unittest.TestCase):
             path.write_bytes(data)
             return dict(name=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
 
-        artifacts = [receipt("app.bin", b"firmware"), receipt("app.elf", b"ELF-fixture")]
+        artifacts = [
+            receipt("app.bin", b"firmware"),
+            receipt("app.elf", b"ELF-fixture" if elf_bytes is None else elf_bytes),
+        ]
         manifest = dict(
             schema_version=1,
             build_job_id=job,
@@ -152,6 +157,18 @@ class DurableBuildArtifactTests(unittest.TestCase):
             root.symlink_to(moved, target_is_directory=True)
         except OSError:
             self.skipTest("symlink privilege unavailable")
+        with self.assertRaises(ValueError):
+            self.context()
+
+    def test_large_elf_remains_owned_and_hash_verified_after_restart(self):
+        data = b"E" * (33 * 1024 * 1024)
+        root, manifest = self.publish(elf_bytes=data)
+        self.restart()
+        self.assertEqual((root, manifest), self.context())
+        with self.assertRaises(ValueError):
+            self.context(owner="bob")
+        with (root / "app.elf").open("r+b") as handle:
+            handle.write(b"X")
         with self.assertRaises(ValueError):
             self.context()
 
