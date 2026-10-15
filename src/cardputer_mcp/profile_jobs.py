@@ -10,7 +10,7 @@ from .build_locations import BuildLocationError
 from .build_process import ProcessDeadlineExpired
 from .firmware_build import BuildPreflightFailure, hash_file
 from .logs import Event
-from .models import CancelRequest, ExecuteRequest, PrepareRequest, TestName
+from .models import CancelRequest, ExecuteRequest, Origin, PrepareRequest, TestName
 from .source_snapshot import SourceError
 
 if TYPE_CHECKING:
@@ -190,6 +190,52 @@ class ProfileJobs:
             self._stop(plan, "client_cancelled")
             return {**job, "stop_requested": True, "requires_review": False}
         return self.broker.job(request.job_id)
+
+    def operator_cancellable(
+        self, plan: dict[str, Any] | None, principal: str, origin: str
+    ) -> bool:
+        return bool(
+            origin == Origin.LOCAL.value
+            and self._authorized(principal, origin)
+            and self._operator_plan(plan)
+        )
+
+    def _operator_plan(self, plan: dict[str, Any] | None) -> bool:
+        return bool(
+            plan is not None
+            and plan.get("version") == 2
+            and plan.get("execution_context") == "registered_project"
+            and plan.get("test") in PROFILE_TESTS
+            and plan.get("broker_epoch") == self.broker.epoch
+            and isinstance(plan.get("project_id"), str)
+            and plan["project_id"] in self.broker.settings.build_projects
+        )
+
+    def operator_cancel(
+        self, job_id: str, plan_hash: str, broker_epoch: str, principal: str, origin: str
+    ) -> dict[str, Any]:
+        # Separate local stop authority: never impersonate or replace the plan owner.
+        if origin != Origin.LOCAL.value or not self._authorized(principal, origin):
+            raise BrokerError("local_operator_required")
+        store = self.broker._store()
+        job = store.job(job_id)
+        if broker_epoch != self.broker.epoch or job is None or job["plan_hash"] != plan_hash:
+            raise BrokerError("stale_operator_snapshot")
+        plan = store.plan(plan_hash)
+        if (
+            not self._operator_plan(plan)
+            or plan is None
+            or plan.get("job_id") != job_id
+            or digest_plan(plan) != plan_hash
+        ):
+            raise BrokerError("registered_project_cancel_required")
+        if job["state"] == "queued":
+            store.set_job(job_id, "cancelled", "operator_cancelled")
+        elif job["state"] == "running":
+            self._stop(plan, "operator_cancelled")
+            return {**job, "stop_requested": True, "requires_review": False}
+        # A completion race is read-only; it cannot change a terminal outcome.
+        return self.broker.job(job_id)
 
     def _stop(self, plan: dict[str, Any], reason: str) -> None:
         self.stops.setdefault(plan["job_id"], reason)

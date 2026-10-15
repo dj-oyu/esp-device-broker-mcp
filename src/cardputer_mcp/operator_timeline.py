@@ -115,6 +115,7 @@ RESULTS = (
             "firmware_flash_completed",
             "firmware_restore_completed",
             "client_cancelled",
+            "operator_cancelled",
             "execution_deadline_expired",
             "profile_or_principal_no_longer_valid",
             "profile_plan_inconsistent",

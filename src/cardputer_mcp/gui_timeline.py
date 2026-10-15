@@ -115,7 +115,7 @@ CANCEL_UNCERTAIN = (
     "Cancellation outcome unknown. Refresh status; no automatic retry or device release."
 )
 CANCEL_REJECTED = (
-    "Cancellation was rejected. Existing owner authorization is required; refresh status."
+    "Cancellation was rejected. Local operator control is required; refresh status."
 )
 CANCEL_REVIEW = (
     "Cleanup or device state requires review. Stop completion and device release are not confirmed."

@@ -141,15 +141,20 @@ GUI 操作用のローカル token は公式 Tunnel client に渡しません。
 GUI の operator API は local_cli + control の認証だけを受け付け、Tunnel 用 remote_mcp では操作できません。
 クラウド側での接続可否は、実際の tools/list と device_status が成功するまで未確認です。
 
-## Cancel an owned registered-project job
+## Cancel a registered-project job
 
 A queued/running source or build card can show **Cancel job <exact job ID>** in
-its header. The broker advertises this action only when the GUI's authenticated
-local control principal and origin own that registered-project job. The action
-reuses the existing profile-job cancellation path. A local operator key does not
-gain authority over a remote/different principal's job, legacy lease-bound work,
-or flash/restore/device operations. Those retain their existing requesting-client
-and lease requirements. No credential, capability or lease is copied into the GUI.
+its header. An authenticated local operator with control can stop a registered
+project's source/build job regardless of its requesting principal/origin. This is
+a dedicated local stop authority; the plan owner remains unchanged. Cancellation
+uses the existing profile worker/process cleanup path and records operator_cancelled
+when cleanup is confirmed. Uncertain cleanup retains its original needs_review code.
+
+Remote clients still require their own job's principal/origin for MCP cancel_job;
+they cannot use the local operator route. This stop authority grants no execution,
+artifact-use, lease-acquisition or flash/restore/device-operation permission.
+Legacy lease-bound work, unregistered projects and other job types are rejected.
+No credential, capability or lease is copied into the GUI.
 
 One click sends one exact job/plan/broker-epoch request. Repeated clicks, refreshes
 and lost responses do not replay cancellation. An accepted request displays a

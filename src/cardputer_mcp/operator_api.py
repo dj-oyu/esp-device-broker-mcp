@@ -9,7 +9,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .broker import Broker, BrokerError
 from .capture_policy import CapturePolicyError
-from .models import CancelRequest, Digest, Identifier, Origin
+from .models import Digest, Identifier, Origin
 from .operator_timeline import OperatorTimeline
 from .plan_approval import PlanApprovals
 
@@ -148,15 +148,9 @@ class OperatorAPI:
         self.plans = PlanApprovals(broker)
         self.timeline = OperatorTimeline(broker, self.plans)
 
-    def _owned_profile(self, plan: dict[str, Any] | None, principal: OperatorPrincipal) -> bool:
-        return bool(
-            plan is not None
-            and plan.get("version") == 2
-            and plan.get("execution_context") == "registered_project"
-            and plan.get("test") in ("firmware_build", "firmware_fetch_source")
-            and plan.get("principal_id") == principal.principal_id
-            and plan.get("origin") == principal.origin.value
-            and self.broker.profile_jobs._authorized(principal.principal_id, principal.origin.value)
+    def _operator_profile(self, plan: dict[str, Any] | None, principal: OperatorPrincipal) -> bool:
+        return self.broker.profile_jobs.operator_cancellable(
+            plan, principal.principal_id, principal.origin.value
         )
 
     @staticmethod
@@ -302,22 +296,14 @@ class OperatorAPI:
                     plan = self.broker._store().plan(job["plan_hash"]) if job else None
                     card["cancel_available"] = bool(
                         card["state"] in ("queued", "running")
-                        and self._owned_profile(plan, principal)
+                        and self._operator_profile(plan, principal)
                     )
             elif path == "/operator/job-cancel":
                 cancel_job = CancelJob.model_validate(payload)
-                job = self.broker._store().job(cancel_job.job_id)
-                if (
-                    cancel_job.broker_epoch != self.broker.epoch
-                    or job is None
-                    or job["plan_hash"] != cancel_job.plan_hash
-                ):
-                    raise BrokerError("stale_operator_snapshot")
-                plan = self.broker._store().plan(job["plan_hash"])
-                if not self._owned_profile(plan, principal):
-                    raise BrokerError("owned_registered_project_plan_required")
-                cancelled = self.broker.profile_jobs.cancel(
-                    CancelRequest(job_id=cancel_job.job_id),
+                cancelled = self.broker.profile_jobs.operator_cancel(
+                    cancel_job.job_id,
+                    cancel_job.plan_hash,
+                    cancel_job.broker_epoch,
                     principal.principal_id,
                     principal.origin.value,
                 )
