@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -1850,6 +1851,7 @@ class Broker:
                             lease: Session = lease,
                             capture_principal: str | None = capture_principal,
                             flash_authorization: FlashAuthorization | None = flash_authorization,
+                            committing: bool = False,
                         ) -> bool:
                             current = self.session
                             if (
@@ -1888,7 +1890,9 @@ class Broker:
                                 or (
                                     self.flash_policy_jobs.get(plan["job_id"])
                                     is flash_authorization
-                                    and self.flash_policies.live(flash_authorization, plan)
+                                    and self.flash_policies.live(
+                                        flash_authorization, plan, committing=committing
+                                    )
                                 )
                             )
 
@@ -2070,7 +2074,9 @@ class Broker:
                     try:
                         completed = result.code if isinstance(result, BackendResult) else result
                         if plan["test"] in {item.value for item in FLASH_TESTS}:
-                            self.firmware_flash.commit_success(plan, completed, flash_live)
+                            self.firmware_flash.commit_success(
+                                plan, completed, partial(flash_live, committing=True)
+                            )
                         elif plan["test"] == TestName.SOURCE.value:
                             self.firmware_source.commit_success(plan, completed, source_live)
                         else:

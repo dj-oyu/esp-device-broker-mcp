@@ -218,7 +218,8 @@ async def test_exact_owned_source_receipt_auto_flash_commits_lkg_once(env):
     assert not prepared["approval_required"]
     assert not env.execute(prepared)["deduplicated"]
     await env.broker.queue.join()
-    assert env.broker.job("automatic")["state"] == "succeeded"
+    assert env.broker.job("automatic")["state"] == "succeeded", env.broker.job("automatic")
+    assert env.store.firmware_current("fixture", "alice")["completed_job"] == "automatic"
     assert env.store.db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
     assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
     assert env.execute(prepared)["deduplicated"]
@@ -419,3 +420,28 @@ async def test_draining_cancelled_queue_discards_transient_permission(env):
     assert not env.broker.flash_policy_jobs and env.broker.queue.empty()
     assert env.driver.writes == before
     assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
+
+
+async def test_second_atomic_commit_guard_rechecks_policy_and_rolls_back(env):
+    env.configure()
+    prepared = env.prepare("atomic-revoke", build_job_id="build-one")
+    original = env.store.finish_firmware
+    previous = env.store.firmware_current("fixture", "alice")
+    calls = 0
+
+    def finish(job_id, result, promotion, guard, *args):
+        def guarded():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                env.configure(env.policy.model_copy(update={"enabled": False}))
+            return guard()
+
+        return original(job_id, result, promotion, guarded, *args)
+
+    env.store.finish_firmware = finish
+    env.execute(prepared)
+    await env.broker.queue.join()
+    assert calls == 2
+    assert env.broker.job("atomic-revoke")["state"] == "needs_review"
+    assert env.store.firmware_current("fixture", "alice") == previous

@@ -76,7 +76,9 @@ class FlashPolicies:
         )
         return FlashAuthorization(digest, _digest(registration), _digest(project), lease, intent)
 
-    def _binding_live(self, token: FlashAuthorization, plan: dict[str, Any]) -> bool:
+    def _binding_live(
+        self, token: FlashAuthorization, plan: dict[str, Any], *, committing: bool = False
+    ) -> bool:
         """No external callbacks or source rehashes; safe after every auth callback."""
         from .broker import digest_plan
 
@@ -111,16 +113,26 @@ class FlashPolicies:
                 job is None
                 or (
                     job["plan_hash"] == token.plan_hash
-                    and job["state"] in ("queued", "running")
-                    and (job["state"] != "running" or broker.active_job == token.intent.job_id)
+                    and (
+                        job["state"] in ("queued", "running")
+                        or (
+                            committing
+                            and broker._store().db.in_transaction
+                            and job["state"] == "succeeded"
+                            and job["result"] == "firmware_flash_completed"
+                        )
+                    )
+                    and (job["state"] == "queued" or broker.active_job == token.intent.job_id)
                 )
             )
         )
 
-    def _live(self, token: FlashAuthorization, plan: dict[str, Any]) -> bool:
+    def _live(
+        self, token: FlashAuthorization, plan: dict[str, Any], *, committing: bool = False
+    ) -> bool:
         from .broker import digest_plan
 
-        if not self._binding_live(token, plan):
+        if not self._binding_live(token, plan, committing=committing):
             return False
         for job_id, digest in (
             (plan["build_job_id"], token.build_hash),
@@ -138,9 +150,11 @@ class FlashPolicies:
                 return False
         return True
 
-    def live(self, token: FlashAuthorization, plan: dict[str, Any]) -> bool:
+    def live(
+        self, token: FlashAuthorization, plan: dict[str, Any], *, committing: bool = False
+    ) -> bool:
         try:
-            return self._live(token, plan)
+            return self._live(token, plan, committing=committing)
         except Exception:
             return False
 
