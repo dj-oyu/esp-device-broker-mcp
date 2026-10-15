@@ -448,3 +448,66 @@ async def test_second_atomic_commit_guard_rechecks_policy_and_rolls_back(env):
     assert calls == 2
     assert env.broker.job("atomic-revoke")["state"] == "needs_review"
     assert env.store.firmware_current("fixture", "alice") == previous
+
+
+@pytest.mark.parametrize("phase", ["dispatch", "prewrite", "commit"])
+@pytest.mark.parametrize("replacement", ["replace", "delete"])
+async def test_last_auth_callback_cannot_replace_owned_fetch_receipt(env, phase, replacement):
+    env.configure()
+    prepared = env.prepare("receipt-revoke", build_job_id="build-one")
+    env.execute(prepared)
+    before = env.driver.writes
+    previous = env.store.firmware_current("fixture", "alice")
+    fetch_hash = env.store.job("fetch-one")["plan_hash"]
+    calls = 0
+    changed = False
+    second_guard = False
+    original = env.store.finish_firmware
+    guard_calls = 0
+
+    def finish(job_id, result, promotion, guard, *args):
+        def guarded():
+            nonlocal guard_calls, second_guard
+            guard_calls += 1
+            second_guard = guard_calls == 2
+            return guard()
+
+        return original(job_id, result, promotion, guarded, *args)
+
+    def current(*args):
+        nonlocal calls, changed
+        calls += 1
+        trigger = (
+            (phase == "dispatch" and calls == 3)
+            or (phase == "prewrite" and env.driver.active)
+            or (phase == "commit" and second_guard)
+        )
+        if trigger and not changed:
+            changed = True
+            diagnostic = (
+                json.dumps({"source": {"source_receipt": "b" * 64}})
+                if replacement == "replace"
+                else None
+            )
+            env.store.db.execute(
+                "UPDATE jobs SET diagnostic=? WHERE id='fetch-one'", (diagnostic,)
+            )
+            if phase != "commit":
+                env.store.db.commit()
+            fetched = env.store.job("fetch-one")
+            assert fetched["state"] == "succeeded" and fetched["plan_hash"] == fetch_hash
+        return True
+
+    env.store.finish_firmware = finish
+    env.broker.principal_valid = current
+    await env.broker.queue.join()
+    assert changed
+    expected = "cancelled" if phase == "dispatch" else "needs_review"
+    assert env.broker.job("receipt-revoke")["state"] == expected, env.broker.job("receipt-revoke")
+    assert env.store.firmware_current("fixture", "alice") == previous
+    if phase != "commit":
+        assert env.driver.writes == before
+    else:
+        assert guard_calls == 2
+        assert env.store.job("fetch-one")["diagnostic"]["source"]["source_receipt"] == env.receipt
+    assert env.driver.closed and not env.broker.flash_policy_jobs
