@@ -167,6 +167,8 @@ class BuildProcess:
                         raise win.WindowsProcessError("owned_process_handles_missing")
                     if self.stop_requested.is_set():
                         raise ValueError("build_interrupted_needs_review")
+                    if monitor is not None:
+                        monitor()
                     api.resume_thread(thread)
                     api.close_handle(thread)
                     self.owner._handles.thread = None

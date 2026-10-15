@@ -1,0 +1,350 @@
+"""Registered source/build jobs: authenticated profile scope, no USB lease."""
+
+import asyncio
+import hashlib
+import sqlite3
+from typing import TYPE_CHECKING, Any
+
+from .broker import BrokerError, digest_plan
+from .build_locations import BuildLocationError
+from .build_process import ProcessDeadlineExpired
+from .firmware_build import BuildPreflightFailure, hash_file
+from .logs import Event
+from .models import CancelRequest, ExecuteRequest, PrepareRequest, TestName
+from .source_snapshot import SourceError
+
+if TYPE_CHECKING:
+    from .broker import Broker
+
+PROFILE_TESTS = frozenset({TestName.SOURCE.value, TestName.BUILD.value})
+# Whole-job limits, independent of connection lifetime and physical leases.
+PROFILE_SECONDS = {TestName.SOURCE.value: 180, TestName.BUILD.value: 1800}
+
+
+class ProfileJobs:
+    def __init__(self, broker: "Broker") -> None:
+        self.broker = broker
+        self.queue: asyncio.Queue[str | None] = asyncio.Queue(broker.settings.max_queue)
+        self.worker: asyncio.Task[None] | None = None
+        self.active: str | None = None
+        self.stops: dict[str, str] = {}
+        self.deadline = 0.0
+        self.uncertain = False
+
+    def _uncertain(self) -> bool:
+        return bool(
+            self.uncertain
+            or self.broker.firmware_source.snapshots.uncertain
+            or self.broker.firmware_build.output_uncertain
+            or self.broker.firmware_build.process.uncertain
+        )
+
+    def start(self) -> None:
+        self.worker = asyncio.create_task(self._work(), name="registered-project-worker")
+
+    def _authorized(self, principal: str, origin: str) -> bool:
+        try:
+            valid = self.broker.principal_valid
+            return bool(
+                principal
+                and valid is not None
+                and valid(principal, origin, frozenset({"read", "control"})) is True
+            )
+        except Exception:
+            return False
+
+    def _registration(self, project_id: str) -> str:
+        project = self.broker.settings.build_projects.get(project_id)
+        if project is None:
+            raise BrokerError("registered_build_project_required")
+        return hashlib.sha256(project.model_dump_json().encode()).hexdigest()
+
+    def _sync_settings(self) -> None:
+        self.broker.firmware_source.settings = self.broker.settings
+        self.broker.firmware_source.snapshots.settings = self.broker.settings
+        self.broker.firmware_build.settings = self.broker.settings
+
+    def prepare(self, request: PrepareRequest, principal: str, origin: str) -> dict[str, Any]:
+        broker, store = self.broker, self.broker._store()
+        if broker.closing or not self._authorized(principal, origin):
+            raise BrokerError("principal_not_authorized")
+        if self._uncertain() or store.needs_review():
+            raise BrokerError("recovery_review_required")
+        if request.test.value not in PROFILE_TESTS or request.project_id is None:
+            raise BrokerError("registered_build_project_required")
+        registration = self._registration(request.project_id)
+        self._sync_settings()
+        if request.test == TestName.SOURCE:
+            details = broker.firmware_source.prepare(request, principal)
+            storage = {"source_cache": broker.firmware_source.snapshots.usage(request.project_id)}
+        else:
+            if request.source_receipt is not None:
+                broker.firmware_source.authorize_receipt(
+                    request.project_id, request.source_receipt, principal
+                )
+            details = broker.firmware_build.prepare(
+                request.project_id, principal, request.source_receipt
+            )
+            storage = broker.firmware_build.storage(request.project_id)
+        plan = dict(
+            version=2,
+            execution_context="registered_project",
+            broker_epoch=broker.epoch,
+            job_id=request.job_id,
+            test=request.test.value,
+            principal_id=principal,
+            origin=origin,
+            registration_sha256=registration,
+            execution_seconds=PROFILE_SECONDS[request.test.value],
+            **details,
+            **(
+                {
+                    "profile_sha256": hash_file(
+                        broker.settings.build_projects[request.project_id].trusted_profile
+                    )
+                }
+                if request.test == TestName.BUILD
+                else {}
+            ),
+        )
+        digest = digest_plan(plan)
+        existing = store.job(request.job_id)
+        if existing and existing["plan_hash"] != digest:
+            raise BrokerError("job_id_conflict")
+        if store.plan(digest) is None and store.record_count("plans") >= 10000:
+            raise BrokerError("history_full_archive_offline")
+        # Callbacks above may invalidate configuration or authorization.
+        if not self._binding_live(plan):
+            raise BrokerError("profile_or_principal_no_longer_valid")
+        store.put_plan(digest, plan)
+        return dict(plan_hash=digest, plan=plan, storage=storage, approval_required=False)
+
+    def _plan(self, digest: str, principal: str, origin: str) -> dict[str, Any]:
+        plan = self.broker._store().plan(digest)
+        if (
+            plan is None
+            or digest_plan(plan) != digest
+            or plan.get("version") != 2
+            or plan.get("execution_context") != "registered_project"
+            or plan.get("test") not in PROFILE_TESTS
+            or plan.get("principal_id") != principal
+            or plan.get("origin") != origin
+        ):
+            raise BrokerError("owned_registered_project_plan_required")
+        return plan
+
+    def _binding_live(self, plan: dict[str, Any]) -> bool:
+        broker = self.broker
+        try:
+            registration = self._registration(plan["project_id"])
+            authorized = self._authorized(plan["principal_id"], plan["origin"])
+            return bool(
+                authorized
+                and not broker.closing
+                and broker._state_lock.is_locked
+                and plan["broker_epoch"] == broker.epoch
+                and registration == plan["registration_sha256"]
+                and self._registration(plan["project_id"]) == registration
+                and (
+                    plan["test"] != TestName.BUILD.value
+                    or hash_file(broker.settings.build_projects[plan["project_id"]].trusted_profile)
+                    == plan["profile_sha256"]
+                )
+            )
+        except Exception:
+            return False
+
+    def execute(self, request: ExecuteRequest, principal: str, origin: str) -> dict[str, Any]:
+        if not self._authorized(principal, origin):
+            raise BrokerError("principal_not_authorized")
+        plan = self._plan(request.plan_hash, principal, origin)
+        store = self.broker._store()
+        existing = store.job(plan["job_id"])
+        if existing:
+            if existing["plan_hash"] != request.plan_hash:
+                raise BrokerError("job_id_conflict")
+            return {**existing, "deduplicated": True}
+        if not self._binding_live(plan):
+            raise BrokerError("profile_or_principal_no_longer_valid")
+        if self._uncertain() or store.needs_review():
+            raise BrokerError("recovery_review_required")
+        if self.queue.qsize() >= self.broker.settings.max_queue:
+            raise BrokerError("queue_full")
+        if store.record_count("jobs") >= 10000:
+            raise BrokerError("history_full_archive_offline")
+        # No await/callback between durable enqueue and queue insertion.
+        store.add_job(plan["job_id"], request.plan_hash)
+        self.queue.put_nowait(plan["job_id"])
+        return {**self.broker.job(plan["job_id"]), "deduplicated": False}
+
+    def cancel(self, request: CancelRequest, principal: str, origin: str) -> dict[str, Any]:
+        if not self._authorized(principal, origin):
+            raise BrokerError("principal_not_authorized")
+        job = self.broker._store().job(request.job_id)
+        if job is None:
+            raise BrokerError("job_not_found")
+        plan = self._plan(job["plan_hash"], principal, origin)
+        if job["state"] == "queued":
+            self.broker._store().set_job(request.job_id, "cancelled", "client_cancelled")
+        elif job["state"] == "running":
+            self._stop(plan, "client_cancelled")
+            return {**job, "stop_requested": True, "requires_review": False}
+        return self.broker.job(request.job_id)
+
+    def _stop(self, plan: dict[str, Any], reason: str) -> None:
+        self.stops.setdefault(plan["job_id"], reason)
+        if plan["test"] == TestName.SOURCE.value:
+            self.broker.firmware_source.request_stop(plan["job_id"])
+        else:
+            self.broker.firmware_build.request_stop(plan["job_id"])
+
+    def _live(self, plan: dict[str, Any]) -> bool:
+        if (
+            plan["job_id"] in self.stops
+            or self.broker.clock() >= self.deadline
+            or not self._binding_live(plan)
+        ):
+            return False
+        job = self.broker._store().job(plan["job_id"])
+        return bool(
+            job is not None
+            and job["state"] == "running"
+            and job["plan_hash"] == digest_plan(plan)
+            and self.broker.clock() < self.deadline
+            and plan["job_id"] not in self.stops
+        )
+
+    async def _watch(self, plan: dict[str, Any]) -> None:
+        while True:
+            if self.broker.clock() >= self.deadline:
+                self._stop(plan, "execution_deadline_expired")
+            elif not self._binding_live(plan):
+                self._stop(plan, "profile_or_principal_no_longer_valid")
+            await asyncio.sleep(0.1)
+
+    async def _work(self) -> None:
+        broker = self.broker
+        while True:
+            job_id = await self.queue.get()
+            try:
+                if job_id is None:
+                    return
+                store = broker._store()
+                job = store.job(job_id)
+                if job is None or job["state"] != "queued":
+                    continue
+                plan = store.plan(job["plan_hash"])
+                if plan is None or digest_plan(plan) != job["plan_hash"]:
+                    store.set_job(job_id, "needs_review", "profile_plan_inconsistent")
+                    continue
+                if self._uncertain() or store.needs_review() or not self._binding_live(plan):
+                    store.set_job(job_id, "cancelled", "profile_or_principal_no_longer_valid")
+                    continue
+                self._sync_settings()
+                self.active = job_id
+                self.deadline = broker.clock() + plan["execution_seconds"]
+                store.set_job(job_id, "running")
+                watch = asyncio.create_task(self._watch(plan))
+                source = plan["test"] == TestName.SOURCE.value
+
+                def stage(name: str, job: str = job_id, db: Any = store) -> None:
+                    db.set_stage(job, name)
+
+                def live(prepared: dict[str, Any] = plan) -> bool:
+                    return self._live(prepared)
+
+                committing = False
+                try:
+                    if source:
+                        broker.firmware_source.begin()
+                        result = await broker.firmware_source.execute(plan, stage, live)
+                    else:
+                        broker.firmware_build.begin()
+                        broker.firmware_build.authority = live
+                        result = await broker.firmware_build.execute(
+                            plan, stage, defer_publish=True
+                        )
+                    if not self._live(plan):
+                        self._stop(plan, "profile_or_principal_no_longer_valid")
+                        raise ValueError("profile_job_stopped")
+                    committing = True
+                    if source:
+                        broker.firmware_source.commit_success(plan, result, live)
+                    else:
+                        broker.firmware_build.commit_deferred(plan, live)
+                        store.set_job(job_id, "succeeded", result)
+                except Exception as failure:
+                    code = (
+                        failure.code
+                        if isinstance(
+                            failure, (SourceError, BuildPreflightFailure, BuildLocationError)
+                        )
+                        else "execution_deadline_expired"
+                        if isinstance(failure, ProcessDeadlineExpired)
+                        else "source_fetch_failed"
+                        if source
+                        else "firmware_build_failed"
+                    )
+                    if source:
+                        broker.firmware_source.record_failure(plan, code)
+                    else:
+                        broker.firmware_build.discard_deferred(job_id)
+                    if not self._live(plan):
+                        self._stop(
+                            plan,
+                            "execution_deadline_expired"
+                            if broker.clock() >= self.deadline
+                            else "profile_or_principal_no_longer_valid",
+                        )
+                    reason = self.stops.get(job_id)
+                    uncertain = (
+                        (
+                            committing
+                            and reason is None
+                            and not isinstance(failure, BuildPreflightFailure)
+                        )
+                        or isinstance(failure, sqlite3.Error)
+                        or broker.firmware_source.snapshots.uncertain
+                        or broker.firmware_source.active
+                        or broker.firmware_build.process.active
+                        or broker.firmware_build.process.uncertain
+                        or broker.firmware_build.output_uncertain
+                    )
+                    if broker.firmware_source.snapshots.uncertain:
+                        code = "source_cleanup_unconfirmed"
+                    elif broker.firmware_build.process.uncertain:
+                        code = "build_process_exit_unconfirmed"
+                    elif broker.firmware_build.output_uncertain:
+                        code = "build_output_release_unconfirmed"
+                    elif isinstance(failure, sqlite3.Error):
+                        code = "registered_project_state_inconsistent"
+                    state = "needs_review" if uncertain else "cancelled" if reason else "failed"
+                    outcome = code if uncertain else reason or code
+                    store.set_job(job_id, state, outcome, {"code": outcome})
+                    if uncertain:
+                        broker.logs.append(Event.REVIEW)
+                finally:
+                    watch.cancel()
+                    await asyncio.gather(watch, return_exceptions=True)
+                    broker.firmware_build.authority = None
+                    self.stops.pop(job_id, None)
+                    self.active = None
+            except Exception:
+                # A failure to read/write durable state cannot be represented as
+                # an ordinary job failure. Keep this lane closed until recovery.
+                self.uncertain = True
+                broker.logs.append(Event.REVIEW)
+            finally:
+                self.queue.task_done()
+
+    async def close(self) -> None:
+        if self.active is not None:
+            job = self.broker._store().job(self.active)
+            if job is not None:
+                plan = self.broker._store().plan(job["plan_hash"])
+                if plan is not None:
+                    self._stop(plan, "broker_shutdown")
+        if self.worker is not None:
+            await self.queue.put(None)
+            await asyncio.shield(self.worker)
+            self.worker = None

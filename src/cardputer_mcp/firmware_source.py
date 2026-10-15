@@ -133,7 +133,7 @@ class FirmwareSource:
         failure_code = diagnostic.get("code") if isinstance(diagnostic, dict) else None
         failed = (
             job is not None
-            and job["state"] == "needs_review"
+            and job["state"] in ("needs_review", "failed", "cancelled")
             and type(failure_code) is str
             and failure_code in SOURCE_ERROR_CODES
         )

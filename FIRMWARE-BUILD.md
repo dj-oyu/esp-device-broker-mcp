@@ -35,15 +35,42 @@ Neither fixed diagnostic contains native stderr or private paths.
 Only an explicit environment allowlist reaches the
 child. Ambient credentials and arbitrary exported variables are excluded.
 
-Acquire an authenticated lease, then call `prepare_test` with
-`test="firmware_build"`, `project_id="cardputer"` and a fresh `job_id`. Review and
-approve the immutable plan locally, then call `execute_test` with its hash; or
-submit `wait_for_approval=true` and approve via the existing GUI. Build requires
-manual approval even when mock automatic execution is enabled. The approval
-covers profile execution, Python/toolchain diagnostics, project build scripts and
-bounded output delivery to the original principal. Repeated execute calls return
-the durable job rather than rebuilding. Changed inputs invalidate the prepared
-plan. Interrupted or failed jobs need review; restart never restores authority.
+Call `prepare_test` with `test="firmware_build"`,
+`project_id="cardputer"`, a fresh `job_id` and optionally an owned source_receipt.
+A current authenticated control principal is required. Omit session: build and
+source fetch do not acquire a USB lease. The existing local project/profile
+registration authorizes execution within those registered inputs; no additional
+grant, approval screen or per-job APPROVE is required. Execute the exact returned
+plan_hash. wait_for_approval has no effect on these registered-profile jobs.
+No remote API can register projects, change paths/tools or expand repositories.
+
+Registering a build project trusts its scripts to run as the broker's local OS
+user, including code from selected commits in its registered repository. Public
+source acquisition only parses and stores bounded data; compiling it executes
+project code. Neither an environment allowlist nor Windows Job Object is a
+filesystem/network sandbox. Registered output roots constrain broker-managed
+output; they cannot constrain every write/read made by trusted build scripts.
+The existing free-space checks, artifact and log bounds are not a hard disk quota
+for arbitrary scripts. Do not register untrusted code for this execution mode.
+
+Exact plans, source/profile/tool fingerprints, current principal, receipt ownership
+and integrity are still checked. Repeated execute calls return the durable job
+rather than rebuilding. A connection disconnect does not cancel or replay work.
+The whole build job has an 1800-second execution deadline independent of transport
+or physical lease lifetime. Principal revocation/expiry, registration change,
+explicit cancellation or shutdown requests stop; actual process-tree exit and
+output-lock release are confirmed before allowing another job. Final manifest
+publication is performed on the broker loop after fresh authorization/configuration
+checks, without yielding before the durable success commit.
+
+Known preflight/compiler/source failures with confirmed cleanup are terminal
+failed jobs. Confirmed cancellation is terminal cancelled. They do not latch global
+review, so a corrected new job can run without restart or operator intervention.
+Uncertain process exit, output-lock release, durable state or final publication
+still fails closed as needs_review. Restart never replays jobs: new queued profile
+jobs are cancelled; interrupted running work requires review because completion
+and ownership are not established. Old approvals/needs_review records are neither
+deleted nor automatically acknowledged.
 
 The fixed build argument vector is external Python, external `tools/idf.py`, `-B`,
 the broker-generated directory, `build`. Canonical registered project identity plus source/profile hashes and external
@@ -66,7 +93,8 @@ ambient secret values are removed; arbitrary application secrets cannot be
 universally recognized, so local approval must consider log delivery.
 
 Cancellation of a running build requests termination and returns before shutdown
-is confirmed; poll `job_status`. It results in needs_review, never success/replay.
+is confirmed; poll `job_status`. Confirmed termination results in cancelled, never
+success/replay; unconfirmed termination remains needs_review.
 Windows assigns the suspended child atomically to a kill-on-close owned Job Object
 and inherits only NUL plus the two output pipes. Leader exit does not establish
 subtree exit. Failed teardown retains the owner and blocks broker lock release.
@@ -286,3 +314,15 @@ Windows output directories over 200 UTF-16 code units fail early with
 preflight does not guarantee that every external project-generated path fits
 its toolchain. Output slot locks are held through build, hashing and publication,
 and remain held when owned process termination is uncertain.
+
+## Upgrade with existing registrations
+
+Existing local profiles become the execution scope of current control principals;
+there is no new grant database, first-run screen or automatic profile registration.
+Deploying this behavior is a separate operator action. Retain private SDK/tool,
+cache/output-root settings. No production configuration is edited by this change.
+Old one-job source/build approvals stay recorded but are not converted into new
+plans or reused; prepare a fresh registered-project plan. Old needs_review records
+still require their existing explicit acknowledgement and are never cleared by
+upgrade. New normal failures/cancellations need no acknowledgement. No source,
+build artifact, backup or durable history GC is introduced.

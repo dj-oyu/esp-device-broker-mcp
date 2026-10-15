@@ -49,7 +49,8 @@ class RenewRequest(LeaseRequest):
     lease_seconds: int = Field(default=30, ge=1, le=300)
 
 
-class PrepareRequest(LeaseRequest):
+class PrepareRequest(StrictModel):
+    session: Capability | None = None
     job_id: Identifier
     test: TestName = TestName.DIAGNOSTICS
     project_id: Identifier | None = None
@@ -62,6 +63,8 @@ class PrepareRequest(LeaseRequest):
 
     @model_validator(mode="after")
     def flash_references(self) -> "PrepareRequest":
+        if self.test not in (TestName.SOURCE, TestName.BUILD) and self.session is None:
+            raise ValueError("device_session_required")
         if self.test == TestName.SOURCE:
             if (
                 self.project_id is None
@@ -104,12 +107,14 @@ class PrepareRequest(LeaseRequest):
         return self
 
 
-class ExecuteRequest(LeaseRequest):
+class ExecuteRequest(StrictModel):
+    session: Capability | None = None
     plan_hash: Digest
     wait_for_approval: bool = Field(default=False, strict=True)
 
 
-class CancelRequest(LeaseRequest):
+class CancelRequest(StrictModel):
+    session: Capability | None = None
     job_id: Identifier
 
 

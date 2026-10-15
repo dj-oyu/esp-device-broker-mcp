@@ -20,17 +20,19 @@ on:
       - 'src/cardputer_mcp/server.py'
       - 'src/cardputer_mcp/config.py'
       - 'src/cardputer_mcp/plan_approval.py'
+      - 'src/cardputer_mcp/profile_jobs.py'
+      - 'src/cardputer_mcp/store.py'
+      - 'tests/test_profile_jobs.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: flash-contract-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   checks:
+    concurrency:
+      group: flash-contract-checks-${{ github.ref }}-${{ github.sha }}
+      cancel-in-progress: true
     runs-on: windows-2022
     timeout-minutes: 20
     defaults:
@@ -69,9 +71,10 @@ jobs:
         run: |
           .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_flash*.py' -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Operator HTTP and MCP flash integration without hardware
+      - name: Source/build, authorization and device integration without hardware
+        timeout-minutes: 5
         run: |
-          .venv/Scripts/python.exe -m pytest -q tests/test_flash_http.py tests/test_source_http.py tests/test_source_snapshot.py tests/test_build_approval_integration.py tests/test_derby_smoke.py tests/test_derby_http.py tests/test_serial_backend.py tests/test_capture_broker.py tests/test_plan_approval.py
+          .venv/Scripts/python.exe -m pytest -vv --tb=short -o faulthandler_timeout=60 tests/test_flash_http.py tests/test_source_http.py tests/test_source_snapshot.py tests/test_profile_jobs.py tests/test_build_approval_integration.py tests/test_derby_smoke.py tests/test_derby_http.py tests/test_serial_backend.py tests/test_capture_broker.py tests/test_plan_approval.py tests/test_broker.py tests/test_review_invariants.py tests/test_session_safety_review.py tests/test_queued_principal_recheck.py tests/test_pending_execution.py tests/test_pending_execution_http.py tests/test_http_security.py tests/test_registry_http.py tests/test_work_sessions.py tests/test_operator_timeline.py tests/test_operator_timeline_http.py tests/test_gui_timeline.py tests/test_gui_timeline_state.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Source and build regression
         run: |
@@ -81,11 +84,45 @@ jobs:
         run: |
           .venv/Scripts/python.exe packaging/source_public_smoke.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  diagnostics:
+    concurrency:
+      group: flash-contract-diagnostics-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13.16'
+          architecture: x64
+      - name: Locked verification dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-deps uv==0.12.19
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv sync --frozen --no-install-project --python python
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv/Scripts/python.exe --no-deps uv-build==0.12.19
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python .venv/Scripts/python.exe --no-build-isolation --no-deps --editable .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Integration style diagnostics
+        if: success() || failure()
         run: |
           .venv/Scripts/python.exe packaging/check_flash_style.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Native Windows type checks against the same base
+        if: success() || failure()
         env:
           FLASH_BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
         run: |

@@ -331,7 +331,12 @@ class TimelineCard:
         else:
             plan_hash = _hex(plan_hash, 64)
             test = TestName(test).value
-            if backend not in ("mock", "serial"):
+            if backend not in ("mock", "serial", "registered_project"):
+                raise ValueError(INVALID_TIMELINE)
+            if backend == "registered_project" and test not in (
+                "firmware_build",
+                "firmware_fetch_source",
+            ):
                 raise ValueError(INVALID_TIMELINE)
         review = None
         if data["review"] is not None:
@@ -1632,6 +1637,8 @@ class _CardView:
                 if card.backend == "mock"
                 else " · SERIAL"
                 if card.backend == "serial"
+                else " · PROFILE"
+                if card.backend == "registered_project"
                 else ""
             )
         )

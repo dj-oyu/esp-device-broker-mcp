@@ -8,6 +8,8 @@ import re
 import shutil
 import stat
 import threading
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -84,6 +86,7 @@ class FixedDiagnosticFailure(BuildPreflightFailure):
             "registered_tool_resolution_ambiguous",
             "external_toolchain_resolution_changed",
             "node_requires_explicit_local_registration",
+            "build_inputs_changed",
         }:
             raise ValueError("invalid_build_diagnostic_code")
         self.code = code
@@ -306,6 +309,10 @@ class FirmwareBuild:
         self._lock = threading.RLock()
         self._committed_job: str | None = None
         self._build_lock: Any = None
+        self._pending: dict[str, tuple[str, Path, dict[str, Any]]] = {}
+        self.output_uncertain = False
+        self.authority: Callable[[], bool] | None = None
+        self._authority_monitor: Callable[[], None] | None = None
 
     @staticmethod
     def _registered_tools(project: Any) -> dict[str, Any]:
@@ -469,32 +476,54 @@ class FirmwareBuild:
             self._committed_job = None
             self.process.stop_requested.clear()
 
-    async def execute(self, plan: dict[str, Any], stage: Any) -> str:
+    async def execute(
+        self, plan: dict[str, Any], stage: Any, *, defer_publish: bool = False
+    ) -> str:
         self._check_cancelled()
         loop = asyncio.get_running_loop()
-        return await asyncio.to_thread(
-            self._execute, plan, lambda name: loop.call_soon_threadsafe(stage, name)
-        )
 
-    def _execute(self, plan: dict[str, Any], stage: Any) -> str:
+        async def authorized() -> bool:
+            return self.authority is not None and self.authority() is True
+
+        def monitor() -> None:
+            if asyncio.run_coroutine_threadsafe(authorized(), loop).result(timeout=5) is not True:
+                self.process.stop_requested.set()
+                raise ValueError("profile_or_principal_no_longer_valid")
+
+        self._authority_monitor = monitor if defer_publish else None
+        try:
+            return await asyncio.to_thread(
+                self._execute,
+                plan,
+                lambda name: loop.call_soon_threadsafe(stage, name),
+                defer_publish,
+            )
+        finally:
+            self._authority_monitor = None
+
+    def _execute(self, plan: dict[str, Any], stage: Any, defer_publish: bool = False) -> str:
         if self._build_lock is not None:
             raise BuildLocationError("build_output_in_use")
         try:
-            return self._execute_inner(plan, stage)
+            return self._execute_inner(plan, stage, defer_publish)
         finally:
-            if self._build_lock is not None and not (
-                getattr(self.process, "active", False) or getattr(self.process, "uncertain", False)
+            if (
+                self._build_lock is not None
+                and not self._pending
+                and not (
+                    getattr(self.process, "active", False)
+                    or getattr(self.process, "uncertain", False)
+                )
             ):
                 try:
-                    self._build_lock.release()
-                except Exception:
+                    self._release_output_lock()
+                except BuildLocationError:
                     with self._lock:
                         self.manifests.pop(plan.get("job_id", ""), None)
                         self._committed_job = None
-                    raise BuildLocationError("build_output_release_unconfirmed") from None
-                self._build_lock = None
+                    raise
 
-    def _execute_inner(self, plan: dict[str, Any], stage: Any) -> str:
+    def _execute_inner(self, plan: dict[str, Any], stage: Any, defer_publish: bool = False) -> str:
         self._check_cancelled()
         if os.name != "nt":
             raise ValueError("external_windows_idf_required")
@@ -525,6 +554,11 @@ class FirmwareBuild:
         if not system.is_absolute() or not powershell.is_file():
             raise ValueError("trusted_powershell_missing")
         stage("idf_profile")
+        run = (
+            partial(self.process.run, monitor=self._authority_monitor)
+            if self._authority_monitor is not None
+            else self.process.run
+        )
         output: list[str] = []
         output_bytes = 0
         stderr_seen = False
@@ -545,9 +579,7 @@ class FirmwareBuild:
             profile_args.extend(["-ExecutionPolicy", "RemoteSigned"])
         profile_args.extend(["-File", str(project.trusted_profile), "-e"])
         try:
-            code = self.process.run(
-                profile_args, env, project.project_dir, profile_output, timeout=30
-            )
+            code = run(profile_args, env, project.project_dir, profile_output, timeout=30)
         except ValueError:
             if stderr_seen:
                 logs.append("error: trusted profile export rejected or failed")
@@ -588,7 +620,7 @@ class FirmwareBuild:
             else:
                 version.append(line[:4096])
 
-        if self.process.run(
+        if run(
             [str(python), str(idf_py), "--version"],
             env,
             project.project_dir,
@@ -599,17 +631,13 @@ class FirmwareBuild:
         if not any(re.fullmatch(r"ESP-IDF v6\.0\.1", line.strip()) for line in version):
             raise FixedDiagnosticFailure("idf_version_mismatch_no_fallback")
         version.clear()
-        if self.process.run(
-            [str(python), "--version"], env, project.project_dir, version_output, timeout=30
-        ):
+        if run([str(python), "--version"], env, project.project_dir, version_output, timeout=30):
             raise FixedDiagnosticFailure("external_python_diagnostic_failed")
         compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
         if compiler is None:
             raise FixedDiagnosticFailure("external_toolchain_missing")
         version.clear()
-        if self.process.run(
-            [compiler, "--version"], env, project.project_dir, version_output, timeout=30
-        ):
+        if run([compiler, "--version"], env, project.project_dir, version_output, timeout=30):
             logs.append("error: external toolchain diagnostic failed; build not started")
             raise ToolchainDiagnosticFailure()
         registered_versions: dict[str, dict[str, str]] = {}
@@ -617,7 +645,7 @@ class FirmwareBuild:
         search_directories: list[str] = []
         for name, tool in registered_tools.items():
             version.clear()
-            if self.process.run(
+            if run(
                 [str(tool.executable), "--version"],
                 env,
                 project.project_dir,
@@ -671,7 +699,8 @@ class FirmwareBuild:
             self.settings.state_dir, build_root, plan["fingerprint"], environment_fingerprint
         )
         lock_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        lock = FileLock(str(lock_path), timeout=0)
+        # The worker acquires; deferred success/discard releases on the broker loop.
+        lock = FileLock(str(lock_path), timeout=0, thread_local=False)
         try:
             lock.acquire()
         except Timeout:
@@ -700,7 +729,7 @@ class FirmwareBuild:
         if provenance is not None:
             build_args += ["-D", "SDKCONFIG=" + str(build_dir / "sdkconfig")]
         build_args.append("build")
-        if self.process.run(
+        if run(
             build_args,
             env,
             project.project_dir,
@@ -759,7 +788,15 @@ class FirmwareBuild:
         # Write an inert candidate first. Accepted cancellation must never publish
         # a success manifest, including cancellation during hashing or serialization.
         candidate = build_dir / "broker-manifest.pending.json"
+        if defer_publish:
+            # Register cleanup ownership before the candidate write can fail or
+            # cancellation can win; the broker loop confirms cleanup and unlock.
+            with self._lock:
+                self._pending[plan["job_id"]] = (principal, build_dir, manifest)
         candidate.write_text(json.dumps(manifest, indent=2))
+        if defer_publish:
+            self._check_cancelled()
+            return "firmware_build_succeeded_no_flash"
         try:
             with self._lock:
                 self._check_cancelled()
@@ -773,6 +810,63 @@ class FirmwareBuild:
         finally:
             candidate.unlink(missing_ok=True)
         return "firmware_build_succeeded_no_flash"
+
+    def commit_deferred(self, plan: dict[str, Any], live: Callable[[], bool]) -> None:
+        """Called on the broker loop after worker exit, with no await before job commit."""
+        self._check_cancelled()
+        principal, root, manifest = self._pending[plan["job_id"]]
+        if self.process.active or self.process.uncertain or not live():
+            raise ValueError("build_final_commit_not_authorized")
+        if (
+            self.prepare(plan["project_id"], principal, plan.get("source_receipt"))["fingerprint"]
+            != plan["fingerprint"]
+        ):
+            raise FixedDiagnosticFailure("build_inputs_changed")
+        if not live():
+            raise ValueError("build_final_commit_not_authorized")
+        self._check_cancelled()
+        (root / "broker-manifest.pending.json").replace(root / "broker-manifest.json")
+        self._release_output_lock()
+        self.artifacts.publish(plan["job_id"], principal, root, manifest)
+        self.manifests[plan["job_id"]] = (principal, manifest)
+        self._pending.pop(plan["job_id"])
+        self._committed_job = plan["job_id"]
+        self.logs[plan["job_id"]].append(
+            "Build complete; artifact hashes recorded; flash requires separate approval"
+        )
+
+    def discard_deferred(self, job_id: str) -> None:
+        """Discard only this job's unpublished candidate; never delete source/artifact data."""
+        self.manifests.pop(job_id, None)
+        self.artifacts.discard(job_id)
+        pending = self._pending.pop(job_id, None)
+        if pending is not None:
+            try:
+                (pending[1] / "broker-manifest.pending.json").unlink(missing_ok=True)
+            except Exception:
+                self.output_uncertain = True
+        if (
+            self._build_lock is not None
+            and not self.process.active
+            and not self.process.uncertain
+            and not self.output_uncertain
+        ):
+            try:
+                self._release_output_lock()
+            except BuildLocationError:
+                pass
+
+    def _release_output_lock(self) -> None:
+        if self._build_lock is None:
+            return
+        try:
+            self._build_lock.release()
+            if self._build_lock.is_locked:
+                raise ValueError("build_output_release_unconfirmed")
+        except Exception:
+            self.output_uncertain = True
+            raise BuildLocationError("build_output_release_unconfirmed") from None
+        self._build_lock = None
 
     def storage(self, project_id: str) -> dict[str, Any]:
         project = self.settings.build_projects.get(project_id)

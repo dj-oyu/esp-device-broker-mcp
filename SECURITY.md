@@ -18,11 +18,12 @@ Automatically managed runtime-auth.json credential-file mode is intentionally
 unsupported on Windows. See SERIAL.md. The explicit, user-managed stdio client
 env file described below is a separate mechanism.
 
-Only bounded passive observation and an ordinary HELLO test are implemented for
-real serial mode, and only synthetic devices have been used for automated tests.
+Serial observation, HOME/DERBY capture, restart and explicit firmware
+backup/flash/restore have separate local approvals. Automated hardware tests use
+synthetic devices; packaging success does not prove physical operation.
 Opening/closing a serial port may cause driver control-line glitches. Approval
 states this risk; HELLO additionally states that it exits the current application.
-No real flash, reset, recovery, subprocess or image API exists.
+No arbitrary shell, raw serial command, automatic flash/restore or rollback API is exposed.
 
 Cancellation waits for the actual serial worker to finish. An unconfirmed port
 close latches ownership and prevents broker lock release. Uncertain results require
@@ -32,6 +33,24 @@ of successful physical recovery.
 Do not share runtime databases, authentication/lease tokens, raw device logs,
 serial numbers, local filesystem paths or credentials in public issues. Reproduce
 with synthetic data and include only version, platform and minimal steps.
+
+## Registered profile execution
+
+Existing locally registered build/source profiles define the scope for current
+authenticated control principals. Source/build require no additional permission
+record or individual operator approval. The MCP caller cannot register projects,
+expand repository/submodule allowlists, select arbitrary paths or change tools.
+Prepare binds exact inputs/settings and execute deduplicates the durable job.
+Revocation/expiry, cancellation and registration changes are checked during work
+and again at success publication. Connection lifetime grants no execution authority.
+
+Public source fetch parses bounded data under strict archive/tree checks. Build
+executes trusted registered project/profile code as the local OS user, including
+selected repository commits; it is not a filesystem/network sandbox. See
+FIRMWARE-BUILD.md before registering code. Normal failures with confirmed cleanup
+end without global review. Uncertain process/lock/persistence remains fail closed.
+Device lease and flash/restore approval contracts are unchanged. Existing legacy
+review records must still be explicitly acknowledged; installation clears none.
 
 ## Optional scoped keys and Tunnel preparation
 

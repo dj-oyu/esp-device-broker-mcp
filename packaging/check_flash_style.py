@@ -6,7 +6,7 @@ import sys
 
 def main():
     for command in (
-        ["format", "--check", "src", "tests"],
+        ["format", "--check", "--diff", "src", "tests"],
         ["check", "src", "tests"],
     ):
         subprocess.run([sys.executable, "-m", "ruff", *command], check=True)

@@ -19,6 +19,10 @@ class BuildArtifacts:
                 self._records.pop(next(iter(self._records)))
             self._records[job_id] = principal, root.resolve(), copy.deepcopy(manifest)
 
+    def discard(self, job_id: str) -> None:
+        with self._lock:
+            self._records.pop(job_id, None)
+
     def resolve(self, job_id: str, principal: str) -> tuple[Path, dict[str, Any]]:
         with self._lock:
             record = self._records.get(job_id)

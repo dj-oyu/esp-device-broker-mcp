@@ -184,10 +184,11 @@ class BuildSlotOwnershipTests(unittest.TestCase):
         from cardputer_mcp.firmware_build import FirmwareBuild
 
         builder = FirmwareBuild(SimpleNamespace())
-        lock = SimpleNamespace(released=False)
+        lock = SimpleNamespace(released=False, is_locked=True)
 
         def release():
             lock.released = True
+            lock.is_locked = False
 
         lock.release = release
         builder.process.uncertain = True
@@ -206,10 +207,11 @@ class BuildSlotOwnershipTests(unittest.TestCase):
         from cardputer_mcp.firmware_build import FirmwareBuild
 
         builder = FirmwareBuild(SimpleNamespace())
-        lock = SimpleNamespace(released=False)
+        lock = SimpleNamespace(released=False, is_locked=True)
 
         def release():
             lock.released = True
+            lock.is_locked = False
 
         lock.release = release
 

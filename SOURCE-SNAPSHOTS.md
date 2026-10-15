@@ -26,17 +26,19 @@ MCP accepts only the project ID, full lowercase 40-hex commit, or an opaque rece
 
 ## Explicit cloud MCP requests
 
-1. Acquire/renew the existing authenticated lease. Prepare test
-   firmware_fetch_source with project_id and source_commit (full 40 hex).
+1. With a current authenticated control principal, prepare firmware_fetch_source
+   with project_id, a fresh job_id and source_commit (full 40 hex). Omit session:
+   source/build jobs require neither a USB lease nor individual operator approval.
    Prepare does not download. Storage shows cache counts/bytes and fixed limits.
-2. Use the existing exact-plan local approval and execute_test contract. Source
-   fetch needs no new device attestation phrase. No second source-specific
-   approval mechanism is introduced. Existing build/flash approvals remain separate.
+2. Execute that exact plan_hash. The locally registered profile defines the
+   allowed project/repositories/cache/output roots and tools. No separate grant
+   registration or first-run approval is required. MCP cannot expand that scope.
 3. Read_build_logs for the succeeded fetch job returns source.source_receipt,
    repository/commit/tree/source hashes, file count/bytes and source_cache usage.
    The receipt is available after RAM-log expiry/restart to the same principal.
 4. Prepare firmware_build with project_id and source_receipt. A succeeded owned
-   fetch is mandatory. Review/execute the existing build plan. Read_build_logs
+   fetch is mandatory. Execute the exact build plan without operator approval or
+   USB lease. Read_build_logs
    returns the existing hashed manifest plus source_provenance, linking the exact
    receipt, repository, commit, Git tree and SHA-256 source manifest.
 5. Prepare/approve/execute firmware_flash from that successful build job and
@@ -61,8 +63,11 @@ Bounds: 64 MiB total downloads, 1 MiB per commit metadata, 256 MiB expanded file
 files/200,000 entries, 180 seconds, 10-second network-read timeout, 8 snapshots
 and 2 GiB cache. Traversal, links/reparse paths, encrypted ZIP entries, Windows
 reserved names/ADS/case aliases, collisions, and long Windows paths are rejected.
-Cancellation/lease/principal loss is checked around network/extraction/publication;
-failed fetches grant no build permission. Retained sources are not automatically
+Cancellation, principal expiry/revocation and registration changes are checked
+around network/extraction/publication. The whole-job 180-second deadline is
+independent of a transport connection or device lease; failed fetches grant no
+build permission. Confirmed normal failure/cancellation ends the job without a
+recovery-review latch. A corrected new job can run; the old job never replays. Retained sources are not automatically
 removed. Capacity exhaustion rejects another fetch and reports current usage;
 there is no hidden unbounded cache or forced deletion of referenced sources.
 
@@ -78,7 +83,7 @@ using tracked sdkconfig.defaults. No source rewrite or SDK 6.1 fallback is used.
 ## Acceptance and Windows deployment verification
 
 Cloud CI checks synthetic archives, receipt ownership/tampering/limits, actual
-HTTP/MCP local approval, source-to-build manifest provenance with fake processes,
+HTTP/MCP unattended registered-profile execution, source-to-build manifest provenance with fake processes,
 and a real pinned public target archive/tree + Windows build preflight. SDK
 compilation/device behavior must not be claimed from these fake/preflight checks.
 

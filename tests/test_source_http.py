@@ -1,16 +1,18 @@
-"""Authenticated MCP and local approval with synthetic source transport."""
+"""Authenticated unattended source/build loop with synthetic transport."""
 
+import asyncio
 import json
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import httpx2
 import pytest
+from filelock import FileLock
 from test_registry_http import registry_service as registry_service
 from test_source_snapshot import COMMIT, FILES, REPOSITORY, archive
 
 from cardputer_mcp import firmware_build as build_module
+from cardputer_mcp.build_locations import slot_lock_path
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import BuildProject, SerialSettings, SourceRepository
 from cardputer_mcp.models import BuildLogRequest
@@ -20,7 +22,7 @@ from cardputer_mcp.source_snapshot import SourceError, file_receipt, tree_hash
 
 @pytest.mark.parametrize("backend_name", ["mock", "serial"])
 @pytest.mark.parametrize("with_submodule", [False, True])
-async def test_explicit_source_approval_then_owned_receipt_build_plan(
+async def test_registered_source_then_owned_receipt_build_without_operator(
     registry_service, tmp_path, monkeypatch, backend_name, with_submodule
 ):
     service = registry_service
@@ -120,52 +122,27 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
         )
 
     service.resident.firmware_source.snapshots.transport = transport
-    async with (
-        httpx2.AsyncClient(
-            base_url=service.url.removesuffix("/mcp"),
-            trust_env=False,
-            headers={"Authorization": "Bearer " + "a" * 64},
-        ) as http,
-        connect(service.url, key.token) as remote,
-    ):
+    async with connect(service.url, key.token) as remote:
         catalog = await remote.list_tools()
         schema = next(tool.input_schema for tool in catalog.tools if tool.name == "prepare_test")
         assert "firmware_fetch_source" in json.dumps(schema)
         assert "source_commit" in json.dumps(schema) and "source_receipt" in json.dumps(schema)
-        lease = await call(remote, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300})
         prepared = await call(
             remote,
             "prepare_test",
             {
-                "session": lease["session"],
                 "job_id": "fetch-one",
                 "test": "firmware_fetch_source",
                 "project_id": "fixture",
                 "source_commit": COMMIT,
             },
         )
-        assert prepared["ok"] and prepared["approval_required"], prepared
+        assert prepared["ok"] and not prepared["approval_required"], prepared
         assert prepared["storage"]["source_cache"]["snapshots"] == 0
         assert not calls
-        execution = {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
-        assert (await call(remote, "execute_test", execution))[
-            "error"
-        ] == "operator_approval_required"
-        detail = (
-            await http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})
-        ).json()
-        assert detail.get("attestation") == "none", detail
-        approved = await http.post(
-            "/operator/approve-plan",
-            json={
-                "plan_hash": prepared["plan_hash"],
-                "review_revision": detail["review_revision"],
-                "attestation": "",
-            },
-        )
-        assert approved.status_code == 200 and approved.json()["ok"], approved.text
+        execution = {"plan_hash": prepared["plan_hash"]}
         assert (await call(remote, "execute_test", execution))["ok"]
-        await service.resident.queue.join()
+        await service.resident.profile_jobs.queue.join()
         job = service.resident.job("fetch-one")
         assert job["state"] == "succeeded", json.dumps(job)
         logs = await call(remote, "read_build_logs", {"job_id": "fetch-one"})
@@ -178,14 +155,13 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
             remote,
             "prepare_test",
             {
-                "session": lease["session"],
                 "job_id": "build-one",
                 "test": "firmware_build",
                 "project_id": "fixture",
                 "source_receipt": receipt,
             },
         )
-        assert built["ok"] and built["approval_required"], built
+        assert built["ok"] and not built["approval_required"], built
         assert built["plan"]["source_provenance"]["commit"] == COMMIT
         sdk = tmp_path / "sdk"
         idf_py = sdk / "idf/tools/idf.py"
@@ -198,11 +174,15 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
             tool.write_bytes(b"synthetic executable; never invoked")
             tool.chmod(0o755)
 
+        fail_build = False
+
         class FakeIdf:
             active = uncertain = False
             stop_requested = threading.Event()
 
-            def run(self, args, env, cwd, emit, timeout=1800):
+            def run(self, args, env, cwd, emit, timeout=1800, monitor=None):
+                if monitor is not None:
+                    monitor()
                 if "-e" in args:
                     for line in (
                         "IDF_PATH=" + str(sdk / "idf"),
@@ -213,6 +193,9 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
                 elif args[-1] == "--version":
                     emit("ESP-IDF v6.0.1" if str(idf_py) in args else "version", "stdout")
                 elif args[-1] == "build":
+                    if fail_build:
+                        emit("error: synthetic compilation failure", "stderr")
+                        return 1
                     directory = build_module.Path(args[args.index("-B") + 1])
                     assert env["IDF_COMPONENT_MANAGER"] == "0"
                     assert "SDKCONFIG=" + str(directory / "sdkconfig") in args
@@ -244,28 +227,15 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
         service.resident.firmware_build.process = FakeIdf()
         native = SimpleNamespace(name="nt", environ={"SYSTEMROOT": str(system)})
         with patch.object(build_module, "os", native):
-            detail = (
-                await http.post("/operator/plan", json={"plan_hash": built["plan_hash"]})
-            ).json()
-            approved = await http.post(
-                "/operator/approve-plan",
-                json={
-                    "plan_hash": built["plan_hash"],
-                    "review_revision": detail["review_revision"],
-                    "attestation": "",
-                },
-            )
-            assert approved.json()["ok"], approved.text
             executed = await call(
                 remote,
                 "execute_test",
                 {
-                    "session": lease["session"],
                     "plan_hash": built["plan_hash"],
                 },
             )
             assert executed["ok"], executed
-            await service.resident.queue.join()
+            await service.resident.profile_jobs.queue.join()
             job = service.resident.job("build-one")
             assert job["state"] == "succeeded", json.dumps(job)
             report = await call(remote, "read_build_logs", {"job_id": "build-one"})
@@ -282,6 +252,77 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
                 assert provenance["dependency_policy"] == "gitlinks_fixed_commits_no_fetch"
             assert report["manifest"]["flash_authorized"] is False
             assert service.backend.calls == 0 and not project.project_dir.exists()
+
+            # A normal compiler failure ends safely, then the same registered
+            # profile accepts a corrected new job without review/restart.
+            fail_build = True
+            failed_plan = await call(
+                remote,
+                "prepare_test",
+                {
+                    "job_id": "build-failed",
+                    "test": "firmware_build",
+                    "project_id": "fixture",
+                    "source_receipt": receipt,
+                },
+            )
+            assert failed_plan["ok"] and not failed_plan["approval_required"]
+            assert (
+                await call(
+                    remote,
+                    "execute_test",
+                    {
+                        "plan_hash": failed_plan["plan_hash"],
+                    },
+                )
+            )["ok"]
+            await service.resident.profile_jobs.queue.join()
+            assert service.resident.job("build-failed")["state"] == "failed"
+            assert not service.resident._store().needs_review()
+            assert "build-failed" not in service.resident.firmware_build.manifests
+            assert service.resident.firmware_build._build_lock is None
+            assert not service.resident.firmware_build.output_uncertain
+            lock_path = slot_lock_path(
+                settings.state_dir,
+                project.build_root,
+                report["manifest"]["fingerprint"],
+                report["manifest"]["environment_fingerprint"],
+            )
+
+            def acquire_released_slot():
+                # A fresh thread must acquire the actual OS lock after both
+                # success publication and ordinary compile-failure cleanup.
+                with FileLock(str(lock_path), timeout=0):
+                    return True
+
+            assert await asyncio.to_thread(acquire_released_slot)
+            fail_build = False
+            retry = await call(
+                remote,
+                "prepare_test",
+                {
+                    "job_id": "build-corrected",
+                    "test": "firmware_build",
+                    "project_id": "fixture",
+                    "source_receipt": receipt,
+                },
+            )
+            assert retry["ok"]
+            request = {"plan_hash": retry["plan_hash"]}
+            assert (await call(remote, "execute_test", request))["ok"]
+            await service.resident.profile_jobs.queue.join()
+            assert service.resident.job("build-corrected")["state"] == "succeeded"
+            assert (await call(remote, "execute_test", request))["deduplicated"]
+            assert service.backend.calls == 0
+            assert service.resident.session is None
+            assert not service.resident._store().db.execute("SELECT 1 FROM approvals").fetchone()
+            async with connect(service.url, service.keys["first"].token) as other:
+                denied = await call(other, "execute_test", request)
+                assert not denied["ok"]
+                denied = await call(other, "read_build_logs", {"job_id": "build-corrected"})
+                assert not denied["ok"]
+                denied = await call(other, "job_status", {"job_id": "build-corrected"})
+                assert not denied["ok"]
         source, _ = service.resident.firmware_source.snapshots.resolve(
             "fixture", receipt, key.metadata.principal_id
         )
@@ -290,7 +331,6 @@ async def test_explicit_source_approval_then_owned_receipt_build_plan(
             remote,
             "prepare_test",
             {
-                "session": lease["session"],
                 "job_id": "changed-build",
                 "test": "firmware_build",
                 "project_id": "fixture",
@@ -322,6 +362,8 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
     )
     settings = service.resident.settings.model_copy(update={"build_projects": {"fixture": project}})
     source = service.resident.firmware_source
+    original_fetch = source.snapshots.fetch
+    original_usage = source.snapshots.usage
     service.resident.settings = settings
     source.settings = source.snapshots.settings = settings
     secret = "synthetic-private-token-123456"
@@ -364,20 +406,11 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
     else:
         monkeypatch.setattr(source.snapshots, "fetch", failed_fetch)
 
-    async with (
-        httpx2.AsyncClient(
-            base_url=service.url.removesuffix("/mcp"),
-            trust_env=False,
-            headers={"Authorization": "Bearer " + "a" * 64},
-        ) as http,
-        connect(service.url, key.token) as remote,
-    ):
-        lease = await call(remote, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300})
+    async with connect(service.url, key.token) as remote:
         prepared = await call(
             remote,
             "prepare_test",
             {
-                "session": lease["session"],
                 "job_id": "source-failure",
                 "test": "firmware_fetch_source",
                 "project_id": "fixture",
@@ -385,29 +418,14 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
             },
         )
         assert prepared["ok"], prepared
-        execution = {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
-        assert (await call(remote, "execute_test", execution))[
-            "error"
-        ] == "operator_approval_required"
-        detail = (
-            await http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})
-        ).json()
-        approved = await http.post(
-            "/operator/approve-plan",
-            json={
-                "plan_hash": prepared["plan_hash"],
-                "review_revision": detail["review_revision"],
-                "attestation": "",
-            },
-        )
-        assert approved.json()["ok"], approved.text
+        execution = {"plan_hash": prepared["plan_hash"]}
         assert (await call(remote, "execute_test", execution))["ok"]
-        await service.resident.queue.join()
+        await service.resident.profile_jobs.queue.join()
         job = service.resident.job("source-failure")
-        assert job["state"] == "needs_review"
+        assert job["state"] == ("needs_review" if failure_kind.startswith("commit_") else "failed")
         assert job["result"] == expected
         assert job["diagnostic"] == {"code": expected}
-        assert service.resident._store().needs_review()
+        assert service.resident._store().needs_review() == failure_kind.startswith("commit_")
         report = await call(
             remote, "read_build_logs", {"job_id": "source-failure", "levels": ["error"]}
         )
@@ -438,3 +456,42 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         assert recovered["diagnostic"] == {"code": expected}
         assert recovered["source_cache"] == {"available": False, "code": "source_fetch_failed"}
         assert secret not in json.dumps(recovered) and private_path not in json.dumps(recovered)
+
+        if not failure_kind.startswith("commit_"):
+            # A failed fetch grants no receipt, but does not prevent a corrected
+            # fresh fetch under the same registration/principal.
+            monkeypatch.setattr(source.snapshots, "fetch", original_fetch)
+            monkeypatch.setattr(source.snapshots, "usage", original_usage)
+            tree = tree_hash({name: file_receipt(data, "100644") for name, data in FILES.items()})
+
+            def corrected_transport(url, deadline, live, limit):
+                return (
+                    json.dumps({"sha": COMMIT, "tree": {"sha": tree}}).encode()
+                    if url.startswith("https://api.github.com/")
+                    else archive()
+                )
+
+            source.snapshots.transport = corrected_transport
+            corrected = await call(
+                remote,
+                "prepare_test",
+                {
+                    "job_id": "source-corrected",
+                    "test": "firmware_fetch_source",
+                    "project_id": "fixture",
+                    "source_commit": COMMIT,
+                },
+            )
+            assert corrected["ok"]
+            assert (
+                await call(
+                    remote,
+                    "execute_test",
+                    {
+                        "plan_hash": corrected["plan_hash"],
+                    },
+                )
+            )["ok"]
+            await service.resident.profile_jobs.queue.join()
+            assert service.resident.job("source-corrected")["state"] == "succeeded"
+            assert not service.resident._store().needs_review()
