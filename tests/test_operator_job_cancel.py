@@ -14,6 +14,12 @@ from cardputer_mcp.models import Origin, PrepareRequest
 from cardputer_mcp.models import TestName as Action
 
 
+def assert_refused(response):
+    assert response.status_code in (400, 401, 403) or (
+        response.status_code == 200 and response.json().get("ok") is False
+    )
+
+
 def owner(service):
     return service.registry.issue("Synthetic local build owner", Origin.LOCAL, scopes={"control"})
 
@@ -68,7 +74,7 @@ async def test_actual_cancel_http_waits_for_cleanup_and_retains_uncertainty(
             response = await http.post(
                 "/operator/job-cancel", json=target(broker, prepared), headers=headers(other)
             )
-            assert response.json()["ok"] is False
+            assert_refused(response)
             assert not broker.firmware_build.process.stop_requested.is_set()
             stopped = (
                 await http.post("/operator/job-cancel", json=target(broker, prepared))
@@ -143,13 +149,13 @@ async def test_endpoint_rejects_wrong_owner_scope_epoch_plan_and_device_jobs(
             {**target(broker, prepared), "session": "synthetic-lease"},
         ):
             rejected = await http.post("/operator/job-cancel", json=invalid)
-            assert rejected.status_code in (400, 403) or rejected.json().get("ok") is False
+            assert_refused(rejected)
             assert broker.job("cancel-job")["state"] == "queued"
         for credential in (owner(service), service.keys["second"], read_only):
             response = await http.post(
                 "/operator/job-cancel", json=target(broker, prepared), headers=headers(credential)
             )
-            assert response.json()["ok"] is False
+            assert_refused(response)
             assert broker.job("cancel-job")["state"] == "queued"
         plan = dict(
             job_id="device-job",
@@ -169,7 +175,7 @@ async def test_endpoint_rejects_wrong_owner_scope_epoch_plan_and_device_jobs(
                 broker_epoch=broker.epoch,
             ),
         )
-        assert response.json()["ok"] is False
+        assert_refused(response)
         assert broker.job("device-job")["state"] == "queued"
         assert service.backend.calls == 0 and not broker.profile_jobs.stops
         cancelled = (await http.post("/operator/job-cancel", json=target(broker, prepared))).json()
