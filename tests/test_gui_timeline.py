@@ -771,7 +771,8 @@ def test_inline_cards_keep_attestation_expansion_selection_and_widget_identity(
     api.data["cards"][0]["review"]["review_revision"] = "f" * 64
     refresh(panel.controller, api, clock)
     panel._render()
-    assert view.attestation_var.get() == "" and view.approve_button.config["state"] == "disabled"
+    assert view.attestation_var.get() == ATTESTATIONS["device_home_firmware"]
+    assert view.plan_activation is None
 
 
 def test_primary_plan_approval_is_one_action_after_visible_effects(monkeypatch: Any) -> None:
@@ -1391,7 +1392,7 @@ def test_review_target_text_escapes_control_and_bidi_characters(monkeypatch: Any
     view = panel.views["job-a"]
     assert 'Port: "COM7\\nUNTRUSTED\\u202e"' in view.summary_var.get()
     assert "\nUNTRUSTED" not in view.summary_var.get() and "\u202e" not in view.summary_var.get()
-    assert ATTESTATIONS["device_home_firmware"] in view.phrase.config["text"]
+    assert view.phrase.config["text"] == "Approve this plan only"
 
 
 @pytest.mark.parametrize(
@@ -1479,3 +1480,18 @@ def test_known_firmware_failures_are_visible_in_gui_details(
     view = panel.views["failed-job"]
     assert f"Result: {code}" in view.detail_var.get()
     assert f"Internal stage: {stage}" in view.detail_var.get()
+
+
+def test_serial_approve_needs_no_typed_phrase_and_still_submits_once(monkeypatch: Any) -> None:
+    panel, _api, _clock, _ = panel_fixture(monkeypatch, card(backend="serial"))
+    view = panel.views["job-a"]
+    assert not hasattr(view, "attestation")
+    assert "Type" not in view.phrase.config["text"]
+    assert "Esc" in view.summary_var.get() and "unsaved" in view.summary_var.get()
+    view._arm_plan()
+    view._approve()
+    view._approve()
+    assert panel.worker.commands.qsize() == 1
+    operation = panel.worker.commands.get_nowait()
+    assert operation.action == "approve_plan"
+    assert operation.attestation == ATTESTATIONS["device_home_firmware"]

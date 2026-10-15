@@ -1339,7 +1339,6 @@ class _CardView:
         self.attestation_var = tk.StringVar()
         self.phrase = self._label(self.plan_actions)
         self.phrase.pack(anchor="w")
-        self.attestation = ttk.Entry(self.plan_actions, textvariable=self.attestation_var)
         self.approve_button = ttk.Button(
             self.plan_actions, text="Approve plan", command=self._approve
         )
@@ -1833,7 +1832,7 @@ class _CardView:
         if identity != self.review_identity:
             self.plan_activation = None
             self.review_identity = identity
-            self.attestation_var.set("")
+            self.attestation_var.set(ATTESTATIONS[review.attestation] if review else "")
             self.home_line_opt_in_var.set("")
         if review is not None and (
             self.last_review is None or review_key(self.last_review) != identity
@@ -1866,27 +1865,11 @@ class _CardView:
                 if self.home_line_opt_in_var.get():
                     self.home_line_opt_in_var.set("")
                 self.home_line_opt_in.pack_forget()
-            required = ATTESTATIONS[review.attestation]
-            if required:
-                self.phrase.configure(text="Type to confirm: " + required)
-                self.attestation.pack(
-                    before=self.home_line_opt_in
-                    if (review.backend, review.test) == ("serial", "capture_home")
-                    else self.approve_button,
-                    fill="x",
-                    pady=4,
-                )
-            else:
-                self.phrase.configure(
-                    text="Approve this exact reset, observation and report delivery"
-                    if review.test == "restart_and_observe"
-                    else "Approve observation and report delivery"
-                    if review.test == "firmware_observe"
-                    else "Approve and queue this exact submitted plan"
-                    if review.execution_submitted
-                    else "Approve this plan only"
-                )
-                self.attestation.pack_forget()
+            self.phrase.configure(
+                text="Approve and queue this exact submitted plan"
+                if review.execution_submitted
+                else "Approve this plan only"
+            )
             self.approve_button.configure(text=approval_button_text(review))
             if self.expanded:
                 model.mark_review_displayed(card.job_id, review)

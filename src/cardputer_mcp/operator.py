@@ -35,18 +35,6 @@ def approve_plan(
             from .plan_approval import PlanApprovals
 
             PlanApprovals._schema(plan)
-            expected = (
-                "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ"
-                if plan["test"] == "firmware_backup"
-                else "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN"
-            )
-            if plan["recovery_kind"] == "artifact_bundle":
-                expected = "DEVICE AND FIRMWARE RECOVERY VERIFIED FOR THIS EXACT PLAN"
-            attestation = confirm(
-                f"Verify this exact registered device/artifact/backup. Type {expected} to attest: "
-            )
-            if attestation.strip() != expected:
-                raise ValueError("device_attestation_required")
             disclosure = (
                 "This exact plan may reset/read/write the selected device. Verify the "
                 "device/artifact/backup. Partial writes are not undone; no automatic restore.\n"
@@ -117,26 +105,18 @@ def approve_plan(
                     if plan.get("test") == "capture_home"
                     else "HELLO exits the current app and sends q/a/u/e navigation keys. "
                 )
-                phrase = (
-                    "DEVICE HOME AND FIRMWARE VERIFIED"
-                    if plan.get("test") in ("capture_home", "derby_smoke")
-                    else "DEVICE FREE AND FIRMWARE VERIFIED"
-                )
-                attestation = confirm(
+                disclosure = (
                     effects
                     + "Device opening/closing may reset it due to driver control-line glitches. "
                     "Verify the configured firmware is running and other serial tools are closed. "
-                    f"Type {phrase} to attest: "
                 )
-                if attestation.strip() != phrase:
-                    raise ValueError("device_attestation_required")
         summary = json.dumps(plan, indent=2, sort_keys=True)
         submission_notice = "This approval alone does not submit execution.\n"
         answer = confirm(
             f"{disclosure}{submission_notice}{summary}\nPlan SHA-256: {digest}\n"
-            f"Type APPROVE {digest} to approve: "
+            "Type APPROVE to approve this displayed plan: "
         )
-        if answer.strip() != f"APPROVE {digest}":
+        if answer.strip() not in ("APPROVE", f"APPROVE {digest}"):
             raise ValueError("approval_not_granted")
         # The prompt can remain open while a client submits or cancels work.
         # Bind its execution meaning as well as its immutable plan; otherwise

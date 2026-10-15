@@ -379,6 +379,40 @@ class PlanReview:
 
 
 def review_warning(review: PlanReview) -> str:
+    """Explain consent separately from checks enforced by the broker."""
+    plan = json.loads(review.json_text)
+    target = {
+        key: plan[key]
+        for key in ("device", "device_id", "port", "project_id", "build_job_id")
+        if key in plan
+    }
+    recovery = {
+        key: plan[key]
+        for key in ("recovery_kind", "backup_job_id", "lkg_receipt")
+        if plan.get(key) is not None
+    }
+    recovery_text = (
+        json.dumps(recovery, sort_keys=True, ensure_ascii=True)
+        if recovery
+        else "no recovery action in this plan"
+    )
+    summary = (
+        f"Target: {json.dumps(target, sort_keys=True, ensure_ascii=True)}\n"
+        f"Operation: {review.test}; job: {review.job_id}\n"
+        f"Recovery: {recovery_text}\n"
+    )
+    return (
+        summary
+        + "Approve records your consent to this displayed plan. It does not prove the "
+        "physical target or running firmware identity. The broker separately rechecks "
+        "the exact plan, current authorization, lease and exclusive ownership. "
+        "Flash also requires artifact hashes, allowed regions and a bound recovery target; "
+        "failure stops work without automatic restore.\n\n"
+        + _review_effects(review)
+    )
+
+
+def _review_effects(review: PlanReview) -> str:
     notice = EXECUTION_NOTICE if review.execution_submitted else APPROVAL_NOTICE
     if review.test == "restart_and_observe":
         return (
@@ -767,14 +801,8 @@ class PlanApprovalPanel:
         ttk.Label(outer, textvariable=self.warning_var, wraplength=980).grid(
             row=4, column=0, sticky="w", pady=8
         )
-        self.attestation_label = tk.StringVar()
-        ttk.Label(outer, textvariable=self.attestation_label, wraplength=980).grid(
-            row=5, sticky="w"
-        )
+        # Wire attestations remain for compatibility; consent is the explicit click.
         self.attestation_var = tk.StringVar()
-        self.attestation_var.trace_add("write", self._attestation_changed)
-        self.attestation_entry = ttk.Entry(outer, textvariable=self.attestation_var)
-        self.attestation_entry.grid(row=6, sticky="ew", pady=(3, 8))
         self.status_var = tk.StringVar()
         ttk.Label(outer, textvariable=self.status_var, wraplength=980).grid(
             row=7, sticky="w", pady=6
@@ -877,11 +905,7 @@ class PlanApprovalPanel:
                 self.plan_text.configure(state="disabled")
                 self.warning_var.set(review_warning(review) if review else APPROVAL_NOTICE)
                 phrase = ATTESTATIONS[review.attestation] if review else ""
-                self.attestation_label.set(
-                    f"Type exactly: {phrase}" if phrase else "No device attestation required."
-                )
-                self.attestation_var.set("")
-                self.attestation_entry.configure(state="normal" if phrase else "disabled")
+                self.attestation_var.set(phrase)
         finally:
             self.updating = False
         self._controls()
