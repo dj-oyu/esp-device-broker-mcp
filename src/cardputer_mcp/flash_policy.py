@@ -203,7 +203,8 @@ class FlashPolicies:
                 or metadata["repository"] != policy.source_repository
                 or metadata["commit"] != policy.source_commit
                 or provenance.get("submodules") != metadata.get("submodules")
-                or provenance.get("dependency_policy") != (
+                or provenance.get("dependency_policy")
+                != (
                     "gitlinks_fixed_commits_no_fetch"
                     if metadata["schema_version"] == 2
                     else "vendored_components_no_fetch"
