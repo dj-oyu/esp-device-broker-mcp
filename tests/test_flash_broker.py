@@ -110,3 +110,42 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
                     backup_job_id="backup-one",
                 )
             )
+
+
+    async def test_native_failure_survives_broker_timeline_and_gui(self):
+        from cardputer_mcp.flash_lifecycle import FlashFailure
+        from cardputer_mcp.gui_timeline import TimelineSnapshot
+        from cardputer_mcp.operator_timeline import OperatorTimeline
+
+        code = "flash_native_failed_needs_review"
+
+        def fail_read(offset, size):
+            raise FlashFailure(code)
+
+        self.driver.read = fail_read
+        result = self.broker.prepare(
+            PrepareRequest(
+                session=self.token, job_id="native-failed",
+                test=TestName.BACKUP, device_id="fixture",
+            )
+        )
+        approvals = PlanApprovals(self.broker)
+        detail = approvals.detail(result["plan_hash"])
+        approvals.approve(
+            result["plan_hash"], detail["review_revision"],
+            "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ",
+        )
+        self.broker.execute(ExecuteRequest(session=self.token, plan_hash=result["plan_hash"]))
+        await self.broker.queue.join()
+        job = self.broker.job("native-failed")
+        self.assertEqual(job["state"], "needs_review")
+        self.assertEqual(job["result"], code)
+        listing = OperatorTimeline(self.broker, approvals).snapshot()
+        row = next(x for x in listing["cards"] if x["job_id"] == "native-failed")
+        self.assertEqual(row["result"], code)
+        gui = TimelineSnapshot.parse({"ok": True, **listing}, 0).cards
+        shown = next(x for x in gui if x.job_id == "native-failed")
+        self.assertEqual(shown.result, code)
+        self.assertTrue(shown.needs_device_review)
+        self.assertTrue(self.driver.closed)
+        self.assertEqual(self.driver.writes, 0)

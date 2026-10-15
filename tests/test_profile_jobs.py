@@ -483,3 +483,41 @@ async def test_unconfirmed_output_release_retains_lock_reference_and_review(
         prepare(service, "after-uncertain-release")
     broker.firmware_build._build_lock = None
     broker.firmware_build.output_uncertain = False
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["build_output_insufficient_space", "build_output_in_use", "build_output_identity_mismatch"],
+)
+async def test_build_failure_result_survives_execution_timeline_and_gui(
+    registry_service, tmp_path, monkeypatch, code
+):
+    from cardputer_mcp.build_locations import BuildLocationError
+    from cardputer_mcp.gui_timeline import TimelineSnapshot
+    from cardputer_mcp.operator_timeline import OperatorTimeline
+    from cardputer_mcp.plan_approval import PlanApprovals
+
+    service = registry_service
+    register(service, tmp_path)
+    broker = service.resident
+    key = service.keys["second"].metadata
+
+    async def fail_build(plan, stage, *, defer_publish):
+        stage("idf_build")
+        raise BuildLocationError(code)
+
+    monkeypatch.setattr(broker.firmware_build, "execute", fail_build)
+    prepared = prepare(service, "failure-display")
+    broker.profile_jobs.execute(
+        ExecuteRequest(plan_hash=prepared["plan_hash"]), key.principal_id, key.origin.value
+    )
+    await broker.profile_jobs.queue.join()
+    assert broker.job("failure-display")["state"] == "failed"
+    assert broker.job("failure-display")["result"] == code
+    listing = OperatorTimeline(broker, PlanApprovals(broker)).snapshot()
+    row = next(x for x in listing["cards"] if x["job_id"] == "failure-display")
+    assert row["result"] == code and row["stage"] == "idf_build"
+    parsed = TimelineSnapshot.parse({"ok": True, **listing}, 0).cards
+    shown = next(x for x in parsed if x.job_id == "failure-display")
+    assert shown.result == code and shown.backend == "registered_project"
+    assert not broker._store().needs_review()
