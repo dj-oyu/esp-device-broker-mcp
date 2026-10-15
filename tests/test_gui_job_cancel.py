@@ -32,8 +32,12 @@ class CancelAPI(FakeAPI):
         if self.response is not None:
             return copy.deepcopy(self.response)
         return dict(
-            ok=True, job_id=job_id, plan_hash=plan_hash, broker_epoch=broker_epoch,
-            state="running", stop_requested=True,
+            ok=True,
+            job_id=job_id,
+            plan_hash=plan_hash,
+            broker_epoch=broker_epoch,
+            state="running",
+            stop_requested=True,
         )
 
 
@@ -68,8 +72,12 @@ def test_completion_race_uses_fresh_terminal_state_without_rewriting_history(ter
     model, api, clock = loaded()
     operation = submit(model)
     api.response = dict(
-        ok=True, job_id=operation.job_id, plan_hash=operation.plan_hash,
-        broker_epoch=operation.broker_epoch, state=terminal, stop_requested=False,
+        ok=True,
+        job_id=operation.job_id,
+        plan_hash=operation.plan_hash,
+        broker_epoch=operation.broker_epoch,
+        state=terminal,
+        stop_requested=False,
     )
     assert model.accept(perform_timeline(api, operation, clock))
     assert model.card("build-job").state == "running"
@@ -87,9 +95,11 @@ def test_cleanup_uncertainty_never_claims_stop_or_usb_release():
     model, api, clock = loaded()
     operation = submit(model)
     model.accept(perform_timeline(api, operation, clock))
-    api.data = snapshot(running(
-        state="needs_review", cancel_available=False, result="build_output_release_unconfirmed"
-    ))
+    api.data = snapshot(
+        running(
+            state="needs_review", cancel_available=False, result="build_output_release_unconfirmed"
+        )
+    )
     refresh(model, api, clock)
     assert model.cancel_messages["build-job"] == CANCEL_REVIEW
     assert model.card("build-job").needs_device_review
@@ -128,16 +138,26 @@ def test_delayed_worker_does_not_cancel_a_stale_target():
     assert not any(call[0] == "cancel_job" for call in api.calls)
 
 
-@pytest.mark.parametrize("field,value", [
-    ("job_id", "other-job"), ("plan_hash", "0" * 64),
-    ("broker_epoch", "0" * 32), ("stop_requested", "yes"), ("state", "unknown"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("job_id", "other-job"),
+        ("plan_hash", "0" * 64),
+        ("broker_epoch", "0" * 32),
+        ("stop_requested", "yes"),
+        ("state", "unknown"),
+    ],
+)
 def test_wrong_or_malformed_cancel_receipt_confers_no_success(field, value):
     model, api, clock = loaded()
     operation = submit(model)
     api.response = dict(
-        ok=True, job_id=operation.job_id, plan_hash=operation.plan_hash,
-        broker_epoch=operation.broker_epoch, state="running", stop_requested=True,
+        ok=True,
+        job_id=operation.job_id,
+        plan_hash=operation.plan_hash,
+        broker_epoch=operation.broker_epoch,
+        state="running",
+        stop_requested=True,
     )
     api.response[field] = value
     assert perform_timeline(api, operation, clock).error == CANCEL_UNCERTAIN
@@ -175,10 +195,15 @@ def test_completion_between_button_press_and_invoke_does_not_cancel(monkeypatch)
     assert panel.worker.commands.empty() and panel.controller.pending is None
 
 
-@pytest.mark.parametrize("changes", [
-    {"cancel_available": "yes"}, {"state": "succeeded"},
-    {"backend": "serial"}, {"test": "firmware_flash", "backend": "serial"},
-])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"cancel_available": "yes"},
+        {"state": "succeeded"},
+        {"backend": "serial"},
+        {"test": "firmware_flash", "backend": "serial"},
+    ],
+)
 def test_cancel_advertisement_cannot_enable_unsupported_job(changes):
     with pytest.raises(ValueError):
         TimelineSnapshot.parse(snapshot(running(**changes)), 1000)

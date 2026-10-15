@@ -191,7 +191,8 @@ class OperatorClient:
 
     def cancel_job(self, job_id: str, plan_hash: str, broker_epoch: str) -> dict[str, Any]:
         return self._request(
-            "POST", "/operator/job-cancel",
+            "POST",
+            "/operator/job-cancel",
             {"job_id": job_id, "plan_hash": plan_hash, "broker_epoch": broker_epoch},
             allow_refusal=True,
         )
@@ -254,8 +255,12 @@ class OperatorClient:
         return self._request("POST", "/operator/release", {"lease_id": lease_id})
 
     def _request(
-        self, method: str, path: str, payload: dict[str, Any] | None = None,
-        *, allow_refusal: bool = False,
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        allow_refusal: bool = False,
     ) -> dict[str, Any]:
         try:
             # Explicitly disable environment proxies and redirects. A redirect must

@@ -108,10 +108,18 @@ Action = Literal[
 ]
 CancelKey = tuple[str, str, str]
 CANCEL_PENDING = "Cancellation request pending; cleanup and device release are not confirmed."
-CANCEL_REQUESTED = "Cancellation requested; waiting for worker/process cleanup. Device release is not confirmed."
-CANCEL_UNCERTAIN = "Cancellation outcome unknown. Refresh status; no automatic retry or device release."
-CANCEL_REJECTED = "Cancellation was rejected. Existing owner authorization is required; refresh status."
-CANCEL_REVIEW = "Cleanup or device state requires review. Stop completion and device release are not confirmed."
+CANCEL_REQUESTED = (
+    "Cancellation requested; waiting for worker/process cleanup. Device release is not confirmed."
+)
+CANCEL_UNCERTAIN = (
+    "Cancellation outcome unknown. Refresh status; no automatic retry or device release."
+)
+CANCEL_REJECTED = (
+    "Cancellation was rejected. Existing owner authorization is required; refresh status."
+)
+CANCEL_REVIEW = (
+    "Cleanup or device state requires review. Stop completion and device release are not confirmed."
+)
 ReviewKey = tuple[str, str, str, str, str, str, str, str, bool]
 ImageKey = tuple[str, str, str, str, str, str, bool]
 
@@ -359,7 +367,8 @@ class TimelineCard:
             ):
                 raise ValueError(INVALID_TIMELINE)
         if cancel_available and (
-            backend != "registered_project" or test not in ("firmware_build", "firmware_fetch_source")
+            backend != "registered_project"
+            or test not in ("firmware_build", "firmware_fetch_source")
         ):
             raise ValueError(INVALID_TIMELINE)
         review = None
@@ -515,9 +524,8 @@ def perform_timeline(
                 or response.get("job_id") != operation.job_id
                 or response.get("plan_hash") != operation.plan_hash
                 or response.get("broker_epoch") != operation.broker_epoch
-                or response.get("state") not in (
-                    "queued", "running", "succeeded", "failed", "cancelled", "needs_review"
-                )
+                or response.get("state")
+                not in ("queued", "running", "succeeded", "failed", "cancelled", "needs_review")
                 or type(response.get("stop_requested")) is not bool
             ):
                 raise ValueError(CANCEL_UNCERTAIN)
@@ -759,9 +767,12 @@ class TimelineController:
     def can_cancel(self, job_id: str) -> bool:
         card, key = self.card(job_id), self.cancel_key(job_id)
         return bool(
-            not (self.closed or self.busy) and self.fresh
-            and card is not None and card.cancel_available
-            and card.state in ("queued", "running") and key is not None
+            not (self.closed or self.busy)
+            and self.fresh
+            and card is not None
+            and card.cancel_available
+            and card.state in ("queued", "running")
+            and key is not None
             and self.cancel_attempts.get(job_id) != key
         )
 
@@ -1125,8 +1136,9 @@ class TimelineController:
             self.next_refresh = self.clock()
             if operation.action == "cancel_job":
                 self.cancel_messages[operation.job_id] = (
-                    CANCEL_REQUESTED if outcome.stop_requested else
-                    "Cancellation was not accepted or the job already ended. Refresh status."
+                    CANCEL_REQUESTED
+                    if outcome.stop_requested
+                    else "Cancellation was not accepted or the job already ended. Refresh status."
                 )
             elif outcome.approved and operation.action == "approve_plan":
                 self.card_messages[operation.job_id] = (
@@ -1450,7 +1462,9 @@ class _CardView:
 
     def _arm_cancel(self, _event: Any = None) -> None:
         model = self.panel.controller
-        self.cancel_activation = model.cancel_key(self.job_id) if model.can_cancel(self.job_id) else None
+        self.cancel_activation = (
+            model.cancel_key(self.job_id) if model.can_cancel(self.job_id) else None
+        )
 
     def _cancel_job(self) -> None:
         expected, self.cancel_activation = self.cancel_activation, None

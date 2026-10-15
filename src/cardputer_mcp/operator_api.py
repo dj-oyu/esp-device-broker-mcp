@@ -309,7 +309,8 @@ class OperatorAPI:
                 job = self.broker._store().job(cancel_job.job_id)
                 if (
                     cancel_job.broker_epoch != self.broker.epoch
-                    or job is None or job["plan_hash"] != cancel_job.plan_hash
+                    or job is None
+                    or job["plan_hash"] != cancel_job.plan_hash
                 ):
                     raise BrokerError("stale_operator_snapshot")
                 plan = self.broker._store().plan(job["plan_hash"])
@@ -317,11 +318,14 @@ class OperatorAPI:
                     raise BrokerError("owned_registered_project_plan_required")
                 cancelled = self.broker.profile_jobs.cancel(
                     CancelRequest(job_id=cancel_job.job_id),
-                    principal.principal_id, principal.origin.value,
+                    principal.principal_id,
+                    principal.origin.value,
                 )
                 result = {
-                    "job_id": cancel_job.job_id, "plan_hash": cancel_job.plan_hash,
-                    "broker_epoch": self.broker.epoch, "state": cancelled["state"],
+                    "job_id": cancel_job.job_id,
+                    "plan_hash": cancel_job.plan_hash,
+                    "broker_epoch": self.broker.epoch,
+                    "state": cancelled["state"],
                     "stop_requested": cancelled.get("stop_requested", False),
                 }
             elif path == "/operator/plans":
