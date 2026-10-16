@@ -348,12 +348,20 @@ class Broker:
 
     def _execution_intent_binding_live(self, intent: ExecutionIntent) -> bool:
         """Final callback-free identity/deadline checks; never extend an intent."""
+        now = self.clock()
+        return bool(
+            math.isfinite(now)
+            and math.isfinite(intent.deadline)
+            and now < intent.deadline
+            and self._execution_lease_binding_live(intent)
+        )
+
+    def _execution_lease_binding_live(self, intent: ExecutionIntent) -> bool:
+        """Current lease authority, independent of the fixed admission deadline."""
         lease, now = self.session, self.clock()
         if (
             self.closing
             or not math.isfinite(now)
-            or not math.isfinite(intent.deadline)
-            or now >= intent.deadline
             or intent.epoch != self.epoch
             or lease is None
             or not math.isfinite(lease.deadline)
