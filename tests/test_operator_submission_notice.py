@@ -60,3 +60,15 @@ def test_submitted_job_requires_live_gui_review_before_any_cli_prompt(tmp_path):
         assert port.opens == 0 and port.writes == []
     finally:
         store.close()
+
+
+def test_single_short_approve_discloses_target_without_copying_a_token(tmp_path):
+    digest, port = write_plan(tmp_path)
+    prompts = []
+    result = approve_plan(tmp_path, digest, lambda prompt: prompts.append(prompt) or "APPROVE")
+    assert result == {"approved": True, "plan_hash": digest}
+    assert len(prompts) == 1
+    for expected in ("Target:", "Recovery:", "consent", "does not prove", digest):
+        assert expected in prompts[0]
+    assert "Type APPROVE to approve this displayed plan" in prompts[0]
+    assert port.opens == 0 and port.writes == []

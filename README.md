@@ -28,6 +28,10 @@ are now implemented and mock-tested. The optional [Windows Tunnel preparation](T
 and [local scoped-key management](KEYS.md) are available. A user-run Windows mock Tunnel registration and read-only MCP calls
 were verified; cloud lifecycle remains external to broker status. Nothing opens USB automatically at startup.
 
+Manual plan approval uses an explicit Approve click after reviewing the target,
+effects and recovery reference; no long confirmation phrase is required.
+See [operator consent and unattended flash design](APPROVAL-UX.md).
+
 ## Console and job visibility
 
 The broker sends bounded, best-effort job lifecycle and redacted warning/error/
@@ -181,7 +185,7 @@ clients can prepare plans but cannot grant approvals. In PowerShell:
 $lease = uv run cardputer acquire --owner local_cli --seconds 300 | ConvertFrom-Json
 $plan = uv run cardputer prepare --session $lease.session --job trial-001 --test diagnostics | ConvertFrom-Json
 uv run cardputer approve --state-dir .state/safe --plan $plan.plan_hash
-# Inspect the printed immutable plan, then type the exact requested APPROVE phrase
+# Inspect the printed target, effects and recovery, then type APPROVE
 uv run cardputer execute --session $lease.session --plan $plan.plan_hash
 uv run cardputer job trial-001
 uv run cardputer release --session $lease.session
