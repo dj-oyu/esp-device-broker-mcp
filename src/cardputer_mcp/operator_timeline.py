@@ -12,7 +12,7 @@ from typing import Any
 from .backend import DeviceOperationFailure
 from .broker import Broker, BrokerError
 from .device_observation import FIRMWARE_LIMITATIONS, REDACTION_LIMITATIONS
-from .plan_approval import PlanApprovals
+from .plan_approval import _ATTESTATIONS, PlanApprovals
 from .source_snapshot import SOURCE_ERROR_CODES
 
 MAX_CARDS = 32
@@ -666,7 +666,12 @@ class OperatorTimeline:
                     "lease_remaining_seconds",
                     "attestation",
                 }
-                optional = {"execution_submitted", "intent_remaining_seconds"}
+                optional = {
+                    "execution_submitted",
+                    "intent_remaining_seconds",
+                    "attestation_text",
+                    "image_delivery_recipient",
+                }
                 submitted = detail.get("execution_submitted", False)
                 intent_remaining: Any = detail.get("intent_remaining_seconds")
                 if (
@@ -697,6 +702,25 @@ class OperatorTimeline:
                         )
                     )
                     or (not submitted and intent_remaining is not None)
+                    or (
+                        "attestation_text" in detail
+                        and (
+                            type(detail["attestation_text"]) is not str
+                            or detail["attestation_text"] != _ATTESTATIONS[detail["attestation"]]
+                        )
+                    )
+                    or (
+                        "image_delivery_recipient" in detail
+                        and (
+                            type(detail["image_delivery_recipient"]) not in (str, type(None))
+                            or detail["image_delivery_recipient"]
+                            != (
+                                lease.principal_id
+                                if lease is not None and detail["plan"]["test"] == "capture_home"
+                                else None
+                            )
+                        )
+                    )
                 ):
                     raise ValueError
                 card["review"] = {key: detail[key] for key in fields | optional if key in detail}
