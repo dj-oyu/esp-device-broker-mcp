@@ -176,6 +176,98 @@ with Ctrl+C; shutdown drains any active mock workflow before releasing the lock.
 `examples/mock-demo.toml` is an explicit **local-operator opt-in for synthetic
 operations only**. The default policy requires individual local approval.
 
+## Connect Claude Code, Codex and Antigravity CLI
+
+Use the existing authenticated broker on the same Windows machine. Start it with
+the existing GUI/launcher and its client-key registry as described in
+[STDIO-CLIENTS.md](STDIO-CLIENTS.md#1回だけ準備するもの).
+The clients launch a tools-only **stdio adapter**, which forwards to the resident
+Streamable HTTP endpoint `http://127.0.0.1:8765/mcp`; it does not start another
+broker or acquire USB.
+
+First complete the [private env-file setup](STDIO-CLIENTS.md#private-env-ファイル):
+use an issued `remote_mcp` client key with `read` scope (and `control` only when
+needed), from that broker's registry. The unauthenticated mock quick start above
+is not this authenticated setup. The file contains `CARDPUTER_CLIENT_KEY` and,
+optionally, `CARDPUTER_BROKER_URL`; keep it private and outside both the adapter
+installation and Git checkouts. Registration stores its path, not the secret.
+The following paths are placeholders for a stable source/venv installation;
+substitute the actual paths locally.
+
+### Claude Code
+
+In PowerShell, after installing this project with `uv sync --frozen`:
+
+```powershell
+$AdapterPython = 'C:\Tools\cardputer-device-mcp\.venv\Scripts\python.exe'
+$ClientEnvFile = Join-Path $env:LOCALAPPDATA 'DeviceBroker\local-client.env'
+claude mcp add --transport stdio --scope local device-broker -- $AdapterPython -m cardputer_mcp.cli stdio --env-file $ClientEnvFile
+claude mcp get device-broker
+```
+
+Run registration from the project where you will use Claude Code. The explicit
+local scope is private to you in that project; project-shared JSON templates
+remain available in [STDIO-CLIENTS.md](STDIO-CLIENTS.md#claude-code-のプロジェクト登録).
+Start Claude Code there and inspect `/mcp`.
+[Official Claude Code MCP commands/scopes](https://code.claude.com/docs/en/mcp).
+
+### Codex
+
+Use the same adapter and private file variables in PowerShell:
+
+```powershell
+codex mcp add device_broker -- $AdapterPython -m cardputer_mcp.cli stdio --env-file $ClientEnvFile
+codex mcp list
+```
+
+This CLI registration uses the user MCP configuration. For project configuration
+instead, use the existing [trusted-project TOML template](STDIO-CLIENTS.md#codex-のプロジェクト登録).
+Start Codex in the intended project and inspect `/mcp`.
+[Official Codex MCP guide](https://developers.openai.com/codex/mcp);
+`codex mcp add --help` documents the command/argument separator.
+
+### Antigravity CLI (Google)
+
+The [official Antigravity CLI MCP guide](https://antigravity.google/docs/mcp)
+documents stdio definitions in a workspace's `.agents/mcp_config.json`, or
+globally in `~/.gemini/config/mcp_config.json`. Merge this entry into
+`mcpServers`, preserving existing servers. Replace both absolute example paths;
+the env-file path must point to the same private file prepared above, not a
+literal placeholder. No secret belongs in this JSON.
+
+```json
+{
+  "mcpServers": {
+    "device-broker": {
+      "command": "C:\\Tools\\cardputer-device-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "cardputer_mcp.cli",
+        "stdio",
+        "--env-file",
+        "C:\\Private\\DeviceBroker\\local-client.env"
+      ]
+    }
+  }
+}
+```
+
+In the Antigravity CLI prompt, run:
+
+```text
+/mcp
+```
+
+Use its MCP manager to reload the configuration and inspect connection status.
+This is the documented JSON/interactive-manager route; verify it against your
+installed CLI version. Actual Antigravity client compatibility has not been
+runtime-tested here.
+
+For all three clients, begin with `client_identity`, `device_status` and
+`read_logs`. Connection and registration do not grant device ownership or
+change the broker's operation/approval policy. Separate work sessions and
+shared-key identity are explained in [STDIO-CLIENTS.md](STDIO-CLIENTS.md).
+
 ## Safer approval workflow
 
 Start `uv run cardputer serve --config examples/mock-safe.toml` instead. MCP
