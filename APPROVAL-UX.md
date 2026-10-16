@@ -88,9 +88,14 @@ source_commit = "0000000000000000000000000000000000000000"
 The source receipt and retained manifest must agree on repository, commit, tree
 and content digest, and the fetch/build must remain successful and owned by that
 principal. Full provenance is checked before queueing and again before dispatch.
-After current-auth callbacks, checks bind the same lease object, original intent
-deadline, exact plan, current device/project registration and durable source/build
-records. During device work and final atomic LKG commit, the broker rechecks
+After current-auth callbacks, admission and queued dispatch bind the same lease
+object and original intent deadline. A running unattended flash follows explicit
+renewals of that original lease, bounded by its current finite deadline and the
+original work session's current finite deadline, scopes and open state. Renewal
+does not revive an expired, cancelled or completed operation. Running checks and
+both atomic commit guards still bind the original lease/work-session objects,
+principal, owner, epoch, exact plan, current device/project registration and
+durable source/build records. During device work and final atomic LKG commit, the broker rechecks
 policy, authority and binding without repeatedly hashing the whole source tree.
 Changing any registration invalidates previously prepared unattended plans.
 

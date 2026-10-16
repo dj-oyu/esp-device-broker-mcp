@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from .models import TestName
 
 if TYPE_CHECKING:
-    from .broker import Broker, ExecutionIntent, Session
+    from .broker import Broker, ExecutionIntent, Session, WorkSession
 
 
 def _digest(value: Any) -> str:
@@ -22,6 +22,7 @@ class FlashAuthorization:
     project_sha256: str
     lease: "Session"
     intent: "ExecutionIntent"
+    work: "WorkSession | None"
     build_hash: str = ""
     fetch_job_id: str = ""
     fetch_hash: str = ""
@@ -75,7 +76,14 @@ class FlashPolicies:
             lease.work_session_id,
             lease.deadline,
         )
-        return FlashAuthorization(digest, _digest(registration), _digest(project), lease, intent)
+        return FlashAuthorization(
+            digest,
+            _digest(registration),
+            _digest(project),
+            lease,
+            intent,
+            broker.work_sessions.get(lease.work_session_id or ""),
+        )
 
     def _binding_live(
         self, token: FlashAuthorization, plan: dict[str, Any], *, committing: bool = False
@@ -85,14 +93,35 @@ class FlashPolicies:
 
         broker = self.broker
         current = self._candidate(plan)
+        job = broker._store().job(token.intent.job_id)
+        # Only the already-running operation may follow explicit lease renewals.
+        # Admission (including queued dispatch) retains its original deadline.
+        running = bool(
+            job is not None
+            and broker.active_job == token.intent.job_id
+            and (
+                job["state"] == "running"
+                or (
+                    committing
+                    and broker._store().db.in_transaction
+                    and job["state"] == "succeeded"
+                    and job["result"] == "firmware_flash_completed"
+                )
+            )
+        )
         if (
             current is None
             or current.lease is not token.lease
+            or current.work is not token.work
             or current.plan_hash != token.plan_hash
             or current.registration_sha256 != token.registration_sha256
             or current.project_sha256 != token.project_sha256
             or plan.get("registration_sha256") != token.registration_sha256
-            or not broker._execution_intent_binding_live(token.intent)
+            or not (
+                broker._execution_lease_binding_live(token.intent)
+                if running
+                else broker._execution_intent_binding_live(token.intent)
+            )
             or not math.isfinite(broker.clock())
             or broker.closing
             or broker._store().needs_review()
@@ -105,7 +134,6 @@ class FlashPolicies:
         ):
             return False
         saved = broker._store().plan(token.plan_hash)
-        job = broker._store().job(token.intent.job_id)
         return bool(
             saved is not None
             and saved == plan
