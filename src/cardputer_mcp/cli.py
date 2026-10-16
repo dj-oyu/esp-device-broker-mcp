@@ -148,6 +148,18 @@ def parser() -> argparse.ArgumentParser:
     image_decision.add_argument("--sha256", required=True)
     image_decision.add_argument("--delivery-revision", required=True)
     image_decision.add_argument("--decision", required=True, choices=("approve", "reject"))
+    launch = sub.add_parser(
+        "operator-launch-request", help="Request one explicitly enabled local capture CLI slot"
+    )
+    launch.add_argument("--pipe", required=True)
+    launch.add_argument("--action", required=True, choices=("plan-review", "approve-and-start"))
+    launch.add_argument("--epoch", required=True)
+    launch.add_argument("--job", required=True)
+    launch.add_argument("--plan", required=True)
+    launch.add_argument("--principal", required=True)
+    launch.add_argument("--review-revision")
+    launch.add_argument("--attestation")
+    launch.add_argument("--allow-image-delivery", action="store_true")
     review = sub.add_parser("review", help="OFFLINE acknowledgement; never retries a job")
     review.add_argument("--state-dir", type=Path, default=Path(".state"))
     review.add_argument("--job", required=True)
@@ -371,6 +383,37 @@ def main() -> None:
             if args.auth_source != "environment" or args.client != Origin.LOCAL.value:
                 raise AuthError("http_diagnostics_requires_local_environment_credentials")
             output(OperatorClient(args.url, load_environment_token(Origin.LOCAL)).diagnostics())
+        elif args.command == "operator-launch-request":
+            from .operator_launch import OperatorLaunchError
+            from .operator_launch_pipe import request_operator_launch
+
+            if (
+                args.auth_source != "none"
+                or args.client != Origin.LOCAL.value
+                or args.auth_file is not None
+                or args.url != "http://127.0.0.1:8765/mcp"
+            ):
+                raise AuthError("operator_launch_uses_os_identity_only")
+            try:
+                result = request_operator_launch(
+                    args.pipe,
+                    {
+                        "action": args.action,
+                        "broker_epoch": args.epoch,
+                        "job_id": args.job,
+                        "plan_hash": args.plan,
+                        "principal_id": args.principal,
+                        "review_revision": args.review_revision,
+                        "attestation": args.attestation,
+                        "allow_image_delivery": args.allow_image_delivery,
+                    },
+                )
+                output(result)
+                if result.get("ok") is not True:
+                    raise SystemExit(1)
+            except OperatorLaunchError as error:
+                print(str(error), file=sys.stderr)
+                raise SystemExit(1) from None
         elif args.command in (
             "plan-review",
             "approve-live",
