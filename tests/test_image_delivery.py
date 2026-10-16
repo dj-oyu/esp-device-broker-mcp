@@ -332,7 +332,9 @@ async def test_delivery_http_local_preview_approval_then_remote_read(
         ):
             assert forbidden not in public and forbidden not in history
         for path in service.resident.settings.state_dir.rglob("*"):
-            if path.is_file():
+            # A shorter file cannot contain the complete PNG. In particular,
+            # Windows denies reads of the broker's actively locked one-byte file.
+            if path.is_file() and path.stat().st_size >= len(pixels):
                 assert pixels not in path.read_bytes()
 
 

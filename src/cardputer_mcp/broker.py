@@ -101,6 +101,16 @@ class ExecutionIntent:
     deadline: float
 
 
+@dataclass(frozen=True, repr=False)
+class CaptureDeliveryConsent:
+    """Local consent for one future image from this exact reviewed capture."""
+
+    intent: ExecutionIntent
+    lease: Session
+    work: WorkSession | None
+    target: str
+
+
 @dataclass(frozen=True)
 class RetainedCapture:
     principal_id: str = field(repr=False)
@@ -220,6 +230,7 @@ class Broker:
         self.store: Store | None = None
         self.closing = False
         self.captures: dict[str, RetainedCapture] = {}
+        self.capture_delivery_consents: dict[str, CaptureDeliveryConsent] = {}
         self.device_observations: dict[str, RetainedDeviceObservation] = {}
         self.capture_policies: Any = None
         self.policy_jobs: dict[str, Any] = {}
@@ -275,6 +286,7 @@ class Broker:
         self.firmware_flash.request_stop()
         self._clear_local_home_diagnostic()
         self.captures.clear()
+        self.capture_delivery_consents.clear()
         self.device_observations.clear()
         self.policy_jobs.clear()
         self.flash_policy_jobs.clear()
@@ -330,6 +342,7 @@ class Broker:
                     store.set_job(job_id, "cancelled", reason)
                     self.policy_jobs.pop(job_id, None)
                     self.flash_policy_jobs.pop(job_id, None)
+                    self.capture_delivery_consents.pop(job_id, None)
                     self.logs.append(Event.CANCELLED)
         if stopping:
             self.queue.put_nowait(None)
@@ -345,6 +358,7 @@ class Broker:
             self.logs.append(Event.CANCELLED)
         self._execution_intents.pop(intent.job_id, None)
         self.flash_policy_jobs.pop(intent.job_id, None)
+        self.capture_delivery_consents.pop(intent.job_id, None)
 
     def _execution_intent_binding_live(self, intent: ExecutionIntent) -> bool:
         """Final callback-free identity/deadline checks; never extend an intent."""
@@ -483,6 +497,7 @@ class Broker:
         if self.capture_policies is not None:
             self.capture_policies.invalidate_session()
         self.session = None
+        self.capture_delivery_consents.clear()
         self._queue_sequence += 1
         self.logs.append(Event.EXPIRED if state == "expired" else Event.RELEASED)
 
@@ -530,6 +545,14 @@ class Broker:
                 if not self._physical_busy():
                     self._end_ownership("expired", "lease_expired")
         self._prune_execution_intents()
+        for job_id, consent in tuple(self.capture_delivery_consents.items()):
+            try:
+                plan = self._store().plan(consent.intent.plan_hash)
+                live = plan is not None and self._capture_delivery_binding_live(consent, plan)
+            except Exception:
+                live = False
+            if not live:
+                self.capture_delivery_consents.pop(job_id, None)
         if (
             self.closing
             or self.session is not None
@@ -1314,6 +1337,7 @@ class Broker:
             raise BrokerError("only_queued_jobs_can_be_cancelled")
         self._store().set_job(request.job_id, "cancelled", "client_cancelled_queued")
         self._execution_intents.pop(request.job_id, None)
+        self.capture_delivery_consents.pop(request.job_id, None)
         self.logs.append(Event.CANCELLED)
         return self.job(request.job_id)
 
@@ -1387,6 +1411,112 @@ class Broker:
             "remaining_seconds": max(0, retained.deadline - self.clock()),
             "metadata": retained.observation.metadata(),
         }
+
+    def _capture_delivery_target(self) -> str:
+        from .serial_backend import SerialBackend
+
+        return digest_plan(
+            {
+                "backend": self.backend.name,
+                "device": self.backend.device,
+                "serial": self.settings.serial.model_dump(mode="json")
+                if self.settings.serial
+                else None,
+                "backend_serial": self.backend.config.model_dump(mode="json")
+                if isinstance(self.backend, SerialBackend)
+                else None,
+            }
+        )
+
+    def _make_capture_delivery_consent(
+        self, plan: dict[str, Any], lease: Session
+    ) -> CaptureDeliveryConsent:
+        if plan["test"] != TestName.CAPTURE.value or lease.principal_id is None:
+            raise BrokerError("capture_delivery_consent_not_available")
+        pending = self.pending_execution(digest_plan(plan))
+        intent = pending or ExecutionIntent(
+            self.epoch,
+            digest_plan(plan),
+            plan["job_id"],
+            lease.id,
+            lease.principal_id,
+            lease.owner,
+            lease.work_session_id,
+            lease.deadline,
+        )
+        consent = CaptureDeliveryConsent(
+            intent,
+            lease,
+            self.work_sessions.get(lease.work_session_id or ""),
+            self._capture_delivery_target(),
+        )
+        if not self._capture_delivery_authorized(consent, plan):
+            raise BrokerError("capture_delivery_consent_not_available")
+        if len(self.capture_delivery_consents) >= 64:
+            raise BrokerError("capture_delivery_consent_not_available")
+        return consent
+
+    def _capture_delivery_binding_live(
+        self, consent: CaptureDeliveryConsent, plan: dict[str, Any]
+    ) -> bool:
+        intent = consent.intent
+        job = self._store().job(intent.job_id)
+        return bool(
+            self.session is consent.lease
+            and self.work_sessions.get(intent.work_session_id or "") is consent.work
+            and self._execution_intent_binding_live(intent)
+            and plan.get("test") == TestName.CAPTURE.value
+            and plan.get("job_id") == intent.job_id
+            and plan.get("broker_epoch") == intent.epoch
+            and plan.get("session_id") == intent.lease_id
+            and digest_plan(plan) == intent.plan_hash
+            and self._store().plan(intent.plan_hash) == plan
+            and self._capture_delivery_target() == consent.target
+            and self._device_lock.is_locked
+            and self._state_lock.is_locked
+            and not self._store().needs_review()
+            and (
+                job is None
+                or (
+                    job["plan_hash"] == intent.plan_hash
+                    and job["state"] in ("awaiting_approval", "queued", "running")
+                )
+            )
+        )
+
+    def _capture_delivery_authorized(
+        self, consent: CaptureDeliveryConsent, plan: dict[str, Any]
+    ) -> bool:
+        try:
+            valid = self.principal_valid
+            authorized = (
+                valid is not None
+                and valid(
+                    consent.intent.principal_id or "",
+                    consent.intent.owner,
+                    frozenset({"read", "control"}),
+                )
+                is True
+            )
+            return bool(
+                authorized
+                and self.principal_valid is valid
+                and self._capture_delivery_binding_live(consent, plan)
+            )
+        except Exception:
+            return False
+
+    def _consume_capture_delivery(self, plan: dict[str, Any]) -> bool:
+        job_id = plan["job_id"]
+        consent = self.capture_delivery_consents.get(job_id)
+        allowed = bool(
+            consent is not None
+            and self.active_job == job_id
+            and self._capture_delivery_authorized(consent, plan)
+            and self.capture_delivery_consents.get(job_id) is consent
+        )
+        self.capture_delivery_consents.pop(job_id, None)
+        return allowed
 
     def read_capture(self, job_id: str, principal_id: str) -> CapturedImage:
         """Read completed pixels from memory only, after per-request authentication."""
@@ -2030,6 +2160,9 @@ class Broker:
                             self.clock() + 300,
                             self.session.owner if self.session is not None else "",
                             datetime.now(UTC).isoformat(),
+                            delivery_state="approved"
+                            if self._consume_capture_delivery(plan)
+                            else "pending",
                             policy_target=capture_target,
                         )
                 except (FlashFailure, FlashAdmissionError) as failure:
@@ -2123,6 +2256,7 @@ class Broker:
                     self._expire()
             finally:
                 if job_id is not None:
+                    self.capture_delivery_consents.pop(job_id, None)
                     self.policy_jobs.pop(job_id, None)
                     self.flash_policy_jobs.pop(job_id, None)
                     self._execution_intents.pop(job_id, None)

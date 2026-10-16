@@ -65,6 +65,7 @@ class ApprovePlan(ReviewPlan):
         "DEVICE AND FIRMWARE RECOVERY VERIFIED FOR THIS EXACT PLAN",
     ]
     retain_local_home_line: bool = False
+    allow_image_delivery: bool = False
 
 
 class PreviewImage(BaseModel):
@@ -326,6 +327,7 @@ class OperatorAPI:
                     approval.review_revision,
                     approval.attestation,
                     approval.retain_local_home_line,
+                    approval.allow_image_delivery,
                 )
             elif path == "/operator/local-home-line":
                 home_line = PreviewHomeLine.model_validate(payload)

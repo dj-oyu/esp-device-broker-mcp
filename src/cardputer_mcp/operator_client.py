@@ -173,6 +173,7 @@ class OperatorClient:
         review_revision: str,
         attestation: str,
         retain_local_home_line: bool = False,
+        allow_image_delivery: bool = False,
     ) -> dict[str, Any]:
         if type(retain_local_home_line) is not bool:
             raise OperatorClientError("Invalid local diagnostic consent.")
@@ -183,6 +184,10 @@ class OperatorClient:
         }
         if retain_local_home_line:
             data["retain_local_home_line"] = True
+        if type(allow_image_delivery) is not bool:
+            raise OperatorClientError("Invalid capture delivery consent.")
+        if allow_image_delivery:
+            data["allow_image_delivery"] = True
         return self._request(
             "POST",
             "/operator/approve-plan",

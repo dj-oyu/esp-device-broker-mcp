@@ -54,14 +54,14 @@ disconnect, or uncertain close. Such jobs require review and are never retried.
    logical work session and device lease with your authenticated client.
 2. Call `prepare_test` with `request.session`, a new `request.job_id`, and
    `request.test = "capture_home"`. Inspect the returned plan.
-3. If approval is required, the local operator approves its exact hash using
-   `cardputer approve --state-dir PRIVATE_STATE_DIRECTORY --plan PLAN_HASH`.
+3. If approval is required, the local operator reviews and approves its exact hash
+   through the [live local CLI](#live-local-cli-approval-and-image-delivery).
    Capture may also be permitted by an explicit operator key policy; otherwise
    use the job's inline approval in the GUI timeline or this CLI. The existing explicit mock setting still applies.
 4. Call `execute_test` with the lease and plan hash, then inspect `job_status`.
    A repeated execution request for the same job is deduplicated.
-5. On success, approve the actual image in the same GUI timeline card, unless an explicit
-   operator policy already permits image delivery for this key. Then call
+5. On success, approve the actual image through the local CLI or GUI timeline card,
+   unless exact capture opt-in or an explicit operator policy permits delivery. Then call
    `read_capture` with `request.job_id`. Its MCP result contains
    ImageContent plus metadata; stdio forwards both. The host application decides
    how to display or attach the PNG. A JSON-only CLI status call does not save it.
@@ -76,6 +76,52 @@ requesting client to retrieve/transmit rendered pixels to its AI service.
 The broker never creates its own permission grants. Existing explicit operator
 policies may permit a capture plan; otherwise use the GUI timeline's inline approval or the local CLI. Existing `needs_review` history is not
 cleared by upgrading, switching tools, reading images, or restarting.
+
+## Live local CLI approval and image delivery
+
+Use the existing resident broker with `CARDPUTER_LOCAL_TOKEN` supplied privately
+in the process environment. The following commands require `--auth-source
+environment`, a local CLI identity, and an HTTP loopback broker URL. They do not
+start another broker, write approval rows directly, or drive the GUI.
+
+```powershell
+cardputer --auth-source environment plan-review --plan PLAN_HASH
+cardputer --auth-source environment approve-live --plan PLAN_HASH --review-revision REVIEW_REVISION --attestation "DEVICE HOME AND FIRMWARE VERIFIED"
+```
+
+`plan-review` displays the full exact plan, revision, current submission state,
+required attestation, image recipient and capture effects. `approve-live` accepts
+only a prepared, unsubmitted plan: approval alone never starts it. If the client
+already submitted `execute_test(wait_for_approval=true)`, review again and use
+`approve-and-start` instead. That action queues only the exact submitted job once;
+the requesting client does not need to execute again. A changed submission state,
+stale revision, expired authority, wrong target or wrong HOME/firmware attestation
+is refused. Never substitute the real-device attestation for physical verification.
+
+To explicitly permit this capture's one resulting image for the requesting
+principal and its AI service, add `--allow-image-delivery` to the approval command.
+The recipient is the one named by `plan-review`; it cannot be selected or changed
+by a CLI flag. This opt-in is held only in RAM and binds the original plan, job,
+principal, broker epoch, lease/work-session identity, target and original deadline.
+It is consumed only for that capture result and cannot move to another job.
+Renewal does not extend the opt-in, and cancellation, failure, revocation or restart
+does not revive it. It creates no session or permanent policy. Image retention
+remains five minutes from completion; repeat reads and decisions do not extend it.
+
+Without that opt-in, review and decide on the completed image through the same
+local operator API:
+
+```powershell
+cardputer --auth-source environment image-review --job JOB_ID
+cardputer --auth-source environment image-decision --job JOB_ID --sha256 IMAGE_SHA256 --delivery-revision DELIVERY_REVISION --decision approve
+```
+
+The review emits JSON containing the local PNG preview as base64 and its exact
+digest/revision. `image-decision` also accepts `reject`. Neither action captures
+another image or sends it remotely. After approval, the original currently
+authenticated principal can use MCP `read_capture` within the existing retention.
+On a lost approval response, inspect current job/image state before another
+decision; the CLI never automatically retries a mutation.
 
 ## Privacy and retention
 

@@ -1,0 +1,56 @@
+"""Explicit live local operator actions; no database writes or GUI dependencies."""
+
+import secrets
+from typing import Any
+
+from pydantic import TypeAdapter
+
+from .models import Digest
+from .operator_client import OperatorClient, OperatorClientError
+
+
+def review_plan(client: OperatorClient, plan_hash: str) -> dict[str, Any]:
+    TypeAdapter(Digest).validate_python(plan_hash)
+    detail = client.plan(plan_hash)
+    return {
+        **detail,
+        "approval_effect": "Queues this exact submitted job once."
+        if detail["execution_submitted"]
+        else "Records approval only; does not submit or start work.",
+        "capture_notice": (
+            "Capture requires HOME and the verified configured firmware. It sends Esc then s; "
+            "Esc on another screen can exit an app/editor and lose unsaved state. Serial "
+            "open/close may reset the device. Pixels do not prove LCD transfer or coherence. "
+            "Image delivery stays private unless separately approved or explicitly opted in. "
+            "--allow-image-delivery permits only this plan/job's one resulting image to its "
+            "named requesting principal and AI service, for the existing five-minute retention; "
+            "it creates no policy and does not extend any deadline."
+            if detail["plan"]["test"] == "capture_home"
+            else None
+        ),
+    }
+
+
+def approve_live(
+    client: OperatorClient,
+    plan_hash: str,
+    revision: str,
+    attestation: str,
+    *,
+    start_submitted: bool,
+    allow_image_delivery: bool = False,
+) -> dict[str, Any]:
+    TypeAdapter(Digest).validate_python(plan_hash)
+    TypeAdapter(Digest).validate_python(revision)
+    detail = client.plan(plan_hash)
+    if not secrets.compare_digest(revision, detail["review_revision"]):
+        raise OperatorClientError("Stale review. Review the plan again; nothing was approved.")
+    if detail["execution_submitted"] is not start_submitted:
+        raise OperatorClientError("Approval action does not match the reviewed submission state.")
+    if allow_image_delivery and (
+        detail["plan"]["test"] != "capture_home" or not detail.get("image_delivery_recipient")
+    ):
+        raise OperatorClientError("Image delivery consent requires an owned capture plan.")
+    return client.approve(
+        plan_hash, revision, attestation, allow_image_delivery=allow_image_delivery
+    )
