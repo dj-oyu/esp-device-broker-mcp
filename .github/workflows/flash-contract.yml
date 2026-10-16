@@ -34,6 +34,9 @@ on:
       - 'src/cardputer_mcp/gui_approvals.py'
       - 'src/cardputer_mcp/operator.py'
       - 'src/cardputer_mcp/operator_cli.py'
+      - 'src/cardputer_mcp/operator_launch.py'
+      - 'src/cardputer_mcp/operator_launch_pipe.py'
+      - 'tests/test_operator_launch*.py'
       - 'src/cardputer_mcp/operator_api.py'
       - 'src/cardputer_mcp/operator_client.py'
       - 'src/cardputer_mcp/cli.py'
@@ -108,6 +111,11 @@ jobs:
         timeout-minutes: 2
         run: |
           .venv/Scripts/python.exe -m pytest -vv --tb=short -o faulthandler_timeout=60 tests/test_operator_live_cli.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Scoped supervisor CLI entry without hardware
+        timeout-minutes: 2
+        run: |
+          .venv/Scripts/python.exe -m pytest -vv --tb=short -o faulthandler_timeout=60 tests/test_operator_launch.py tests/test_operator_launch_pipe.py tests/test_operator_launch_http.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Source and build regression
         run: |

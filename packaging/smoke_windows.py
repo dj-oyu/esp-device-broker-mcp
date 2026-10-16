@@ -173,6 +173,18 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
             logs = json.loads(invoke(exe, [*client, "logs"], folder, env))
             assert logs["ok"] is True and logs["gap"] is False
             frozen_build_api_smoke(f"http://127.0.0.1:{port}/mcp", folder, env)
+            # Exercise the packaged OS-identity request client and the two fixed
+            # privileged CLI actions, with dummy tokens and one synthetic capture.
+            launch_probe = Path(__file__).with_name("operator_launch_smoke.py")
+            launch_python = Path(__file__).resolve().parents[1] / ".venv/Scripts/python.exe"
+            launch_result = subprocess.run(
+                [str(launch_python), str(launch_probe), "--exe", str(exe),
+                 "--url", f"http://127.0.0.1:{port}/mcp", "--cwd", str(folder)],
+                cwd=folder, env=dict(env), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=90, check=False,
+            )
+            if launch_result.returncode != 0:
+                raise RuntimeError("packaged_operator_launch_probe_failed")
             # Authentication must remain enforced in the frozen broker.
             try:
                 invoke(exe, ["--url", f"http://127.0.0.1:{port}/mcp", "status"], folder, env)

@@ -79,6 +79,10 @@ cleared by upgrading, switching tools, reading images, or restarting.
 
 ## Live local CLI approval and image delivery
 
+If the resident supervisor is the only process holding the local token, use the
+optional [one-capture supervisor entry](SUPERVISOR-OPERATOR-CLI.md). It requires
+explicit local authorization and integration; it is not enabled by this upgrade.
+
 Use the existing resident broker with `CARDPUTER_LOCAL_TOKEN` supplied privately
 in the process environment. The following commands require `--auth-source
 environment`, a local CLI identity, and an HTTP loopback broker URL. They do not
