@@ -23,6 +23,27 @@ class FlashPython(BaseModel):
         return value
 
 
+class UnattendedFlash(BaseModel):
+    """Exact local permission; enabling a flash operation alone grants no consent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    enabled: bool = Field(default=False, strict=True)
+    principal_id: str = Field(pattern=r"^[A-Za-z0-9_.:@-]{1,128}$")
+    device_id: Identifier
+    project_id: Identifier
+    operation: Literal["firmware_flash"]
+    source_receipt: Digest
+    source_repository: str = Field(pattern=r"^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$")
+    source_commit: str = Field(pattern=r"^[a-f0-9]{40}$")
+
+    @field_validator("source_repository")
+    @classmethod
+    def public_repository(cls, value: str) -> str:
+        if any(part in (".", "..") for part in value.split("/")):
+            raise ValueError("registered_github_repository_required")
+        return value
+
+
 class FlashDevice(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     selector: DeviceSelector
@@ -37,6 +58,7 @@ class FlashDevice(BaseModel):
     original_elf_sha256: Digest | None = None
     allow_backup: bool = Field(default=False, strict=True)
     allow_flash: bool = Field(default=False, strict=True)
+    unattended_flash: UnattendedFlash | None = None
     allow_restore: bool = Field(default=False, strict=True)
 
     @field_validator("esptool_directory", "backup_directory")

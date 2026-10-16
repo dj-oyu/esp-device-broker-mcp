@@ -19,24 +19,25 @@ selects that existing enum for the displayed plan only after an explicit click;
 it is no longer presented as a human password or claimed as machine evidence.
 No MCP tool schema or remote approval permission changes are made.
 
-## Follow-up: explicit unattended flash registration (not implemented here)
+## Explicit unattended flash registration
 
-This PR changes consent presentation only. Unattended flash requires a separate
-reviewed implementation because it changes authority at enqueue, device dispatch
-and final LKG commit. There is no functional unattended option or enabled example
-in this PR. `allow_flash` continues to enable the operation; it never implies
-permission to skip manual approval. Missing/disabled unattended registration must
-preserve manual approval.
+The dependent unattended-flash implementation adds local registration and
+transient per-execution permission. `allow_flash` continues to enable the
+operation; it never implies permission to skip manual approval. Missing/disabled
+unattended registration preserves manual approval. Prepare reports eligibility;
+only an explicit client execute request can queue work. Eligibility never
+synthesizes an operator approval row. Restart does not replay the permission.
 
-Proposed local-only `unattended_flash` registration has an explicit strict
+Local-only `unattended_flash` registration has an explicit strict
 `enabled = false` default and exact pins for authenticated `principal_id`,
 `device_id`, `project_id`, `operation = "firmware_flash"`, public source repository
-and immutable source commit. No wildcard principals, client paths, commands,
+and immutable source commit. The exact successful owned source receipt must also
+be registered; a second receipt or a different build origin is ineligible. No wildcard principals, client paths, commands,
 remote policy edits or silent enablement. A policy mismatch falls back to manual
 review before enqueue; revocation after enqueue cancels rather than falling back
 to another approval or retry.
 
-Eligibility must prove a successful owned source fetch receipt, its currently
+Eligibility proves a successful owned source fetch receipt, its currently
 verified repository/commit/tree/content digest, the same owner's successful build
 from that receipt, and the retained manifest/artifact hashes. A build from an
 arbitrary local worktree is ineligible. Pin the current local project/device
@@ -52,16 +53,62 @@ success only after readback, expected boot, confirmed close and final authority.
 Failure, cancellation, crash or uncertainty preserves the previous LKG and the
 existing stop/review behavior.
 
-Implementation must bind a transient authorization to the exact plan, broker
-epoch, original lease/principal and registered provenance. Recheck complete
-provenance before enqueue and dispatch; recheck live authority and policy after
-callbacks and immediately before final atomic success. Do not rehash an entire
-source tree on each progress event. Restart cannot replay transient permission.
+The implementation binds a transient authorization to the exact plan, broker
+epoch, original lease/principal and registered provenance. Complete provenance is rechecked before enqueue and dispatch; live authority and
+policy are rechecked after callbacks and immediately before final atomic success.
+The source tree is not rehashed on each progress event. Restart cannot replay
+transient permission.
 
-Required fake-device coverage: default manual despite `allow_flash`; exact-match
+Fake-device coverage: default manual despite `allow_flash`; exact-match
 success without an approval row; every pin/receipt-owner/provenance mismatch;
 local-worktree and backup/restore exclusions; tampered bytes/regions; revoked
 policy or principal, expired/replaced lease and callback reentrancy; failed or
-cancelled write/readback/close retaining LKG and stopping further work. CI must
-exercise those boundaries before this option is exposed in a settings schema.
+cancelled write/readback/close retaining LKG and stopping further work. CI exercises these cases with synthetic ROM drivers and private temporary state.
 No production configuration, deployment or device operation is part of this work.
+
+## Local configuration shape
+
+This inert example illustrates a nested registration under an existing device.
+The sample receipt is a placeholder; do not enable it without selecting and
+reviewing the actual owned source receipt and established artifact LKG locally.
+The normal existing device/tool/project registration remains required.
+
+```toml
+[flash_devices.example.unattended_flash]
+enabled = false
+principal_id = "example-principal"
+device_id = "example"
+project_id = "example-project"
+operation = "firmware_flash"
+source_receipt = "0000000000000000000000000000000000000000000000000000000000000000"
+source_repository = "example/public-firmware"
+source_commit = "0000000000000000000000000000000000000000"
+```
+
+The source receipt and retained manifest must agree on repository, commit, tree
+and content digest, and the fetch/build must remain successful and owned by that
+principal. Full provenance is checked before queueing and again before dispatch.
+After current-auth callbacks, checks bind the same lease object, original intent
+deadline, exact plan, current device/project registration and durable source/build
+records. During device work and final atomic LKG commit, the broker rechecks
+policy, authority and binding without repeatedly hashing the whole source tree.
+Changing any registration invalidates previously prepared unattended plans.
+
+A queued invalidation cancels with no device writes; a running invalidation stops
+through the existing flash lifecycle and may require review for partial writes.
+No fallback to manual consent occurs after an unattended job was queued. Existing
+manually approved jobs retain their manual approval semantics.
+
+The existing atomic success transaction invokes its authority guard twice: before
+updates and after the provisional job/LKG updates. A private commit-only check
+recognizes that provisional successful job only inside the open transaction;
+normal device-work checks reject completed jobs. Both checks still revalidate
+policy and current authority. Tests cover second-guard revocation rolling back
+both updates and rejection of a completed job outside that transaction.
+
+The transient permission also pins the successful fetch diagnostic's exact
+`source.source_receipt`. Live checks re-read this binding after auth callbacks,
+before writes and in both final commit guards. Replacing or deleting the receipt
+invalidates permission even when the fetch remains succeeded and its plan hash is
+unchanged. This adds only callback-free checks on the existing small DB records;
+it does not rehash the source tree on progress events.

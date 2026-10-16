@@ -89,6 +89,11 @@ jobs:
         run: |
           .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_flash*.py' -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Unattended flash authorization without hardware
+        timeout-minutes: 3
+        run: |
+          .venv/Scripts/python.exe -m pytest -vv --tb=short -o faulthandler_timeout=60 tests/test_flash_policy.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Source/build, authorization and device integration without hardware
         timeout-minutes: 5
         run: |
