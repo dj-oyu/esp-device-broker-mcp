@@ -119,6 +119,35 @@ def parser() -> argparse.ArgumentParser:
     approve = sub.add_parser("approve", help="LOCAL operator-only exact-plan approval")
     approve.add_argument("--state-dir", type=Path, default=Path(".state"))
     approve.add_argument("--plan", required=True)
+    live_review = sub.add_parser(
+        "plan-review", help="Review an exact plan on the live local broker"
+    )
+    live_review.add_argument("--plan", required=True)
+    for action in ("approve-live", "approve-and-start"):
+        live = sub.add_parser(
+            action, help="Approve the exact live review; local environment auth only"
+        )
+        live.add_argument("--plan", required=True)
+        live.add_argument("--review-revision", required=True)
+        live.add_argument(
+            "--attestation", required=True, help="Exact attestation text from plan-review"
+        )
+        live.add_argument(
+            "--allow-image-delivery",
+            action="store_true",
+            help="Consent to this capture's one image for its requesting principal",
+        )
+    image_review = sub.add_parser(
+        "image-review", help="Preview a completed image through the local API"
+    )
+    image_review.add_argument("--job", required=True)
+    image_decision = sub.add_parser(
+        "image-decision", help="Decide delivery of an exact reviewed image"
+    )
+    image_decision.add_argument("--job", required=True)
+    image_decision.add_argument("--sha256", required=True)
+    image_decision.add_argument("--delivery-revision", required=True)
+    image_decision.add_argument("--decision", required=True, choices=("approve", "reject"))
     review = sub.add_parser("review", help="OFFLINE acknowledgement; never retries a job")
     review.add_argument("--state-dir", type=Path, default=Path(".state"))
     review.add_argument("--job", required=True)
@@ -342,6 +371,39 @@ def main() -> None:
             if args.auth_source != "environment" or args.client != Origin.LOCAL.value:
                 raise AuthError("http_diagnostics_requires_local_environment_credentials")
             output(OperatorClient(args.url, load_environment_token(Origin.LOCAL)).diagnostics())
+        elif args.command in (
+            "plan-review",
+            "approve-live",
+            "approve-and-start",
+            "image-review",
+            "image-decision",
+        ):
+            from .operator_cli import approve_live, review_plan
+
+            if args.auth_source != "environment" or args.client != Origin.LOCAL.value:
+                raise AuthError("operator_cli_requires_local_environment_credentials")
+            operator = OperatorClient(args.url, load_environment_token(Origin.LOCAL))
+            if args.command == "plan-review":
+                output(review_plan(operator, args.plan))
+            elif args.command in ("approve-live", "approve-and-start"):
+                output(
+                    approve_live(
+                        operator,
+                        args.plan,
+                        args.review_revision,
+                        args.attestation,
+                        start_submitted=args.command == "approve-and-start",
+                        allow_image_delivery=args.allow_image_delivery,
+                    )
+                )
+            elif args.command == "image-review":
+                output(operator.image(args.job))
+            else:
+                output(
+                    operator.decide_image(
+                        args.job, args.sha256, args.delivery_revision, args.decision
+                    )
+                )
         elif args.command == "review-request":
             output(acknowledge_device_request_recovery(args.state_dir, args.request_id))
         elif args.command == "ports":

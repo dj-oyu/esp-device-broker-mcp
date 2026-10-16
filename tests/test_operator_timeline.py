@@ -343,6 +343,70 @@ async def test_review_failure_never_hides_history_or_returns_a_stale_approval(tm
         assert broker.backend.calls == 0
 
 
+@pytest.mark.parametrize("test", [Action.CAPTURE, Action.DIAGNOSTICS])
+async def test_exact_cli_review_metadata_survives_timeline_without_authorizing_delivery(
+    tmp_path, test
+):
+    async with running(tmp_path) as (broker, plans, timeline, _):
+        prepared = prepare(broker, test=test)
+        review = plans.detail(prepared["plan_hash"])
+        snapshot = timeline.snapshot()
+        assert snapshot["plans_available"]
+        assert snapshot["cards"][0]["review"] == review
+        assert review["attestation_text"] == ""
+        assert review["image_delivery_recipient"] == (
+            "synthetic-owner" if test == Action.CAPTURE else None
+        )
+        assert TimelineSnapshot.parse({"ok": True, **snapshot}, 0).cards[0].review is not None
+        assert not broker.capture_delivery_consents and broker.backend.calls == 0
+        assert broker._store().db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("attestation_text", "DEVICE HOME AND FIRMWARE VERIFIED"),
+        ("attestation_text", 1),
+        ("image_delivery_recipient", "another-principal"),
+        ("image_delivery_recipient", None),
+        ("image_delivery_recipient", 1),
+        ("unexpected_metadata", "synthetic-private-value"),
+    ],
+)
+async def test_timeline_rejects_forged_or_unknown_cli_review_metadata(tmp_path, field, value):
+    async with running(tmp_path) as (broker, plans, timeline, _):
+        prepare(broker, test=Action.CAPTURE)
+        original = plans.detail
+
+        def altered(plan_hash):
+            return {**original(plan_hash), field: value}
+
+        plans.detail = altered
+        snapshot = timeline.snapshot()
+        assert not snapshot["plans_available"]
+        assert all(item["review"] is None for item in snapshot["cards"])
+        assert not broker.capture_delivery_consents and broker.backend.calls == 0
+
+
+async def test_timeline_preserves_legacy_review_shape_without_cli_metadata(tmp_path):
+    async with running(tmp_path) as (broker, plans, timeline, _):
+        prepare(broker, test=Action.CAPTURE)
+        original = plans.detail
+
+        def legacy(plan_hash):
+            return {
+                key: value
+                for key, value in original(plan_hash).items()
+                if key not in ("attestation_text", "image_delivery_recipient")
+            }
+
+        plans.detail = legacy
+        snapshot = timeline.snapshot()
+        assert snapshot["plans_available"] and snapshot["cards"][0]["review"] is not None
+        assert "attestation_text" not in snapshot["cards"][0]["review"]
+        assert not broker.capture_delivery_consents and broker.backend.calls == 0
+
+
 async def test_corrupt_rows_are_redacted_without_parsing_raw_diagnostics(tmp_path):
     async with running(tmp_path) as (broker, _, timeline, _):
         prepare(broker, "healthy")

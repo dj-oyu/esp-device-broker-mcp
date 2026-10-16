@@ -706,6 +706,10 @@ class PlanApprovals:
                 "review_revision": self._revision(plan, lease),
                 "lease_remaining_seconds": self._remaining(lease),
                 "attestation": self._attestation(plan),
+                "attestation_text": _ATTESTATIONS[self._attestation(plan)],
+                "image_delivery_recipient": lease.principal_id
+                if plan["test"] == TestName.CAPTURE.value
+                else None,
                 **self._intent_detail(plan_hash, lease),
             }
 
@@ -726,10 +730,13 @@ class PlanApprovals:
         review_revision: str,
         attestation: str,
         retain_local_home_line: bool = False,
+        allow_image_delivery: bool = False,
     ) -> dict[str, Any]:
         with _fixed_errors():
             if type(retain_local_home_line) is not bool:
                 raise BrokerError("local_home_diagnostic_not_available")
+            if type(allow_image_delivery) is not bool:
+                raise BrokerError("capture_delivery_consent_not_available")
             lease = self._context()
             plan = self._validate(plan_hash, lease)
             if not _hex(review_revision, 64) or not secrets.compare_digest(
@@ -784,6 +791,18 @@ class PlanApprovals:
                 is not None
             )
             local_entry = None
+            delivery_entry = None
+            if allow_image_delivery:
+                if already:
+                    delivery_entry = self.broker.capture_delivery_consents.get(current["job_id"])
+                    if delivery_entry is None or not self.broker._capture_delivery_authorized(
+                        delivery_entry, current
+                    ):
+                        raise BrokerError("capture_delivery_consent_requires_fresh_approval")
+                else:
+                    delivery_entry = self.broker._make_capture_delivery_consent(
+                        current, current_lease
+                    )
             if retain_local_home_line:
                 if already:
                     if not self.broker._local_home_opt_in_current(current, current_lease):
@@ -806,7 +825,24 @@ class PlanApprovals:
                     final_plan, final_lease
                 ):
                     raise BrokerError("stale_plan_review")
+            if delivery_entry is not None:
+                final_lease = self._context()
+                final_plan = self._validate(plan_hash, final_lease)
+                # Recipient validation can reenter, too. Check the exact review
+                # meaning after that final callback, before recording any consent.
+                if not self.broker._capture_delivery_authorized(delivery_entry, final_plan) or not (
+                    secrets.compare_digest(review_revision, self._revision(final_plan, final_lease))
+                ):
+                    raise BrokerError("stale_plan_review")
+                if retain_local_home_line and (
+                    not self.broker._home_line_binding_live(local_entry, final_lease)
+                    if local_entry is not None
+                    else not self.broker._local_home_opt_in_current(final_plan, final_lease)
+                ):
+                    raise BrokerError("stale_plan_review")
             store.approve(plan_hash)
+            if delivery_entry is not None:
+                self.broker.capture_delivery_consents[current["job_id"]] = delivery_entry
             if local_entry is not None:
                 self.broker._install_local_home_diagnostic(local_entry)
             submitted = self.broker.dispatch_pending_execution(plan_hash)
@@ -820,4 +856,6 @@ class PlanApprovals:
                 result["job_state"] = "queued"
             if retain_local_home_line:
                 result["local_home_line_opt_in"] = True
+            if allow_image_delivery:
+                result["image_delivery_opt_in"] = True
             return result
