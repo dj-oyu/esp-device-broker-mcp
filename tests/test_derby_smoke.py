@@ -24,6 +24,7 @@ class Wire:
         self.running = False
         self.phase_order = (b"gate", b"race", b"photo", b"res")
         self.demo = 0
+        self.photo_quiet = 0
         self.is_open = False
         self.dtr = self.rts = False
         self.port = None
@@ -32,6 +33,9 @@ class Wire:
         self.now += 0.1
         if self.queue:
             return self.queue.popleft()
+        if self.photo_quiet:
+            self.photo_quiet -= 1
+            return b""
         if self.running and self.phases:
             self.demo += 1
             if self.demo == 2:
@@ -39,6 +43,8 @@ class Wire:
                 return b"DERBY DEMO START 5000,0,0,100\n"
             if 3 <= self.demo < 3 + len(self.phase_order):
                 phase = self.phase_order[self.demo - 3]
+                if phase == b"photo":
+                    self.photo_quiet = 2
                 return b"DERBY SCENE " + phase + b" race=1000001 seed=AB123456 plans=2 reg=3\n"
             if self.demo == 3 + len(self.phase_order):
                 return b"DERBY DEMO END 5000,0,0,100\n"
@@ -153,10 +159,10 @@ class DerbyTests(unittest.TestCase):
         _, code = self.run_wire(wire)
         self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
 
-    def test_absent_phases_returns_time_image_limit_not_cycle_success(self):
+    def test_absent_phases_exits_without_capture_or_cycle_success(self):
         image, code = self.run_wire(Wire(phases=False))
-        self.assertTrue(image.png)
-        self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
+        self.assertIsNone(image)
+        self.assertEqual(code, "derby_photo_not_verified_no_capture")
 
     def test_wrong_order_and_duplicate_start_do_not_claim_cycle(self):
         wire = Wire()

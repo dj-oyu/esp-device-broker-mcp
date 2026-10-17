@@ -18,6 +18,7 @@ from typing import Any, Protocol
 from .backend import BackendResult, DeviceOperationFailure
 from .capture import CapturedImage, CaptureError, LegacyCaptureDecoder
 from .config import SerialSettings
+from .derby_observation import DerbyObservation
 from .device_observation import MAX_RECEIVE_BYTES, DeviceLogCollector, DeviceObservation
 from .home_line import HomeLineProbe
 from .models import TestName
@@ -125,6 +126,7 @@ class Reader:
     ) -> None:
         self.port, self.emit, self.clock, self.deadline = port, emit, clock, deadline
         self.phase_observer: Callable[[bytes], None] | None = None
+        self.derby_observation: Callable[[], DerbyObservation] | None = None
         self.derby_mode = False
         self.pending = b""
         self.lines: list[bytes] = []
@@ -140,7 +142,7 @@ class Reader:
         self.local_home_probe = local_home_probe
 
     def failure(self, code: str) -> SerialFailure:
-        return SerialFailure(
+        failure = SerialFailure(
             code,
             step=self.step,
             expected_marker=self.expected_marker,
@@ -149,6 +151,11 @@ class Reader:
             recognized_markers=self.recognized_markers,
             receive_summary=self.receive_diagnostics.snapshot(self.diagnostic_pending_bytes),
         )
+        if self.derby_observation is not None:
+            failure.diagnostic["derby_observation"] = self.derby_observation().model_dump(
+                mode="json", exclude_none=True
+            )
+        return failure
 
     def read_once(self) -> bool:
         if self.clock() >= self.deadline:
@@ -168,6 +175,10 @@ class Reader:
             self.diagnostic_pending_bytes = len(diagnostic_lines[-1])
             for diagnostic_line in diagnostic_lines[:-1]:
                 self.receive_diagnostics.observe_line(diagnostic_line)
+                if self.phase_observer is not None:
+                    # Record bounded host-observed markers in wire order, even
+                    # if a subsequent frame record fails decoder validation.
+                    self.phase_observer(clean_line(diagnostic_line))
                 if self.local_home_probe is not None:
                     self.local_home_probe.observe_line(diagnostic_line)
         if self.capture_guard and self.clock() >= self.deadline:
@@ -194,8 +205,6 @@ class Reader:
         while b"\n" in self.pending:
             raw, self.pending = self.pending.split(b"\n", 1)
             line = clean_line(raw)
-            if self.phase_observer is not None:
-                self.phase_observer(line)
             if self.capture_guard:
                 if line.startswith(b"APP_ID"):
                     raise self.failure("serial_capture_unexpected_app")
@@ -295,6 +304,7 @@ class Reader:
         self.pending = b""
         self.lines.clear()
         self.phase_observer = None
+        self.derby_observation = None
         self.fault_tail = b""
         self.capture_decoder = None
         self.local_home_probe = None
@@ -516,7 +526,10 @@ class SerialBackend:
                 "Opens/closes serial; drivers may glitch control lines or reset device",
                 "Fixed Esc/a/u x16/d x12/e navigation requires local.derby and DERBY READY",
                 "Observe automatic demo up to 120 seconds; whole serial job at most 180 seconds",
-                "One s at observed photo phase or 45-second fallback; pixels may be private",
+                "One s only at a currently observed photo phase; no timed fallback; "
+                "no photo before the deadline means no image and an unverified photo result",
+                "Reserve 18 seconds for capture, 12 for exit and 5 seconds margin; "
+                "record bounded host phase/race/seed and capture timing; pixels may be private",
                 "One explicit q exit requiring fresh HOME_READY; game exit may save player state",
                 "Cancellation/lease loss stops new writes, including q; game may remain running",
                 "Render buffer does not prove LCD transfer; "
@@ -753,7 +766,8 @@ class SerialBackend:
                 from .derby_smoke import derby_smoke
 
                 image, code = derby_smoke(reader)
-                return BackendResult(code, image)
+                assert reader.derby_observation is not None
+                return BackendResult(code, image, derby_observation=reader.derby_observation())
             if test == TestName.CAPTURE:
                 image = capture_home(reader)
                 # Python completes finally before returning this result. The
@@ -771,6 +785,11 @@ class SerialBackend:
         except Exception:
             raise SerialFailure("serial_operation_uncertain") from None
         finally:
+            derby_summary = (
+                reader.derby_observation().model_dump(mode="json", exclude_none=True)
+                if reader is not None and reader.derby_observation is not None
+                else None
+            )
             if reader is not None:
                 reader.clear_transient()
             # Exactly this worker owns close. No other consumer opens a second port.
@@ -783,7 +802,10 @@ class SerialBackend:
                 self._unclosed_port = port
                 self.hardware_connected = True
                 emit("serial_close_unconfirmed")
-                raise SerialFailure("serial_close_unconfirmed", step="close_serial") from None
+                close_failure = SerialFailure("serial_close_unconfirmed", step="close_serial")
+                if derby_summary is not None:
+                    close_failure.diagnostic["derby_observation"] = derby_summary
+                raise close_failure from None
             else:
                 self.hardware_connected = False
                 emit("serial_close")

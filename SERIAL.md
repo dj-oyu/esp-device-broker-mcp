@@ -214,11 +214,36 @@ POCKET_KEYTEST build or new firmware write is required.
 
 Observation is at most 120 seconds after READY, within a 180-second whole-job
 reader budget. Auto-demo starts after 15 seconds of no input; a race's wall time
-is frame-rate dependent. Capture sends one s at an observed photo scene or a
-45-second fallback. Image coherence and physical LCD transfer remain unverified.
+is frame-rate dependent. Capture sends at most one s only while the last observed
+scene is photo, after a fresh quiet receive boundary still has that phase/race/seed.
+There is no timed fallback or retry. Observation also stops early enough to reserve
+18 seconds for the complete capture (including drains), 12 seconds for exit and
+5 seconds margin within the existing 180 seconds. No lease or approval TTL changes.
+If no current photo is available in time, the broker sends its one approved q,
+requires fresh HOME_READY and confirmed close, and completes with
+`derby_photo_not_verified_no_capture`: no image and no claim that photo was tested.
+Cancellation/authority loss still suppresses q. Image coherence and physical LCD
+transfer remain unverified.
 Only observed START, ordered gate/race/photo/res and END support the cycle result;
 missing/out-of-order signals yield an image/time observation with limits, never
 an inferred cycle success. Capture traffic can overlap phase text.
+
+`job_status.diagnostic.derby_observation` separates `demo_cycle_observed`,
+`photo_context_correlation`, and `image_acquired`. At most 64 structured events
+record host milliseconds since the serial operation started, observed phase/race/
+seed, photo observation, s request/completed write, received CAPTURE_BEGIN/END,
+skip/exit reason and fresh HOME. Validated frame completion is a separate image
+fact: a received marker alone cannot establish it. A phase/race/seed change during
+the capture window prevents the correlated-context classification; absent or
+truncated evidence never establishes a full cycle. No raw console or pixels are
+persisted in these diagnostics. A matching serial context is temporal evidence,
+not a firmware capture nonce or proof that the pixels depict a photo decision;
+`photo_pixels_verified` remains false. Failure diagnostics retain the bounded
+observations available before failure, including incomplete captures/failed close.
+
+The immutable plan/effects now describe photo-only capture and reserved budgets.
+Prepare and approve a fresh plan; a legacy fallback plan is rejected before USB
+opens rather than silently executing the changed behavior.
 
 One explicit q exit must produce fresh HOME_READY, then the owner closes serial.
 Game exit can save the restored player state; this plan does not test player
