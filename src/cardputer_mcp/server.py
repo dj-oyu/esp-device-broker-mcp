@@ -24,6 +24,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from .auth import AuthState
 from .broker import Broker, BrokerError
 from .config import Settings
+from .home_recovery import CancelHomeRecovery, RequestHomeRecovery
 from .http_diagnostics import (
     INGRESS_CONTEXT_KEY,
     DenialReason,
@@ -567,6 +568,9 @@ def create_server(
             "Images require local preview/send approval or an explicit operator key policy. "
             "Read permitted captures within five minutes using the same identity. "
             "Pixels do not prove LCD transfer. "
+            "request_home_recovery proposes one separately locally approved DERBY q exit "
+            "only after a recorded capture failure and confirmed close; no prior HOME "
+            "attestation is asserted. It cannot resolve flash reviews or retry itself. "
             "No arbitrary shell/raw serial commands are available. Flash requires "
             "registered device/build/backup and exact local approval. "
             "Restart requires an exact locally approved plan."
@@ -724,6 +728,32 @@ def create_server(
 
         return _result(execute)
 
+    @server.tool(annotations=mutating)
+    async def request_home_recovery(
+        request: RequestHomeRecovery, ctx: Context[Any, Any]
+    ) -> dict[str, Any]:
+        """Request one locally approved q after a proved-closed DERBY capture failure.
+
+        No USB opens until dedicated local approval. Thirty-second single-use
+        authority; fresh APP_STOPPED/HOME_READY and confirmed close are required.
+        No reset, flash, screenshot, reconnect, retry or general review bypass.
+        """
+
+        def submit() -> dict[str, Any]:
+            owner = principal(ctx, "control")
+            return resident.home_recovery.request(request, owner.principal_id, owner.origin.value)
+
+        return _result(submit)
+
+    @server.tool(annotations=mutating)
+    async def cancel_home_recovery(
+        request: CancelHomeRecovery, ctx: Context[Any, Any]
+    ) -> dict[str, Any]:
+        """Stop this principal's exact recovery; retain ownership until confirmed close."""
+        return _result(
+            lambda: resident.home_recovery.cancel(request, principal(ctx, "control").principal_id)
+        )
+
     @server.tool(annotations=read_only)
     async def job_status(request: JobRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read persisted job state after reconnecting. Interrupted work is never replayed."""
@@ -731,6 +761,28 @@ def create_server(
         def get_job() -> dict[str, Any]:
             job = resident.job(request.job_id)
             plan = resident._store().plan(job["plan_hash"])
+            if plan is not None and plan.get("operation") == "home_recovery":
+                owner = principal(ctx, "read")
+                if plan["principal_id"] != owner.principal_id:
+                    raise BrokerError("owned_home_recovery_required")
+                job["recovery_audit"] = [
+                    dict(row)
+                    for row in resident._store().db.execute(
+                        "SELECT sequence,event,created FROM home_recovery_audit "
+                        "WHERE source_job=? AND recovery_job IN ('',?) ORDER BY sequence LIMIT 64",
+                        (plan["source_job_id"], request.job_id),
+                    )
+                ]
+                approval = (
+                    resident._store()
+                    .db.execute(
+                        "SELECT principal_id,review_revision FROM home_recovery_approvals "
+                        "WHERE recovery_job=?",
+                        (request.job_id,),
+                    )
+                    .fetchone()
+                )
+                job["recovery_approval"] = dict(approval) if approval else None
             if plan is not None and plan.get("execution_context") == "registered_project":
                 owner = principal(ctx, "read")
                 if plan.get("principal_id") != owner.principal_id:

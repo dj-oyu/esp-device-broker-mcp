@@ -383,6 +383,12 @@ The endpoint is `http://127.0.0.1:8765/mcp`. Tools with arguments accept a neste
 | `job_status` | job_id | Read durable job result |
 | `read_capture` | job_id | Read your completed PNG from five-minute memory cache |
 | `cancel_job` | session, job_id | Cancel queued work only |
+| `request_home_recovery` | job_id, source_job_id | Propose a separately locally approved single DERBY exit after recorded capture failure/close |
+| `cancel_home_recovery` | job_id, plan_hash | Stop your bounded recovery, retaining ownership until confirmed close |
+
+See [bounded HOME recovery](HOME-RECOVERY.md) for exact eligibility, local approval,
+effects, freshness checks and single-use failure behavior. It does not clear other
+review barriers or grant capture/flash authority.
 
 Mock tests: `diagnostics`, `firmware_workflow`, `capture_home`. Serial tests:
 `passive_observe`, `firmware_observe`, `restart_and_observe`, `hello`, `capture_home`,
