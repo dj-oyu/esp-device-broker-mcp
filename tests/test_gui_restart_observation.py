@@ -92,7 +92,9 @@ def test_one_click_discloses_reset_and_exact_delivery_without_another_dialog(mon
     ):
         assert required in view.summary_var.get()
     assert view.approve_button.config["text"] == "Approve reset, observation and delivery"
-    assert view.attestation.hidden and view.home_line_opt_in.hidden
+    assert not hasattr(view, "attestation")
+    assert view.attestation_var.get() == "" and view.home_line_opt_in.hidden
+    assert view.phrase.config["text"] == "Approve this plan only"
     assert view.image_panel.hidden and view.image_actions.hidden
     assert api.calls == [("timeline",)]
     assert panel.worker.commands.empty()

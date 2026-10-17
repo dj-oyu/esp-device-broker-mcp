@@ -24,6 +24,7 @@ from test_device_observation_integration import (
     WIRE,
     Clock,
     Grant,
+    assert_no_durable_logs,
     assert_no_public_or_durable_logs,
     create_work,
     request_device,
@@ -91,6 +92,7 @@ async def running(tmp_path, *, wire=WIRE, reconnect=False):
         )
     finally:
         await broker.close()
+        assert_no_durable_logs(broker)
 
 
 def prepare(env, job_id=JOB):
@@ -640,6 +642,7 @@ async def http_restart(tmp_path, monkeypatch):
         shutdown.set()
         await asyncio.wait_for(task, timeout=5)
         registry.close()
+        assert_no_durable_logs(broker)
 
 
 async def http_observe(env):

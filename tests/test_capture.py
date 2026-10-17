@@ -120,6 +120,27 @@ def test_noise_crlf_and_random_fragmentation_are_bounded_and_private():
         (frame() + frame(), "capture_multiple_frames"),
         (b"CAPTURE_OTHER\n", "capture_record_invalid"),
     ],
+    ids=[
+        "wrong-width",
+        "extra-header-field",
+        "duplicate-header",
+        "row-before-header",
+        "end-before-header",
+        "no-rows",
+        "missing-first-row",
+        "duplicate-row",
+        "row-out-of-range",
+        "negative-row",
+        "uppercase-pixels",
+        "padded-row-index",
+        "short-row",
+        "invalid-pixel",
+        "invalid-end",
+        "duplicate-end",
+        "row-after-end",
+        "second-frame",
+        "unknown-record",
+    ],
 )
 def test_corrupt_or_mixed_capture_records_fail_closed_and_never_recover(wire, code):
     decoder = LegacyCaptureDecoder()
@@ -132,7 +153,11 @@ def test_corrupt_or_mixed_capture_records_fail_closed_and_never_recover(wire, co
             operation()
 
 
-@pytest.mark.parametrize("wire", [b"", b"CAPTURE_BEGIN 240 135\n", frame()[:-1], frame()[:-12]])
+@pytest.mark.parametrize(
+    "wire",
+    [b"", b"CAPTURE_BEGIN 240 135\n", frame()[:-1], frame()[:-12]],
+    ids=["empty", "header-only", "partial-end", "missing-end"],
+)
 def test_finish_on_timeout_or_truncated_end_poisoned_decoder(wire):
     decoder = LegacyCaptureDecoder()
     decoder.feed(wire)

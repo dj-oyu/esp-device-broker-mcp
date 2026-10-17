@@ -6,6 +6,7 @@ import json
 import threading
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from weakref import WeakKeyDictionary
 
 import httpx2
 import pytest
@@ -45,6 +46,10 @@ WIRE = (
     + b"\npassword=SYNTHETIC_PASSWORD_VALUE\n"
     + b"Authorization: Bearer SYNTHETIC_BEARER_VALUE\n"
 )
+
+# Live SQLite/public checks happen immediately. The complete filesystem scan
+# runs after shutdown, when Windows releases the exclusive OS lock files too.
+_durable_checks = WeakKeyDictionary()
 
 
 class Clock:
@@ -98,6 +103,7 @@ async def running(tmp_path, *, wire=WIRE, **port_options):
         if port.close_release is not None:
             port.close_release.set()
         await broker.close()
+        assert_no_durable_logs(broker)
 
 
 def prepare(env, job_id="firmware-report", *, origin=Origin.LOCAL):
@@ -136,6 +142,11 @@ def assert_no_public_or_durable_logs(broker, *credentials):
     history = "\n".join(broker._store().db.iterdump())
     for forbidden in (LOG_LINE, *SECRETS, *credentials):
         assert forbidden not in public and forbidden not in history
+    _durable_checks.setdefault(broker, set()).update(credentials)
+
+
+def assert_no_durable_logs(broker):
+    credentials = _durable_checks.pop(broker, set())
     for path in broker.settings.state_dir.rglob("*"):
         if path.is_file():
             data = path.read_bytes()
@@ -588,6 +599,7 @@ async def http_observation(tmp_path, monkeypatch):
         shutdown.set()
         await asyncio.wait_for(task, timeout=5)
         registry.close()
+        assert_no_durable_logs(broker)
 
 
 async def rpc_response(env, method, params, *, token):

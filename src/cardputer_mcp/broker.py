@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from filelock import FileLock, Timeout
@@ -163,7 +163,7 @@ def device_lock_path(backend: str = "mock") -> Path:
 
         size = wintypes.DWORD(257)
         buffer = ctypes.create_unicode_buffer(size.value)
-        windows_api = ctypes.windll  # type: ignore[attr-defined]
+        windows_api = cast(Any, ctypes).windll
         if not windows_api.advapi32.GetUserNameW(buffer, ctypes.byref(size)):
             raise BrokerError("cannot_resolve_os_user")
         identity = buffer.value

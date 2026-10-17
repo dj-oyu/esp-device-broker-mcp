@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ._platform_api import posix_file_api
 from .models import Origin
 
 _VERSION = 1
@@ -46,7 +47,12 @@ def _open_directory(path: Path) -> int:
     target = path.absolute()
     if target.name != "runtime-auth.json" or ".." in target.parts:
         raise AuthError("unsafe_runtime_path")
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | posix_file_api.O_DIRECTORY
+        | posix_file_api.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     descriptor: int | None = None
     try:
         descriptor = os.open("/", flags)
@@ -55,7 +61,7 @@ def _open_directory(path: Path) -> int:
             os.close(descriptor)
             descriptor = next_descriptor
         info = os.fstat(descriptor)
-        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        if info.st_uid != posix_file_api.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
             raise AuthError("unsafe_runtime_directory")
         result = descriptor
         descriptor = None
@@ -70,7 +76,7 @@ def _open_directory(path: Path) -> int:
 def _file_info(info: os.stat_result) -> None:
     if (
         not stat.S_ISREG(info.st_mode)
-        or info.st_uid != os.geteuid()
+        or info.st_uid != posix_file_api.geteuid()
         or stat.S_IMODE(info.st_mode) != 0o600
         or info.st_nlink != 1
     ):
@@ -78,7 +84,12 @@ def _file_info(info: os.stat_result) -> None:
 
 
 def _read_file(directory: int) -> tuple[bytes, os.stat_result]:
-    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0) | os.O_NONBLOCK
+    flags = (
+        os.O_RDONLY
+        | posix_file_api.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+        | posix_file_api.O_NONBLOCK
+    )
     descriptor = os.open("runtime-auth.json", flags, dir_fd=directory)
     try:
         info = os.fstat(descriptor)
@@ -195,9 +206,9 @@ class AuthState:
                 },
                 separators=(",", ":"),
             ).encode("ascii")
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | posix_file_api.O_NOFOLLOW
             descriptor = os.open(temporary, flags, 0o600, dir_fd=directory)
-            os.fchmod(descriptor, 0o600)
+            posix_file_api.fchmod(descriptor, 0o600)
             _file_info(os.fstat(descriptor))
             remaining = memoryview(payload)
             while remaining:

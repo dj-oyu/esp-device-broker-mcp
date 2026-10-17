@@ -182,7 +182,11 @@ def test_device_render_buffer_label_does_not_claim_lcd_or_live_view() -> None:
     assert SOURCES[preview.row.source] == "Device render buffer / LCD unverified"
 
 
-@pytest.mark.parametrize("encoded", ["not base64!", "", True, None, "a" * 266669])
+@pytest.mark.parametrize(
+    "encoded",
+    ["not base64!", "", True, None, "a" * 266669],
+    ids=["malformed", "empty", "boolean", "missing", "oversized"],
+)
 def test_invalid_or_oversized_base64_is_rejected(encoded: Any) -> None:
     with pytest.raises(ValueError, match=INVALID_IMAGE):
         validate_png(encoded, 100, "a" * 64)
