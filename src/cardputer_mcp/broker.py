@@ -1606,7 +1606,22 @@ class Broker:
 
     def operator_image(self, job_id: str) -> dict[str, Any]:
         retained = self._operator_capture(job_id)
+        job = self._store().job(job_id)
+        plan = self._store().plan(job["plan_hash"]) if job else None
+        provenance = {}
+        if plan and plan["test"] == TestName.DERBY.value:
+            provenance = {
+                "derby_scope": {
+                    "broker_epoch": self.epoch,
+                    "job_id": job_id,
+                    "plan_hash": digest_plan(plan),
+                    "principal_id": retained.principal_id,
+                    "device_fingerprint": plan["device_fingerprint"],
+                    "expected_firmware_sha256": plan["expected_firmware_sha256"],
+                }
+            }
         return {
+            **provenance,
             **self._image_summary(job_id, retained),
             "metadata": retained.image.metadata(),
             "image_base64": base64.b64encode(retained.image.png).decode("ascii"),

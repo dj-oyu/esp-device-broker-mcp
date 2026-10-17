@@ -26,7 +26,18 @@ def review_plan(client: OperatorClient, plan_hash: str) -> dict[str, Any]:
             "named requesting principal and AI service, for the existing five-minute retention; "
             "it creates no policy and does not extend any deadline."
             if detail["plan"]["test"] == "capture_home"
-            else None
+            else (
+                "DERBY requires HOME and the exact configured normal firmware. Fixed "
+                "Esc/a/u x16/d x12/e navigation starts local.derby; automatic demo observation "
+                "is bounded to 120 seconds, whole job to 180 seconds. One s captures the photo "
+                "phase or fallback; one q attempts HOME. Cancellation or lease loss stops "
+                "new writes including q and may leave the game running. Serial open/close "
+                "can reset the device; exit may save state. No arbitrary keys or replay. "
+                "Pixels do not prove LCD transfer or frame coherence. Image delivery requires "
+                "a separate image-review / image-decision for the exact SHA and revision."
+                if detail["plan"]["test"] == "derby_smoke"
+                else None
+            )
         ),
     }
 

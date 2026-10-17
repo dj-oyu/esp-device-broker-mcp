@@ -12,6 +12,9 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
+from pydantic import TypeAdapter
+
+from .derby_operator_launch import DerbyLaunchRequest
 from .operator_launch import (
     MAX_REQUEST,
     MAX_RESPONSE,
@@ -183,7 +186,9 @@ def request_operator_launch(
         raise OperatorLaunchError("operator_launch_invalid_pipe")
     if not 0 < timeout <= 30:
         raise OperatorLaunchError("operator_launch_invalid_timeout")
-    request = LaunchRequest.model_validate(payload)
+    request: LaunchRequest | DerbyLaunchRequest = TypeAdapter(
+        LaunchRequest | DerbyLaunchRequest
+    ).validate_python(payload)
     data = json.dumps(request.model_dump(), separators=(",", ":")).encode() + b"\n"
     if len(data) > MAX_REQUEST:
         raise OperatorLaunchError("operator_launch_invalid_message")

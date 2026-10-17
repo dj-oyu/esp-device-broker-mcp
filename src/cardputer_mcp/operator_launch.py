@@ -180,6 +180,14 @@ class OperatorLaunchSlot:
             args += ["--review-revision", self._revision, "--attestation", request.attestation]
             if request.allow_image_delivery:
                 args.append("--allow-image-delivery")
+        return self._run_command(args)
+
+    def _run_command(
+        self, args: list[str], *, response_limit: int = MAX_RESPONSE
+    ) -> dict[str, Any]:
+        """Shared fixed-child transport; callers build their own bounded commands."""
+        self._monitor()
+        self._verify_paths()
         environment = {
             key.upper(): value for key, value in os.environ.items() if key.upper() in OS_ENV
         }
@@ -194,7 +202,7 @@ class OperatorLaunchSlot:
             if stream != "stdout":
                 return
             count += len(line.encode("utf-8")) + 1
-            if count > MAX_RESPONSE:
+            if count > response_limit:
                 self.process.stop_requested.set()
                 return
             lines.append(line)
@@ -208,9 +216,9 @@ class OperatorLaunchSlot:
                 timeout=min(10.0, self._deadline - self._clock()),
                 monitor=self._monitor,
             )
-            if code != 0 or count > MAX_RESPONSE:
+            if code != 0 or count > response_limit:
                 raise OperatorLaunchError("operator_launch_child_failed")
-            return decode_message("\n".join(lines).encode("utf-8"), MAX_RESPONSE)
+            return decode_message("\n".join(lines).encode("utf-8"), response_limit)
         finally:
             environment.clear()
             lines.clear()
