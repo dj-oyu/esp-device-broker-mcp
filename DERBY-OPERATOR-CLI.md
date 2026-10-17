@@ -70,6 +70,10 @@ This separate window needs no lease renewal and performs no device operation.
    Pixels stay inside the local child/supervisor; IPC returns only bounded scope,
    SHA and revision. Local child output is bounded to 256 KiB for this review;
    other commands and IPC replies retain their existing 64 KiB bound.
+   Image review alone also permits a stdout line up to 256 KiB, so the JSON's
+   base64 line reaches the decoder intact. Normal stdout and all stderr retain
+   the 4096-byte line limit. Oversized lines are omitted without partial content;
+   the aggregate response limit and one-use failure semantics remain unchanged.
 2. `--action derby-image-decision --sha256 <reviewed-sha>
    --delivery-revision <reviewed-revision> --decision approve` (or `reject`)
    invokes the existing local decision API. A missing/mismatched revision, SHA,

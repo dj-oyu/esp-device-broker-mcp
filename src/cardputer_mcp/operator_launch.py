@@ -215,6 +215,8 @@ class OperatorLaunchSlot:
                 collect,
                 timeout=min(10.0, self._deadline - self._clock()),
                 monitor=self._monitor,
+                # Only the DERBY image JSON uses the larger bounded response.
+                **({"stdout_line_bytes": response_limit} if response_limit > MAX_RESPONSE else {}),
             )
             if code != 0 or count > response_limit:
                 raise OperatorLaunchError("operator_launch_child_failed")

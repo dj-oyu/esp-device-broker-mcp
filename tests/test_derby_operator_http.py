@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import os
+import random
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -40,11 +41,28 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows same-user pipe 
         "image_expire",
         "image_revision",
         "image_review_epoch",
+        "large_image",
     ],
 )
 async def test_exact_derby_cli_execution_then_image_decision(registry_service, tmp_path, change):
     env = registry_service
     wire = Wire()
+    if change == "large_image":
+        original_write = wire.write
+
+        def noisy_capture(data):
+            if data != b"s":
+                return original_write(data)
+            wire.writes.append(data)
+            rng = random.Random(42)
+            response = b"CAPTURE_BEGIN 240 135\n"
+            for row in range(135):
+                response += f"PIX {row} ".encode() + rng.randbytes(480).hex().encode() + b"\n"
+            response += b"CAPTURE_END\n"
+            wire.queue.extend(response[at : at + 1024] for at in range(0, len(response), 1024))
+            return len(data)
+
+        wire.write = noisy_capture
     config = SerialSettings(
         selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
         expected_firmware_sha256="a" * 64,
@@ -137,7 +155,7 @@ async def test_exact_derby_cli_execution_then_image_decision(registry_service, t
                 },
             )
             assert slot.closed and slot._local_token is None
-            if change and not change.startswith("image_"):
+            if change and change != "large_image" and not change.startswith("image_"):
                 assert not approved["ok"] and not wire.writes, approved
                 return
             assert approved["ok"], approved
@@ -146,6 +164,8 @@ async def test_exact_derby_cli_execution_then_image_decision(registry_service, t
         await env.resident.queue.join()
         assert env.resident.job(scope.job_id)["state"] == "succeeded"
         assert wire.closed and wire.writes[-2:] == [b"s", b"q"]
+        if change == "large_image":
+            assert len(env.resident.captures[scope.job_id].image.png) > 64 * 1024
         denied = await remote.call_tool("read_capture", {"request": {"job_id": scope.job_id}})
         assert denied.is_error
         slot, endpoint = arm("image")
