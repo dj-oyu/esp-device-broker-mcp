@@ -57,6 +57,8 @@ EXPECTED_TOOLS = {
     "read_device_logs",
     "read_build_logs",
     "cancel_job",
+    "request_home_recovery",
+    "cancel_home_recovery",
     "create_work_session",
     "resume_work_session",
     "request_device",

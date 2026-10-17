@@ -587,7 +587,7 @@ async def test_legacy_initialize_and_discovery_through_ingress(ingress_service, 
     assert acknowledged.status_code == 202
     listed = await service.post("/tunnel/mcp", *wire_request("tools/list", version=version))
     assert listed.status_code == 200
-    assert len(listed.json()["result"]["tools"]) == 18
+    assert len(listed.json()["result"]["tools"]) == 20
     assert "read_build_logs" in {tool["name"] for tool in listed.json()["result"]["tools"]}
     assert "read_capture" in {tool["name"] for tool in listed.json()["result"]["tools"]}
 
