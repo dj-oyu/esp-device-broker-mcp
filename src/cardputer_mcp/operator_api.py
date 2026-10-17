@@ -9,6 +9,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .broker import Broker, BrokerError
 from .capture_policy import CapturePolicyError
+from .home_recovery import ATTESTATION
 from .models import Digest, Identifier, Origin
 from .operator_timeline import OperatorTimeline
 from .plan_approval import PlanApprovals
@@ -66,6 +67,11 @@ class ApprovePlan(ReviewPlan):
     ]
     retain_local_home_line: bool = False
     allow_image_delivery: bool = False
+
+
+class ApproveHomeRecovery(ReviewPlan):
+    review_revision: Digest
+    attestation: str
 
 
 class PreviewImage(BaseModel):
@@ -201,6 +207,8 @@ class OperatorAPI:
             "/operator/plans": "GET",
             "/operator/plan": "POST",
             "/operator/approve-plan": "POST",
+            "/operator/home-recovery-review": "POST",
+            "/operator/home-recovery-approve": "POST",
             "/operator/local-home-line": "POST",
             "/operator/images": "GET",
             "/operator/image": "POST",
@@ -320,6 +328,19 @@ class OperatorAPI:
             elif path == "/operator/plan":
                 review = ReviewPlan.model_validate(payload)
                 result = self.plans.detail(review.plan_hash)
+            elif path == "/operator/home-recovery-review":
+                review = ReviewPlan.model_validate(payload)
+                result = self.broker.home_recovery.review(review.plan_hash)
+            elif path == "/operator/home-recovery-approve":
+                approval_home = ApproveHomeRecovery.model_validate(payload)
+                if approval_home.attestation != ATTESTATION:
+                    raise BrokerError("home_recovery_attestation_required")
+                result = self.broker.home_recovery.approve(
+                    approval_home.plan_hash,
+                    approval_home.review_revision,
+                    approval_home.attestation,
+                    principal.principal_id,
+                )
             elif path == "/operator/approve-plan":
                 approval = ApprovePlan.model_validate(payload)
                 result = self.plans.approve(

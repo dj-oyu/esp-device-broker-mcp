@@ -37,6 +37,16 @@ class Store:
             hash TEXT PRIMARY KEY, payload TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS approvals (hash TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS home_closed_sources (
+            source_job TEXT PRIMARY KEY, payload TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS home_recovery_audit (
+            sequence INTEGER PRIMARY KEY, source_job TEXT NOT NULL, recovery_job TEXT NOT NULL,
+            event TEXT NOT NULL, created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS home_recovery_approvals (
+            recovery_job TEXT PRIMARY KEY, principal_id TEXT NOT NULL, review_revision TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS jobs (
             id TEXT PRIMARY KEY, plan_hash TEXT NOT NULL, state TEXT NOT NULL,
             stage TEXT, result TEXT, diagnostic TEXT, reviewed INTEGER NOT NULL DEFAULT 0,
@@ -90,6 +100,98 @@ class Store:
                 WHERE state='needs_review' AND reviewed=0 LIMIT 1"""
             ).fetchone()
         )
+
+    def home_source(self, source_job: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT * FROM home_closed_sources WHERE source_job=?", (source_job,)
+        ).fetchone()
+        return dict(payload=json.loads(row["payload"]), attempted=row["attempted"]) if row else None
+
+    def home_audit(self, source: str, recovery: str, event: str) -> None:
+        if self.db.execute("SELECT count(*) FROM home_recovery_audit").fetchone()[0] >= 50000:
+            raise ValueError("home_recovery_history_full")
+        self.db.execute(
+            "INSERT INTO home_recovery_audit(source_job,recovery_job,event) VALUES(?,?,?)",
+            (source, recovery, event),
+        )
+
+    def record_home_closed(self, source: str, payload: dict[str, Any]) -> None:
+        with self.db:
+            result = self.db.execute(
+                "INSERT OR IGNORE INTO home_closed_sources(source_job,payload) VALUES(?,?)",
+                (source, json.dumps(payload, sort_keys=True)),
+            )
+            if result.rowcount:
+                self.home_audit(source, "", "source_close_confirmed")
+
+    def consume_home_attempt(
+        self,
+        source: str,
+        recovery: str,
+        expected: dict[str, Any],
+        recovery_hash: str,
+        operator: str,
+        revision: str,
+    ) -> None:
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            if self.home_source(source) != dict(payload=expected, attempted=0):
+                raise ValueError("home_recovery_source_changed")
+            origin, current = self.job(source), self.job(recovery)
+            if (
+                origin is None
+                or origin["state"] != "needs_review"
+                or origin["reviewed"]
+                or origin["plan_hash"] != expected["plan_hash"]
+                or current is None
+                or current["state"] != "awaiting_approval"
+                or current["plan_hash"] != recovery_hash
+            ):
+                raise ValueError("home_recovery_source_changed")
+            self.db.execute(
+                "UPDATE home_closed_sources SET attempted=1 WHERE source_job=?", (source,)
+            )
+            self.db.execute(
+                "UPDATE jobs SET state='running' WHERE id=? AND state='awaiting_approval'",
+                (recovery,),
+            )
+            self.home_audit(source, recovery, "attempt_consumed")
+            self.db.execute(
+                "INSERT INTO home_recovery_approvals VALUES(?,?,?)", (recovery, operator, revision)
+            )
+
+    def finish_home_recovery(
+        self, source: str, recovery: str, source_hash: str, recovery_hash: str
+    ) -> None:
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.job(source)
+            current = self.job(recovery)
+            proof = self.home_source(source)
+            approved = self.db.execute(
+                "SELECT 1 FROM home_recovery_approvals WHERE recovery_job=?", (recovery,)
+            ).fetchone()
+            if (
+                row is None
+                or row["state"] != "needs_review"
+                or row["reviewed"] != 0
+                or row["plan_hash"] != source_hash
+                or current is None
+                or current["state"] != "running"
+                or current["plan_hash"] != recovery_hash
+                or proof is None
+                or proof["attempted"] != 1
+                or approved is None
+            ):
+                raise ValueError("home_recovery_source_changed")
+            # Preserve the failed job/result. Only its physical-HOME review barrier is resolved.
+            self.home_audit(source, recovery, "fresh_home_and_close_confirmed")
+            self.db.execute("UPDATE jobs SET reviewed=1 WHERE id=?", (source,))
+            self.db.execute(
+                "UPDATE jobs SET state='succeeded',result='fresh_home_closed',"
+                "finished=CURRENT_TIMESTAMP WHERE id=?",
+                (recovery,),
+            )
 
     def put_plan(self, digest: str, payload: dict[str, Any]) -> None:
         self.db.execute(

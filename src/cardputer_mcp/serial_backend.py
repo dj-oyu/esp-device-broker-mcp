@@ -470,6 +470,7 @@ class SerialBackend:
         self.hardware_connected = False
         self.ownership_uncertain = False
         self._unclosed_port: SerialPort | None = None
+        self.last_closed_plan: dict[str, Any] | None = None
         self.smoke_stop = threading.Event()
 
     def prepare(self, test: TestName) -> dict[str, Any]:
@@ -699,6 +700,7 @@ class SerialBackend:
         local_home_probe: HomeLineProbe | None = None,
         live: Callable[[], bool] | None = None,
     ) -> str | BackendResult:
+        self.last_closed_plan = None
         test = TestName(plan["test"])
         current = self.prepare(test)
         if any(plan.get(key) != value for key, value in current.items()):
@@ -786,6 +788,8 @@ class SerialBackend:
                 raise SerialFailure("serial_close_unconfirmed", step="close_serial") from None
             else:
                 self.hardware_connected = False
+                if port.is_open is False:
+                    self.last_closed_plan = json.loads(json.dumps(plan))
                 emit("serial_close")
 
     def _close_restart_port(self, port: SerialPort) -> None:

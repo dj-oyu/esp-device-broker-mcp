@@ -244,6 +244,9 @@ class Broker:
             str(lock_path or device_lock_path(settings.backend)), timeout=0
         )
         self._state_lock = FileLock(str(settings.state_dir / "broker.lockfile"), timeout=0)
+        from .home_recovery import HomeRecovery
+
+        self.home_recovery = HomeRecovery(self)
 
     def _store(self) -> Store:
         if self.store is None:
@@ -281,6 +284,7 @@ class Broker:
         if self.store is None:
             return
         self.closing = True
+        await self.home_recovery.close()
         await self.profile_jobs.close()
         self.firmware_build.request_stop()
         self.firmware_flash.request_stop()
@@ -508,6 +512,7 @@ class Broker:
         self._prune_local_home_diagnostic()
         if self.store is None:
             return
+        self.home_recovery.maintain()
         now = self.clock()
         for work in self.work_sessions.values():
             if work.state == "open" and now >= work.deadline:
@@ -2283,6 +2288,14 @@ class Broker:
                         and not self.firmware_flash.uncertain
                     ):
                         self.active_job = None
+                    if self.active_job is None:
+                        try:
+                            self.home_recovery.record_closed(
+                                plan, lease.principal_id or "", lease.owner
+                            )
+                        except Exception:
+                            # Failure to retain closure evidence never grants recovery.
+                            pass
                     self._expire()
             finally:
                 if job_id is not None:

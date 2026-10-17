@@ -209,6 +209,18 @@ class OperatorClient:
             {"job_id": job_id, "plan_hash": plan_hash, "diagnostic_id": diagnostic_id},
         )
 
+    def home_recovery_review(self, plan_hash: str) -> dict[str, Any]:
+        return self._request("POST", "/operator/home-recovery-review", {"plan_hash": plan_hash})
+
+    def home_recovery_approve(
+        self, plan_hash: str, revision: str, attestation: str
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/operator/home-recovery-approve",
+            {"plan_hash": plan_hash, "review_revision": revision, "attestation": attestation},
+        )
+
     def images(self) -> dict[str, Any]:
         return self._request("GET", "/operator/images")
 

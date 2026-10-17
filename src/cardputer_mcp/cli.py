@@ -123,6 +123,15 @@ def parser() -> argparse.ArgumentParser:
         "plan-review", help="Review an exact plan on the live local broker"
     )
     live_review.add_argument("--plan", required=True)
+    home_review = sub.add_parser(
+        "home-recovery-review", help="Review one submitted bounded HOME recovery"
+    )
+    home_review.add_argument("--plan", required=True)
+    home_approve = sub.add_parser(
+        "home-recovery-approve", help="Approve one exact HOME recovery; no HOME attestation"
+    )
+    for name in ("plan", "review-revision", "attestation"):
+        home_approve.add_argument("--" + name, required=True)
     for action in ("approve-live", "approve-and-start"):
         live = sub.add_parser(
             action, help="Approve the exact live review; local environment auth only"
@@ -179,6 +188,26 @@ def parser() -> argparse.ArgumentParser:
     for name in ("review-revision", "attestation", "sha256", "delivery-revision"):
         derby_launch.add_argument("--" + name)
     derby_launch.add_argument("--decision", choices=("approve", "reject"))
+    recovery_launch = sub.add_parser(
+        "home-recovery-operator-request",
+        help="Request one explicitly armed HOME recovery approval slot",
+    )
+    recovery_launch.add_argument("--pipe", required=True)
+    recovery_launch.add_argument(
+        "--action", required=True, choices=("home-recovery-review", "home-recovery-approve")
+    )
+    for name in (
+        "epoch",
+        "job",
+        "plan",
+        "principal",
+        "source-job",
+        "device-fingerprint",
+        "firmware-sha256",
+    ):
+        recovery_launch.add_argument("--" + name, required=True)
+    recovery_launch.add_argument("--review-revision")
+    recovery_launch.add_argument("--attestation")
     review = sub.add_parser("review", help="OFFLINE acknowledgement; never retries a job")
     review.add_argument("--state-dir", type=Path, default=Path(".state"))
     review.add_argument("--job", required=True)
@@ -402,7 +431,11 @@ def main() -> None:
             if args.auth_source != "environment" or args.client != Origin.LOCAL.value:
                 raise AuthError("http_diagnostics_requires_local_environment_credentials")
             output(OperatorClient(args.url, load_environment_token(Origin.LOCAL)).diagnostics())
-        elif args.command in ("operator-launch-request", "derby-operator-request"):
+        elif args.command in (
+            "operator-launch-request",
+            "derby-operator-request",
+            "home-recovery-operator-request",
+        ):
             from .operator_launch import OperatorLaunchError
             from .operator_launch_pipe import request_operator_launch
 
@@ -425,13 +458,19 @@ def main() -> None:
                 }
                 if args.command == "operator-launch-request":
                     payload["allow_image_delivery"] = args.allow_image_delivery
-                else:
+                elif args.command == "derby-operator-request":
                     payload.update(
                         device_fingerprint=args.device_fingerprint,
                         expected_firmware_sha256=args.firmware_sha256,
                         sha256=args.sha256,
                         delivery_revision=args.delivery_revision,
                         decision=args.decision,
+                    )
+                else:
+                    payload.update(
+                        source_job_id=args.source_job,
+                        device_fingerprint=args.device_fingerprint,
+                        expected_firmware_sha256=args.firmware_sha256,
                     )
                 result = request_operator_launch(args.pipe, payload)
                 output(result)
@@ -446,13 +485,23 @@ def main() -> None:
             "approve-and-start",
             "image-review",
             "image-decision",
+            "home-recovery-review",
+            "home-recovery-approve",
         ):
             from .operator_cli import approve_live, review_plan
 
             if args.auth_source != "environment" or args.client != Origin.LOCAL.value:
                 raise AuthError("operator_cli_requires_local_environment_credentials")
             operator = OperatorClient(args.url, load_environment_token(Origin.LOCAL))
-            if args.command == "plan-review":
+            if args.command == "home-recovery-review":
+                output(operator.home_recovery_review(args.plan))
+            elif args.command == "home-recovery-approve":
+                output(
+                    operator.home_recovery_approve(
+                        args.plan, args.review_revision, args.attestation
+                    )
+                )
+            elif args.command == "plan-review":
                 output(review_plan(operator, args.plan))
             elif args.command in ("approve-live", "approve-and-start"):
                 output(

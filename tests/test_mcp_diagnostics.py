@@ -56,7 +56,7 @@ async def test_real_http_probe_uses_existing_operator_identity_and_does_no_work(
     result = await asyncio.to_thread(api.catalog)
     assert result == summary() | {
         "server_version": "0.12.0",
-        "tools_count": 18,
+        "tools_count": 20,
         "broker_epoch": service.resident.epoch,
     }
     assert service.backend.calls == 0

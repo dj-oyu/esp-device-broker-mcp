@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import TypeAdapter
 
 from .derby_operator_launch import DerbyLaunchRequest
+from .home_recovery_launch import HomeRecoveryLaunchRequest
 from .operator_launch import (
     MAX_REQUEST,
     MAX_RESPONSE,
@@ -186,8 +187,8 @@ def request_operator_launch(
         raise OperatorLaunchError("operator_launch_invalid_pipe")
     if not 0 < timeout <= 30:
         raise OperatorLaunchError("operator_launch_invalid_timeout")
-    request: LaunchRequest | DerbyLaunchRequest = TypeAdapter(
-        LaunchRequest | DerbyLaunchRequest
+    request: LaunchRequest | DerbyLaunchRequest | HomeRecoveryLaunchRequest = TypeAdapter(
+        LaunchRequest | DerbyLaunchRequest | HomeRecoveryLaunchRequest
     ).validate_python(payload)
     data = json.dumps(request.model_dump(), separators=(",", ":")).encode() + b"\n"
     if len(data) > MAX_REQUEST:
