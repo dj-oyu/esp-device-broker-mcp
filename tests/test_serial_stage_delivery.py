@@ -31,8 +31,10 @@ async def test_stage_callbacks_precede_fast_worker_result_and_owner_release(monk
 
     monkeypatch.setattr(backend, "_execute_sync", synthetic_worker)
     monkeypatch.setattr(loop, "run_in_executor", already_done)
+
     def stage(value):
         events.append((value, backend.active))
+
     if failure:
         with pytest.raises(SerialFailure, match="^serial_read_failed$"):
             await backend.execute(plan, stage)
