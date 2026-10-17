@@ -115,7 +115,9 @@ def test_same_approval_visibly_authorizes_named_recipient_and_never_sends_itself
     ):
         assert required in text
     assert "Approve observation and delivery" == view.approve_button.config["text"]
-    assert view.attestation.hidden and view.home_line_opt_in.hidden
+    assert not hasattr(view, "attestation")  # The current UI displays a fixed phrase, not an entry.
+    assert view.attestation_var.get() == "" and view.home_line_opt_in.hidden
+    assert view.phrase.config["text"] == "Approve this plan only"
     assert view.image_panel.hidden and view.image_actions.hidden
     view._arm_plan()
     view._approve()

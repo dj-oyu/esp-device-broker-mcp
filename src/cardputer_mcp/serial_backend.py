@@ -659,6 +659,23 @@ class SerialBackend:
                     interrupted = True
                     if plan["test"] == TestName.DERBY.value:
                         self.smoke_stop.set()
+                except Exception:
+                    # Retrieve/rethrow the worker's exception after its queued
+                    # stage notifications have crossed the same loop barrier.
+                    if not worker.done():
+                        raise
+            # A fast executor can already be done before the first await. Its
+            # call_soon_threadsafe notifications must precede both the result
+            # and ownership release, including failure and cancellation.
+            drained: asyncio.Future[None] = loop.create_future()
+            loop.call_soon(drained.set_result, None)
+            while not drained.done():
+                try:
+                    await asyncio.shield(drained)
+                except asyncio.CancelledError:
+                    interrupted = True
+                    if plan["test"] == TestName.DERBY.value:
+                        self.smoke_stop.set()
             result = worker.result()
             if interrupted:
                 raise SerialFailure("operation_interrupted_review_required")

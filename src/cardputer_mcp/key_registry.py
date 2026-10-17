@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from ._platform_api import posix_file_api
 from .models import Origin
 
 DEFAULT_TTL_SECONDS = 3600
@@ -128,7 +129,9 @@ def _safe_file(path: Path) -> None:
         raise KeyRegistryError("unsafe_key_registry_path")
     if info.st_size > _MAX_DB_BYTES:
         raise KeyRegistryError("key_registry_too_large")
-    if os.name == "posix" and (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600):
+    if os.name == "posix" and (
+        info.st_uid != posix_file_api.geteuid() or stat.S_IMODE(info.st_mode) != 0o600
+    ):
         raise KeyRegistryError("unsafe_key_registry_permissions")
 
 
@@ -140,13 +143,13 @@ def _safe_directory(path: Path) -> None:
         if os.name == "posix":
             # Directory owners can rename descendants even when the leaf is
             # private. Only the current OS user and root are trusted owners.
-            if info.st_uid not in (0, os.geteuid()):
+            if info.st_uid not in (0, posix_file_api.geteuid()):
                 raise KeyRegistryError("unsafe_key_registry_permissions")
             # A trusted sticky directory such as /tmp protects existing children.
             if info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX:
                 raise KeyRegistryError("unsafe_key_registry_permissions")
     info = path.lstat()
-    if os.name == "posix" and (info.st_uid != os.geteuid() or info.st_mode & 0o022):
+    if os.name == "posix" and (info.st_uid != posix_file_api.geteuid() or info.st_mode & 0o022):
         raise KeyRegistryError("unsafe_key_registry_permissions")
 
 

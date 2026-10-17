@@ -79,12 +79,24 @@ class SubmittedAPI(FakeAPI):
         }
 
 
+REVIEW_NOTICE = (
+    'Target: {"device": "mock-cardputer"}\n'
+    "Operation: diagnostics; job: job-a\n"
+    "Recovery: no recovery action in this plan\n"
+    "Approve records your consent to this displayed plan. It does not prove the "
+    "physical target or running firmware identity. The broker separately rechecks "
+    "the exact plan, current authorization, lease and exclusive ownership. "
+    "Flash also requires artifact hashes, allowed regions and a bound recovery target; "
+    "failure stops work without automatic restore.\n\n"
+)
+
+
 def test_old_detail_keeps_prepare_only_copy_and_action():
     review = PlanReview.parse(detail(), 100)
     assert review.execution_submitted is False
     assert review.expires_at == 130
     assert approval_button_text(review) == "Approve plan"
-    assert review_warning(review) == APPROVAL_NOTICE
+    assert review_warning(review) == REVIEW_NOTICE + APPROVAL_NOTICE
     assert PlanList.parse(listing(detail()), 100).plans[0].execution_submitted is False
 
 
@@ -97,7 +109,7 @@ def test_submitted_detail_clamps_authority_to_intent_and_changes_review_identity
     assert review.execution_submitted is True and review.expires_at == 104.5
     assert review_key(old) != review_key(review)
     assert approval_button_text(review) == "Approve & start"
-    assert review_warning(review) == EXECUTION_NOTICE
+    assert review_warning(review) == REVIEW_NOTICE + EXECUTION_NOTICE
     assert APPROVAL_NOTICE not in review_warning(review)
 
 
@@ -157,6 +169,9 @@ def test_single_inline_click_queues_exact_submission_with_serial_opt_in(monkeypa
     assert "Esc" in view.summary_var.get() and "unsaved" in view.summary_var.get()
     assert APPROVAL_NOTICE not in view.summary_var.get()
     assert not view.home_line_opt_in.hidden
+    assert view.attestation_var.get() == ATTESTATIONS["device_home_firmware"]
+    assert view.approve_button.config["state"] == "normal"
+    view.attestation_var.set("")
     assert view.approve_button.config["state"] == "disabled"
     view.attestation_var.set(ATTESTATIONS["device_home_firmware"])
     view.home_line_opt_in_var.set("1" if retain else "")

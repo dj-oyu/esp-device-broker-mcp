@@ -317,6 +317,51 @@ def test_file_replacement_between_check_and_open_rejected(private_file, monkeypa
     assert_safe_failure(private_file)
 
 
+def test_windows_path_and_descriptor_creation_identity_uses_explicit_birthtime(monkeypatch):
+    monkeypatch.setattr(environment, "os", SimpleNamespace(name="nt"))
+    common = dict(st_dev=1, st_ino=2, st_size=122, st_mtime_ns=20, st_birthtime_ns=10)
+    path = SimpleNamespace(**common, st_ctime_ns=10)
+    descriptor = SimpleNamespace(**common, st_ctime_ns=20)
+    assert environment._identity(path) == environment._identity(descriptor)
+    replacement = SimpleNamespace(**{**common, "st_ino": 3}, st_ctime_ns=20)
+    assert environment._identity(path) != environment._identity(replacement)
+
+
+def test_descriptor_metadata_change_during_read_is_still_rejected(private_file, monkeypatch):
+    write_private(private_file, ASSIGNMENT)
+    inode = private_file.stat().st_ino
+    real_fstat = os.fstat
+    calls = 0
+
+    def changed(descriptor):
+        nonlocal calls
+        info = real_fstat(descriptor)
+        if info.st_ino != inode:
+            return info
+        calls += 1
+        values = {
+            name: getattr(info, name)
+            for name in (
+                "st_dev",
+                "st_ino",
+                "st_size",
+                "st_mode",
+                "st_nlink",
+                "st_uid",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+        }
+        values["st_birthtime_ns"] = getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+        if calls > 1:
+            values["st_ctime_ns"] += 1
+        return SimpleNamespace(**values)
+
+    monkeypatch.setattr(os, "fstat", changed)
+    assert_safe_failure(private_file)
+    assert calls == 2
+
+
 def test_file_replaced_after_read_rejected(private_file, monkeypatch):
     write_private(private_file, ASSIGNMENT)
     replacement = write_private(private_file.with_name("replacement.env"), ASSIGNMENT)

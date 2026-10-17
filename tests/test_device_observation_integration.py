@@ -3,9 +3,13 @@
 import asyncio
 import hashlib
 import json
+import os
+import sqlite3
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
+from weakref import WeakKeyDictionary
 
 import httpx2
 import pytest
@@ -45,6 +49,10 @@ WIRE = (
     + b"\npassword=SYNTHETIC_PASSWORD_VALUE\n"
     + b"Authorization: Bearer SYNTHETIC_BEARER_VALUE\n"
 )
+
+# Live public/SQLite/filesystem checks happen immediately. Scan again after
+# shutdown as well, including files created by teardown or checkpointing.
+_durable_checks = WeakKeyDictionary()
 
 
 class Clock:
@@ -98,6 +106,7 @@ async def running(tmp_path, *, wire=WIRE, **port_options):
         if port.close_release is not None:
             port.close_release.set()
         await broker.close()
+        assert_no_durable_logs(broker)
 
 
 def prepare(env, job_id="firmware-report", *, origin=Origin.LOCAL):
@@ -136,11 +145,92 @@ def assert_no_public_or_durable_logs(broker, *credentials):
     history = "\n".join(broker._store().db.iterdump())
     for forbidden in (LOG_LINE, *SECRETS, *credentials):
         assert forbidden not in public and forbidden not in history
+    _durable_checks.setdefault(broker, set()).update(credentials)
+    for path in broker.settings.state_dir.rglob("*"):
+        if path.is_file():
+            data = read_live_fixture_file(broker, path)
+            for forbidden in (LOG_LINE, *SECRETS, *credentials):
+                assert forbidden.encode() not in data
+
+
+def read_live_fixture_file(broker, path):
+    try:
+        return path.read_bytes()
+    except PermissionError:
+        # A second handle cannot read Windows' locked byte range. Read through
+        # this fixture's already-owned lock descriptor instead, never unlock,
+        # change sharing/permissions or omit the file. Preserve its position.
+        lock = broker._state_lock
+        assert os.name == "nt" and path == Path(lock.lock_file) and lock.is_locked
+        descriptor = lock._context.lock_file_fd
+        assert descriptor is not None
+        info, current = os.fstat(descriptor), path.stat()
+        assert (info.st_dev, info.st_ino) == (current.st_dev, current.st_ino)
+        position = os.lseek(descriptor, 0, os.SEEK_CUR)
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            data = bytearray()
+            while chunk := os.read(descriptor, 65536):
+                data.extend(chunk)
+            return bytes(data)
+        finally:
+            os.lseek(descriptor, position, os.SEEK_SET)
+
+
+def assert_no_durable_logs(broker):
+    credentials = _durable_checks.pop(broker, set())
     for path in broker.settings.state_dir.rglob("*"):
         if path.is_file():
             data = path.read_bytes()
             for forbidden in (LOG_LINE, *SECRETS, *credentials):
                 assert forbidden.encode() not in data
+
+
+async def test_live_filesystem_check_rejects_transient_wal_leak_before_shutdown(tmp_path):
+    async with running(tmp_path) as env:
+        descriptor = env.broker._state_lock._context.lock_file_fd
+        position = os.lseek(descriptor, 0, os.SEEK_CUR)
+        assert_no_public_or_durable_logs(env.broker)
+        assert os.lseek(descriptor, 0, os.SEEK_CUR) == position
+        assert env.broker._state_lock.is_locked
+        path = env.broker.settings.state_dir / "synthetic-leak.sqlite3-wal"
+        path.write_bytes(LOG_LINE.encode())
+        try:
+            with pytest.raises(AssertionError):
+                assert_no_public_or_durable_logs(env.broker)
+            assert env.broker._state_lock.is_locked
+        finally:
+            path.unlink()
+
+
+async def test_live_scan_detects_committed_secret_in_past_wal_frame(tmp_path):
+    async with running(tmp_path) as env:
+        path = env.broker.settings.state_dir / "synthetic-history.sqlite3"
+        db = sqlite3.connect(path)
+        try:
+            assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            db.execute("PRAGMA wal_autocheckpoint=0")
+            db.execute("PRAGMA secure_delete=ON")
+            db.execute("CREATE TABLE fixture(value TEXT)")
+            db.execute("INSERT INTO fixture VALUES (?)", (LOG_LINE,))
+            db.commit()
+            db.execute("UPDATE fixture SET value='[redacted]'")
+            db.commit()
+            assert LOG_LINE not in "\n".join(db.iterdump())
+            hits = [
+                item.name
+                for item in path.parent.rglob("*")
+                if item.is_file() and LOG_LINE.encode() in read_live_fixture_file(env.broker, item)
+            ]
+            assert hits == [path.name + "-wal"]
+            with pytest.raises(AssertionError):
+                assert_no_public_or_durable_logs(env.broker)
+        finally:
+            db.close()
+        assert not path.with_name(path.name + "-wal").exists()
+        assert LOG_LINE.encode() not in path.read_bytes()
+        assert_no_public_or_durable_logs(env.broker)
+        assert env.port.opens == env.port.closes == 0
 
 
 async def test_exact_manual_approval_delivers_redacted_report_without_second_approval(
@@ -588,6 +678,7 @@ async def http_observation(tmp_path, monkeypatch):
         shutdown.set()
         await asyncio.wait_for(task, timeout=5)
         registry.close()
+        assert_no_durable_logs(broker)
 
 
 async def rpc_response(env, method, params, *, token):

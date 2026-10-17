@@ -21,6 +21,18 @@ import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol, cast
+
+
+class _PosixFileAPI(Protocol):
+    O_DIRECTORY: int
+
+    def geteuid(self) -> int: ...
+
+
+# Keep this module independently loadable with only the standard library.
+# Required APIs are still accessed only behind the existing POSIX guards.
+posix_file_api = cast(_PosixFileAPI, os)
 
 _MAX_BYTES = 8192
 _DEFAULT_URL = "http://127.0.0.1:8765/mcp"
@@ -87,7 +99,7 @@ def _check_file(info: os.stat_result) -> None:
     if info.st_size > _MAX_BYTES:
         raise ClientEnvironmentError()
     if os.name == "posix" and (
-        info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) not in (0o400, 0o600)
+        info.st_uid != posix_file_api.geteuid() or stat.S_IMODE(info.st_mode) not in (0o400, 0o600)
     ):
         raise ClientEnvironmentError()
 
@@ -113,7 +125,7 @@ def _open_file(path: Path) -> int:
         or os.open not in os.supports_dir_fd
     ):
         return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0))
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_flags = os.O_RDONLY | posix_file_api.O_DIRECTORY | os.O_NOFOLLOW
     directory_flags |= getattr(os, "O_CLOEXEC", 0)
     descriptor = os.open(path.anchor, directory_flags)
     try:
@@ -127,7 +139,13 @@ def _open_file(path: Path) -> int:
 
 
 def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
-    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+    # Windows stat and fstat can expose different meanings of the deprecated
+    # ctime field (creation vs metadata change). Compare their explicit birth
+    # time instead; retain the descriptor's change-time check across the read.
+    stamp = info.st_ctime_ns
+    if os.name == "nt":
+        stamp = getattr(info, "st_birthtime_ns", stamp)
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, stamp
 
 
 def _read_file(path: Path) -> bytes:
@@ -146,7 +164,11 @@ def _read_file(path: Path) -> bytes:
             data.extend(chunk)
         after = os.fstat(descriptor)
         _check_file(after)
-        if len(data) > _MAX_BYTES or _identity(opened) != _identity(after):
+        if (
+            len(data) > _MAX_BYTES
+            or _identity(opened) != _identity(after)
+            or opened.st_ctime_ns != after.st_ctime_ns
+        ):
             raise ClientEnvironmentError()
         if _identity(opened) != _identity(_path_identity(path)):
             raise ClientEnvironmentError()

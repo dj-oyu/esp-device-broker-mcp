@@ -21,6 +21,10 @@ from cardputer_mcp.models import (
 )
 from cardputer_mcp.store import Store
 
+# A bounded harness guard for real SQLite/OS-lock IO, not a broker lease or
+# latency assertion. Authorization expiry is controlled by Clock below.
+COMPLETION_TIMEOUT = 5
+
 
 class Clock:
     def __init__(self) -> None:
@@ -42,7 +46,7 @@ class ObservedBackend(MockBackend):
 
 async def wait_active(broker: Broker) -> None:
     assert isinstance(broker.backend, ObservedBackend)
-    await asyncio.wait_for(broker.backend.started.wait(), timeout=1)
+    await asyncio.wait_for(broker.backend.started.wait(), timeout=COMPLETION_TIMEOUT)
     assert broker.active_job is not None
 
 
@@ -77,12 +81,17 @@ async def test_review_expired_lease_does_not_eat_shutdown_sentinel(tmp_path: Pat
     clock.now += 2
     backend.gate.set()
     try:
-        await asyncio.wait_for(asyncio.shield(close_task), timeout=0.2)
+        await asyncio.wait_for(asyncio.shield(close_task), timeout=COMPLETION_TIMEOUT)
+        assert clock.now == 102
+        assert broker.worker is not None and broker.worker.done()
+        assert broker.queue.empty() and broker.active_job is None
+        assert not broker._state_lock.is_locked and not broker._device_lock.is_locked
+        assert backend.calls == backend.max_active == 1
     finally:
         # Repair only the synthetic test's teardown if the sentinel was lost.
         if not close_task.done():
             broker.queue.put_nowait(None)
-            await asyncio.wait_for(close_task, timeout=1)
+            await asyncio.wait_for(close_task, timeout=COMPLETION_TIMEOUT)
 
 
 @pytest.mark.asyncio
@@ -108,7 +117,7 @@ async def test_review_expiry_cancels_pending_but_pins_active_owner(tmp_path: Pat
         with pytest.raises(BrokerError, match="device_busy"):
             broker.acquire(AcquireRequest(owner=Origin.REMOTE))
         backend.gate.set()
-        await asyncio.wait_for(broker.queue.join(), timeout=1)
+        await asyncio.wait_for(broker.queue.join(), timeout=COMPLETION_TIMEOUT)
         assert backend.calls == 1
         assert backend.max_active == 1
         assert broker.status()["owner"] is None
@@ -139,8 +148,10 @@ async def test_review_approved_retries_do_not_duplicate_work(tmp_path: Path) -> 
         assert first["deduplicated"] is False
         assert second["deduplicated"] is True
         assert broker.store.db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
-        await asyncio.wait_for(broker.queue.join(), timeout=1)
+        await asyncio.wait_for(broker.queue.join(), timeout=COMPLETION_TIMEOUT)
         assert backend.calls == 1
+        assert broker.queue.empty() and broker.active_job is None
+        assert broker.job("approved")["state"] == "succeeded"
         assert broker.execute(request)["deduplicated"] is True
         assert backend.calls == 1
     finally:
