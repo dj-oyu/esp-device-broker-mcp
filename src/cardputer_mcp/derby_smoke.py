@@ -149,11 +149,15 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
         nonlocal started, ended, identity, consistent, scene, context_changed
         if line.startswith(b"APP_ID"):
             raise reader.failure("unexpected_app_launch")
+        if line in (b"APP_STOPPED", b"HOME_READY"):
+            raise reader.failure("teardown_sequence_invalid")
         if capturing and line in (b"CAPTURE_BEGIN 240 135", b"CAPTURE_END"):
             capture_mark("capture_begin" if line.startswith(b"CAPTURE_BEGIN") else "capture_end")
         if re.fullmatch(rb"DERBY DEMO START [0-9,-]{1,80}", line):
             if started:
                 consistent = False
+            if capturing:
+                context_changed = True
             started = True
             record("demo_start")
             reader.emit("derby_demo_start_observed")
@@ -184,6 +188,8 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
                 reader.emit("derby_scene_" + phase + "_observed")
         if started and re.fullmatch(rb"DERBY DEMO END [0-9,-]{1,80}", line):
             ended = True
+            if capturing:
+                context_changed = True
             record("demo_end")
             reader.emit("derby_demo_end_observed")
 

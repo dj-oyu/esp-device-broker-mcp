@@ -278,3 +278,20 @@ def test_silence_after_s_still_expires_capture_within_18_seconds_no_retry():
     assert wire.now - sent_at <= 18.2 and reader.deadline == 180
     assert wire.writes.count(b"s") == 1 and b"q" not in wire.writes
     assert failure.value.diagnostic["derby_observation"]["image_acquired"] is False
+
+
+def test_demo_end_during_frame_cannot_leave_photo_context_correlated():
+    events = schedule()[:4] + [(69, b"DERBY DEMO END 5000,0,0,100\n")]
+    image, _, report, _ = run(TimedWire(events))
+    assert image.png and report.image_acquired
+    assert report.photo_context_correlation == "changed_or_incomplete"
+
+
+@pytest.mark.parametrize("marker", [b"APP_STOPPED\n", b"HOME_READY\n"])
+def test_unexpected_teardown_during_frame_fails_without_any_new_q(marker):
+    events = schedule()
+    events.insert(4, (69, marker))
+    wire = TimedWire(events)
+    with pytest.raises(SerialFailure):
+        run(wire)
+    assert wire.writes.count(b"s") == 1 and b"q" not in wire.writes
