@@ -21,8 +21,18 @@ import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol, cast
 
-from ._platform_api import posix_file_api
+
+class _PosixFileAPI(Protocol):
+    O_DIRECTORY: int
+
+    def geteuid(self) -> int: ...
+
+
+# Keep this module independently loadable with only the standard library.
+# Required APIs are still accessed only behind the existing POSIX guards.
+posix_file_api = cast(_PosixFileAPI, os)
 
 _MAX_BYTES = 8192
 _DEFAULT_URL = "http://127.0.0.1:8765/mcp"
