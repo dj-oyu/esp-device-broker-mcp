@@ -209,7 +209,15 @@ def test_receive_summary_retains_no_input_in_attributes() -> None:
     diagnostics.observe_line(b"PIX " + secret)
     state = {name: getattr(diagnostics, name) for name in ReceiveDiagnostics.__slots__}
     assert state["_last_command"] == "none"
-    assert set(state) == {"_counts", "_before_command", "_last_command", "_write_completed"}
+    assert set(state) == {
+        "_counts",
+        "_before_command",
+        "_last_command",
+        "_write_completed",
+        "_home_shape",
+        "_home_candidates",
+        "_cross_command_partial",
+    }
     assert all(type(value) is int for value in state["_counts"].values())
     assert all(type(value) is int for value in state["_before_command"].values())
     assert "INVENTED" not in json.dumps(state)

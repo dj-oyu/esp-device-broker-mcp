@@ -48,6 +48,47 @@ _SUMMARY_KEYS = frozenset(
 _MAX_BYTES = 1048576
 _MAX_LINES = 65536
 _MAX_PENDING_BYTES = 16384
+_SHAPE_COUNTS = {
+    "candidate_lines": 2,
+    "standard_prefix_count": 4,
+    "token_offset": 16384,
+    "after_bytes": 16384,
+}
+_SHAPE_FLAGS = ("before_horizontal_only", "after_horizontal_only", "cross_command_partial")
+_SHAPE_KINDS = frozenset({"exact", "horizontal_padding", "repeated_prefix", "other_surrounding"})
+
+
+def _home_shape(line: bytes, body: bytes, token: re.Match[bytes]) -> dict[str, Any]:
+    """Numbers and fixed categories only; positions refer to the normalized body.
+
+    The control parser still removes exactly one prefix. Counting further
+    prefixes here describes a mismatch; it never makes that record acceptable.
+    Both positions saturate at the existing protocol line limit.
+    """
+    prefix_count = 0
+    while prefix_count < 4 and (prefix := _PREFIX.match(line)) is not None:
+        prefix_count += 1
+        # PREFIX is anchored: use a bounded suffix only for this diagnostic.
+        line = line[prefix.end() :]
+    before = body[: token.start()]
+    after = body[token.end() :]
+    horizontal = not before.strip(b" \t") and not after.strip(b" \t")
+    if body == b"HOME_READY":
+        normalization = "exact"
+    elif prefix_count > 1:
+        normalization = "repeated_prefix"
+    elif horizontal:
+        normalization = "horizontal_padding"
+    else:
+        normalization = "other_surrounding"
+    return {
+        "standard_prefix_count": prefix_count,
+        "token_offset": min(token.start(), _MAX_PENDING_BYTES),
+        "after_bytes": min(len(after), _MAX_PENDING_BYTES),
+        "before_horizontal_only": not before.strip(b" \t"),
+        "after_horizontal_only": not after.strip(b" \t"),
+        "normalization": normalization,
+    }
 
 
 def _count_limit(name: str) -> int:
@@ -67,13 +108,24 @@ class ReceiveDiagnostics:
     tabs are allowed. These indicators make no claims about the text's meaning.
     """
 
-    __slots__ = ("_counts", "_before_command", "_last_command", "_write_completed")
+    __slots__ = (
+        "_counts",
+        "_before_command",
+        "_last_command",
+        "_write_completed",
+        "_home_shape",
+        "_home_candidates",
+        "_cross_command_partial",
+    )
 
     def __init__(self) -> None:
         self._counts = dict.fromkeys(_COUNTERS, 0)
         self._before_command = self._counts.copy()
         self._last_command = "none"
         self._write_completed = False
+        self._home_shape: dict[str, Any] | None = None
+        self._home_candidates = 0
+        self._cross_command_partial = False
 
     def _increment(self, name: str, amount: int = 1) -> None:
         self._counts[name] = _bounded_count(self._counts[name] + amount, _count_limit(name))
@@ -87,10 +139,17 @@ class ReceiveDiagnostics:
         self._increment("complete_lines")
         without_ansi = _ANSI.sub(b"", raw).rstrip(b"\r")
         line = _PREFIX.sub(b"", without_ansi, count=1)
+        token = _HOME_TOKEN.search(line)
+        if self._last_command in {"home_escape", "home_quit"} and token is not None:
+            self._home_candidates = min(self._home_candidates + 1, 2)
+            if self._home_shape is None:
+                self._home_shape = _home_shape(without_ansi, line, token)
+                self._home_shape["cross_command_partial"] = self._cross_command_partial
+        self._cross_command_partial = False
         indicators = {
             "esp_log_lines": _PREFIX.match(without_ansi) is not None,
             "ansi_lines": _ANSI.search(raw) is not None,
-            "home_ready_token_lines": _HOME_TOKEN.search(line) is not None,
+            "home_ready_token_lines": token is not None,
             "home_ready_exact_lines": line == b"HOME_READY",
             "boot_banner_lines": line.startswith(b"ESP-ROM:"),
             "reset_reason_lines": _RESET_REASON.match(line) is not None,
@@ -104,11 +163,14 @@ class ReceiveDiagnostics:
         if not any(indicators.values()):
             self._increment("unclassified_lines")
 
-    def begin_command(self, name: str) -> None:
+    def begin_command(self, name: str, *, cross_command_partial: bool = False) -> None:
         """Snapshot the receive baseline immediately before a command write."""
         self._last_command = name if type(name) is str and name in _COMMANDS else "none"
         self._before_command = self._counts.copy()
         self._write_completed = False
+        self._home_shape = None
+        self._home_candidates = 0
+        self._cross_command_partial = type(cross_command_partial) is bool and cross_command_partial
 
     def write_completed(self) -> None:
         """Mark only a successfully completed command write."""
@@ -117,7 +179,7 @@ class ReceiveDiagnostics:
     def snapshot(self, pending_bytes: int) -> dict[str, Any]:
         """Return detached fixed-schema data, without sharing internal state."""
         pending = pending_bytes if type(pending_bytes) is int else 0
-        return {
+        result = {
             "last_command": self._last_command,
             "command_write_completed": self._write_completed,
             "before_command": self._before_command.copy(),
@@ -126,6 +188,11 @@ class ReceiveDiagnostics:
             },
             "pending_bytes": _bounded_count(pending, _MAX_PENDING_BYTES),
         }
+        if self._home_shape is not None:
+            result["home_marker_shape"] = dict(
+                self._home_shape, candidate_lines=self._home_candidates
+            )
+        return result
 
 
 def _sanitize_counters(value: object) -> dict[str, int] | None:
@@ -151,7 +218,7 @@ def sanitize_receive_summary(value: object) -> dict[str, Any] | None:
     """
     if type(value) is not dict or any(type(key) is not str for key in value):
         return None
-    if value.keys() != _SUMMARY_KEYS:
+    if value.keys() not in (_SUMMARY_KEYS, _SUMMARY_KEYS | {"home_marker_shape"}):
         return None
     command = value["last_command"]
     completed = value["command_write_completed"]
@@ -164,10 +231,33 @@ def sanitize_receive_summary(value: object) -> dict[str, Any] | None:
     after = _sanitize_counters(value["after_command"])
     if before is None or after is None:
         return None
-    return {
+    result = {
         "last_command": command,
         "command_write_completed": completed,
         "before_command": before,
         "after_command": after,
         "pending_bytes": _bounded_count(pending, _MAX_PENDING_BYTES),
     }
+    if "home_marker_shape" in value:
+        shape = value["home_marker_shape"]
+        keys = set(_SHAPE_COUNTS) | set(_SHAPE_FLAGS) | {"normalization"}
+        if (
+            command not in {"home_escape", "home_quit"}
+            or type(shape) is not dict
+            or any(type(key) is not str for key in shape)
+            or shape.keys() != keys
+        ):
+            return None
+        if any(type(shape[key]) is not int for key in _SHAPE_COUNTS):
+            return None
+        if any(type(shape[key]) is not bool for key in _SHAPE_FLAGS):
+            return None
+        kind = shape["normalization"]
+        if type(kind) is not str or kind not in _SHAPE_KINDS:
+            return None
+        result["home_marker_shape"] = {
+            **{key: _bounded_count(shape[key], limit) for key, limit in _SHAPE_COUNTS.items()},
+            **{key: shape[key] for key in _SHAPE_FLAGS},
+            "normalization": kind,
+        }
+    return result
