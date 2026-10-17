@@ -5,6 +5,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from .backend import DeviceOperationFailure
 from .capture import CapturedImage, CaptureError, LegacyCaptureDecoder
 from .derby_observation import NO_CAPTURE, DerbyEvent, DerbyObservation
 
@@ -44,7 +45,15 @@ def take_frame(
         reader.expected_marker = "CAPTURE_END"
         reader.receive_diagnostics.begin_command("capture_frame")
         mark("capture_s_requested")
-        if reader.port.write(b"s") != 1:
+        try:
+            written = reader.port.write(b"s")
+        except DeviceOperationFailure as failure:
+            # Owned-port revocation may fail directly inside write's guard.
+            # Preserve its fixed failure code plus the requested/not-completed trace.
+            raise reader.failure(failure.code) from None
+        except Exception:
+            raise reader.failure("serial_write_failed") from None
+        if written != 1:
             raise reader.failure("incomplete_serial_write")
         mark("capture_s_sent")
         reader.receive_diagnostics.write_completed()
@@ -72,6 +81,7 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
     scene: tuple[str, str, str] | None = None
     selected: tuple[str, str, str] | None = None
     consistent = True
+    demo_epoch = 0
     capturing = context_changed = attempted = home = False
     image: CapturedImage | None = None
     reason = "photo_not_observed_before_deadline"
@@ -146,7 +156,7 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
         record(kind, reason="photo_observed", **fields)
 
     def observe(line: bytes) -> None:
-        nonlocal started, ended, identity, consistent, scene, context_changed
+        nonlocal started, ended, identity, consistent, scene, context_changed, demo_epoch
         if line.startswith(b"APP_ID"):
             raise reader.failure("unexpected_app_launch")
         if line in (b"APP_STOPPED", b"HOME_READY"):
@@ -158,6 +168,13 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
                 consistent = False
             if capturing:
                 context_changed = True
+            demo_epoch += 1
+            # START establishes a new cycle even when identifiers repeat. No
+            # earlier photo/identity/order can qualify a write in this cycle.
+            scene = identity = None
+            phases.clear()
+            sequence.clear()
+            ended = False
             started = True
             record("demo_start")
             reader.emit("derby_demo_start_observed")
@@ -202,11 +219,15 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
                 break
             attempted = capturing = True
             selected = scene
+            selected_epoch = demo_epoch
             reason = "capture_incomplete"
 
-            def current_photo(expected: tuple[str, str, str] | None = selected) -> bool:
+            def current_photo(
+                expected: tuple[str, str, str] | None = selected,
+                expected_epoch: int = selected_epoch,
+            ) -> bool:
                 nonlocal reason
-                if scene != expected or ended:
+                if not started or demo_epoch != expected_epoch or scene != expected or ended:
                     reason = "photo_not_current_before_s"
                     record("capture_skipped", reason=reason)
                     return False

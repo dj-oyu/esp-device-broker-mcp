@@ -1,5 +1,6 @@
 """Synthetic host clocks and serial only; no physical photo/pixel attestation."""
 
+import threading
 from collections import deque
 from copy import deepcopy
 
@@ -11,6 +12,7 @@ from cardputer_mcp.derby_smoke import derby_smoke
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.ports import PortInfo
 from cardputer_mcp.serial_backend import Reader, SerialBackend, SerialFailure
+from cardputer_mcp.smoke_port import SmokePort
 
 
 def scene(phase, race="1000001", seed="AB123456"):
@@ -295,3 +297,79 @@ def test_unexpected_teardown_during_frame_fails_without_any_new_q(marker):
     with pytest.raises(SerialFailure):
         run(wire)
     assert wire.writes.count(b"s") == 1 and b"q" not in wire.writes
+
+
+def test_photo_then_next_demo_start_in_same_read_never_uses_old_photo():
+    events = schedule()
+    events[3] = (68, scene("photo") + b"DERBY DEMO START 5000,0,0,100\n")
+    wire = TimedWire(events)
+    image, _, report, _ = run(wire)
+    assert image is None and b"s" not in wire.writes
+    assert report.photo_context_correlation == "not_captured"
+    assert not report.demo_cycle_observed and wire.writes.count(b"q") == 1
+
+
+@pytest.mark.parametrize("new_scene", [b"", scene("photo")])
+def test_next_demo_start_during_s_predrain_invalidates_the_selected_cycle(new_scene):
+    events = schedule()
+    events.insert(4, (68.1, b"DERBY DEMO START 5000,0,0,100\n" + new_scene))
+    wire = TimedWire(events)
+    image, _, report, _ = run(wire)
+    assert image is None and b"s" not in wire.writes
+    assert report.capture_reason == "photo_not_current_before_s"
+    assert report.photo_context_correlation == "changed_or_incomplete"
+    assert not report.demo_cycle_observed and wire.writes.count(b"q") == 1
+
+
+@pytest.mark.parametrize("failure_kind", ["transport", "revoked_before_s"])
+async def test_direct_s_write_failure_preserves_timing_and_still_closes(failure_kind):
+    wire = TimedWire(schedule())
+    valid = [True]
+    attempted_s = []
+    original_write = wire.write
+
+    def failed_write(data):
+        if data == b"s":
+            attempted_s.append(True)
+            raise OSError("SYNTHETIC_PRIVATE_WRITE_ERROR")
+        return original_write(data)
+
+    class RevokeS(SmokePort):
+        def write(self, data):
+            if data == b"s":
+                attempted_s.append(True)
+                valid[0] = False
+            return super().write(data)
+
+    if failure_kind == "transport":
+        wire.write = failed_write
+        port = wire
+    else:
+        port = RevokeS(wire, lambda: valid[0], threading.Event())
+    config = SerialSettings(
+        selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
+        expected_firmware_sha256="a" * 64,
+    )
+    backend = SerialBackend(
+        config,
+        inventory=lambda: [PortInfo(port="COM42", vid=1, pid=2, serial_number="synthetic")],
+        factory=lambda: port,
+        clock=lambda: wire.now,
+    )
+    plan = {"test": Action.DERBY.value, **backend.prepare(Action.DERBY)}
+    with pytest.raises(SerialFailure) as failure:
+        await backend.execute_smoke(plan, lambda _: None, lambda: valid[0])
+    assert failure.value.code == (
+        "serial_write_failed"
+        if failure_kind == "transport"
+        else "operation_interrupted_review_required"
+    )
+    report = failure.value.diagnostic["derby_observation"]
+    kinds = [event["kind"] for event in report["events"]]
+    assert "photo_observed" in kinds and "capture_s_requested" in kinds
+    assert "capture_s_sent" not in kinds and "capture_begin" not in kinds
+    assert report["capture_reason"] == "capture_incomplete" and not report["image_acquired"]
+    assert failure.value.diagnostic["receive_summary"]["command_write_completed"] is False
+    assert len(attempted_s) == 1 and b"s" not in wire.writes and b"q" not in wire.writes
+    assert wire.closed and backend.active == 0 and backend.hardware_connected is False
+    assert "SYNTHETIC_PRIVATE_WRITE_ERROR" not in str(failure.value.diagnostic)
