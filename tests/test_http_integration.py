@@ -78,6 +78,8 @@ async def test_real_mcp_http_disconnect_retry_handover(service):
             "read_device_logs",
             "read_build_logs",
             "cancel_job",
+            "request_home_recovery",
+            "cancel_home_recovery",
             "create_work_session",
             "resume_work_session",
             "request_device",
@@ -97,6 +99,21 @@ async def test_real_mcp_http_disconnect_retry_handover(service):
             "limit",
         }
         assert build_request["additionalProperties"] is False
+        for name, model, fields in (
+            ("request_home_recovery", "RequestHomeRecovery", {"job_id", "source_job_id"}),
+            ("cancel_home_recovery", "CancelHomeRecovery", {"job_id", "plan_hash"}),
+        ):
+            tool = next(tool for tool in advertised.tools if tool.name == name)
+            assert tool.annotations.read_only_hint is False
+            data = tool.model_dump()
+            shape = data.get("input_schema", data.get("inputSchema"))["$defs"][model]
+            assert set(shape["properties"]) == fields and shape["additionalProperties"] is False
+        for name, request in (
+            ("request_home_recovery", {"job_id": "recovery", "source_job_id": "source"}),
+            ("cancel_home_recovery", {"job_id": "recovery", "plan_hash": "a" * 64}),
+        ):
+            denied = await call(first, name, request)
+            assert denied["error"] == "authentication_required"
         # Even an unauthenticated mock demo must not expose build output.
         private_logs = await call(first, "read_build_logs", {"job_id": "unstarted"})
         assert private_logs["error"] == "authentication_required"
