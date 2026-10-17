@@ -74,6 +74,9 @@ This separate window needs no lease renewal and performs no device operation.
    --delivery-revision <reviewed-revision> --decision approve` (or `reject`)
    invokes the existing local decision API. A missing/mismatched revision, SHA,
    scope, expired window, rejected/expired image or revoked recipient fails.
+   The broker rechecks image identity and delivery revision after the recipient
+   callback, immediately before recording the decision; an epoch change cannot
+   commit a consent based on a stale revision.
 3. The requesting principal uses existing MCP `read_capture`. Broker checks the
    successful job, five-minute RAM retention, exact image decision, requesting
    principal and current read authority. A render buffer does not prove physical

@@ -39,6 +39,7 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows same-user pipe 
         "image_revoke",
         "image_expire",
         "image_revision",
+        "image_review_epoch",
     ],
 )
 async def test_exact_derby_cli_execution_then_image_decision(registry_service, tmp_path, change):
@@ -149,7 +150,18 @@ async def test_exact_derby_cli_execution_then_image_decision(registry_service, t
         assert denied.is_error
         slot, endpoint = arm("image")
         try:
+            if change == "image_review_epoch":
+                summary = env.resident._image_summary
+
+                def changed_epoch(*args):
+                    env.resident.epoch = "9" * 32
+                    return summary(*args)
+
+                env.resident._image_summary = changed_epoch
             image = await exchange(endpoint, {**scope.model_dump(), "action": "derby-image-review"})
+            if change == "image_review_epoch":
+                assert not image["ok"] and slot.closed
+                return
             assert image["ok"] and "image_base64" not in image, image
             if change == "image_revoke":
                 env.registry.revoke(env.keys["second"].metadata.key_id)
