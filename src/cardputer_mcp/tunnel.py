@@ -236,7 +236,9 @@ def save_gui_config(
         raw["tunnel"] = selected.model_dump(mode="json", exclude_none=True, exclude_unset=True)
         # Persist portable TOML path spellings, independent of the saving OS.
         for key in ("client_exe", "client_archive"):
-            raw["tunnel"][key] = getattr(selected, key).as_posix()
+            value = getattr(selected, key)
+            if value is not None and key in raw["tunnel"]:
+                raw["tunnel"][key] = value.as_posix()
         broker = Settings.model_validate(raw)
         _resolve_metadata(target, project, broker, None)  # Do not strand conflicting metadata.
         serialized = _toml_document(raw)

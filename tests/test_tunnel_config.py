@@ -231,6 +231,56 @@ def test_save_runtime_settings_checks_broker_identity(tmp_path):
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("with_legacy", [False, True])
+@pytest.mark.parametrize(
+    "paths",
+    [
+        {},
+        {"client_exe": "tools/tunnel-client.exe"},
+        {"client_archive": "downloads/client.zip"},
+        {"client_exe": None},
+        {"client_archive": None},
+        {"client_exe": None, "client_archive": None},
+        {"client_exe": None, "client_archive": "downloads/client.zip"},
+        {"client_exe": "tools/tunnel-client.exe", "client_archive": None},
+    ],
+    ids=[
+        "both-omitted",
+        "exe-only",
+        "archive-only",
+        "exe-none",
+        "archive-none",
+        "both-none",
+        "exe-none-archive-set",
+        "exe-set-archive-none",
+    ],
+)
+def test_partial_path_save_preserves_omission_and_none_without_starting_client(
+    tmp_path, monkeypatch, paths, with_legacy
+):
+    path = broker_file(tmp_path, metadata(), max_waiters=19)
+    before = tomllib.loads(path.read_text())
+    before.pop("tunnel")
+    if with_legacy:
+        legacy_file(tmp_path)
+    monkeypatch.setattr(tunnel.subprocess, "Popen", lambda *a, **kw: pytest.fail("started client"))
+    requested = {"tunnel_id": ID, **paths}
+    tunnel.save_gui_config(path, tmp_path, requested)
+    after = tomllib.loads(path.read_text())
+    expected = {key: value for key, value in requested.items() if value is not None}
+    assert after.pop("tunnel") == expected
+    assert after == before
+    stored = load_settings(path).tunnel
+    for key in ("client_exe", "client_archive"):
+        assert getattr(stored, key) == (Path(paths[key]) if paths.get(key) is not None else None)
+    resolved = tunnel.load_gui_config(path, tmp_path)
+    if with_legacy:
+        assert resolved.client_exe == tmp_path / "tools/tunnel-client.exe"
+        assert resolved.client_archive == tmp_path / "downloads/client.zip"
+    else:
+        assert resolved is None
+
+
 def test_save_compatible_legacy_metadata_only_writes_canonical_file(tmp_path):
     path = broker_file(tmp_path)
     legacy = legacy_file(tmp_path)

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import sqlite3
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -200,6 +201,36 @@ async def test_live_filesystem_check_rejects_transient_wal_leak_before_shutdown(
             assert env.broker._state_lock.is_locked
         finally:
             path.unlink()
+
+
+async def test_live_scan_detects_committed_secret_in_past_wal_frame(tmp_path):
+    async with running(tmp_path) as env:
+        path = env.broker.settings.state_dir / "synthetic-history.sqlite3"
+        db = sqlite3.connect(path)
+        try:
+            assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            db.execute("PRAGMA wal_autocheckpoint=0")
+            db.execute("PRAGMA secure_delete=ON")
+            db.execute("CREATE TABLE fixture(value TEXT)")
+            db.execute("INSERT INTO fixture VALUES (?)", (LOG_LINE,))
+            db.commit()
+            db.execute("UPDATE fixture SET value='[redacted]'")
+            db.commit()
+            assert LOG_LINE not in "\n".join(db.iterdump())
+            hits = [
+                item.name
+                for item in path.parent.rglob("*")
+                if item.is_file() and LOG_LINE.encode() in read_live_fixture_file(env.broker, item)
+            ]
+            assert hits == [path.name + "-wal"]
+            with pytest.raises(AssertionError):
+                assert_no_public_or_durable_logs(env.broker)
+        finally:
+            db.close()
+        assert not path.with_name(path.name + "-wal").exists()
+        assert LOG_LINE.encode() not in path.read_bytes()
+        assert_no_public_or_durable_logs(env.broker)
+        assert env.port.opens == env.port.closes == 0
 
 
 async def test_exact_manual_approval_delivers_redacted_report_without_second_approval(
