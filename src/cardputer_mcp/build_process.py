@@ -129,7 +129,10 @@ class BuildProcess:
         emit: Callable[[str, str], None],
         timeout: float = 1800,
         monitor: Callable[[], None] | None = None,
+        stdout_line_bytes: int = 4096,
     ) -> int:
+        if type(stdout_line_bytes) is not int or not 1 <= stdout_line_bytes <= 256 * 1024:
+            raise ValueError("invalid_stdout_line_limit")
         if self.active or self.uncertain:
             raise ValueError("build_process_busy")
         if self.stop_requested.is_set():
@@ -201,6 +204,7 @@ class BuildProcess:
             def consume(pipe: BinaryIO, stream: str) -> None:
                 pending = bytearray()
                 oversized = False
+                line_limit = stdout_line_bytes if stream == "stdout" else 4096
                 while chunk := pipe.read(1024):
                     for byte in chunk:
                         if byte == 10:
@@ -212,7 +216,7 @@ class BuildProcess:
                             oversized = False
                         elif not oversized:
                             pending.append(byte)
-                            if len(pending) > 4096:
+                            if len(pending) > line_limit:
                                 pending.clear()
                                 oversized = True
                 if oversized:

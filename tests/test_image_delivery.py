@@ -39,6 +39,20 @@ async def completed_preview(broker: Broker, job_id: str = "review") -> dict[str,
     return broker.operator_image(job_id)
 
 
+async def test_final_recipient_callback_cannot_change_delivery_revision(tmp_path: Path) -> None:
+    async with running(tmp_path) as broker:
+        preview = await completed_preview(broker)
+
+        def changed_epoch(*args):
+            broker.epoch = "9" * 32
+            return True
+
+        broker.principal_valid = changed_epoch
+        with pytest.raises(BrokerError, match="^stale_image_preview$"):
+            decide(broker, preview, "approve")
+        assert broker.captures[preview["job_id"]].delivery_state == "pending"
+
+
 async def test_completed_capture_stays_private_until_exact_local_delivery_approval(
     tmp_path: Path,
 ) -> None:

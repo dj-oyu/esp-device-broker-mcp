@@ -1606,12 +1606,40 @@ class Broker:
 
     def operator_image(self, job_id: str) -> dict[str, Any]:
         retained = self._operator_capture(job_id)
-        return {
+        job = self._store().job(job_id)
+        plan = self._store().plan(job["plan_hash"]) if job else None
+        provenance = {}
+        if plan and plan["test"] == TestName.DERBY.value:
+            if (
+                job is None
+                or plan["broker_epoch"] != self.epoch
+                or digest_plan(plan) != job["plan_hash"]
+            ):
+                raise BrokerError("stale_image_preview")
+            provenance = {
+                "derby_scope": {
+                    "broker_epoch": self.epoch,
+                    "job_id": job_id,
+                    "plan_hash": digest_plan(plan),
+                    "principal_id": retained.principal_id,
+                    "device_fingerprint": plan["device_fingerprint"],
+                    "expected_firmware_sha256": plan["expected_firmware_sha256"],
+                }
+            }
+        result = {
+            **provenance,
             **self._image_summary(job_id, retained),
             "metadata": retained.image.metadata(),
             "image_base64": base64.b64encode(retained.image.png).decode("ascii"),
             "delivery_revision": self._delivery_revision(job_id, retained),
         }
+        if provenance and (
+            plan is None
+            or self._operator_capture(job_id) is not retained
+            or plan["broker_epoch"] != self.epoch
+        ):
+            raise BrokerError("stale_image_preview")
+        return result
 
     def operator_decide_image(
         self, job_id: str, sha256: str, delivery_revision: str, decision: str
@@ -1635,7 +1663,9 @@ class Broker:
                 valid = False
             if valid is not True:
                 raise BrokerError("image_recipient_not_authorized")
-        if self._operator_capture(job_id) is not retained:
+        if self._operator_capture(job_id) is not retained or not secrets.compare_digest(
+            delivery_revision, self._delivery_revision(job_id, retained)
+        ):
             raise BrokerError("stale_image_preview")
         self.captures[job_id] = replace(retained, delivery_state=target)
         return {"job_id": job_id, "delivery_state": target}

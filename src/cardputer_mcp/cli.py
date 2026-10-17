@@ -160,6 +160,25 @@ def parser() -> argparse.ArgumentParser:
     launch.add_argument("--review-revision")
     launch.add_argument("--attestation")
     launch.add_argument("--allow-image-delivery", action="store_true")
+    derby_launch = sub.add_parser(
+        "derby-operator-request", help="Request one explicitly armed exact DERBY operator slot"
+    )
+    derby_launch.add_argument("--pipe", required=True)
+    derby_launch.add_argument(
+        "--action",
+        required=True,
+        choices=(
+            "derby-plan-review",
+            "derby-approve-and-start",
+            "derby-image-review",
+            "derby-image-decision",
+        ),
+    )
+    for name in ("epoch", "job", "plan", "principal", "device-fingerprint", "firmware-sha256"):
+        derby_launch.add_argument("--" + name, required=True)
+    for name in ("review-revision", "attestation", "sha256", "delivery-revision"):
+        derby_launch.add_argument("--" + name)
+    derby_launch.add_argument("--decision", choices=("approve", "reject"))
     review = sub.add_parser("review", help="OFFLINE acknowledgement; never retries a job")
     review.add_argument("--state-dir", type=Path, default=Path(".state"))
     review.add_argument("--job", required=True)
@@ -383,7 +402,7 @@ def main() -> None:
             if args.auth_source != "environment" or args.client != Origin.LOCAL.value:
                 raise AuthError("http_diagnostics_requires_local_environment_credentials")
             output(OperatorClient(args.url, load_environment_token(Origin.LOCAL)).diagnostics())
-        elif args.command == "operator-launch-request":
+        elif args.command in ("operator-launch-request", "derby-operator-request"):
             from .operator_launch import OperatorLaunchError
             from .operator_launch_pipe import request_operator_launch
 
@@ -395,19 +414,26 @@ def main() -> None:
             ):
                 raise AuthError("operator_launch_uses_os_identity_only")
             try:
-                result = request_operator_launch(
-                    args.pipe,
-                    {
-                        "action": args.action,
-                        "broker_epoch": args.epoch,
-                        "job_id": args.job,
-                        "plan_hash": args.plan,
-                        "principal_id": args.principal,
-                        "review_revision": args.review_revision,
-                        "attestation": args.attestation,
-                        "allow_image_delivery": args.allow_image_delivery,
-                    },
-                )
+                payload = {
+                    "action": args.action,
+                    "broker_epoch": args.epoch,
+                    "job_id": args.job,
+                    "plan_hash": args.plan,
+                    "principal_id": args.principal,
+                    "review_revision": args.review_revision,
+                    "attestation": args.attestation,
+                }
+                if args.command == "operator-launch-request":
+                    payload["allow_image_delivery"] = args.allow_image_delivery
+                else:
+                    payload.update(
+                        device_fingerprint=args.device_fingerprint,
+                        expected_firmware_sha256=args.firmware_sha256,
+                        sha256=args.sha256,
+                        delivery_revision=args.delivery_revision,
+                        decision=args.decision,
+                    )
+                result = request_operator_launch(args.pipe, payload)
                 output(result)
                 if result.get("ok") is not True:
                     raise SystemExit(1)

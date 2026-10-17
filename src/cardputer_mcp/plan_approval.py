@@ -708,7 +708,7 @@ class PlanApprovals:
                 "attestation": self._attestation(plan),
                 "attestation_text": _ATTESTATIONS[self._attestation(plan)],
                 "image_delivery_recipient": lease.principal_id
-                if plan["test"] == TestName.CAPTURE.value
+                if plan["test"] in (TestName.CAPTURE.value, TestName.DERBY.value)
                 else None,
                 **self._intent_detail(plan_hash, lease),
             }
