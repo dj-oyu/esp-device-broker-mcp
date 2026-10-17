@@ -3,8 +3,10 @@
 import asyncio
 import hashlib
 import json
+import os
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from weakref import WeakKeyDictionary
 
@@ -47,8 +49,8 @@ WIRE = (
     + b"Authorization: Bearer SYNTHETIC_BEARER_VALUE\n"
 )
 
-# Live SQLite/public checks happen immediately. The complete filesystem scan
-# runs after shutdown, when Windows releases the exclusive OS lock files too.
+# Live public/SQLite/filesystem checks happen immediately. Scan again after
+# shutdown as well, including files created by teardown or checkpointing.
 _durable_checks = WeakKeyDictionary()
 
 
@@ -143,6 +145,35 @@ def assert_no_public_or_durable_logs(broker, *credentials):
     for forbidden in (LOG_LINE, *SECRETS, *credentials):
         assert forbidden not in public and forbidden not in history
     _durable_checks.setdefault(broker, set()).update(credentials)
+    for path in broker.settings.state_dir.rglob("*"):
+        if path.is_file():
+            data = read_live_fixture_file(broker, path)
+            for forbidden in (LOG_LINE, *SECRETS, *credentials):
+                assert forbidden.encode() not in data
+
+
+def read_live_fixture_file(broker, path):
+    try:
+        return path.read_bytes()
+    except PermissionError:
+        # A second handle cannot read Windows' locked byte range. Read through
+        # this fixture's already-owned lock descriptor instead, never unlock,
+        # change sharing/permissions or omit the file. Preserve its position.
+        lock = broker._state_lock
+        assert os.name == "nt" and path == Path(lock.lock_file) and lock.is_locked
+        descriptor = lock._context.lock_file_fd
+        assert descriptor is not None
+        info, current = os.fstat(descriptor), path.stat()
+        assert (info.st_dev, info.st_ino) == (current.st_dev, current.st_ino)
+        position = os.lseek(descriptor, 0, os.SEEK_CUR)
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            data = bytearray()
+            while chunk := os.read(descriptor, 65536):
+                data.extend(chunk)
+            return bytes(data)
+        finally:
+            os.lseek(descriptor, position, os.SEEK_SET)
 
 
 def assert_no_durable_logs(broker):
@@ -152,6 +183,23 @@ def assert_no_durable_logs(broker):
             data = path.read_bytes()
             for forbidden in (LOG_LINE, *SECRETS, *credentials):
                 assert forbidden.encode() not in data
+
+
+async def test_live_filesystem_check_rejects_transient_wal_leak_before_shutdown(tmp_path):
+    async with running(tmp_path) as env:
+        descriptor = env.broker._state_lock._context.lock_file_fd
+        position = os.lseek(descriptor, 0, os.SEEK_CUR)
+        assert_no_public_or_durable_logs(env.broker)
+        assert os.lseek(descriptor, 0, os.SEEK_CUR) == position
+        assert env.broker._state_lock.is_locked
+        path = env.broker.settings.state_dir / "synthetic-leak.sqlite3-wal"
+        path.write_bytes(LOG_LINE.encode())
+        try:
+            with pytest.raises(AssertionError):
+                assert_no_public_or_durable_logs(env.broker)
+            assert env.broker._state_lock.is_locked
+        finally:
+            path.unlink()
 
 
 async def test_exact_manual_approval_delivers_redacted_report_without_second_approval(
