@@ -266,7 +266,8 @@ class Reader:
                 b"u": "select_previous",
                 b"d": "select_next",
                 b"e": "enter",
-            }[key]
+            }[key],
+            cross_command_partial=stale_partial,
         )
         try:
             written = self.port.write(key)

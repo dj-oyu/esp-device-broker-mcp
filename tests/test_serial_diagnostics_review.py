@@ -196,7 +196,14 @@ def test_diagnostics_review_categories_cannot_contain_exception_secrets():
     assert str(failure) == "serial_operation_uncertain"
 
 
-@pytest.mark.parametrize("reply", [b"", b"NOISY_PREFIX token=INVENTED_SECRET\r\n"])
+@pytest.mark.parametrize(
+    "reply",
+    [
+        b"",
+        b"NOISY_PREFIX token=INVENTED_SECRET\r\n",
+        b"I (1) shell: HOME_READY token=INVENTED_SECRET\r\n",
+    ],
+)
 async def test_diagnostics_review_safe_timeout_detail_survives_backend_and_broker(tmp_path, reply):
     clock = DiagnosticClock()
     port = DiagnosticPort(clock, reply)
@@ -242,6 +249,9 @@ async def test_diagnostics_review_safe_timeout_detail_survives_backend_and_broke
         assert broker.status()["needs_review"] is True
         stored = "\n".join(broker._store().db.iterdump())
         public = json.dumps([job, broker.read_logs(LogRequest())])
+        if b"HOME_READY" in reply:
+            assert summary["home_marker_shape"]["normalization"] == "other_surrounding"
+            assert '"home_marker_shape"' in stored
         assert "INVENTED_SECRET" not in stored + public
         assert "NOISY_PREFIX" not in stored + public
     finally:

@@ -172,6 +172,21 @@ No raw text, arbitrary prefix/tag values, device identifiers, pixels, or excepti
 messages are retained by these counters. Earlier failures cannot be reconstructed
 because their original serial text was not stored.
 
+For HOME escape/quit commands, `receive_summary.home_marker_shape` optionally
+describes the first complete token-containing line after the command baseline.
+It contains only bounded numbers, booleans and fixed categories: consecutive
+standard prefix count (saturates at 4), normalized token offset (also the number
+of bytes before the first token), bytes after that token (both saturate at
+16,384), and whether the surrounding bytes contain only spaces/tabs. Normalization
+is `exact`, `horizontal_padding`, `repeated_prefix`, or `other_surrounding`.
+`candidate_lines` saturates at 2: 2 means multiple candidates, so the first shape
+cannot explain every received line. A line spanning the command boundary is
+marked `cross_command_partial`; even an `exact` shape is not proof of fresh HOME.
+Incomplete lines have no shape. Every command resets this single-record slot.
+The metadata travels through existing failure diagnostics/history; it does not
+enable the opt-in raw preview below, retain text/fragments/hashes, add reads or
+commands, alter exact marker acceptance, or acknowledge a review.
+
 For a failure with `expected_marker = "HOME_READY"`, the frame command has not
 yet been sent. A missing image in that case means no usable image was acquired,
 not that the five-minute image retention period elapsed. Interrupted/restarted
