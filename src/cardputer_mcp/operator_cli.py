@@ -29,8 +29,10 @@ def review_plan(client: OperatorClient, plan_hash: str) -> dict[str, Any]:
             else (
                 "DERBY requires HOME and the exact configured normal firmware. Fixed "
                 "Esc/a/u x16/d x12/e navigation starts local.derby; automatic demo observation "
-                "is bounded to 120 seconds, whole job to 180 seconds. One s captures the photo "
-                "phase or fallback; one q attempts HOME. Cancellation or lease loss stops "
+                "is bounded to 120 seconds, whole job to 180 seconds. At most one s captures "
+                "only a currently observed photo; no timed fallback. Reserve 18 seconds for "
+                "capture, 12 for exit and 5 margin. Without a current photo, exit unverified "
+                "without an image. One q attempts HOME. Cancellation or lease loss stops "
                 "new writes including q and may leave the game running. Serial open/close "
                 "can reset the device; exit may save state. No arbitrary keys or replay. "
                 "Pixels do not prove LCD transfer or frame coherence. Image delivery requires "

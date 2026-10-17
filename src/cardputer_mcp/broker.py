@@ -2136,7 +2136,25 @@ class Broker:
                         result = await self.backend.execute_with_local_probe(
                             plan, on_stage, local_home_probe
                         )
-                    if plan["test"] in (TestName.CAPTURE.value, TestName.DERBY.value) and (
+                    if plan["test"] == TestName.DERBY.value:
+                        from .derby_observation import NO_CAPTURE, DerbyObservation
+
+                        if (
+                            not isinstance(result, BackendResult)
+                            or not isinstance(result.derby_observation, DerbyObservation)
+                            or not result.derby_observation.exit_home_observed
+                            or result.derby_observation.image_acquired
+                            is not (result.image is not None)
+                            or (
+                                result.image is None
+                                and (
+                                    result.code != NO_CAPTURE
+                                    or not result.derby_observation.no_capture_completed()
+                                )
+                            )
+                        ):
+                            raise BrokerError("capture_result_invalid")
+                    if plan["test"] == TestName.CAPTURE.value and (
                         not isinstance(result, BackendResult) or result.image is None
                     ):
                         raise BrokerError("capture_result_invalid")
@@ -2256,7 +2274,18 @@ class Broker:
                         elif plan["test"] == TestName.SOURCE.value:
                             self.firmware_source.commit_success(plan, completed, source_live)
                         else:
-                            store.set_job(job_id, "succeeded", completed)
+                            diagnostic = (
+                                {
+                                    "derby_observation": result.derby_observation.model_dump(
+                                        mode="json", exclude_none=True
+                                    )
+                                }
+                                if isinstance(result, BackendResult)
+                                and result.derby_observation is not None
+                                and plan["test"] == TestName.DERBY.value
+                                else None
+                            )
+                            store.set_job(job_id, "succeeded", completed, diagnostic)
                     except Exception as failure:
                         if plan["test"] == TestName.SOURCE.value:
                             code = (
