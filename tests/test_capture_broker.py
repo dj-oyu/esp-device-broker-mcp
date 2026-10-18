@@ -335,6 +335,15 @@ async def test_capture_shutdown_waits_for_active_close_and_cancels_queued_work(
 async def test_capture_shutdown_drops_retained_bytes_before_service_close_await(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service_name: str
 ) -> None:
+    images = []
+    original_image = mock_image
+
+    def tracked_image():
+        image = original_image()
+        images.append(weakref.ref(image))
+        return image
+
+    monkeypatch.setattr(f"{__name__}.mock_image", tracked_image)
     backend = ClosingCapture()
     async with running(tmp_path, backend=backend) as broker:
         session = acquire(broker)
@@ -374,6 +383,16 @@ async def test_capture_shutdown_drops_retained_bytes_before_service_close_await(
             assert not broker.device_observations
             assert not closing.done() and backend.active == 1
             assert broker._device_lock.is_locked and broker._state_lock.is_locked
+            # Finish only device work. Keep service shutdown blocked so a late
+            # publication cannot be hidden by close()'s final cache cleanup.
+            backend.close_allowed.set()
+            await asyncio.wait_for(broker.queue.join(), timeout=2)
+            assert broker.job("active")["state"] == "succeeded"
+            assert not closing.done() and backend.active == 0
+            assert broker._device_lock.is_locked and broker._state_lock.is_locked
+            assert not broker.captures and not broker.device_observations
+            gc.collect()
+            assert len(images) == 2 and all(image() is None for image in images)
         finally:
             allowed.set()
             backend.close_allowed.set()

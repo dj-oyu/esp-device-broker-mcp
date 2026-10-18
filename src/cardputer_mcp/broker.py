@@ -1963,14 +1963,17 @@ class Broker:
                             )
                         ):
                             raise BrokerError("device_log_result_invalid")
-                        # Only the newest report is retained. No text is written to SQLite.
-                        self.device_observations.clear()
-                        self.device_observations[job_id] = RetainedDeviceObservation(
-                            capture_principal,
-                            lease.owner,
-                            result.observation,
-                            self.clock() + 300,
-                        )
+                        # Shutdown may be waiting on another service while this
+                        # worker finishes. Do not republish private output then.
+                        if not self.closing:
+                            # Only the newest report is retained. No text is written to SQLite.
+                            self.device_observations.clear()
+                            self.device_observations[job_id] = RetainedDeviceObservation(
+                                capture_principal,
+                                lease.owner,
+                                result.observation,
+                                self.clock() + 300,
+                            )
                     if isinstance(result, BackendResult) and result.image is not None:
                         if (
                             plan["test"] not in (TestName.CAPTURE.value, TestName.DERBY.value)
@@ -1987,18 +1990,19 @@ class Broker:
                             )
                         ):
                             raise BrokerError("capture_result_invalid")
-                        self._prune_captures()
-                        while len(self.captures) >= 8:
-                            del self.captures[next(iter(self.captures))]
-                        self.captures[job_id] = RetainedCapture(
-                            capture_principal,
-                            result.image,
-                            self.clock() + 300,
-                            self.session.owner if self.session is not None else "",
-                            datetime.now(UTC).isoformat(),
-                            delivery_state="available",
-                            policy_target=capture_target,
-                        )
+                        if not self.closing:
+                            self._prune_captures()
+                            while len(self.captures) >= 8:
+                                del self.captures[next(iter(self.captures))]
+                            self.captures[job_id] = RetainedCapture(
+                                capture_principal,
+                                result.image,
+                                self.clock() + 300,
+                                self.session.owner if self.session is not None else "",
+                                datetime.now(UTC).isoformat(),
+                                delivery_state="available",
+                                policy_target=capture_target,
+                            )
                 except (FlashFailure, FlashAdmissionError) as failure:
                     store.set_job(job_id, "needs_review", str(failure))
                     self.logs.append(Event.REVIEW)
