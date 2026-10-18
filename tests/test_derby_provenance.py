@@ -28,19 +28,20 @@ EXPECTED = "a" * 64
 PRIVATE = "SYNTHETIC_PRIVATE_SENTINEL"
 
 
-def registration(selector):
+def registration(selector, root):
+    root = root / "synthetic-private"
     return FlashDevice(
         selector=selector,
         flash_bytes=8388608,
         project_id="project",
         python_tool=FlashPython(
-            executable=Path("/synthetic/private/python.exe"),
+            executable=root / "python.exe",
             sha256="b" * 64,
             version="Python 3.12.1",
         ),
-        esptool_directory=Path("/synthetic/private/esptool"),
+        esptool_directory=root / "esptool",
         esptool_sha256="c" * 64,
-        backup_directory=Path("/synthetic/private/backup"),
+        backup_directory=root / "backup",
     )
 
 
@@ -90,7 +91,7 @@ def context(tmp_path):
 def assert_safe(scope):
     encoded = scope.model_dump_json(exclude_none=True)
     assert len(encoded.encode()) <= MAX_SCOPE_BYTES
-    assert PRIVATE not in encoded and "/synthetic" not in encoded
+    assert PRIVATE not in encoded and "synthetic-private" not in encoded
     assert "installed" not in encoded and "source_commit" not in encoded
     assert DerbyProvenance.model_validate_json(encoded) == scope
 
@@ -118,10 +119,12 @@ def test_capture_binds_exact_owned_request_and_reads_database_only(context, monk
     assert_safe(scope)
 
 
-def test_exact_registration_remains_candidate_without_receipt_chain_proofs(context):
+def test_exact_registration_remains_candidate_without_receipt_chain_proofs(context, tmp_path):
     broker, _, plan = context
     broker.settings = broker.settings.model_copy(
-        update={"flash_devices": {"device": registration(broker.settings.serial.selector)}}
+        update={
+            "flash_devices": {"device": registration(broker.settings.serial.selector, tmp_path)}
+        }
     )
     scope = capture_provenance(broker, plan, "demo", OWNER)
     assert scope.binding_status == "captured"
@@ -130,9 +133,9 @@ def test_exact_registration_remains_candidate_without_receipt_chain_proofs(conte
     assert_safe(scope)
 
 
-def test_duplicate_selector_registrations_are_ambiguous_without_first_choice(context):
+def test_duplicate_selector_registrations_are_ambiguous_without_first_choice(context, tmp_path):
     broker, _, plan = context
-    candidate = registration(broker.settings.serial.selector)
+    candidate = registration(broker.settings.serial.selector, tmp_path)
     broker.settings = broker.settings.model_copy(
         update={"flash_devices": {"one": candidate, "two": candidate}}
     )
@@ -143,10 +146,12 @@ def test_duplicate_selector_registrations_are_ambiguous_without_first_choice(con
     assert_safe(scope)
 
 
-def test_matching_hash_lkg_and_build_reference_never_automatically_link(context):
+def test_matching_hash_lkg_and_build_reference_never_automatically_link(context, tmp_path):
     broker, store, plan = context
     broker.settings = broker.settings.model_copy(
-        update={"flash_devices": {"device": registration(broker.settings.serial.selector)}}
+        update={
+            "flash_devices": {"device": registration(broker.settings.serial.selector, tmp_path)}
+        }
     )
     # These hash references alone omit the actual manifest/snapshot proofs.
     with store.db:
