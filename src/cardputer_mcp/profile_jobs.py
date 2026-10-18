@@ -315,8 +315,15 @@ class ProfileJobs:
                 def stage(name: str, job: str = job_id, db: Any = store) -> None:
                     db.set_stage(job, name)
 
-                def live(prepared: dict[str, Any] = plan) -> bool:
-                    return self._live(prepared)
+                publication = [False]
+
+                def live(
+                    prepared: dict[str, Any] = plan, publishing: list[bool] = publication
+                ) -> bool:
+                    # Running process monitors may observe owned teardown. Once
+                    # the worker has returned, publication must also recheck all
+                    # resource latches after any authentication callback.
+                    return self._live(prepared) and (not publishing[0] or not self._uncertain())
 
                 committing = False
                 try:
@@ -333,6 +340,7 @@ class ProfileJobs:
                         self._stop(plan, "profile_or_principal_no_longer_valid")
                         raise ValueError("profile_job_stopped")
                     committing = True
+                    publication[0] = True
                     if source:
                         broker.firmware_source.commit_success(plan, result, live)
                     else:

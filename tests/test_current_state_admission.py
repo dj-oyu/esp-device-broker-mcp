@@ -245,3 +245,41 @@ async def test_profile_commit_failure_latches_current_uncertainty(broker, tmp_pa
             "owner",
             Origin.REMOTE.value,
         )
+
+
+async def test_profile_publication_rechecks_uncertainty_after_auth_callback(
+    broker, tmp_path, monkeypatch
+):
+    register(SimpleNamespace(resident=broker), tmp_path)
+    published = []
+
+    async def build(prepared, stage, *, defer_publish):
+        return "build_completed_no_device_write"
+
+    def commit(prepared, live):
+        def changed_resource(*_):
+            broker.firmware_build.process.uncertain = True
+            return True
+
+        monkeypatch.setattr(broker, "principal_valid", changed_resource)
+        if not live():
+            raise ValueError("build_final_commit_not_authorized")
+        published.append(prepared["job_id"])
+
+    monkeypatch.setattr(broker.firmware_build, "execute", build)
+    monkeypatch.setattr(broker.firmware_build, "commit_deferred", commit)
+    prepared = broker.profile_jobs.prepare(
+        PrepareRequest(job_id="publication", test=Action.BUILD, project_id="fixture"),
+        "owner",
+        Origin.REMOTE.value,
+    )
+    broker.profile_jobs.execute(
+        ExecuteRequest(plan_hash=prepared["plan_hash"]), "owner", Origin.REMOTE.value
+    )
+    try:
+        await asyncio.wait_for(broker.profile_jobs.queue.join(), 2)
+        assert broker.job("publication")["state"] == "needs_review"
+        assert broker.profile_jobs.state_uncertain
+        assert published == []
+    finally:
+        broker.firmware_build.process.uncertain = False

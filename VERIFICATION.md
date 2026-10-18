@@ -592,3 +592,11 @@ The five regressions plus admission and existing build tests passed together
 (59 tests); Ruff lint/format and strict mypy passed. Prior-head CI/artifacts are
 historical evidence only; same-head CI and distribution verification must be
 repeated for this follow-up before any deployment.
+
+
+Publication also rechecks resource latches after authentication callbacks, once
+worker teardown has returned. An additional callback regression prevents the
+running/cleanup distinction from authorizing publication if a resource becomes
+uncertain during final authorization. The combined cleanup/admission/build suite
+passed 60 tests, with Ruff lint/format and strict mypy passing. This final follow-up
+requires its own head CI and artifact; intermediate artifacts remain superseded.
