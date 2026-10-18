@@ -104,7 +104,8 @@ def test_native_job_selection_delta_log_navigation_and_close(monkeypatch):
                 pass
 
 
-def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(monkeypatch):
+@pytest.mark.parametrize("job_id", ["job_image_1", "capture_" + "long_context_" * 4])
+def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(monkeypatch, job_id):
     import tkinter as tk
 
     from test_gui_images import detail, row
@@ -114,37 +115,37 @@ def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(m
         root = tk.Tk()
     except tk.TclError:
         pytest.skip("Native Tk requires a desktop display")
-    root.geometry("860x600")
     monkeypatch.setattr(gui_live, "LiveRunner", Runner)
     now = [time.monotonic()]
     monkeypatch.setattr(gui_live.time, "monotonic", lambda: now[0])
     window = None
     try:
         window = gui_live.LiveWindow(root, OperatorClient("http://127.0.0.1:8765", "synthetic"))
+        root.geometry("860x600")
         generation = window.state.generation
-        data = detail(remaining_seconds=5)
+        data = detail(remaining_seconds=5, job_id=job_id)
         window.runner.events.append(
             TransportEvent(
                 "message",
                 generation,
-                snapshot([image_card(image=row(data))]),
+                snapshot([image_card(job_id=job_id, image=row(data))]),
                 now[0],
             )
         )
         window._drain()
-        window.job_tree.selection_set("job_image_1")
+        window.job_tree.selection_set(job_id)
         window._select()
         root.update_idletasks()
         assert window.preview_button.instate(["!disabled"])
         window.preview_button.invoke()
-        assert window.runner.images == [(generation, "job_image_1")]
+        assert window.runner.images == [(generation, job_id)]
         assert window.preview_state.pending and not window.action_pending
         window.runner.events.append(
             TransportEvent(
                 "image",
                 generation,
                 {
-                    "job_id": "job_image_1",
+                    "job_id": job_id,
                     "request_id": 1,
                     "response": {**data, "broker_epoch": "e" * 32},
                 },
@@ -153,6 +154,7 @@ def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(m
         )
         window._drain()
         root.update()
+        assert (root.winfo_width(), root.winfo_height()) == (860, 600)
         assert window.preview_photo is not None
         assert (window.preview_photo.width(), window.preview_photo.height()) == (240, 135)
         assert window.preview_image.cget("image") == str(window.preview_photo)
@@ -163,6 +165,15 @@ def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(m
             parent = widget.master
             assert widget.winfo_x() + widget.winfo_width() <= parent.winfo_width()
             assert widget.winfo_y() + widget.winfo_height() <= parent.winfo_height()
+        for widget in (
+            window.preview_area,
+            window.preview_status_label,
+            window.log_status_label,
+            window.preview_button,
+            window.job_cancel,
+        ):
+            assert widget.winfo_rootx() + widget.winfo_width() <= root.winfo_rootx() + 860
+            assert widget.winfo_rooty() + widget.winfo_height() <= root.winfo_rooty() + 600
         name = str(window.preview_photo)
         assert name in root.tk.call("image", "names")
         now[0] += 5

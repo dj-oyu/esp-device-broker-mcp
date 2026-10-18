@@ -1522,6 +1522,7 @@ class Broker:
                 }
             }
         result = {
+            "broker_epoch": self.epoch,
             **provenance,
             **self._image_summary(job_id, retained),
             "metadata": retained.image.metadata(),
