@@ -23,6 +23,8 @@ from .backend import Backend, BackendResult, DeviceDisconnected, DeviceOperation
 from .build_locations import BuildLocationError
 from .capture import CapturedImage
 from .config import Settings
+from .derby_provenance import DerbyProvenance, capture_provenance, finish_provenance
+from .derby_reports import PROVENANCE_KEY
 from .device_observation import DeviceObservation
 from .firmware_build import BuildPreflightFailure
 from .flash_binding import FlashBinding, live_binding, prepare_binding, validate_binding
@@ -1771,6 +1773,29 @@ class Broker:
                 capture_principal = self.session.principal_id
                 store.set_job(job_id, "running")
                 result: str | BackendResult = ""
+                derby_scope = (
+                    capture_provenance(self, plan, job_id, capture_principal or "")
+                    if plan["test"] == TestName.DERBY.value
+                    else None
+                )
+
+                def derby_diagnostic(
+                    diagnostic: dict[str, Any] | None,
+                    scope: DerbyProvenance | None = derby_scope,
+                    prepared: dict[str, Any] = plan,
+                    completed_job: str = job_id,
+                    principal_id: str = capture_principal or "",
+                ) -> dict[str, Any] | None:
+                    if diagnostic is None or scope is None:
+                        return diagnostic
+                    scoped = dict(diagnostic)
+                    # Freeze observed dispatch/completion evidence. Reading a
+                    # historic report never consults a newer firmware target.
+                    scoped[PROVENANCE_KEY] = finish_provenance(
+                        scope,
+                        capture_provenance(self, prepared, completed_job, principal_id),
+                    ).model_dump(mode="json", exclude_none=True)
+                    return scoped
 
                 def running_authorized(
                     lease: Session = lease,
@@ -1995,7 +2020,9 @@ class Broker:
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except DeviceOperationFailure as failure:
-                    store.set_job(job_id, "needs_review", failure.code, failure.diagnostic)
+                    store.set_job(
+                        job_id, "needs_review", failure.code, derby_diagnostic(failure.diagnostic)
+                    )
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except DeviceDisconnected:
@@ -2037,7 +2064,9 @@ class Broker:
                                 and plan["test"] == TestName.DERBY.value
                                 else None
                             )
-                            store.set_job(job_id, "succeeded", completed, diagnostic)
+                            store.set_job(
+                                job_id, "succeeded", completed, derby_diagnostic(diagnostic)
+                            )
                     except Exception as failure:
                         self.execution_uncertain = True
                         if plan["test"] == TestName.SOURCE.value:

@@ -37,6 +37,8 @@ principal, lease, device, firmware configuration and plan checks pass.
 `wait_for_approval` is a deprecated compatibility field and is ignored.
 Preparation alone never starts work. Repeated execution returns the original job;
 connection loss never replays it. Inspect `job_status` after an uncertain reply.
+An explicitly requested DERBY smoke can retain [bounded numeric diagnostics](DERBY-DIAGNOSTICS.md)
+for its requesting principal through the same read operation.
 
 There is no product-level plan approval, image-delivery decision, capture policy,
 arming window, confirmation keyword or operator-launch permission. Legacy
