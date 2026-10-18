@@ -34,6 +34,7 @@ class ProfileJobs:
     def _uncertain(self) -> bool:
         return bool(
             self.uncertain
+            or self.broker._store().profile_needs_review()
             or self.broker.firmware_source.snapshots.uncertain
             or self.broker.firmware_build.output_uncertain
             or self.broker.firmware_build.process.uncertain
@@ -68,7 +69,9 @@ class ProfileJobs:
         broker, store = self.broker, self.broker._store()
         if broker.closing or not self._authorized(principal, origin):
             raise BrokerError("principal_not_authorized")
-        if self._uncertain() or store.needs_review():
+        # Device recovery history does not own the independent source/build
+        # lane. Its actual process/output/cache uncertainty still blocks work.
+        if self._uncertain():
             raise BrokerError("recovery_review_required")
         if request.test.value not in PROFILE_TESTS or request.project_id is None:
             raise BrokerError("registered_build_project_required")
@@ -166,7 +169,7 @@ class ProfileJobs:
             return {**existing, "deduplicated": True}
         if not self._binding_live(plan):
             raise BrokerError("profile_or_principal_no_longer_valid")
-        if self._uncertain() or store.needs_review():
+        if self._uncertain():
             raise BrokerError("recovery_review_required")
         if self.queue.qsize() >= self.broker.settings.max_queue:
             raise BrokerError("queue_full")
@@ -283,7 +286,7 @@ class ProfileJobs:
                 if plan is None or digest_plan(plan) != job["plan_hash"]:
                     store.set_job(job_id, "needs_review", "profile_plan_inconsistent")
                     continue
-                if self._uncertain() or store.needs_review() or not self._binding_live(plan):
+                if self._uncertain() or not self._binding_live(plan):
                     store.set_job(job_id, "cancelled", "profile_or_principal_no_longer_valid")
                     continue
                 self._sync_settings()

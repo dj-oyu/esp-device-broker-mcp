@@ -3,7 +3,6 @@
 import threading
 from collections import deque
 from copy import deepcopy
-from types import SimpleNamespace
 
 import pytest
 from test_derby_smoke import Wire
@@ -11,7 +10,6 @@ from test_derby_smoke import Wire
 from cardputer_mcp.config import SerialSettings
 from cardputer_mcp.derby_smoke import derby_smoke
 from cardputer_mcp.models import TestName as Action
-from cardputer_mcp.operator_cli import review_plan
 from cardputer_mcp.ports import PortInfo
 from cardputer_mcp.serial_backend import Reader, SerialBackend, SerialFailure
 from cardputer_mcp.smoke_port import SmokePort
@@ -377,13 +375,14 @@ async def test_direct_s_write_failure_preserves_timing_and_still_closes(failure_
     assert "SYNTHETIC_PRIVATE_WRITE_ERROR" not in str(failure.value.diagnostic)
 
 
-def test_formal_operator_notice_does_not_offer_the_removed_fallback():
-    client = SimpleNamespace(
-        plan=lambda _: {
-            "plan": {"test": "derby_smoke"},
-            "execution_submitted": True,
-        }
+def test_plan_documents_photo_trigger_without_timed_fallback():
+    config = SerialSettings(
+        selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
+        expected_firmware_sha256="a" * 64,
     )
-    notice = review_plan(client, "a" * 64)["capture_notice"]
-    assert "phase or fallback" not in notice and "no timed fallback" in notice
-    assert "without an image" in notice
+    backend = SerialBackend(
+        config,
+        inventory=lambda: [PortInfo(port="COM42", vid=1, pid=2, serial_number="synthetic")],
+    )
+    plan = backend.prepare(Action.DERBY)
+    assert plan["smoke"]["capture"] == "one_s_only_at_current_observed_photo_no_fallback_v2"

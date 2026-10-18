@@ -1,94 +1,16 @@
-# 撮影・画像送信の許可とGUI確認
+# 撮影・画像送信の許可機能 — retired
 
-v0.8 は手動確認を未許可時の経路として残し、利用者が明示的に設定したキー別ルールで
-撮影や画像送信を省力化できます。更新しただけでは許可は増えません。状態・ログの
-読み取りには、従来の read 権限以外の新しい確認を追加しません。
+The former product approval, capture-policy and operator-launch flows are retired.
+Do not arm a slot, enter an approval keyword, create a permission rule or invoke
+an approval command. Legacy mutation routes authenticate and check scopes before
+returning `410 Gone`; they never execute work.
 
-## GUIでの操作
+Use [prepare and explicit execute](README.md#prepare-and-explicitly-execute).
+The authenticated requesting principal may retrieve its successful capture within
+the original retention period without a separate image-delivery decision.
+See [capture](CAPTURE.md) and [bounded HOME recovery](HOME-RECOVERY.md).
 
-v0.9は要求と結果をjob単位のタイムラインにまとめます。
-v0.9.1では完了カードを既定で折りたたみ、画像はサムネイルから同じカード内で拡大します。
-手動の開閉状態は通常更新で保ちます。内部情報は詳細へまとめ、承認に必要な影響・対象・
-送信先・実機確認文は操作ボタンの近くに残します。カードを閉じたまま承認はできません。
-
-- カード上の要求内容と影響を確認し、**Approve plan** を1回押して承認します。
-  詳細はカード内で開閉できます。別窓やInspectへの移動、ハッシュのコピーは不要です。
-  実機の確認文入力と期限・内容の検証は維持します。クライアントが実行要求を先に送った
-  jobは「Approve & start」で実行待ち列へ進み、prepareだけのjobは承認だけを行います
-- 取得済みPNGは同じカードに自動表示し、未許可の送信を承認または拒否します。
-  ローカル表示だけではAIへの送信を許可しません。取得時刻・宛先・残り時間を表示します
-- **Permissions...** でキー、対象、firmware、操作、期限、session限定／persistentを
-  確認してルールを作成・変更・取消します。既定のチェックは許可なしです
-
-プラン確認中にlease、期限、対象、履歴や状態が変わった場合は、最新の内容で確認します。
-確認や送信が応答不明になっても自動では再送しません。新しい状態を取得して判断します。
-
-Pendingバッジは、既存の認証を使うバックグラウンド処理で約2秒ごとに更新します。
-承認済み・期限切れ・現在のルールで自動許可されたプランは手動待ち件数に含めません。
-新着には **NEW** と色付きの案内を表示し、押すと同じ画面のタイムラインへ移動します。
-取得エラー、期限境界、6秒以上古い情報は **?** と表示し、0件と誤表示しません。
-64件を超える場合は **64+** です。OSのpush通知や通知権限設定は使用しません。
-
-画像の保持期限は完了から5分です。期限切れでも取得jobの成功履歴は残ります。
-一覧が空でも撮影が実行されなかったとは限りません。画面の更新では再撮影しません。
-
-## キーと許可の上限
-
-撮影にはキーの read + control、画像取得には read が必要です。許可ルールでキー自身の
-権限を増やすことはできません。同じキーをClaude/Codexなどで共有すると同じ本人として
-扱われます。ルールは端末やアプリの個体を識別しません。
-
-永続ルールを作れるのは、読み込まれたキー台帳に存在する有効な発行済みclientキーだけです。
-有効期限は最大7日で、キーの期限も超えません。GUI起動時の共有ephemeral tokenには
-永続ルールを作れません。現在のleaseに限定したルールだけを選べます。GUIがキーを勝手に
-発行・保存・移行することはありません。必要なキー台帳の設定は [KEYS.md](KEYS.md) を参照してください。
-
-sessionルールはbroker起動と現在のlease、principal、対象設定に結び付きます。
-leaseの解放・失効、broker再起動、対象変更、reviewが必要な失敗で無効になります。
-同じキーに複数の有効ルールがあれば、どれかがその操作を許可すると自動許可になります。
-全面的に止める場合は、該当するルールをすべて取り消してください。
-
-今回の自動許可は capture_home と画像送信だけです。HELLO、flash、reset、upload、
-任意コマンドはこのルールで自動許可しません。flash等の未実装機能も追加しません。
-
-## 実機撮影のsession確認
-
-実機では撮影ルールに加えて、その作業sessionをoperatorが有効化する必要があります。
-物理画面がHOME、対象firmwareが正しく、競合するserialツールが閉じていることを確認し、
-DEVICE HOME AND FIRMWARE VERIFIED と入力します。Escが別画面ではeditor/appを終了し、
-未保存状態を失う可能性、USB open/closeの制御線リスクも明示的に確認します。
-
-有効化の期限は利用者が選び、最大1時間です。勝手に延長しません。leaseの更新だけでは
-この期限は延びません。leaseそのものが失効・解放されたら、残り時間があっても無効です。
-撮影のたびに既存の1回のEscとfresh HOME_READY、静かな空の受信境界を要求します。
-session中ずっとHOMEだとは推測しません。失敗時は追加キーや再撮影で回復しません。
-
-## 画像の扱い
-
-撮影許可と画像送信許可は別です。撮影だけを許可すると、画像は取得後に同じjobカードでの
-確認を待ちます。画像送信も許可すると、そのキーは自分の取得画像を期限内に読めます。
-許可がない場合は、同じPNG・job・受取principal・期限に結び付いたプレビューで承認します。
-明示的に拒否した画像を、自動ルールで再び送信可能にはしません。
-
-画像は取得完了時の記録です。現在の画面やLCD転送成功の証明ではありません。mockは
-実際にTEST / NOT DEVICEと描いたfixtureを表示します。実機画像はrender bufferで、
-LCD転送ACKとsnapshot coherenceはunknownです。完了時刻はホストPCの時計です。
-
-operatorはこのbrokerに保持された画像をローカルプレビューできます。MCPのread_captureは
-元のprincipalに限定され、手動送信承認またはその時点で有効な画像送信ルールが必要です。
-キー取消・失効は新しい取得を拒否します。ルール取消は将来の自動取得を拒否しますが、
-既に明示承認した画像や既にclientへ渡ったコピーを取り消すものではありません。
-
-画像は最大8枚・各200,000 PNG bytes・完了後5分だけメモリ保持します。プレビューや承認で
-延長しません。永続ルールがあっても、失われた画像を再撮影しません。画像・token・生serial
-内容は設定、SQLite履歴、監査に保存しません。ルールと上限付きの操作分類の監査だけを保存します。
-
-## 取消と実行中の所有
-
-実行・画像取得の直前に、キーとルールのrevision・期限・対象を再確認します。
-待機中の自動撮影が取消の影響を受けた場合は、実機を開かずcancelledになります。
-既に始まった操作は、取消だけでUSB所有を放棄しません。安全なcloseまで所有を維持します。
-更新・再起動で古いjobを再実行したり、needs_reviewを消したりしません。
-
-この版の自動試験は合成キー・mock・fake serialです。GUIのWindowsネイティブ表示、
-実機の撮影と運用ルールは、この実装の検証では実行していません。
+Old approval/grant records remain history only. Upgrade cancels legacy pending
+work without replay and preserves uncertain-running recovery barriers.
+This change does not alter agent or host platform approval controls.
+The previous design remains available in Git history; it is not a current runbook.

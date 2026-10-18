@@ -17,10 +17,25 @@ from .client import call, connect, validate_url
 from .config import load_settings
 from .key_operator import run as manage_keys
 from .models import Origin, TestName
-from .operator import acknowledge_device_request_recovery, acknowledge_recovery, approve_plan
+from .operator import acknowledge_device_request_recovery, acknowledge_recovery
 from .operator_client import OperatorClient, OperatorClientError
 from .ports import inventory_json
 from .server import create_app
+
+RETIRED_COMMANDS = frozenset(
+    {
+        "approve",
+        "plan-review",
+        "approve-live",
+        "approve-and-start",
+        "image-decision",
+        "home-recovery-review",
+        "home-recovery-approve",
+        "operator-launch-request",
+        "derby-operator-request",
+        "home-recovery-operator-request",
+    }
+)
 
 
 def output(value: Any) -> None:
@@ -45,7 +60,7 @@ def parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--enable-serial",
         action="store_true",
-        help="Explicit hardware-mode opt-in; still requires per-job approval",
+        help="Explicit hardware-mode opt-in; authenticated control scope still required",
     )
     serve.add_argument(
         "--require-auth",
@@ -108,7 +123,7 @@ def parser() -> argparse.ArgumentParser:
             cmd.add_argument(
                 "--wait-for-approval",
                 action="store_true",
-                help="Submit now; local approval starts the exact job without another client call",
+                help=argparse.SUPPRESS,
             )
         if name == "cancel":
             cmd.add_argument("--job", required=True)
@@ -116,98 +131,10 @@ def parser() -> argparse.ArgumentParser:
     job.add_argument("job_id")
     device_logs = sub.add_parser("device-logs", help="Read your completed device log report")
     device_logs.add_argument("job_id")
-    approve = sub.add_parser("approve", help="LOCAL operator-only exact-plan approval")
-    approve.add_argument("--state-dir", type=Path, default=Path(".state"))
-    approve.add_argument("--plan", required=True)
-    live_review = sub.add_parser(
-        "plan-review", help="Review an exact plan on the live local broker"
-    )
-    live_review.add_argument("--plan", required=True)
-    home_review = sub.add_parser(
-        "home-recovery-review", help="Review one submitted bounded HOME recovery"
-    )
-    home_review.add_argument("--plan", required=True)
-    home_approve = sub.add_parser(
-        "home-recovery-approve", help="Approve one exact HOME recovery; no HOME attestation"
-    )
-    for name in ("plan", "review-revision", "attestation"):
-        home_approve.add_argument("--" + name, required=True)
-    for action in ("approve-live", "approve-and-start"):
-        live = sub.add_parser(
-            action, help="Approve the exact live review; local environment auth only"
-        )
-        live.add_argument("--plan", required=True)
-        live.add_argument("--review-revision", required=True)
-        live.add_argument(
-            "--attestation", required=True, help="Exact attestation text from plan-review"
-        )
-        live.add_argument(
-            "--allow-image-delivery",
-            action="store_true",
-            help="Consent to this capture's one image for its requesting principal",
-        )
-    image_review = sub.add_parser(
-        "image-review", help="Preview a completed image through the local API"
-    )
+    for retired in sorted(RETIRED_COMMANDS):
+        sub.add_parser(retired, help="Retired; never executes an operation")
+    image_review = sub.add_parser("image-review", help="Preview a completed retained image")
     image_review.add_argument("--job", required=True)
-    image_decision = sub.add_parser(
-        "image-decision", help="Decide delivery of an exact reviewed image"
-    )
-    image_decision.add_argument("--job", required=True)
-    image_decision.add_argument("--sha256", required=True)
-    image_decision.add_argument("--delivery-revision", required=True)
-    image_decision.add_argument("--decision", required=True, choices=("approve", "reject"))
-    launch = sub.add_parser(
-        "operator-launch-request", help="Request one explicitly enabled local capture CLI slot"
-    )
-    launch.add_argument("--pipe", required=True)
-    launch.add_argument("--action", required=True, choices=("plan-review", "approve-and-start"))
-    launch.add_argument("--epoch", required=True)
-    launch.add_argument("--job", required=True)
-    launch.add_argument("--plan", required=True)
-    launch.add_argument("--principal", required=True)
-    launch.add_argument("--review-revision")
-    launch.add_argument("--attestation")
-    launch.add_argument("--allow-image-delivery", action="store_true")
-    derby_launch = sub.add_parser(
-        "derby-operator-request", help="Request one explicitly armed exact DERBY operator slot"
-    )
-    derby_launch.add_argument("--pipe", required=True)
-    derby_launch.add_argument(
-        "--action",
-        required=True,
-        choices=(
-            "derby-plan-review",
-            "derby-approve-and-start",
-            "derby-image-review",
-            "derby-image-decision",
-        ),
-    )
-    for name in ("epoch", "job", "plan", "principal", "device-fingerprint", "firmware-sha256"):
-        derby_launch.add_argument("--" + name, required=True)
-    for name in ("review-revision", "attestation", "sha256", "delivery-revision"):
-        derby_launch.add_argument("--" + name)
-    derby_launch.add_argument("--decision", choices=("approve", "reject"))
-    recovery_launch = sub.add_parser(
-        "home-recovery-operator-request",
-        help="Request one explicitly armed HOME recovery approval slot",
-    )
-    recovery_launch.add_argument("--pipe", required=True)
-    recovery_launch.add_argument(
-        "--action", required=True, choices=("home-recovery-review", "home-recovery-approve")
-    )
-    for name in (
-        "epoch",
-        "job",
-        "plan",
-        "principal",
-        "source-job",
-        "device-fingerprint",
-        "firmware-sha256",
-    ):
-        recovery_launch.add_argument("--" + name, required=True)
-    recovery_launch.add_argument("--review-revision")
-    recovery_launch.add_argument("--attestation")
     review = sub.add_parser("review", help="OFFLINE acknowledgement; never retries a job")
     review.add_argument("--state-dir", type=Path, default=Path(".state"))
     review.add_argument("--job", required=True)
@@ -219,17 +146,25 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
-async def demo(url: str, recording: bool = False) -> None:
+async def demo(
+    url: str,
+    recording: bool = False,
+    *,
+    local_token: str | None = None,
+    remote_token: str | None = None,
+) -> None:
     async def beat(text: str) -> None:
         print(text, flush=True)
         if recording:
             await asyncio.sleep(3)
 
     await beat("MOCK DEVICE / REAL MCP HTTP: one broker, two clients")
-    async with connect(url) as local, connect(url) as remote:
+    if local_token is None or remote_token is None:
+        raise AuthError("demo_requires_authenticated_clients")
+    async with connect(url, local_token) as local, connect(url, remote_token) as remote:
         initial = await call(local, "device_status")
-        if initial.get("approval_policy") != "operator_opted_in_to_mock":
-            raise ValueError("Demo requires examples/mock-demo.toml (mock-only operator opt-in)")
+        if initial.get("backend") != "mock":
+            raise ValueError("Demo requires a mock broker; hardware is never used")
         acquired = await call(local, "acquire_session", {"owner": "local_cli", "lease_seconds": 60})
         if not acquired.get("ok"):
             raise ValueError("Demo needs an idle, reviewed mock broker")
@@ -269,7 +204,7 @@ async def demo(url: str, recording: bool = False) -> None:
             raise ValueError("Log readers did not see the same cached events")
         await beat("3. MOCK workflow passed; both clients read identical cached logs")
         retry = await call(
-            remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+            local, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
         )
         if not retry.get("deduplicated"):
             raise ValueError("Retry was not deduplicated")
@@ -287,7 +222,14 @@ async def demo(url: str, recording: bool = False) -> None:
 async def run_client(args: argparse.Namespace) -> None:
     url = validate_url(args.url)
     if args.command == "demo":
-        await demo(url, args.recording)
+        if args.auth_source != "environment":
+            raise AuthError("demo_requires_environment_credentials")
+        await demo(
+            url,
+            args.recording,
+            local_token=load_environment_token(Origin.LOCAL),
+            remote_token=load_environment_token(Origin.REMOTE),
+        )
         return
     command = args.command
     tools = {
@@ -335,8 +277,6 @@ async def run_client(args: argparse.Namespace) -> None:
             request.update(job_id=args.job, test=args.test)
         elif command == "execute":
             request["plan_hash"] = args.plan
-            if args.wait_for_approval:
-                request["wait_for_approval"] = True
         elif command == "cancel":
             request["job_id"] = args.job
     token = None
@@ -358,7 +298,13 @@ async def run_client(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    args = parser().parse_args()
+    arguments = parser()
+    args, unknown = arguments.parse_known_args()
+    if args.command in RETIRED_COMMANDS:
+        output({"ok": False, "error": "product_approval_retired"})
+        raise SystemExit(1)
+    if unknown:
+        arguments.error("unrecognized arguments: " + " ".join(unknown))
     try:
         if args.command == "serve":
             if args.auth_source == "key-environment":
@@ -431,103 +377,14 @@ def main() -> None:
             if args.auth_source != "environment" or args.client != Origin.LOCAL.value:
                 raise AuthError("http_diagnostics_requires_local_environment_credentials")
             output(OperatorClient(args.url, load_environment_token(Origin.LOCAL)).diagnostics())
-        elif args.command in (
-            "operator-launch-request",
-            "derby-operator-request",
-            "home-recovery-operator-request",
-        ):
-            from .operator_launch import OperatorLaunchError
-            from .operator_launch_pipe import request_operator_launch
-
-            if (
-                args.auth_source != "none"
-                or args.client != Origin.LOCAL.value
-                or args.auth_file is not None
-                or args.url != "http://127.0.0.1:8765/mcp"
-            ):
-                raise AuthError("operator_launch_uses_os_identity_only")
-            try:
-                payload = {
-                    "action": args.action,
-                    "broker_epoch": args.epoch,
-                    "job_id": args.job,
-                    "plan_hash": args.plan,
-                    "principal_id": args.principal,
-                    "review_revision": args.review_revision,
-                    "attestation": args.attestation,
-                }
-                if args.command == "operator-launch-request":
-                    payload["allow_image_delivery"] = args.allow_image_delivery
-                elif args.command == "derby-operator-request":
-                    payload.update(
-                        device_fingerprint=args.device_fingerprint,
-                        expected_firmware_sha256=args.firmware_sha256,
-                        sha256=args.sha256,
-                        delivery_revision=args.delivery_revision,
-                        decision=args.decision,
-                    )
-                else:
-                    payload.update(
-                        source_job_id=args.source_job,
-                        device_fingerprint=args.device_fingerprint,
-                        expected_firmware_sha256=args.firmware_sha256,
-                    )
-                result = request_operator_launch(args.pipe, payload)
-                output(result)
-                if result.get("ok") is not True:
-                    raise SystemExit(1)
-            except OperatorLaunchError as error:
-                print(str(error), file=sys.stderr)
-                raise SystemExit(1) from None
-        elif args.command in (
-            "plan-review",
-            "approve-live",
-            "approve-and-start",
-            "image-review",
-            "image-decision",
-            "home-recovery-review",
-            "home-recovery-approve",
-        ):
-            from .operator_cli import approve_live, review_plan
-
+        elif args.command == "image-review":
             if args.auth_source != "environment" or args.client != Origin.LOCAL.value:
                 raise AuthError("operator_cli_requires_local_environment_credentials")
-            operator = OperatorClient(args.url, load_environment_token(Origin.LOCAL))
-            if args.command == "home-recovery-review":
-                output(operator.home_recovery_review(args.plan))
-            elif args.command == "home-recovery-approve":
-                output(
-                    operator.home_recovery_approve(
-                        args.plan, args.review_revision, args.attestation
-                    )
-                )
-            elif args.command == "plan-review":
-                output(review_plan(operator, args.plan))
-            elif args.command in ("approve-live", "approve-and-start"):
-                output(
-                    approve_live(
-                        operator,
-                        args.plan,
-                        args.review_revision,
-                        args.attestation,
-                        start_submitted=args.command == "approve-and-start",
-                        allow_image_delivery=args.allow_image_delivery,
-                    )
-                )
-            elif args.command == "image-review":
-                output(operator.image(args.job))
-            else:
-                output(
-                    operator.decide_image(
-                        args.job, args.sha256, args.delivery_revision, args.decision
-                    )
-                )
+            output(OperatorClient(args.url, load_environment_token(Origin.LOCAL)).image(args.job))
         elif args.command == "review-request":
             output(acknowledge_device_request_recovery(args.state_dir, args.request_id))
         elif args.command == "ports":
             output(inventory_json())
-        elif args.command == "approve":
-            output(approve_plan(args.state_dir, args.plan))
         elif args.command == "review":
             output(acknowledge_recovery(args.state_dir, args.job))
         else:

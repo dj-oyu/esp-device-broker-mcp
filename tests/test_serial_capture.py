@@ -148,7 +148,7 @@ def test_preflight_requires_expected_firmware_and_lists_true_effects_without_ope
     backend, port, plan = device()
     assert not port.opens and not port.writes
     assert plan["protocol"] == "pocketjs-legacy-capture-v1"
-    assert plan["firmware_verification"] == "operator_attestation_only"
+    assert plan["firmware_verification"] == "configured_expected_hash_only"
     effects = " ".join(plan["effects"])
     for phrase in ("already HOME", "one fixed Esc", "lose unsaved", "private data", "18-second"):
         assert phrase in effects

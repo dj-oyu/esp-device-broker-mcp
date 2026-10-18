@@ -90,7 +90,7 @@ potential credential fragments.
 Cursor gaps, restart epoch mismatch and expiry are explicit. Raw output stays in
 RAM; no caller-specified path can be opened. Known credential patterns and known
 ambient secret values are removed; arbitrary application secrets cannot be
-universally recognized, so local approval must consider log delivery.
+universally recognized, so the explicit execution request includes log delivery.
 
 Cancellation of a running build requests termination and returns before shutdown
 is confirmed; poll `job_status`. Confirmed termination results in cancelled, never
@@ -104,11 +104,14 @@ A successful build writes broker-manifest.json under its private build directory
 and returns its public manifest with the logs. It includes schema version, exact
 IDF version, target, input/environment fingerprints, artifact relative names,
 lengths and SHA-256. `flash_authorized=false` is explicit. A later flash feature
-must reverify artifacts and obtain independent immutable-plan/local approval;
+must reverify artifacts and obtain independent immutable-plan execution;
 this feature provides no flash operation or permission. Old interrupted build
 jobs are not marked recovered or successful.
 
-## Validation in the delegated cloud environment
+## Historical validation in the delegated cloud environment
+
+These results describe the original implementation and dependencies. Former
+approval paths below are historical; see README.md for current explicit execution.
 
 - 2026-10-12: compileall succeeds.
 - Dependency-free unittest suite: 24 passed, two skipped because pyserial/filelock
@@ -162,11 +165,11 @@ can update the lock or materialize sources and invalidate an earlier plan.
 
 Use a separately explicitly authorized local preparation/configuration step for
 that registered checkout under the same external IDF 6.0.1, inspect the resulting
-lock/source changes, then prepare and approve a fresh build plan. This feature
-adds no arbitrary dependency-install MCP command or automatic approval. If an
-approved build itself changes dependency inputs, inspect and acknowledge its
+lock/source changes, then prepare and explicitly execute a fresh build plan. This feature
+adds no arbitrary dependency-install MCP command or automatic approval. If a
+requested build itself changes dependency inputs, inspect and acknowledge its
 needs_review result before creating a new job/plan; never reinterpret that old
-approval or unsuccessful job as success. Dependency locks and .cache source
+old approval record or unsuccessful job as success. Dependency locks and .cache source
 content must not be excluded from hashing merely to make a first build pass.
 
 Actions packaging run 38295992731 succeeded for PR head 6bf848df. It checked out
@@ -192,7 +195,7 @@ version = 'v22.0.0'
 
 Git uses the same fields under git_tool, with git.exe and an exact version string
 such as git version 2.51.0.windows.1. Obtain these receipts through separately
-approved local diagnostics. Preparation rejects mismatched executable hashes;
+explicitly requested local diagnostics. Preparation rejects mismatched executable hashes;
 execution uses absolute --version argv, then prepends only registered executable
 parent directories to the profile-exported IDF PATH. It verifies resolution points
 back to the registered executable. Node found on the exported PATH without explicit
@@ -296,8 +299,8 @@ Flash integrations call
 from `cardputer_mcp.build_locations`. The resolver verifies the persisted
 manifest and identities, rejects links/reparse points, and never silently falls
 back from a compact location to a legacy root. It grants no flash permission;
-consumer artifact hashes, security checks, successful job/plan checks and local
-approval are still mandatory. Older manifests lacking flash/security receipts
+consumer artifact hashes, security checks, successful job/plan checks and a separate explicit
+execution request are still mandatory. Older manifests lacking flash/security receipts
 remain diagnostic-only.
 
 Preparation reports a bounded read-only storage snapshot: free/total bytes,
@@ -358,7 +361,7 @@ Every lookup uses the currently registered project/output root, checks the store
 location identity and disk manifest digest, and rehashes all recorded binary/ELF,
 flash-layout and security-config files. Missing, changed, linked or out-of-scope
 files fail closed. Existing flash admission, security/device checks and separate
-approval still apply; lookup never opens USB or starts a build/flash/restore.
+explicit execution still apply; lookup never opens USB or starts a build/flash/restore.
 
 Only builds published with this reference support restart lookup. Historical
 success rows and arbitrary old manifests are not adopted; explicitly rebuild an

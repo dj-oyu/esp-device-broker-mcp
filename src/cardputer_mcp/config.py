@@ -138,8 +138,8 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def guard_real_mode(self) -> "Settings":
-        if self.backend == "serial" and (self.serial is None or self.allow_mock_execution):
-            raise ValueError("serial mode needs a device selector and per-plan local approval")
+        if self.backend == "serial" and self.serial is None:
+            raise ValueError("serial mode needs a registered device selector")
         if self.backend == "mock" and self.serial is not None:
             raise ValueError("serial configuration is not accepted in mock mode")
         return self

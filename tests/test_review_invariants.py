@@ -71,9 +71,12 @@ async def test_review_expired_lease_does_not_eat_shutdown_sentinel(tmp_path: Pat
         backend=backend,
         clock=clock,
         lock_path=tmp_path / "device.lockfile",
+        principal_valid=lambda *args: True,
     )
     await broker.start()
-    token = broker.acquire(AcquireRequest(owner=Origin.LOCAL, lease_seconds=1))["session"]
+    token = broker.acquire(
+        AcquireRequest(owner=Origin.LOCAL, lease_seconds=1), principal_id="synthetic-client"
+    )["session"]
     broker.execute(prepare(broker, token, "shutdown"))
     await wait_active(broker)
     close_task = asyncio.create_task(broker.close())
@@ -104,10 +107,13 @@ async def test_review_expiry_cancels_pending_but_pins_active_owner(tmp_path: Pat
         backend=backend,
         clock=clock,
         lock_path=tmp_path / "device.lockfile",
+        principal_valid=lambda *args: True,
     )
     await broker.start()
     try:
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL, lease_seconds=1))["session"]
+        token = broker.acquire(
+            AcquireRequest(owner=Origin.LOCAL, lease_seconds=1), principal_id="synthetic-client"
+        )["session"]
         broker.execute(prepare(broker, token, "active"))
         await wait_active(broker)
         broker.execute(prepare(broker, token, "pending"))
@@ -128,21 +134,21 @@ async def test_review_expiry_cancels_pending_but_pins_active_owner(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_review_approved_retries_do_not_duplicate_work(tmp_path: Path) -> None:
+async def test_review_explicit_retries_do_not_duplicate_work(tmp_path: Path) -> None:
     backend = ObservedBackend(0.001)
     broker = Broker(
         Settings(state_dir=tmp_path / "state"),
         backend=backend,
         lock_path=tmp_path / "device.lockfile",
+        principal_valid=lambda *args: True,
     )
     await broker.start()
     try:
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")[
+            "session"
+        ]
         request = prepare(broker, token, "approved")
-        with pytest.raises(BrokerError, match="operator_approval_required"):
-            broker.execute(request)
         assert broker.store is not None
-        broker.store.approve(request.plan_hash)
         first = broker.execute(request)
         second = broker.execute(request)
         assert first["deduplicated"] is False
@@ -172,14 +178,15 @@ async def test_review_recovery_never_replays_and_blocks_acquire(tmp_path: Path) 
         Settings(state_dir=state, allow_mock_execution=True),
         backend=backend,
         lock_path=tmp_path / "device.lockfile",
+        principal_valid=lambda *args: True,
     )
     await broker.start()
     try:
-        assert broker.job("queued")["state"] == "needs_review"
+        assert broker.job("queued")["state"] == "cancelled"
         assert broker.job("running")["state"] == "needs_review"
         assert broker.status()["needs_review"] is True
         with pytest.raises(BrokerError, match="recovery_review_required"):
-            broker.acquire(AcquireRequest(owner=Origin.LOCAL))
+            broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")
         await asyncio.sleep(0)
         assert backend.calls == 0
     finally:
@@ -207,10 +214,13 @@ async def test_review_mutated_plan_is_rejected(tmp_path: Path) -> None:
     broker = Broker(
         Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
         lock_path=tmp_path / "device.lockfile",
+        principal_valid=lambda *args: True,
     )
     await broker.start()
     try:
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")[
+            "session"
+        ]
         request = prepare(broker, token, "integrity")
         assert broker.store is not None
         payload = broker.store.plan(request.plan_hash)

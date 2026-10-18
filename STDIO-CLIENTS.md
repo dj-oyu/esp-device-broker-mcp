@@ -95,9 +95,10 @@ MCP の transport セッションと、broker の作業セッションは別で�
 終了時は安全に `close_work_session` します。2クライアントで同じキーを共有しても作業セッションは
 別に作れますが、セキュリティ上の本人は同じ principal です。個人や端末の識別は保証しません。
 
-CLI/GUI/Tunnel と同じ broker の lease・FIFO・job ID・ローカル承認を使います。
-撮影・画像送信の確認を省くには、キーを置くだけでなく利用者がGUIで明示的な
-[許可ルール](CAPTURE-PERMISSIONS.md)を設定します。未許可の操作は手動確認に残ります。
+CLI/GUI/Tunnel と同じ broker の lease・FIFO・job ID を使います。
+必要なscopeを持つ認証済みclientが、prepareした正確なplan_hashを明示executeします。
+ローカル承認・撮影許可ルール・画像送信判断は廃止しました。取得元principalは保持期限内に
+有効なread権限で自分の画像を取得できます。
 stdio の接続や切断では、自動で作業セッションを作ったり所有権を解放したりしません。
 
 ## エラー・再接続・出力

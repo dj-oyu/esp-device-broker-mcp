@@ -12,17 +12,9 @@ from cardputer_mcp.operator_api import OperatorAPI
 @pytest.mark.parametrize(
     "route,body",
     [
-        ("approve-plan", {"plan_hash": "a" * 64, "review_revision": "b" * 64, "attestation": ""}),
-        (
-            "image-decision",
-            {
-                "job_id": "fixture",
-                "sha256": "a" * 64,
-                "delivery_revision": "b" * 64,
-                "decision": "approve",
-            },
-        ),
-        ("policy-revoke", {"policy_id": "capture_policy_" + "a" * 32, "expected_revision": 1}),
+        ("cancel", {"request_id": "fixture"}),
+        ("reorder", {"request_id": "fixture", "position": 1, "expected_revision": "a" * 64}),
+        ("job-cancel", {"job_id": "fixture", "plan_hash": "a" * 64, "broker_epoch": "b" * 32}),
         ("release", {"lease_id": "fixture"}),
     ],
 )
@@ -80,3 +72,50 @@ async def test_operator_reauthenticates_after_fragmented_body(route, body, chang
     assert len(authentications) == 2
     assert output[0]["status"] == (401 if changed is None else 403)
     assert b"SYNTHETIC" not in output[1]["body"]
+
+
+async def test_retained_job_cancel_uses_final_authenticated_actor_after_body_wait():
+    first = SimpleNamespace(
+        principal_id="first", origin=Origin.LOCAL, scopes=frozenset({"read", "control"})
+    )
+    final = SimpleNamespace(
+        principal_id="final", origin=Origin.LOCAL, scopes=frozenset({"read", "control"})
+    )
+    current = first
+    calls = []
+
+    def cancel(job, plan, epoch, actor, origin):
+        calls.append((job, plan, epoch, actor, origin))
+        return {"state": "cancelled"}
+
+    broker = SimpleNamespace(epoch="b" * 32, profile_jobs=SimpleNamespace(operator_cancel=cancel))
+
+    async def unused(scope, receive, send):
+        raise AssertionError("unexpected delegation")
+
+    api = OperatorAPI(unused, broker, lambda header: current)
+    body = json.dumps({"job_id": "job", "plan_hash": "a" * 64, "broker_epoch": "b" * 32}).encode()
+
+    async def receive():
+        nonlocal current
+        current = final
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    output = []
+
+    async def send(message):
+        output.append(message)
+
+    await api(
+        {
+            "type": "http",
+            "path": "/operator/job-cancel",
+            "method": "POST",
+            "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+        },
+        receive,
+        send,
+    )
+    assert output[0]["status"] == 200
+    assert calls == [("job", "a" * 64, "b" * 32, "final", "local_cli")]

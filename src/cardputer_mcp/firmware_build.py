@@ -806,7 +806,8 @@ class FirmwareBuild:
                 self.manifests[plan["job_id"]] = (principal, manifest)
                 self._committed_job = plan["job_id"]
                 logs.append(
-                    "Build complete; artifact hashes recorded; flash requires separate approval"
+                    "Build complete; artifact hashes recorded; "
+                    "flash requires a separate explicit operation"
                 )
         finally:
             candidate.unlink(missing_ok=True)
@@ -833,7 +834,7 @@ class FirmwareBuild:
         self._pending.pop(plan["job_id"])
         self._committed_job = plan["job_id"]
         self.logs[plan["job_id"]].append(
-            "Build complete; artifact hashes recorded; flash requires separate approval"
+            "Build complete; artifact hashes recorded; flash requires a separate explicit operation"
         )
 
     def discard_deferred(self, job_id: str) -> None:

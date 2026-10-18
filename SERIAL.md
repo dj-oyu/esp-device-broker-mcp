@@ -13,18 +13,18 @@ Supported operations:
   a bounded configured duration, publish only recognized sanitized markers, close
 - `firmware_observe`: receive up to 30 seconds of bounded device console output,
   close, and expose a redacted report plus any observed ESP-IDF startup fields
-  only to the principal explicitly named in the manually approved plan
-- `restart_and_observe`: one approved native ESP32-S3 USB Serial/JTAG reset,
+  only to the principal explicitly named in the immutable requested plan
+- `restart_and_observe`: one explicitly requested native ESP32-S3 USB Serial/JTAG reset,
   bounded same-identity reconnect if necessary, and boot-log observation under
   the same owner; see [restart effects and limits](DEVICE-LOGS.md#restart-once-and-observe-boot-output)
 - `hello`: exit the current app, select Apps category 0 and row 0, launch HELLO,
   press Enter once, validate startup/count/teardown markers, close
-- `capture_home`: require physical HOME attestation, send one Esc and confirm HOME,
+- `capture_home`: start from verified physical HOME, send one Esc and confirm HOME,
   receive one bounded render-buffer frame after a fixed s command, close
 
 This fixed serial backend has no flash, arbitrary reset command, JavaScript upload, generic shell, raw serial tool, GRID,
 fault injection, arbitrary current-app screenshot, project build, ESP-IDF subprocess, or Tunnel setup
-is included. See [CAPTURE.md](CAPTURE.md) for capture approval and evidence limits.
+is included. See [CAPTURE.md](CAPTURE.md) for capture execution and evidence limits.
 See [DEVICE-LOGS.md](DEVICE-LOGS.md) for log delivery, bounds and firmware identity limits.
 The fixed HELLO key sequence is q, a, fourteen u presses, e, e, q.
 It intentionally changes the running UI and exits the current application.
@@ -34,25 +34,25 @@ It intentionally changes the running UI and exits the current application.
 1. Default startup is mock. Serial mode needs private configuration, the explicit
    `--enable-serial` runtime flag, and an explicit authentication source
 2. Starting a serial-mode broker does **not** enumerate or open USB. Preparing a
-   plan enumerates metadata only; only executing a locally approved plan opens it
+   plan enumerates metadata only; only explicitly executing the exact plan opens it
 3. Plans bind the backend, selected current port, complete USB-identity fingerprint,
-   protocol, expected firmware hash/attestation, effect description, session and
-   job ID. Port or identity changes require a new plan and approval
+   protocol, expected firmware configuration hash, effect description, session and
+   job ID. Port or identity changes require a new plan and explicit execution
 4. Both clients require distinct bearer tokens. Serial session ownership is bound
    to the authenticated client; changing an owner label or stealing another
    client's lease capability is insufficient to operate that lease
-5. Serial jobs require local operator authorization. Observation/HELLO use exact
-   plan approval. HOME capture may use an explicit capture policy plus a separately
-   attested current session; see [CAPTURE-PERMISSIONS.md](CAPTURE-PERMISSIONS.md).
-   HELLO requires expected-firmware and device-free attestation. HOME capture requires
-   expected-firmware and physical-HOME attestation, with other serial tools closed. This is **not** proof of the running firmware hash. No fake measurement
-   or successful physical inspection is reported
+5. Serial jobs require a current authenticated control principal and its owned
+   live lease. There is no per-job local approval, attestation keyword or capture
+   policy. Verify HOME/menu expectations before explicit execution. A configured
+   expected firmware hash is **not** proof of the running firmware hash.
+
+
 6. One worker thread owns open/read/write/close. Event readers share that one
    stream and cannot open another port. Port access lasts only for the bounded
-   approved job; idle broker operation does not continuously capture USB
+   requested job; idle broker operation does not continuously capture USB
 7. DTR/RTS are set false before opening. Driver/OS opening or closing behavior can
    still glitch control lines or reset the device. This implementation makes no
-   no-reset guarantee. Close all other serial terminals before approval
+   no-reset guarantee. Close all other serial terminals before execution
 8. Cancellation waits for the actual reader/close to finish. A failed or unconfirmed
    close latches uncertain ownership, keeps the device marked connected/uncertain,
    and prevents lock release or further actions. It does not kill processes, steal
@@ -140,11 +140,9 @@ In the original PowerShell window:
 uv run cardputer --auth-source environment status
 $lease = uv run cardputer --auth-source environment acquire --seconds 300 | ConvertFrom-Json
 $plan = uv run cardputer --auth-source environment prepare --session $lease.session --job observe-001 --test passive_observe | ConvertFrom-Json
-uv run cardputer approve --state-dir .state/serial --plan $plan.plan_hash
 ```
 
-Inspect the target port, identity fingerprint, effects and bounded duration. Only
-if you approve them, type the exact requested `APPROVE` phrase. Then:
+Inspect the target port, identity fingerprint, effects and bounded duration. Then explicitly submit execution:
 
 ```powershell
 uv run cardputer --auth-source environment execute --session $lease.session --plan $plan.plan_hash
@@ -157,11 +155,10 @@ This is a genuine device operation: even passive open/close may affect control
 signals. A successful observation means the bounded read/close completed; it is
 not firmware, display or hardware-health verification.
 
-### 5. Optional ordinary HELLO, only with additional explicit approval
+### 5. Optional ordinary HELLO, separately requested
 
-Acquire a new lease and prepare a **new job ID** with `--test hello`. The local
-approval command describes the UI changes and asks for both
-`DEVICE FREE AND FIRMWARE VERIFIED` and the exact plan approval. Expected markers
+Acquire a new lease and prepare a **new job ID** with `--test hello`. Inspect the plan's UI changes and verify the expected device/firmware before
+submitting its exact hash to execute. Expected markers
 must match the configured firmware. Failure is quarantined without attempting a
 recovery key, reset or flash. Do not treat an earlier manual success or an unrelated
 GUI result as proof that this adapter has passed.
@@ -194,17 +191,17 @@ Do not publish runtime state or authentication files.
 - User-authorized Windows passive open/read/close with the intended hardware
 - Device fingerprint stability and deliberate port re-enumeration, with no
   automatic substitution or busy-port recovery
-- One explicitly approved HELLO cycle on the expected firmware; inspect physical
+- One explicitly requested HELLO cycle on the expected firmware; inspect physical
   behavior separately from serial markers
-- Only after that: design immutable flash artifact/partition/recovery approval,
-  subprocess-tree ownership and reader handoff. Those APIs do not exist yet
+- Firmware backup/flash/restore are separate registered operations; validate their
+  artifact, readback and ownership paths independently before physical use
 - Authenticated Tunnel ingress and cloud access are separate future work. Do not
   expose this listener through a public proxy or tunnel as-is
 
 ## Fixed DERBY smoke
 
-`derby_smoke` requires a normal firmware, locally attested HOME/exact firmware,
-an authenticated owner and exact local plan approval. It opens once, sends Esc,
+`derby_smoke` requires normal firmware, an appropriate HOME state,
+an authenticated owner and explicit execution of its exact prepared plan. It opens once, sends Esc,
 checks fresh HOME_READY, sends a, normalizes to row 0 with 16 u acknowledgements,
 selects row 12 with 12 d acknowledgements, and sends e. Fresh APP_ID local.derby
 must precede DERBY READY tones=true/false; wrong row/identity fails without retry.
@@ -218,8 +215,8 @@ is frame-rate dependent. Capture sends at most one s only while the last observe
 scene is photo, after a fresh quiet receive boundary still has that phase/race/seed.
 There is no timed fallback or retry. Observation also stops early enough to reserve
 18 seconds for the complete capture (including drains), 12 seconds for exit and
-5 seconds margin within the existing 180 seconds. No lease or approval TTL changes.
-If no current photo is available in time, the broker sends its one approved q,
+5 seconds margin within the existing 180 seconds. The original lease deadline remains enforced.
+If no current photo is available in time, the broker sends its one planned q,
 requires fresh HOME_READY and confirmed close, and completes with
 `derby_photo_not_verified_no_capture`: no image and no claim that photo was tested.
 Cancellation/authority loss still suppresses q. Image coherence and physical LCD
@@ -242,7 +239,7 @@ not a firmware capture nonce or proof that the pixels depict a photo decision;
 observations available before failure, including incomplete captures/failed close.
 
 The immutable plan/effects now describe photo-only capture and reserved budgets.
-Prepare and approve a fresh plan; a legacy fallback plan is rejected before USB
+Prepare and explicitly execute a fresh plan; a legacy fallback plan is rejected before USB
 opens rather than silently executing the changed behavior.
 
 One explicit q exit must produce fresh HOME_READY, then the owner closes serial.
@@ -251,7 +248,8 @@ input/save coverage. Cancellation, principal revocation or lease expiry blocks
 all new sends, including q; the game may remain running. Close is always allowed
 and uncertain close retains ownership/requires review. No arbitrary key, command,
 retry/reopen or firmware write API is added. Rendered pixels use the existing
-principal-bound, five-minute image cache and separate image delivery approval;
+principal-bound, five-minute image cache; the current original principal may
+retrieve it with read scope without a separate image-delivery decision;
 raw game logs and unknown text are not persisted or emitted.
 
-Firmware backup/flash/restore are implemented as separate approved broker operations; see FIRMWARE-FLASH.md.
+Firmware backup/flash/restore are implemented as separate explicitly requested broker operations; see FIRMWARE-FLASH.md.

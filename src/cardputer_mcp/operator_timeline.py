@@ -1,7 +1,7 @@
 """Bounded, read-only job continuity for the authenticated local operator.
 
-Durable job outcomes outlive the short-lived pixel cache. Reviews are borrowed
-from PlanApprovals, never reconstructed as a second authorization mechanism.
+Durable job outcomes outlive the short-lived pixel cache. Immutable plans are
+read only for display; observing a prepared plan never requests execution.
 """
 
 import math
@@ -12,7 +12,7 @@ from typing import Any
 from .backend import DeviceOperationFailure
 from .broker import Broker, BrokerError
 from .device_observation import FIRMWARE_LIMITATIONS, REDACTION_LIMITATIONS
-from .plan_approval import _ATTESTATIONS, PlanApprovals
+from .plan_approval import PlanApprovals
 from .source_snapshot import SOURCE_ERROR_CODES
 
 MAX_CARDS = 32
@@ -91,6 +91,8 @@ RESULTS = (
             "restart_observation_completed_unverified",
             "hello_markers_passed_physical_checks_not_assessed",
             "broker_restart_no_replay",
+            "explicit_requests_migration_no_replay",
+            "explicit_requests_migration_running_uncertain",
             "broker_shutdown",
             "lease_expired",
             "session_released",
@@ -177,6 +179,7 @@ RESULTS = (
             "flash_app_elf_receipt_required",
             "flash_app_receipt_required",
             "flash_approval_or_handoff_required",
+            "flash_plan_or_handoff_required",
             "flash_artifact_hash_mismatch",
             "flash_artifact_missing",
             "flash_artifact_size_mismatch",
@@ -463,8 +466,6 @@ class OperatorTimeline:
                     or isinstance(remaining, bool)
                     or not math.isfinite(remaining)
                     or not 0 < remaining <= 300
-                    or row.get("delivery_state") not in ("pending", "approved", "rejected")
-                    or type(row.get("policy_allowed")) is not bool
                 ):
                     continue
                 # Project only the existing image-summary schema. Never include
@@ -478,33 +479,15 @@ class OperatorTimeline:
                         "recipient_principal",
                         "born_utc",
                         "remaining_seconds",
-                        "delivery_state",
-                        "policy_allowed",
                     )
                 }
+                images[row["job_id"]]["delivery_state"] = "available"
+                images[row["job_id"]]["policy_allowed"] = False
         except Exception:
-            # A disappearing image or unavailable policy cannot suppress the
+            # A disappearing image or invalid metadata cannot suppress the
             # independently readable durable job history.
             return {}
         return images
-
-    def _pending(self) -> dict[str, Any] | None:
-        try:
-            pending = self.plans.list_pending()
-            if (
-                pending.get("broker_epoch") != self.broker.epoch
-                or type(pending.get("plans")) is not list
-                or len(pending["plans"]) > 64
-                or type(pending.get("has_more")) is not bool
-                or any(
-                    type(row) is not dict or not _matches(row.get("plan_hash"), r"[a-f0-9]{64}")
-                    for row in pending["plans"]
-                )
-            ):
-                return None
-            return pending
-        except Exception:
-            return None
 
     def _job_rows(self, where: str, args: tuple[Any, ...] = ()) -> list[Any]:
         # Bound scalar fields before transfer, and never select diagnostic/raw
@@ -532,7 +515,7 @@ class OperatorTimeline:
         return (
             self.broker._store()
             .db.execute(
-                f"""SELECT p.hash, EXISTS(SELECT 1 FROM approvals a WHERE a.hash=p.hash) approved
+                f"""SELECT p.hash
                 FROM plans p WHERE length(p.hash)=64 AND {_UNEXECUTED} AND ({where})
                 ORDER BY p.rowid DESC LIMIT ?""",
                 (_MAX_PLAN_BYTES, *args, MAX_CARDS + 1),
@@ -566,35 +549,33 @@ class OperatorTimeline:
 
     def _snapshot(self) -> dict[str, Any]:
         broker = self.broker
-        store = broker._store()
         broker.maintenance_tick()
-        if not _matches(broker.epoch, r"[a-f0-9]{32}"):
-            raise ValueError
         epoch = broker.epoch
+        if not _matches(epoch, r"[a-f0-9]{32}"):
+            raise ValueError
         images = self._images()
-        pending = self._pending()
-        pending_hashes = {row["plan_hash"] for row in pending["plans"]} if pending else set()
         lease = broker.session
         lease_id = lease.id if lease is not None else ""
         current = """CASE WHEN json_valid(p.payload) THEN
             json_extract(p.payload,'$.broker_epoch')=?
-            AND json_extract(p.payload,'$.session_id')=? ELSE 0 END"""
-        groups: list[tuple[str, list[Any]]] = [("job", self._job_rows(_ACTIVE))]
-        if pending_hashes:
-            marks = ",".join("?" for _ in pending_hashes)
-            groups.append(("plan", self._plan_rows(f"p.hash IN ({marks})", tuple(pending_hashes))))
+            AND (json_extract(p.payload,'$.session_id')=?
+                 OR json_extract(p.payload,'$.execution_context')='registered_project')
+            ELSE 0 END"""
+        groups: list[tuple[str, list[Any]]] = [
+            ("job", self._job_rows(_ACTIVE)),
+            ("plan", self._plan_rows(current, (epoch, lease_id))),
+        ]
         if images:
             marks = ",".join("?" for _ in images)
             groups.append(("job", self._job_rows(f"j.id IN ({marks})", tuple(images))))
         groups.extend(
             [
-                ("plan", self._plan_rows(current, (epoch, lease_id))),
                 ("job", self._job_rows(f"NOT {_ACTIVE}")),
                 ("plan", self._plan_rows(f"NOT ({current})", (epoch, lease_id))),
             ]
         )
         cards: dict[str, dict[str, Any]] = {}
-        has_more = bool(pending and pending["has_more"])
+        has_more = False
         for kind, rows in groups:
             has_more = has_more or len(rows) > MAX_CARDS
             for row in rows:
@@ -623,171 +604,33 @@ class OperatorTimeline:
                     if plan is None:
                         continue
                     card = self._card(plan["job_id"], row["hash"], plan)
+                    lease = broker.session
                     live = (
+                        plan.get("backend") == "registered_project"
+                        and plan.get("broker_epoch") == epoch
+                    ) or (
                         lease is not None
-                        and broker.session is lease
                         and math.isfinite(lease.deadline)
                         and broker.clock() < lease.deadline
-                        and plan["broker_epoch"] == epoch
-                        and plan["session_id"] == lease.id
+                        and plan.get("broker_epoch") == epoch
+                        and plan.get("session_id") == lease.id
                     )
                     card["state"] = "prepared" if live else "expired"
-                    if live and lease is not None and pending is not None:
-                        try:
-                            self.plans._validate(row["hash"], lease)
-                        except Exception:
-                            pass
-                        else:
-                            if row["approved"]:
-                                card["state"] = "approved"
-                            elif row["hash"] in pending_hashes:
-                                card["state"] = "approval_required"
-                            elif (
-                                broker.backend.name == "mock"
-                                and broker.settings.allow_mock_execution
-                            ) or (plan["test"] == "capture_home" and not pending["has_more"]):
-                                card["state"] = "ready"
                 cards.setdefault(card["job_id"], card)
         has_more = has_more or len(cards) > MAX_CARDS
         selected = list(cards.values())[:MAX_CARDS]
-        available = pending is not None
-        revision = store.db.total_changes
-        try:
-            for card in selected:
-                if card["state"] not in ("approval_required", "awaiting_approval"):
-                    continue
-                if card["plan_hash"] not in pending_hashes:
-                    continue
-                detail = self.plans.detail(card["plan_hash"])
-                fields = {
-                    "plan_hash",
-                    "plan",
-                    "review_revision",
-                    "lease_remaining_seconds",
-                    "attestation",
-                }
-                optional = {
-                    "execution_submitted",
-                    "intent_remaining_seconds",
-                    "attestation_text",
-                    "image_delivery_recipient",
-                }
-                submitted = detail.get("execution_submitted", False)
-                intent_remaining: Any = detail.get("intent_remaining_seconds")
-                if (
-                    not fields <= set(detail) <= fields | optional
-                    or detail["plan_hash"] != card["plan_hash"]
-                    or detail["plan"] != self._plan(card["plan_hash"])
-                    or not _matches(detail["review_revision"], r"[a-f0-9]{64}")
-                    or type(detail["lease_remaining_seconds"]) not in (float, int)
-                    or not math.isfinite(detail["lease_remaining_seconds"])
-                    or not 0 < detail["lease_remaining_seconds"] <= 300
-                    or detail["attestation"]
-                    not in (
-                        "none",
-                        "device_free_firmware",
-                        "device_home_firmware",
-                        "flash_device_read_verified",
-                        "flash_device_backup_verified",
-                        "firmware_recovery_verified",
-                    )
-                    or type(submitted) is not bool
-                    or submitted != (card["state"] == "awaiting_approval")
-                    or (
-                        submitted
-                        and (
-                            type(intent_remaining) not in (float, int)
-                            or not math.isfinite(intent_remaining)
-                            or not 0 < intent_remaining <= detail["lease_remaining_seconds"]
-                        )
-                    )
-                    or (not submitted and intent_remaining is not None)
-                    or (
-                        "attestation_text" in detail
-                        and (
-                            type(detail["attestation_text"]) is not str
-                            or detail["attestation_text"] != _ATTESTATIONS[detail["attestation"]]
-                        )
-                    )
-                    or (
-                        "image_delivery_recipient" in detail
-                        and (
-                            type(detail["image_delivery_recipient"]) not in (str, type(None))
-                            or detail["image_delivery_recipient"]
-                            != (
-                                lease.principal_id
-                                if lease is not None and detail["plan"]["test"] == "capture_home"
-                                else None
-                            )
-                        )
-                    )
-                ):
-                    raise ValueError
-                card["review"] = {key: detail[key] for key in fields | optional if key in detail}
-            if available and pending is not None:
-                # Callbacks used by policy/principal validation can expire the
-                # lease or change policy while rendering. Recheck the authority
-                # last, then reject the entire review set if context moved.
-                final = self._pending()
-                if final is None or revision != store.db.total_changes:
-                    raise ValueError
-                final_hashes = {row["plan_hash"] for row in final["plans"]}
-                if final_hashes != pending_hashes or final["has_more"] != pending["has_more"]:
-                    raise ValueError
-                for card in selected:
-                    if card["review"] is not None:
-                        if lease is None:
-                            raise ValueError
-                        plan = self.plans._validate(card["plan_hash"], lease)
-                        if card["review"]["review_revision"] != self.plans._revision(plan, lease):
-                            raise ValueError
-        except Exception:
-            available = False
         broker._prune_captures()
         for card in selected:
             image = card["image"]
-            if image is None:
-                continue
-            retained = broker.captures.get(card["job_id"])
-            if (
-                retained is None
-                or retained.image.sha256 != image["sha256"]
-                or retained.principal_id != image["recipient_principal"]
-                or retained.born_utc != image["born_utc"]
-                or retained.delivery_state != image["delivery_state"]
-            ):
-                card["image"] = None
-        context_expired = (
-            broker.epoch != epoch
-            or broker.session is not lease
-            or (
-                lease is not None
-                and (not math.isfinite(lease.deadline) or broker.clock() >= lease.deadline)
-            )
-        )
-        if context_expired:
-            available = False
-        if not available:
-            for card in selected:
-                card["review"] = None
-                if card["state"] in ("prepared", "approval_required", "approved", "ready"):
-                    card["state"] = "expired" if context_expired else "prepared"
-            # A validation callback can expire/cancel an intent while rendering.
-            # Retain the resulting durable terminal state on the same job card.
-            waiting = {
-                card["job_id"]: card for card in selected if card["state"] == "awaiting_approval"
-            }
-            if waiting:
-                marks = ",".join("?" for _ in waiting)
-                for row in self._job_rows(f"j.id IN ({marks})", tuple(waiting)):
-                    current_card = waiting[row["id"]]
-                    current_card.update(
-                        state=_enum(row["state"], _JOB_STATES) or "unknown",
-                        stage=_enum(row["stage"], STAGES),
-                        result=_enum(row["result"], RESULTS),
-                        finished_utc=_utc(row["finished"]),
-                    )
-        for card in selected:
+            if image is not None:
+                retained = broker.captures.get(card["job_id"])
+                if (
+                    retained is None
+                    or retained.image.sha256 != image["sha256"]
+                    or retained.principal_id != image["recipient_principal"]
+                    or retained.born_utc != image["born_utc"]
+                ):
+                    card["image"] = None
             if (card["backend"], card["state"]) == ("serial", "succeeded") and (
                 card["test"],
                 card["result"],
@@ -807,15 +650,14 @@ class OperatorTimeline:
                     ):
                         card["device_observation"] = observation
                 except Exception:
-                    # Cache expiry or invalid metadata cannot hide job history.
                     pass
             if card["plan_hash"] is not None:
-                home_line = broker.operator_home_line_metadata(card["job_id"], card["plan_hash"])
-                if home_line is not None and home_line["broker_epoch"] == epoch:
-                    card["local_home_line"] = home_line
+                home = broker.operator_home_line_metadata(card["job_id"], card["plan_hash"])
+                if home is not None and home["broker_epoch"] == epoch:
+                    card["local_home_line"] = home
         return {
             "broker_epoch": epoch,
             "cards": selected,
             "has_more": has_more,
-            "plans_available": available,
+            "plans_available": False,
         }

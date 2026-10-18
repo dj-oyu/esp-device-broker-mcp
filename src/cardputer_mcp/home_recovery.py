@@ -1,4 +1,4 @@
-"""One explicitly approved DERBY exit after a proved close; never general review bypass."""
+"""One authenticated, explicit DERBY exit after a proved close; never a replay."""
 
 import asyncio
 import math
@@ -12,7 +12,6 @@ from .ports import resolve_port
 from .serial_backend import Reader, SerialBackend, SerialFailure, fingerprint
 from .smoke_port import SmokePort
 
-ATTESTATION = "DEVICE AND FIRMWARE VERIFIED FOR ONE DERBY EXIT"
 CAPTURE_FAILURES = frozenset({"serial_capture_invalid", "serial_capture_timeout"})
 
 
@@ -59,8 +58,7 @@ class Recovery:
     backend: SerialBackend
     deadline: float
     execution_deadline: float | None = None
-    state: str = "awaiting_approval"
-    operator: str | None = None
+    state: str = "queued"
     stop: threading.Event = field(default_factory=threading.Event)
     task: asyncio.Task[None] | None = None
 
@@ -114,6 +112,7 @@ class HomeRecovery:
         now = b.clock()
         source = s.job(p["source_job_id"])
         current = s.job(p["job_id"])
+        source_plan = s.plan(e.proof["plan_hash"])
         if (
             b.closing
             or not math.isfinite(now)
@@ -158,11 +157,20 @@ class HomeRecovery:
             or source["result"] not in CAPTURE_FAILURES
             or current is None
             or current["plan_hash"] != digest_plan(p)
-            or current["state"] != ("running" if running else "awaiting_approval")
-            or e.state != ("running" if running else "awaiting_approval")
-            or s.plan(e.proof["plan_hash"]) != p["source_plan"]
+            or current["state"] != ("running" if running else "queued")
+            or e.state != ("running" if running else "queued")
+            or not isinstance(source_plan, dict)
+            or digest_plan(source_plan) != e.proof["plan_hash"]
+            or source_plan != p["source_plan"]
+            or source_plan.get("test") != "derby_smoke"
+            or source_plan.get("backend") != "serial"
+            or any(
+                source_plan.get(k) != p[k]
+                for k in ("device_fingerprint", "expected_firmware_sha256", "port")
+            )
             or s.plan(digest_plan(p)) != p
             or s.home_source(p["source_job_id"]) != dict(payload=e.proof, attempted=int(running))
+            or p["expected_firmware_sha256"] is None
             or e.backend.config.expected_firmware_sha256 != p["expected_firmware_sha256"]
         ):
             raise BrokerError("home_recovery_unavailable")
@@ -190,11 +198,6 @@ class HomeRecovery:
                 or valid(p["principal_id"], p["origin"], frozenset({"read", "control"})) is not True
             ):
                 raise BrokerError("home_recovery_authority_changed")
-            if (
-                e.operator is not None
-                and valid(e.operator, "local_cli", frozenset({"control"})) is not True
-            ):
-                raise BrokerError("home_recovery_operator_changed")
             identity = resolve_port(e.backend.config.selector, e.backend.inventory())
             if fingerprint(identity) != p["device_fingerprint"] or identity.port != p["port"]:
                 raise BrokerError("home_recovery_target_changed")
@@ -203,11 +206,6 @@ class HomeRecovery:
             # Enumeration is an opaque callback too; do not use an earlier grant.
             if valid(p["principal_id"], p["origin"], frozenset({"read", "control"})) is not True:
                 raise BrokerError("home_recovery_authority_changed")
-            if (
-                e.operator is not None
-                and valid(e.operator, "local_cli", frozenset({"control"})) is not True
-            ):
-                raise BrokerError("home_recovery_operator_changed")
             self._state(e, running=running)
         except (ValueError, OSError):
             raise BrokerError("home_recovery_unavailable") from None
@@ -229,9 +227,7 @@ class HomeRecovery:
         ):
             raise BrokerError("home_recovery_source_not_eligible")
         self.maintain()
-        self.entries = {
-            k: v for k, v in self.entries.items() if v.state in ("awaiting_approval", "running")
-        }
+        self.entries = {k: v for k, v in self.entries.items() if v.state in ("queued", "running")}
         if len(self.entries) >= 16 or s.record_count("jobs") >= 10000:
             raise BrokerError("home_recovery_history_full")
         if any(v.plan["source_job_id"] == request.source_job_id for v in self.entries.values()):
@@ -258,61 +254,30 @@ class HomeRecovery:
                 "Resolve only this DERBY capture review after fresh HOME and confirmed close.",
             ],
         )
-        e = Recovery(plan, proof, backend, b.clock() + 30)
+        loop = asyncio.get_running_loop()
+        e = Recovery(plan, proof, backend, b.clock() + 15)
         digest = digest_plan(plan)
         s.put_plan(digest, plan)
-        s.add_awaiting_job(request.job_id, digest)
+        s.enqueue_requested(request.job_id, digest, principal)
         try:
             self._validate(e)
+            e.execution_deadline = e.deadline
+            # The explicit request consumes the source before starting any USB
+            # worker. A lost response, cancellation or restart cannot re-arm it.
+            s.consume_home_attempt(request.source_job_id, request.job_id, proof, digest, principal)
         except Exception:
             s.set_job(request.job_id, "cancelled", "home_recovery_not_admitted")
             raise
+        e.state = "running"
+        b.active_job = request.job_id
         self.entries[digest] = e
-        with s.db:
-            s.home_audit(request.source_job_id, request.job_id, "requested")
-        return dict(
-            ok=True, plan_hash=digest, plan=plan, state="awaiting_approval", expires_in_seconds=30
-        )
+        e.task = loop.create_task(self._run(e), name="bounded-home-recovery")
+        return dict(ok=True, plan_hash=digest, plan=plan, job_id=request.job_id, state="running")
 
     def _entry(self, digest: str) -> Recovery:
         if digest not in self.entries:
             raise BrokerError("home_recovery_not_available")
         return self.entries[digest]
-
-    def review(self, digest: str) -> dict[str, Any]:
-        e = self._entry(digest)
-        self._validate(e)
-        return dict(
-            plan=e.plan,
-            plan_hash=digest,
-            review_revision=self._revision(e),
-            attestation=ATTESTATION,
-            remaining_seconds=max(0, e.deadline - self.broker.clock()),
-        )
-
-    def _revision(self, e: Recovery) -> str:
-        return digest_plan(dict(plan=e.plan, proof=e.proof, deadline=e.deadline))
-
-    def approve(
-        self, digest: str, revision: str, attestation: str, operator: str
-    ) -> dict[str, Any]:
-        e = self._entry(digest)
-        self._validate(e)
-        if revision != self._revision(e) or attestation != ATTESTATION:
-            e.stop.set()
-            raise BrokerError("home_recovery_stale_review")
-        e.operator = operator
-        self._validate(e)
-        loop = asyncio.get_running_loop()
-        e.execution_deadline = min(e.deadline, self.broker.clock() + 15)
-        # Consume durably before scheduling any owned USB worker. Lost replies never re-arm.
-        self.broker._store().consume_home_attempt(
-            e.plan["source_job_id"], e.plan["job_id"], e.proof, digest, operator, revision
-        )
-        e.state = "running"
-        self.broker.active_job = e.plan["job_id"]
-        e.task = loop.create_task(self._run(e), name="bounded-home-recovery")
-        return dict(approved=True, job_id=e.plan["job_id"], state="running")
 
     def cancel(self, request: CancelHomeRecovery, principal: str) -> dict[str, Any]:
         e = self._entry(request.plan_hash)
@@ -325,14 +290,14 @@ class HomeRecovery:
                 self.broker._store().home_audit(
                     e.plan["source_job_id"], request.job_id, "cancel_requested"
                 )
-        if e.state == "awaiting_approval":
+        if e.state == "queued":
             e.state = "cancelled"
             self.broker._store().set_job(request.job_id, "cancelled", "home_recovery_cancelled")
         return dict(ok=True, stop_requested=True, state=e.state)
 
     def maintain(self) -> None:
         for e in self.entries.values():
-            if e.state == "awaiting_approval" and (
+            if e.state == "queued" and (
                 not math.isfinite(self.broker.clock()) or self.broker.clock() >= e.deadline
             ):
                 e.stop.set()
@@ -346,7 +311,7 @@ class HomeRecovery:
     async def close(self) -> None:
         for e in self.entries.values():
             e.stop.set()
-            if e.state == "awaiting_approval":
+            if e.state == "queued":
                 e.state = "cancelled"
                 self.broker._store().set_job(
                     e.plan["job_id"], "cancelled", "home_recovery_shutdown"
@@ -421,7 +386,7 @@ class HomeRecovery:
             if e.backend.active or e.backend.hardware_connected:
                 raise BrokerError("home_recovery_close_unconfirmed")
             s.finish_home_recovery(
-                p["source_job_id"], p["job_id"], e.proof["plan_hash"], digest_plan(p)
+                p["source_job_id"], p["job_id"], e.proof["plan_hash"], digest_plan(p), live
             )
             e.state = "succeeded"
         except Exception:

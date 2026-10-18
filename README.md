@@ -11,14 +11,14 @@ Two clients connect over Streamable HTTP and share one resident queue, one workf
 lease, durable job history, and the same bounded log cache.
 
 The serial adapter offers bounded device console logs and observed firmware
-startup information, an ordinary HELLO cycle, and approved HOME render-buffer
+startup information, an ordinary HELLO cycle, and HOME render-buffer
 capture for the inspected PocketJS firmware protocol. Automated verification uses
 synthetic serial devices; one user-run Windows HOME capture has succeeded. These paths require explicit
-startup opt-in, authenticated clients and exact local per-job approval. See
+startup opt-in, authenticated clients and explicit execution. See
 [SERIAL.md](SERIAL.md) for effects, limitations and user-run Windows instructions.
 
 Mock remains the default. `mock_flash`, `mock_boot`, and `mock_test` are synthetic.
-Registered external [ESP-IDF 6.0.1 builds](FIRMWARE-BUILD.md) and separately approved
+Registered external [ESP-IDF 6.0.1 builds](FIRMWARE-BUILD.md) and separately requested
 [backup/flash/restore](FIRMWARE-FLASH.md) are implemented. Flash defaults to disabled;
 physical device behavior remains unvalidated. Completion uses readback and passive
 boot IDF/ELF evidence, with no HELLO key commands.
@@ -28,16 +28,41 @@ are now implemented and mock-tested. The optional [Windows Tunnel preparation](T
 and [local scoped-key management](KEYS.md) are available. A user-run Windows mock Tunnel registration and read-only MCP calls
 were verified; cloud lifecycle remains external to broker status. Nothing opens USB automatically at startup.
 
-Manual plan approval uses an explicit Approve click after reviewing the target,
-effects and recovery reference; no long confirmation phrase is required.
-See [operator consent and unattended flash design](APPROVAL-UX.md).
+## Explicit client operations
+
+Prepare persists an immutable, bounded plan and performs no device operation.
+An authenticated client with the required scopes explicitly submits its exact
+`plan_hash` to `execute_test`; the broker queues it immediately once current
+principal, lease, device, firmware configuration and plan checks pass.
+`wait_for_approval` is a deprecated compatibility field and is ignored.
+Preparation alone never starts work. Repeated execution returns the original job;
+connection loss never replays it. Inspect `job_status` after an uncertain reply.
+
+There is no product-level plan approval, image-delivery decision, capture policy,
+arming window, confirmation keyword or operator-launch permission. Legacy
+approval/policy/arming HTTP endpoints authenticate and check scopes, then return
+`410 Gone` without effects. Legacy approval CLI/launcher entry points are retired;
+they are not aliases for execution. `allow_mock_execution` and legacy unattended
+flash permission settings grant no authority and are ignored.
+
+Authentication and current scopes, registered operation capabilities, exact
+principal/device/firmware bindings, exclusive ownership, bounded I/O, deadlines,
+cancellation, verified flash readback and audit remain enforced. An expected
+firmware hash is a configuration binding, not a measurement of running firmware.
+Physical uncertainty remains a recovery barrier; removing approvals does not
+acknowledge it. Agent/host platform approval controls are unchanged.
+
+On upgrade, legacy approval-waiting and unstarted queued work is cancelled
+without replay. Interrupted running work remains quarantined for review. Old
+approval/grant records remain historical and cannot authorize new execution.
+No approval clicks or manual database changes are needed for this migration.
 
 ## Console and job visibility
 
 The broker sends bounded, best-effort job lifecycle and redacted warning/error/
 progress diagnostics to stderr. Slow or closed consoles do not stop jobs; stdio
 stdout stays JSON-RPC only. GUI firmware cards retain their operation, stage,
-result and exact approval review, with explicit backup/write/restore effects.
+result and exact immutable plan, with explicit backup/write/restore effects.
 See [console diagnostics and the artifact-lookup follow-up](FIRMWARE-BUILD.md#console-diagnostics).
 
 ## Registered source/build loop
@@ -52,86 +77,28 @@ uncertain process/lock/durable state still stops for review. A connection loss
 does not cancel or replay a job. Build executes trusted project code as the local
 OS user, not in a sandbox. See [source snapshots](SOURCE-SNAPSHOTS.md) and
 [external builds](FIRMWARE-BUILD.md). Device flash/restore/backup remain separately
-approved and never follow automatically from successful build.
+requested and never follow automatically from successful build.
 
 ## Windows queue GUI
 
-Version 0.12 lets a client submit an exact plan before local approval. Call
-`execute_test` with `wait_for_approval: true`; a job still requiring manual
-approval returns `awaiting_approval`. An existing valid approval or automatic
-permit continues to allow immediate queueing.
-The GUI then shows **Approve & start**, and approval queues that submitted job
-without waiting for another agent request. Preparation alone does not submit
-execution. Waiting never extends its original lease deadline, and cancellation,
-revocation or restart cannot replay the request. Physical work still waits for
-safe exclusive ownership; approval is not a promise of zero hardware latency.
+The GUI displays job plans, effects, lifecycle, results and retained-image previews
+alongside session and queue controls. It has no approval buttons, pending-approval
+badge or capture-permission panel. Submit execution through the authenticated
+client. Cancellation and safe ownership controls remain available.
 
-Version 0.11 adds a separate, manually approved `restart_and_observe` job for
-native ESP32-S3 USB Serial/JTAG. It issues one fixed reset sequence, keeps the
-same device lease, and captures bounded boot logs. A disconnected port may be
-reopened once only after confirmed close and exact USB identity checks.
-Control-line completion does not prove application boot; lost early logs and
-reopen gaps remain explicit. No real reset or flash was run during automated
-verification. See [restart and logs](DEVICE-LOGS.md#restart-once-and-observe-boot-output).
+`firmware_observe` receives bounded console output without commands;
+`restart_and_observe` separately requests one fixed reset and bounded boot
+observation. Neither happens at startup. See [device logs](DEVICE-LOGS.md).
 
-Version 0.10 adds a manually approved `firmware_observe` job and
-`read_device_logs`. One serial owner receives for up to 30 seconds without sending
-commands. A bounded, redacted report is kept in RAM for five minutes and is
-readable by the authenticated principal named in the approved plan. Firmware
-fields come only from observed ESP-IDF startup logs; missing logs mean unknown,
-and the printed ELF digest prefix is not a firmware binary hash.
-See [device logs and firmware observation](DEVICE-LOGS.md).
-This version also restores the local HOME diagnostic text after image approval
-by re-fetching only under fresh local authorization and the original expiry.
-
-Version 0.9.3 adds an unchecked, per-job local HOME-line diagnostic option beside
-manual serial-capture approval. It keeps at most one bounded candidate line in RAM
-for 120 seconds and shows it only in the local timeline. It never enters MCP
-results, durable history, or automatic exports. Reviewed historical failures now
-display **Failed · reviewed**. See [local diagnosis](CAPTURE.md#optional-one-line-local-diagnosis).
-
-Version 0.9.2 corrects capture-failure text and adds bounded receive diagnostics.
-An executed job no longer asks the operator to execute it, and an unsuccessful
-capture is distinguished from a successful image that is no longer retained.
-See [capture diagnostics](CAPTURE.md#diagnosing-an-unsuccessful-capture).
-
-Version 0.9.1 uses compact accordion cards with clearer borders and status badges.
-Completed cards start collapsed; requests awaiting a decision show their relevant
-controls. Manual expansion choices survive background refreshes. Technical hashes,
-raw JSON and diagnostic codes live under details; a thumbnail can be enlarged
-inside the same card. Required operation effects and image recipients remain
-beside their approval actions.
-
-Version 0.9 presents each job in one main-window timeline: request and effects,
-inline plan approval, execution state, captured-image preview, and image-delivery
-approval stay together. Details expand inside the card; approval only starts a
-job when its client has explicitly submitted execution. The Pending badge highlights
-new manual requests. Expired images
-remain recognizable as completed captures with unavailable pixels, not absent jobs.
-The existing queue controls remain beside the timeline; permissions and Tunnel
-configuration stay in their settings panels. See [CAPTURE-PERMISSIONS.md](CAPTURE-PERMISSIONS.md).
-
-Version 0.7.1 adds **MCP info**: a five-second, read-only live catalog/version probe
-using the GUI's existing in-memory authentication. It displays no credentials or
-complete tool payloads and never starts jobs. See [GUI-WINDOWS.md](GUI-WINDOWS.md).
-
-Version 0.5 adds an integrated **Tunnel...** panel: metadata editing in the
-broker TOML's `[tunnel]` section, explicit connect/disconnect/manual restart,
-owned-process monitoring, and separate local/cloud evidence. Runtime keys are
-masked and never saved. No automatic connection or restart occurs. Windows
-process ownership is covered by synthetic API tests, not native Windows validation.
-See [TUNNEL-WINDOWS.md](TUNNEL-WINDOWS.md).
-
-
-Run `& .\Start-CardputerGui.ps1` after `uv sync --frozen` for authenticated mock mode.
-See [GUI-WINDOWS.md](GUI-WINDOWS.md). Real mode requires explicit opt-in and approval.
+Run `& .\Start-CardputerGui.ps1` after `uv sync --frozen` for authenticated mock
+mode. See [GUI-WINDOWS.md](GUI-WINDOWS.md).
 
 ## Windows serial startup
 
 The bundled [Start-Cardputer.ps1](Start-Cardputer.ps1) now handles project location,
 both process-only credentials, a separate visible server console and authenticated
 readiness. See [START-WINDOWS.md](START-WINDOWS.md) for the one-command setup. This
-helper starts no USB operation and leaves every hardware approval requirement intact.
+helper starts no USB operation. Device work requires a separate authenticated execution request.
 
 ## Quick start (mock mode)
 
@@ -147,34 +114,31 @@ uv sync --frozen
 uv run cardputer serve --config examples/mock-demo.toml
 ```
 
-Keep that terminal running. In a second terminal in the same project directory:
+Keep that terminal running. In a second terminal, read status only:
 
 ```sh
 uv run cardputer status
-uv run cardputer demo
+uv run cardputer logs
 ```
 
-Expected demo result:
+This unauthenticated mock startup is read-only. Execution requires a currently
+valid authenticated control principal, including for synthetic jobs. For mock
+execution, use the existing process-only credential setup in
+[START-WINDOWS.md](START-WINDOWS.md), or the authenticated GUI launcher. With those
+existing credentials available privately in the process environment:
 
-```text
-MOCK DEVICE / REAL MCP HTTP: one broker, two clients
-1. Local CLI owns the whole flash -> boot -> test session
-2. Second MCP client: device_busy (same broker, no second USB reader)
-3. MOCK workflow passed; both clients read identical cached logs
-4. Retrying the job ID returns the original result; no replay
-5. Local releases; second MCP client acquires the device
-PASS: exclusive ownership, shared logs, durable jobs, safe retry
-No USB / real flash / Tunnel connection was used
+```sh
+uv run cardputer --auth-source environment serve --require-auth --config examples/mock-demo.toml
 ```
 
-`uv run cardputer demo --recording` spaces the visible results across about
-21 seconds, suitable for a short screen recording. Show the MOCK label: the demo
-proves actual MCP transport and arbitration, not an actual firmware flash or a
-Tunnel connection. It does not print private lease capabilities. Stop the server
-with Ctrl+C; shutdown drains any active mock workflow before releasing the lock.
+Start only one broker. Use an authenticated client in the same credential
+environment and follow [prepare and explicit execute](#prepare-and-explicitly-execute).
+Mock results establish synthetic transport/arbitration behavior; they do not
+establish a physical flash, capture or Tunnel connection. Stop the owned server
+with Ctrl+C when finished; active work keeps ownership until cleanup completes.
 
-`examples/mock-demo.toml` is an explicit **local-operator opt-in for synthetic
-operations only**. The default policy requires individual local approval.
+`examples/mock-demo.toml` selects synthetic operations only. The legacy
+`allow_mock_execution` value is ignored; explicit execution requests are required.
 
 ## Connect Claude Code, Codex and Antigravity CLI
 
@@ -187,8 +151,8 @@ broker or acquire USB.
 
 First complete the [private env-file setup](STDIO-CLIENTS.md#private-env-ファイル):
 use an issued `remote_mcp` client key with `read` scope (and `control` only when
-needed), from that broker's registry. The unauthenticated mock quick start above
-is not this authenticated setup. The file contains `CARDPUTER_CLIENT_KEY` and,
+needed), from that broker's registry. The process-token mock setup above
+is separate from this issued-key registration. The file contains `CARDPUTER_CLIENT_KEY` and,
 optionally, `CARDPUTER_BROKER_URL`; keep it private and outside both the adapter
 installation and Git checkouts. Registration stores its path, not the secret.
 The following paths are placeholders for a stable source/venv installation;
@@ -265,51 +229,26 @@ runtime-tested here.
 
 For all three clients, begin with `client_identity`, `device_status` and
 `read_logs`. Connection and registration do not grant device ownership or
-change the broker's operation/approval policy. Separate work sessions and
+change the broker's registered operation capabilities. Separate work sessions and
 shared-key identity are explained in [STDIO-CLIENTS.md](STDIO-CLIENTS.md).
 
-## Safer approval workflow
+## Prepare and explicitly execute
 
-Start `uv run cardputer serve --config examples/mock-safe.toml` instead. MCP
-clients can prepare plans but cannot grant approvals. In PowerShell:
+Use the existing authenticated broker and its private client environment:
 
 ```powershell
-$lease = uv run cardputer acquire --owner local_cli --seconds 300 | ConvertFrom-Json
-$plan = uv run cardputer prepare --session $lease.session --job trial-001 --test diagnostics | ConvertFrom-Json
-uv run cardputer approve --state-dir .state/safe --plan $plan.plan_hash
-# Inspect the printed target, effects and recovery, then type APPROVE
-uv run cardputer execute --session $lease.session --plan $plan.plan_hash
-uv run cardputer job trial-001
-uv run cardputer release --session $lease.session
+$lease = uv run cardputer --auth-source environment acquire --owner local_cli --seconds 300 | ConvertFrom-Json
+$plan = uv run cardputer --auth-source environment prepare --session $lease.session --job trial-001 --test diagnostics | ConvertFrom-Json
+# Inspect the immutable target and effects, then explicitly submit execution.
+uv run cardputer --auth-source environment execute --session $lease.session --plan $plan.plan_hash
+uv run cardputer --auth-source environment job trial-001
+uv run cardputer --auth-source environment release --session $lease.session
 ```
 
-`approve` is a local operator command, not an MCP tool. It only writes an approval
-record to the local SQLite database while the broker is running. The broker
-atomically consumes that approval and inserts the exact job in one transaction.
-The SHA-256 binds the broker epoch, session, synthetic device, backend, job ID,
-test, and ordered stages. Changing any field invalidates it. Approvals cannot be
-reused for another job, lease, or broker restart. MCP annotations are descriptive;
-actual enforcement is in the broker. If an agent is given shell/database access,
-that agent is inside this local-operator trust boundary; an `APPROVE` prompt is
-not a security boundary against that agent.
-
-For the GUI workflow, submit before reviewing: `execute_test` with the same
-session and plan hash plus `wait_for_approval: true`, or the CLI's
-`execute --wait-for-approval`. This returns immediately with an `awaiting_approval`
-job. After inspecting **Approve & start**, one local click approves and queues
-that exact request. The original lease deadline also bounds the intent, even if
-the client later renews the lease. Use `cancel_job` to cancel an unstarted request.
-Repeated submission cannot create another execution. Without this explicit
-option, the earlier approve-then-execute workflow remains available.
-Submitted requests require the live GUI review; the legacy SQLite `approve` CLI
-rejects them with `submitted_plan_requires_gui_approval`. Its existing
-prepared-only mode remains available. Changing a plan's submission state while
-that CLI consent prompt is open invalidates the approval.
-
-Lease capabilities authorize operations within a session. Keep them out of
-public videos, chat, shared terminal history and screenshots. Display names
-`local_cli` and `remote_mcp` are informational labels in mock mode. Serial mode
-binds ownership to distinct authenticated clients.
+The SHA-256 binds the epoch, session, backend, device, job and ordered stages.
+Changing a bound field requires a new plan. Device execution keeps its original
+submission deadline; renewal does not revive expired or cancelled intent.
+Lease capabilities are private. Owner labels do not replace authenticated identity.
 
 ## Architecture and invariants
 
@@ -340,8 +279,8 @@ Future authenticated Tunnel ingress (not connected) --------^
 - Job IDs are unique within the retained database. Retries of one immutable plan
   return its original job; a conflicting reuse is rejected. After lease expiry,
   read `job_status` instead of trying to execute an old capability
-- Restart cancels unstarted registered-profile jobs and quarantines interrupted
-  running jobs and legacy device work as needs_review. Nothing is replayed.
+- Restart cancels unstarted jobs and quarantines interrupted
+  running jobs as needs_review. Nothing is replayed.
   Existing unacknowledged reviews remain blocking; installation clears none
 - Device disconnects and uncertain adapter errors quarantine work for review.
   Ordinary source/build failure with confirmed cleanup is terminal without review.
@@ -374,30 +313,29 @@ The endpoint is `http://127.0.0.1:8765/mcp`. Tools with arguments accept a neste
 | --- | --- | --- |
 | `device_status` | none | Read backend/device/broker status |
 | `read_logs` | optional cursor, limit | Read shared cached events |
-| `read_device_logs` | job ID | Read your approved, completed device log report from RAM |
+| `read_device_logs` | job ID | Read your completed device log report from RAM |
 | `acquire_session` | owner, lease_seconds | Obtain private session capability |
 | `renew_session` | session, lease_seconds | Extend an unexpired lease |
 | `release_session` | session | Release idle ownership, cancel queued work |
 | `prepare_test` | session, job_id, test | Persist immutable allowlisted plan |
-| `execute_test` | plan_hash, optional session / wait_for_approval | Run a registered source/build plan; device operations retain lease and approval |
+| `execute_test` | plan_hash, optional session; deprecated wait_for_approval ignored | Queue the exact plan; device operations require an owned live lease |
 | `job_status` | job_id | Read durable job result |
 | `read_capture` | job_id | Read your completed PNG from five-minute memory cache |
 | `cancel_job` | session, job_id | Cancel queued work only |
-| `request_home_recovery` | job_id, source_job_id | Propose a separately locally approved single DERBY exit after recorded capture failure/close |
+| `request_home_recovery` | job_id, source_job_id | Request one bounded DERBY exit after recorded capture failure/close |
 | `cancel_home_recovery` | job_id, plan_hash | Stop your bounded recovery, retaining ownership until confirmed close |
 
-See [bounded HOME recovery](HOME-RECOVERY.md) for exact eligibility, local approval,
+See [bounded HOME recovery](HOME-RECOVERY.md) for exact eligibility, authenticated execution,
 effects, freshness checks and single-use failure behavior. It does not clear other
 review barriers or grant capture/flash authority.
 
 Mock tests: `diagnostics`, `firmware_workflow`, `capture_home`. Serial tests:
 `passive_observe`, `firmware_observe`, `restart_and_observe`, `hello`, `capture_home`,
-with mandatory local approval and
-authentication. Capture requires an authenticated principal-bound lease even in
+with authentication and explicit execution. Capture requires an authenticated principal-bound lease even in
 mock mode. No generic shell, raw serial, arbitrary file path, command upload,
 or fault injection tool exists. Flash accepts only registered device IDs and
-successful owned build/backup jobs with independent exact local approval. Restart is a fixed, individually
-approved job, not an arbitrary serial command tool. Domain failures use structured `{ok:false,error:...}`;
+successful owned build/backup jobs and a separate explicit execute request. Restart is a fixed, separately
+requested job, not an arbitrary serial command tool. Domain failures use structured `{ok:false,error:...}`;
 SDK validation failures return a generic MCP tool error without reflecting inputs.
 
 ## Windows 11 USB boundary
@@ -444,7 +382,7 @@ one broker and the adapter must also acquire OS-level serial exclusivity.
   approvals, private local configuration and `.env` files are ignored by Git
 - The shared event cache contains structured synthetic events or exact allowlisted serial
   markers, not raw firmware logs. Unknown serial text, capabilities and raw driver
-  exceptions are not saved in SQLite/event logs. Separately approved device log
+  exceptions are not saved in SQLite/event logs. Separately requested device log
   reports are bounded, redacted, principal-bound and retained only in RAM; see
   [DEVICE-LOGS.md](DEVICE-LOGS.md)
 - Config `state_dir` is relative to the directory from which you launch the server.
@@ -463,7 +401,7 @@ uv run pytest -q
 
 Tests include real TCP/HTTP MCP discovery and tool calls, client disconnect and
 reconnect, two origins sharing one owner, whole-workflow locking, active lease
-expiry, queue cancellation, approval consumption, retry deduplication, recovery
+expiry, queue cancellation, explicit execution, retry deduplication, recovery
 review, disconnect quarantine, port changes, bounded log fan-out, rejection of
 credential-like inputs in error messages, and HTTP trust boundaries.
 

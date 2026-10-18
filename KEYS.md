@@ -8,10 +8,10 @@ No persistent user key is created merely by installing, starting or updating the
 
 - CSPRNG 256-bit secrets, public random key ID, SHA-256 verifier only in SQLite
 - Default remote origin, read-only scope, one-hour expiry; maximum 30 days
-- Explicit `--control` grants device session/plan/execute requests, but is not
-  automatic device permission. Exact local approval is the default; optional
-  [operator capture policies](CAPTURE-PERMISSIONS.md) can permit only their
-  bounded capture/image operations. Lease ownership and needs_review always apply
+- Explicit `--control` enables device session/plan/execute requests within the
+  registered capabilities. The authenticated client explicitly executes each
+  immutable plan without a separate local approval. Lease ownership, current
+  scopes and needs_review barriers still apply
 - Each key has a distinct security principal. A shared key is one principal,
   even on several terminals; it is not physical-device identity
 - Every new HTTP/tool request checks current revocation/expiry/scope. Revocation

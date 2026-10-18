@@ -8,8 +8,12 @@ the existing native operator window and connects to a separately running broker.
 Download the verified distribution artifact from a successful workflow run and
 extract `cardputer-v<version>-windows-x64.zip` into a writable application folder.
 The ZIP contains the executable, this guide, LICENSE, NOTICE, a mock-only example,
-`manifest.json` and `SHA256SUMS.txt`. The outer ZIP checksum is saved alongside it.
-The manifest records the exact source commit/ref and locked build inputs.
+`build-runtime.json`, `manifest.json` and `SHA256SUMS.txt`. The outer ZIP checksum
+is saved alongside it. The manifest records the exact source commit/ref and
+locked build inputs. The bounded build-runtime receipt comes from the actual
+PyInstaller interpreter, binds the EXE/source/lock/build-tool inputs, and records
+its Python and uv versions. Verification also compares Python's major/minor ABI
+to the embedded PyInstaller cookie; it never substitutes the verifier's runtime.
 These artifacts are unsigned. No tag or GitHub Release is created by this workflow.
 
 ```powershell
@@ -25,7 +29,7 @@ In another console in the same folder, read the mock broker:
 .\cardputer.exe logs
 ```
 
-This example binds to loopback with mock execution disabled. Stop its owned
+This example binds to loopback with the synthetic mock backend. Stop its owned
 broker console with Ctrl+C when finished. It does not open USB or connect Tunnel.
 For authenticated mock use, select `--auth-source environment` and
 `serve --require-auth`, using the existing process-only credential procedure in
@@ -39,13 +43,19 @@ included in the distribution. Relative `state_dir` remains relative to process c
 The package includes neither ESP-IDF nor a toolchain, firmware, USB driver or
 native Tunnel client. ESP-IDF remains external and pinned to **6.0.1**; this
 packaging change does not add build/flash capabilities or migrate to 6.1.
-Serial actions retain their existing explicit opt-in and approval requirements.
+Serial actions retain explicit startup opt-in, authentication, owned leases and
+separate immutable-plan execution requests. Product approval flows are retired.
+On upgrade, legacy pending/unstarted jobs are cancelled without replay; uncertain
+running work remains quarantined. Preserve the existing state directory.
 The existing PowerShell source launchers still target the source checkout's venv;
 use `cardputer.exe` directly for this distribution.
 
 ## Maintainer build and validation
 
 The workflow runs on `windows-2022` x64 with Python 3.13.16 and uv 0.12.19.
+The spec refuses a dirty tracked source tree and writes `cardputer.exe.build.json`
+after the build. The archiver requires that receipt beside the EXE; it cannot
+create provenance by inspecting its own Python version or re-label another build.
 Application dependencies use the checked-in `uv.lock` with `--frozen --no-dev`.
 The project is then installed without dependency resolution or build isolation,
 using the explicitly pinned `uv-build==0.12.19` backend.

@@ -15,10 +15,8 @@ from test_flash_lkg_geometry import table as partition_table
 from cardputer_mcp.broker import Broker, BrokerError, digest_plan
 from cardputer_mcp.build_locations import build_location, claim_build_directory
 from cardputer_mcp.flash_models import FlashDevice, UnattendedFlash
-from cardputer_mcp.gui_approvals import ATTESTATIONS
 from cardputer_mcp.models import AcquireRequest, ExecuteRequest, Origin, PrepareRequest
 from cardputer_mcp.models import TestName as Action
-from cardputer_mcp.plan_approval import PlanApprovals
 
 
 @pytest.fixture
@@ -142,23 +140,12 @@ async def env(tmp_path):
         def execute(prepared):
             return broker.execute(ExecuteRequest(session=session, plan_hash=prepared["plan_hash"]))
 
-        def approve(prepared):
-            service = PlanApprovals(broker)
-            detail = service.detail(prepared["plan_hash"])
-            service.approve(
-                prepared["plan_hash"],
-                detail["review_revision"],
-                ATTESTATIONS[detail["attestation"]],
-            )
-
         # Existing explicit manual bootstrap; unattended never authorizes this full backup.
         initial = prepare("backup-one", Action.BACKUP)
-        approve(initial)
         execute(initial)
         await broker.queue.join()
         assert broker.job("backup-one")["state"] == "succeeded"
         initial = prepare("flash-one", build_job_id="build-one", backup_job_id="backup-one")
-        approve(initial)
         execute(initial)
         await broker.queue.join()
         assert broker.job("flash-one")["state"] == "succeeded"
@@ -190,7 +177,6 @@ async def env(tmp_path):
             configure=configure,
             prepare=prepare,
             execute=execute,
-            approve=approve,
             selected=selected,
             output=output,
             source=source,
@@ -202,14 +188,14 @@ async def env(tmp_path):
         source.tearDown()
 
 
-async def test_default_manual_and_allow_flash_does_not_grant_unattended(env):
-    prepared = env.prepare("manual", build_job_id="build-one")
-    assert prepared["approval_required"]
-    with pytest.raises(BrokerError, match="operator_approval_required"):
-        env.execute(prepared)
-    env.configure(env.policy.model_copy(update={"enabled": False}))
-    assert env.prepare("disabled", build_job_id="build-one")["approval_required"]
-    assert env.driver.writes == 1  # Initial manual bundle only.
+async def test_preparation_never_executes_and_no_policy_grant_is_needed(env):
+    before = env.driver.writes
+    prepared = env.prepare("explicit", build_job_id="build-one")
+    assert prepared["approval_required"] is False
+    assert env.store.job("explicit") is None and env.driver.writes == before
+    env.execute(prepared)
+    await env.broker.queue.join()
+    assert env.broker.job("explicit")["state"] == "succeeded"
 
 
 async def test_exact_owned_source_receipt_auto_flash_commits_lkg_once(env):
@@ -217,16 +203,13 @@ async def test_exact_owned_source_receipt_auto_flash_commits_lkg_once(env):
     prepared = env.prepare("automatic", build_job_id="build-one")
     assert not prepared["approval_required"]
     assert not env.execute(prepared)["deduplicated"]
-    token = env.broker.flash_policy_jobs["automatic"]
     await env.broker.queue.join()
     assert env.broker.job("automatic")["state"] == "succeeded", env.broker.job("automatic")
     assert env.store.firmware_current("fixture", "alice")["completed_job"] == "automatic"
     assert env.store.db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
     assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
     assert env.execute(prepared)["deduplicated"]
-    assert not env.broker.flash_policy_jobs and env.driver.closed
-    assert not env.broker.flash_policies.live(token, prepared["plan"])
-    assert not env.broker.flash_policies.live(token, prepared["plan"], committing=True)
+    assert not env.broker._execution_intents and env.driver.closed
 
 
 @pytest.mark.parametrize(
@@ -240,14 +223,14 @@ async def test_exact_owned_source_receipt_auto_flash_commits_lkg_once(env):
         ("source_commit", "b" * 40),
     ],
 )
-async def test_policy_scope_mismatch_requires_manual_without_writes(env, field, value):
+async def test_obsolete_policy_scope_never_grants_or_blocks_explicit_request(env, field, value):
     env.configure(env.policy.model_copy(update={field: value}))
     before = env.driver.writes
     prepared = env.prepare("mismatch", build_job_id="build-one")
-    assert prepared["approval_required"]
-    with pytest.raises(BrokerError, match="operator_approval_required"):
-        env.execute(prepared)
-    assert env.driver.writes == before
+    assert prepared["approval_required"] is False and env.driver.writes == before
+    env.execute(prepared)
+    await env.broker.queue.join()
+    assert env.broker.job("mismatch")["state"] == "succeeded"
 
 
 @pytest.mark.parametrize(
@@ -258,12 +241,21 @@ async def test_policy_scope_mismatch_requires_manual_without_writes(env, field, 
         (Action.FLASH, {"build_job_id": "build-one", "backup_job_id": "backup-one"}),
     ],
 )
-async def test_backup_restore_and_full_backup_inputs_remain_manual(env, action, references):
+async def test_backup_restore_and_full_backup_require_separate_explicit_request(
+    env, action, references
+):
     env.configure()
-    prepared = env.prepare("excluded", action, **references)
-    assert prepared["approval_required"]
-    with pytest.raises(BrokerError, match="operator_approval_required"):
-        env.execute(prepared)
+    prepared = env.prepare("separate", action, **references)
+    assert prepared["approval_required"] is False
+    assert env.store.job("separate") is None
+    env.execute(prepared)
+    await env.broker.queue.join()
+    if action == Action.FLASH:
+        # The original full backup no longer matches the already flashed base.
+        assert env.broker.job("separate")["state"] == "needs_review"
+        assert env.broker.job("separate")["result"] == "flash_backup_stale_needs_review"
+    else:
+        assert env.broker.job("separate")["state"] == "succeeded"
 
 
 @pytest.mark.parametrize(
@@ -288,22 +280,23 @@ async def test_successful_owned_source_provenance_is_required(env, which):
     else:
         root, _ = env.source.snapshots.resolve("fixture", env.receipt, "alice")
         (root / "CMakeLists.txt").write_bytes(b"tampered")
-    prepared = env.prepare("untrusted", build_job_id="build-one")
-    assert prepared["approval_required"]
-    with pytest.raises(BrokerError, match="operator_approval_required"):
+    before = env.driver.writes
+    with pytest.raises(BrokerError, match="flash_binding_invalid|backend_preflight_failed"):
+        prepared = env.prepare("untrusted", build_job_id="build-one")
         env.execute(prepared)
+    assert env.driver.writes == before
 
 
 @pytest.mark.parametrize(
-    "change", ["policy", "project", "principal", "lease", "artifact", "source"]
+    "change", ["registration", "project", "principal", "lease", "artifact", "source"]
 )
 async def test_queued_authorization_is_rechecked_before_device_writes(env, change):
     env.configure()
     prepared = env.prepare("queued", build_job_id="build-one")
     env.execute(prepared)
     before = env.driver.writes
-    if change == "policy":
-        env.configure(env.policy.model_copy(update={"enabled": False}))
+    if change == "registration":
+        env.configure(allow_flash=False)
     elif change == "project":
         project = env.broker.settings.build_projects["fixture"]
         env.broker.settings = env.broker.settings.model_copy(
@@ -324,10 +317,10 @@ async def test_queued_authorization_is_rechecked_before_device_writes(env, chang
     else:
         env.store.set_job("fetch-one", "failed")
     await env.broker.queue.join()
-    assert env.broker.job("queued")["state"] == "cancelled"
+    assert env.broker.job("queued")["state"] in ("cancelled", "needs_review")
     assert env.driver.writes == before
     assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
-    assert not env.broker.flash_policy_jobs
+    assert not env.broker._execution_intents
 
 
 async def test_revocation_in_last_auth_callback_cannot_start_device(env):
@@ -340,8 +333,8 @@ async def test_revocation_in_last_auth_callback_cannot_start_device(env):
         nonlocal calls
         calls += 1
         # Worker's final callback after full policy provenance validation.
-        if calls == 3:
-            env.configure(env.policy.model_copy(update={"enabled": False}))
+        if calls == 2:
+            env.configure(allow_flash=False)
         return True
 
     env.broker.principal_valid = current
@@ -359,7 +352,7 @@ async def test_failed_or_late_revoked_flash_preserves_lkg_and_halts(env, late_re
     if late_revoke:
 
         def commit(plan, result, live):
-            env.configure(env.policy.model_copy(update={"enabled": False}))
+            env.configure(allow_flash=False)
             return original(plan, result, live)
 
         env.broker.firmware_flash.commit_success = commit
@@ -420,12 +413,12 @@ async def test_draining_cancelled_queue_discards_transient_permission(env):
     before = env.driver.writes
     env.broker._cancel_queued("session_released")
     assert env.broker.job("drained")["state"] == "cancelled"
-    assert not env.broker.flash_policy_jobs and env.broker.queue.empty()
+    assert not env.broker._execution_intents and env.broker.queue.empty()
     assert env.driver.writes == before
     assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
 
 
-async def test_second_atomic_commit_guard_rechecks_policy_and_rolls_back(env):
+async def test_second_atomic_commit_guard_rechecks_registration_and_rolls_back(env):
     env.configure()
     prepared = env.prepare("atomic-revoke", build_job_id="build-one")
     original = env.store.finish_firmware
@@ -437,7 +430,7 @@ async def test_second_atomic_commit_guard_rechecks_policy_and_rolls_back(env):
             nonlocal calls
             calls += 1
             if calls == 2:
-                env.configure(env.policy.model_copy(update={"enabled": False}))
+                env.configure(allow_flash=False)
             return guard()
 
         return original(job_id, result, promotion, guarded, *args)
@@ -478,7 +471,7 @@ async def test_last_auth_callback_cannot_replace_owned_fetch_receipt(env, phase,
         nonlocal calls, changed
         calls += 1
         trigger = (
-            (phase == "dispatch" and calls == 3)
+            (phase == "dispatch" and calls == 2)
             or (phase == "prewrite" and env.driver.active)
             or (phase == "commit" and second_guard)
         )
@@ -508,4 +501,4 @@ async def test_last_auth_callback_cannot_replace_owned_fetch_receipt(env, phase,
     else:
         assert guard_calls == 2
         assert env.store.job("fetch-one")["diagnostic"]["source"]["source_receipt"] == env.receipt
-    assert env.driver.closed and not env.broker.flash_policy_jobs
+    assert env.driver.closed and not env.broker._execution_intents

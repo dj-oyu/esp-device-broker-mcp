@@ -1,7 +1,7 @@
 """Opt-in fixed serial operations. No flash, upload, or raw command API.
 
 A single dedicated worker thread opens, reads, writes and closes the port for one
-approved job. All consumers receive sanitized events from that one reader.
+requested job. All consumers receive sanitized events from that one reader.
 """
 
 import asyncio
@@ -66,7 +66,7 @@ class SerialFailure(DeviceOperationFailure):
 
 
 def make_serial() -> SerialPort:
-    # Delayed until an approved job. Construct unopened, suppress control signals
+    # Delayed until an requested job. Construct unopened, suppress control signals
     # before open. Drivers may still glitch DTR/RTS; this is not a no-reset guarantee.
     import serial
 
@@ -321,7 +321,7 @@ class Reader:
 
 
 def capture_home(reader: Reader) -> CapturedImage:
-    """One approved legacy HOME capture; no retry, navigation loop or replay.
+    """One explicitly requested legacy HOME capture; no retry, navigation loop or replay.
 
     Firmware 22f6d54 main/main.c:211-225 treats q/s as text in an editor,
     but :214 and :361 map Esc to KEY_BACK. The operator must first verify HOME
@@ -573,7 +573,7 @@ class SerialBackend:
                 "Device-reported firmware metadata is unverified and does not attest the image",
             ]
         protocol: str = self.config.protocol
-        verification = "operator_attestation_only"
+        verification = "configured_expected_hash_only"
         observe_seconds = self.config.observe_seconds if test == TestName.OBSERVE else None
         if test == TestName.DERBY:
             protocol = "pocketjs-derby-smoke-v1"
@@ -627,10 +627,9 @@ class SerialBackend:
     async def execute_with_local_probe(
         self, plan: dict[str, Any], stage: Callable[[str], None], probe: HomeLineProbe
     ) -> str | BackendResult:
-        """Internal one-job operator diagnostic; not a serial or MCP command API."""
-        if plan.get("test") != TestName.CAPTURE.value:
-            raise SerialFailure("command_not_allowlisted")
-        return await self._execute(plan, stage, probe)
+        """Retired approval opt-in: never open USB or collect a raw HOME line."""
+        probe.clear()
+        raise SerialFailure("command_not_allowlisted")
 
     async def _execute(
         self,

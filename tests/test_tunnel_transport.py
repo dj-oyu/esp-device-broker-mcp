@@ -36,7 +36,6 @@ from cardputer_mcp.backend import MockBackend
 from cardputer_mcp.broker import Broker
 from cardputer_mcp.config import Settings
 from cardputer_mcp.models import Origin
-from cardputer_mcp.operator import approve_plan
 from cardputer_mcp.server import create_app
 
 LOCAL = "a" * 64
@@ -231,7 +230,7 @@ async def test_modern_self_contained_discovery_and_fixed_status(tunnel_contract,
     assert status["device"] == "mock-cardputer"
     assert status["hardware_connected"] is False
     assert status["owner"] is None and status["active_job"] is None
-    assert status["approval_policy"] == "local_operator_per_plan"
+    assert status["execution_policy"] == "authenticated_explicit_request"
     assert status["tunnel"] == "external_lifecycle_unknown"
     assert service.received_versions == [MODERN, MODERN, MODERN]
     assert service.backend.calls == 0
@@ -345,7 +344,7 @@ async def test_remote_bearer_cannot_claim_local_owner(tunnel_contract):
     assert tunnel_contract.backend.calls == 0
 
 
-async def test_direct_and_relay_compete_for_one_broker_and_keep_approval_boundary(tunnel_contract):
+async def test_direct_and_relay_compete_for_one_broker_and_keep_owner_boundary(tunnel_contract):
     service = tunnel_contract
     actors = [("direct", LOCAL, "local_cli"), ("relay", REMOTE, "remote_mcp")]
     leases = await asyncio.gather(
@@ -364,7 +363,7 @@ async def test_direct_and_relay_compete_for_one_broker_and_keep_approval_boundar
     prepared = await service.tool(
         route, "prepare_test", {"session": session, "job_id": "synthetic-relay"}, token=token
     )
-    assert prepared["approval_required"] is True
+    assert prepared["approval_required"] is False
     digest = prepared["plan_hash"]
     for name, request in (
         ("renew_session", {"session": session}),
@@ -375,13 +374,6 @@ async def test_direct_and_relay_compete_for_one_broker_and_keep_approval_boundar
     ):
         stolen = await service.tool(other_route, name, request, token=other_token)
         assert stolen == {"ok": False, "error": "authenticated_owner_mismatch"}
-    denied = await service.tool(
-        route, "execute_test", {"session": session, "plan_hash": digest}, token=token
-    )
-    assert denied == {"ok": False, "error": "operator_approval_required"}
-    assert service.backend.calls == 0
-    # Only the existing local operator function grants this exact synthetic plan.
-    approve_plan(service.broker.settings.state_dir, digest, lambda _: f"APPROVE {digest}")
     accepted = await service.tool(
         route, "execute_test", {"session": session, "plan_hash": digest}, token=token
     )
@@ -439,18 +431,16 @@ async def test_relay_rejected_input_is_not_echoed_or_persisted(tunnel_contract, 
     assert service.backend.calls == 0
 
 
-async def test_remote_relay_cannot_supply_its_own_approval(tunnel_contract):
+async def test_remote_relay_explicit_execute_rejects_legacy_approval_fields(tunnel_contract):
     service = tunnel_contract
     acquired = await service.tool("relay", "acquire_session", {"owner": "remote_mcp"})
     session = acquired["session"]
     prepared = await service.tool(
-        "relay", "prepare_test", {"session": session, "job_id": "synthetic-unapproved"}
+        "relay", "prepare_test", {"session": session, "job_id": "synthetic-explicit"}
     )
-    assert prepared["approval_required"] is True
+    assert prepared["approval_required"] is False
     request = {"session": session, "plan_hash": prepared["plan_hash"]}
-    denied = await service.tool("relay", "execute_test", request)
-    assert denied == {"ok": False, "error": "operator_approval_required"}
-    # Approval is not a remotely callable tool, nor an accepted tool argument.
+    # Retired approval tools and extra grant fields remain invalid inputs.
     for tool, arguments in (
         ("approve_plan", {"plan_hash": prepared["plan_hash"]}),
         ("execute_test", {"request": {**request, "approved": True}}),
@@ -459,8 +449,11 @@ async def test_remote_relay_cannot_supply_its_own_approval(tunnel_contract):
         rejected = await service.relay.post(body, headers)
         assert rejected.status_code == 200
         assert rejected.json()["result"]["isError"] is True
-    denied = await service.tool("relay", "execute_test", request)
-    assert denied == {"ok": False, "error": "operator_approval_required"}
     assert service.backend.calls == 0
+    accepted = await service.tool("relay", "execute_test", request)
+    assert accepted["ok"] is True
+    async with asyncio.timeout(5):
+        await service.broker.queue.join()
+    assert service.backend.calls == service.backend.max_active == 1
     assert service.broker.queue.empty()
     await service.tool("relay", "release_session", {"session": session})

@@ -9,14 +9,11 @@ from __future__ import annotations
 import math
 import queue
 import threading
-import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from textwrap import wrap
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from .gui_approvals import PlanList
-from .gui_plan_badge import PlanBadge
 from .http_diagnostics import DenialReason
 from .mcp_diagnostics import parse_summary
 from .operator_client import (
@@ -42,29 +39,11 @@ class OperatorAPI(Protocol):
     def cancel(self, request_id: str) -> dict[str, Any]: ...
     def reorder(self, request_id: str, position: int, expected_revision: str) -> dict[str, Any]: ...
     def release(self, lease_id: str) -> dict[str, Any]: ...
-    def plans(self) -> dict[str, Any]: ...
-    def plan(self, plan_hash: str) -> dict[str, Any]: ...
-    def approve(
-        self,
-        plan_hash: str,
-        review_revision: str,
-        attestation: str,
-        retain_local_home_line: bool = False,
-    ) -> dict[str, Any]: ...
     def local_home_line(
         self, job_id: str, plan_hash: str, diagnostic_id: str
     ) -> dict[str, Any]: ...
     def images(self) -> dict[str, Any]: ...
     def image(self, job_id: str) -> dict[str, Any]: ...
-    def decide_image(
-        self, job_id: str, sha256: str, delivery_revision: str, decision: str
-    ) -> dict[str, Any]: ...
-    def policy_options(self) -> dict[str, Any]: ...
-    def policies(self) -> dict[str, Any]: ...
-    def create_policy(self, data: dict[str, Any]) -> dict[str, Any]: ...
-    def update_policy(self, data: dict[str, Any]) -> dict[str, Any]: ...
-    def revoke_policy(self, policy_id: str, expected_revision: int) -> dict[str, Any]: ...
-    def arm_capture(self, data: dict[str, Any]) -> dict[str, Any]: ...
 
 
 def _text(value: Any, *, optional: bool = False) -> str:
@@ -317,26 +296,11 @@ class Outcome:
     failed: bool = False
     diagnostics: str | None = None
     catalog: str | None = None
-    plans: PlanList | None = None
-    plans_started_at: float = 0.0
-    plans_checked: bool = False
 
 
 def perform(api: OperatorAPI, operation: Operation) -> Outcome:
-    """Fetch the bounded plan badge on the existing ordinary-refresh worker."""
-    outcome = _perform_queue(api, operation)
-    if operation.action != "refresh":
-        return outcome
-    started_at = time.monotonic()
-    plans = None
-    if outcome.snapshot is not None:
-        try:
-            plans = PlanList.parse(api.plans(), started_at)
-        except Exception:
-            # A failed count is unknown, never zero. Do not expose payloads or
-            # hide an otherwise usable queue snapshot behind this extra read.
-            pass
-    return replace(outcome, plans=plans, plans_started_at=started_at, plans_checked=True)
+    """Read the queue or perform one explicit queue action; no approval polling."""
+    return _perform_queue(api, operation)
 
 
 def _perform_queue(api: OperatorAPI, operation: Operation) -> Outcome:
@@ -511,15 +475,11 @@ class _Window:
         import tkinter as tk
         from tkinter import ttk
 
-        from .gui_policies import PermissionsPanel
         from .gui_timeline import TimelinePanel
 
         self.root, self.api = root, api
         self.tunnel_panel = tunnel_panel
-        self.permissions_panel = PermissionsPanel(root, api)
         self.controller = QueueController()
-        self.plan_badge = PlanBadge()
-        self._badge_view = self.plan_badge.view(time.monotonic())
         self.commands: queue.Queue[Operation | None] = queue.Queue()
         self.results: queue.Queue[Outcome] = queue.Queue()
         self.stopped = threading.Event()
@@ -532,7 +492,6 @@ class _Window:
         style = ttk.Style(root)
         style.configure("Title.TLabel", font=("TkDefaultFont", 18, "bold"))
         style.configure("Heading.TLabel", font=("TkDefaultFont", 11, "bold"))
-        style.configure("NewPlans.TButton", font=("TkDefaultFont", 10, "bold"))
         style.configure("Treeview", rowheight=25)
         header = ttk.Frame(root, padding=(18, 14, 18, 8))
         header.grid(row=0, column=0, sticky="ew")
@@ -562,15 +521,6 @@ class _Window:
             command=lambda: self._submit(self.controller.catalog()),
         )
         self.catalog_button.grid(row=0, column=3, padx=(12, 0))
-        self.plans_button = ttk.Button(
-            header, text=self._badge_view.label, command=self._show_plans
-        )
-        self.plans_button.grid(row=0, column=4, padx=(12, 0))
-        self.plans_notice = ttk.Label(header, text=self._badge_view.notice, wraplength=430)
-        self.plans_notice.grid(row=1, column=2, columnspan=3, sticky="e", pady=(5, 0))
-        ttk.Button(header, text="Permissions...", command=self.permissions_panel.show).grid(
-            row=0, column=5, padx=(12, 0)
-        )
         if tunnel_panel is not None:
             ttk.Button(header, text="Tunnel...", command=tunnel_panel.show).grid(
                 row=0, column=6, padx=(12, 0)
@@ -752,23 +702,11 @@ class _Window:
         self._submit(self.controller.move(direction))
 
     def _release(self) -> None:
-        from tkinter import messagebox
-
         model = self.controller
         if not model.can_release() or not model.snapshot or not model.snapshot.owner:
             return
         owner = model.snapshot.owner
-        if messagebox.askyesno(
-            "Release idle ownership?",
-            f"Release public lease {owner.lease_id}?\n\n"
-            f"Session: {owner.session_id or 'legacy session'}\n"
-            f"Request: {owner.request_id or 'legacy request'}\n\n"
-            "The next waiting request may receive the device. "
-            "The broker will refuse if ownership changed or work is running.",
-            parent=self.root,
-            default="no",
-        ):
-            self._submit(model.release(owner.lease_id))
+        self._submit(model.release(owner.lease_id))
 
     def _worker(self) -> None:
         while not self.stopped.is_set():
@@ -784,10 +722,6 @@ class _Window:
             while True:
                 outcome = self.results.get_nowait()
                 if self.controller.accept(outcome):
-                    if outcome.plans_checked:
-                        self.plan_badge.update(
-                            outcome.plans, outcome.plans_started_at, time.monotonic()
-                        )
                     self._render()
                     if outcome.diagnostics is not None:
                         self._show_diagnostics(outcome.diagnostics)
@@ -799,7 +733,6 @@ class _Window:
             pass
         if self.stopped.is_set():
             return
-        self._render_plan_badge()
         if not self.stopped.is_set():
             self.root.after(75, self._poll)
 
@@ -812,20 +745,6 @@ class _Window:
         from tkinter import messagebox
 
         messagebox.showinfo("MCP info", summary, parent=self.root)
-
-    def _show_plans(self) -> None:
-        self.plan_badge.acknowledge(time.monotonic())
-        self._render_plan_badge()
-        self.timeline_panel.focus_pending()
-
-    def _render_plan_badge(self) -> None:
-        view = self.plan_badge.view(time.monotonic())
-        if view != self._badge_view:
-            self._badge_view = view
-            self.plans_button.configure(
-                text=view.label, style="NewPlans.TButton" if view.new else "TButton"
-            )
-            self.plans_notice.configure(text=view.notice, foreground="#9b1c1c" if view.new else "")
 
     def _auto_refresh(self) -> None:
         if self.stopped.is_set():
@@ -923,9 +842,9 @@ class _Window:
         self._controls()
 
     def _close(self) -> None:
-        for name in ("timeline_panel", "plan_panel", "image_panel", "permissions_panel"):
-            approval_panel = getattr(self, name, None)
-            if approval_panel is not None and not approval_panel.can_close_window():
+        for name in ("timeline_panel",):
+            panel = getattr(self, name, None)
+            if panel is not None and not panel.can_close_window():
                 return
         panel = getattr(self, "tunnel_panel", None)
         if panel is not None:
@@ -934,10 +853,7 @@ class _Window:
             self._finish_close()
 
     def _finish_close(self) -> None:
-        panels = [
-            getattr(self, name, None)
-            for name in ("timeline_panel", "plan_panel", "image_panel", "permissions_panel")
-        ]
+        panels = [getattr(self, name, None) for name in ("timeline_panel",)]
         if any(panel is not None and not panel.can_close_window() for panel in panels):
             return
         for panel in panels:

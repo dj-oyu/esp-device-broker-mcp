@@ -203,27 +203,29 @@ async def test_disconnect_has_no_auto_recovery_or_extra_command():
     assert not port.writes  # Drain detects failure before sending the first key.
 
 
-async def test_port_not_created_at_broker_start_or_plan_approval(tmp_path):
+async def test_port_not_created_until_explicit_authenticated_execution(tmp_path):
     device, port = backend()
     settings = Settings(backend="serial", serial=config(), state_dir=tmp_path)
     with pytest.raises(BrokerError, match="serial_runtime_opt_in_required"):
         Broker(settings, backend=device)
     broker = Broker(
-        settings, backend=device, serial_enabled=True, lock_path=tmp_path / "device.lockfile"
+        settings,
+        backend=device,
+        serial_enabled=True,
+        lock_path=tmp_path / "device.lockfile",
+        principal_valid=lambda principal, *_: principal == "serial-client",
     )
     await broker.start()
     try:
         assert not port.opens
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="serial-client")[
+            "session"
+        ]
         planned = broker.prepare(
             PrepareRequest(session=token, job_id="serial-test", test=Action.HELLO)
         )
         assert not port.opens
         request = ExecuteRequest(session=token, plan_hash=planned["plan_hash"])
-        with pytest.raises(BrokerError, match="operator_approval_required"):
-            broker.execute(request)
-        assert not port.opens
-        broker._store().approve(planned["plan_hash"])
         broker.execute(request)
         await broker.queue.join()
         assert broker.job("serial-test")["state"] == "succeeded"

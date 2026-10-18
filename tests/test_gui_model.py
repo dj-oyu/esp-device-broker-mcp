@@ -86,10 +86,6 @@ class FakeAPI:
             raise self.state_error
         return copy.deepcopy(self.data)
 
-    def plans(self) -> dict[str, Any]:
-        self.calls.append(("plans",))
-        return {"ok": True, "broker_epoch": "a" * 32, "plans": [], "has_more": False}
-
     def _action(self, *args: Any) -> dict[str, Any]:
         self.calls.append(args)
         if self.action_error:
@@ -376,7 +372,7 @@ def test_background_worker_does_not_call_tk_and_close_does_not_touch_broker() ->
     window.commands.put(None)
     worker.join(timeout=2)
     assert not worker.is_alive()
-    assert api.calls == [("state",), ("plans",)]
+    assert api.calls == [("state",)]
 
 
 @pytest.mark.parametrize(

@@ -318,14 +318,16 @@ async def test_review_serial_exception_and_raw_bytes_are_not_persisted(tmp_path:
         backend=backend,
         serial_enabled=True,
         lock_path=tmp_path / "device.lock",
+        principal_valid=lambda *_: True,
     )
     await broker.start()
     try:
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")[
+            "session"
+        ]
         plan = broker.prepare(
             PrepareRequest(session=token, job_id="synthetic-serial", test=DeviceTest.OBSERVE)
         )
-        broker._store().approve(plan["plan_hash"])
         broker.execute(ExecuteRequest(session=token, plan_hash=plan["plan_hash"]))
         await asyncio.wait_for(broker.queue.join(), timeout=2)
         persisted = "\n".join(broker._store().db.iterdump())

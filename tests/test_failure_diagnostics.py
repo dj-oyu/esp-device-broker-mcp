@@ -31,14 +31,16 @@ async def test_failure_code_and_safe_counts_persist_without_replay(tmp_path, fai
         backend=device,
         serial_enabled=True,
         lock_path=tmp_path / "device.lockfile",
+        principal_valid=lambda *_: True,
     )
     await broker.start()
     try:
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")[
+            "session"
+        ]
         plan = broker.prepare(
             PrepareRequest(session=token, job_id="failure-diagnostics", test=Action.HELLO)
         )
-        broker._store().approve(plan["plan_hash"])
         broker.execute(ExecuteRequest(session=token, plan_hash=plan["plan_hash"]))
         await broker.queue.join()
         result = broker.job("failure-diagnostics")

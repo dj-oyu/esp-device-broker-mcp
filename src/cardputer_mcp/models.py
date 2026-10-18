@@ -188,7 +188,11 @@ class PrepareRequest(StrictModel):
 class ExecuteRequest(StrictModel):
     session: Capability | None = None
     plan_hash: Digest
-    wait_for_approval: bool = Field(default=False, strict=True)
+    wait_for_approval: bool = Field(
+        default=False,
+        strict=True,
+        description="Deprecated compatibility input; ignored. Explicit execute queues immediately.",
+    )
 
 
 class CancelRequest(StrictModel):

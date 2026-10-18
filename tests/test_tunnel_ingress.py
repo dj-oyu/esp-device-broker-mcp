@@ -475,7 +475,9 @@ class IngressService:
 
 
 @asynccontextmanager
-async def serve_ingress(tmp_path, monkeypatch, *, enabled=True) -> AsyncIterator[IngressService]:
+async def serve_ingress(
+    tmp_path, monkeypatch, *, enabled=True, expected_backend_calls=0
+) -> AsyncIterator[IngressService]:
     now = [1000.0]
     sequence = itertools.count(1)
     registry_path = tmp_path / "keys.sqlite3"
@@ -540,13 +542,15 @@ async def serve_ingress(tmp_path, monkeypatch, *, enabled=True) -> AsyncIterator
             server.should_exit = True
             await asyncio.wait_for(task, timeout=5)
             registry.close()
-        assert backend.calls == 0
+        assert backend.calls == expected_backend_calls
         assert not (settings.state_dir / "runtime-auth.json").exists()
 
 
 @pytest.fixture
-async def ingress_service(tmp_path, monkeypatch):
-    async with serve_ingress(tmp_path, monkeypatch) as service:
+async def ingress_service(tmp_path, monkeypatch, request):
+    async with serve_ingress(
+        tmp_path, monkeypatch, expected_backend_calls=getattr(request, "param", 0)
+    ) as service:
         yield service
 
 
@@ -565,7 +569,7 @@ async def test_modern_discovery_and_fixed_status_through_real_http(ingress_servi
     status = await service.tool(route, "device_status")
     assert status["backend"] == "mock"
     assert status["hardware_connected"] is False
-    assert status["approval_policy"] == "local_operator_per_plan"
+    assert status["execution_policy"] == "authenticated_explicit_request"
     assert status["owner"] is None and status["active_job"] is None
 
 
@@ -658,7 +662,8 @@ async def test_read_only_ingress_key_keeps_control_scope_restriction(ingress_ser
     assert service.broker.session is None
 
 
-async def test_same_broker_lease_job_and_plan_approval_boundaries(ingress_service):
+@pytest.mark.parametrize("ingress_service", [1], indirect=True)
+async def test_same_broker_lease_job_and_explicit_execution_boundaries(ingress_service):
     service = ingress_service
     first, second = service.keys["first"].token, service.keys["second"].token
     actors = [("/mcp", first), ("/tunnel/mcp", second)]
@@ -681,7 +686,7 @@ async def test_same_broker_lease_job_and_plan_approval_boundaries(ingress_servic
     prepared = await service.tool(
         route, "prepare_test", {"session": session, "job_id": "synthetic-ingress"}, token=token
     )
-    assert prepared["approval_required"] is True
+    assert prepared["approval_required"] is False
     digest = prepared["plan_hash"]
     for name, fields in {
         "renew_session": {},
@@ -694,14 +699,21 @@ async def test_same_broker_lease_job_and_plan_approval_boundaries(ingress_servic
             other_route, name, {"session": session, **fields}, token=other_token
         )
         assert denied == {"ok": False, "error": "authenticated_owner_mismatch"}
+    accepted = await service.tool(
+        route, "execute_test", {"session": session, "plan_hash": digest}, token=token
+    )
+    assert accepted["ok"] is True
+    async with asyncio.timeout(5):
+        await service.broker.queue.join()
     for path in ("/mcp", "/tunnel/mcp"):
-        denied = await service.tool(
+        repeated = await service.tool(
             path, "execute_test", {"session": session, "plan_hash": digest}, token=token
         )
-        assert denied == {"ok": False, "error": "operator_approval_required"}
+        assert repeated["deduplicated"] is True and repeated["state"] == "succeeded"
         job = await service.tool(path, "job_status", {"job_id": "synthetic-ingress"}, token=token)
-        assert job == {"ok": False, "error": "job_not_found"}
-    assert service.backend.calls == 0 and service.broker.queue.empty()
+        assert job["ok"] is True and job["state"] == "succeeded"
+    assert service.backend.calls == service.backend.max_active == 1
+    assert service.broker.queue.empty()
     assert (await service.tool(other_route, "release_session", {"session": session}, token=token))[
         "ok"
     ]

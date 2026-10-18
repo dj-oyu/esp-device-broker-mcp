@@ -1,4 +1,4 @@
-"""Manual approval never extends a client's revoked authorization to queued work."""
+"""Explicit execution never extends a client's revoked authorization to queued work."""
 
 import pytest
 
@@ -8,7 +8,7 @@ from cardputer_mcp.models import AcquireRequest, ExecuteRequest, Origin, Prepare
 
 
 @pytest.mark.parametrize("change", ["revoke", "expire_in_callback"])
-async def test_legacy_queued_job_rechecks_current_principal_before_start(tmp_path, change):
+async def test_explicit_queued_job_rechecks_current_principal_before_start(tmp_path, change):
     now = [100.0]
     valid = [True]
     crossing = [False]
@@ -28,7 +28,6 @@ async def test_legacy_queued_job_rechecks_current_principal_before_start(tmp_pat
     try:
         lease = broker.acquire(AcquireRequest(owner=Origin.REMOTE), principal_id="synthetic-client")
         plan = broker.prepare(PrepareRequest(session=lease["session"], job_id="queued"))
-        broker._store().approve(plan["plan_hash"])
         broker.execute(ExecuteRequest(session=lease["session"], plan_hash=plan["plan_hash"]))
         if change == "revoke":
             valid[0] = False

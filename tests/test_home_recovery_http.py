@@ -1,25 +1,15 @@
-"""Authenticated MCP/local approval and optional native CLI; synthetic serial only."""
-
-import asyncio
-import hashlib
-import os
-import sys
-from pathlib import Path
+"""Explicit MCP HOME recovery after a proved serial close; synthetic serial only."""
 
 import httpx2
 import pytest
+from test_derby_http import derby_service as derby_service
 from test_derby_smoke import Wire
 from test_home_recovery import Clock, Port
-from test_operator_launch_http import PythonCliProcess
-from test_operator_launch_pipe import exchange
 from test_registry_http import LOCAL
-from test_registry_http import registry_service as registry_service
+from test_serial_http import serial_service as serial_service
 
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import SerialSettings
-from cardputer_mcp.home_recovery import ATTESTATION
-from cardputer_mcp.home_recovery_launch import HomeRecoveryLaunchScope, HomeRecoveryLaunchSlot
-from cardputer_mcp.operator_launch_pipe import WindowsOperatorLaunchPipe, current_user_sid
 from cardputer_mcp.ports import PortInfo
 from cardputer_mcp.serial_backend import SerialBackend
 
@@ -61,18 +51,6 @@ async def fail_derby(env, remote, http):
         "execute_test",
         {"session": lease["session"], "plan_hash": p["plan_hash"], "wait_for_approval": True},
     )
-    review = (await http.post("/operator/plan", json={"plan_hash": p["plan_hash"]})).json()
-    approved = (
-        await http.post(
-            "/operator/approve-plan",
-            json={
-                "plan_hash": p["plan_hash"],
-                "review_revision": review["review_revision"],
-                "attestation": "DEVICE HOME AND FIRMWARE VERIFIED",
-            },
-        )
-    ).json()
-    assert approved["ok"], approved
     await env.resident.queue.join()
     source_job = env.resident.job("derby-source")
     assert source_job["result"] == "serial_capture_invalid", source_job
@@ -82,127 +60,56 @@ async def fail_derby(env, remote, http):
     return home
 
 
-@pytest.mark.parametrize(
-    "change", [None, "remote_approve", "wrong_attestation", "cancel", "revoke"]
-)
-async def test_real_closed_derby_failure_has_dedicated_approved_home_transition(
-    registry_service, change
+@pytest.mark.parametrize("requester", ["second", "local"])
+async def test_closed_derby_recovery_requires_same_authenticated_requester(
+    derby_service, requester
 ):
-    env = registry_service
+    env = derby_service
     async with (
         httpx2.AsyncClient(
             base_url=env.url.removesuffix("/mcp"),
             trust_env=False,
             headers={"Authorization": "Bearer " + LOCAL},
         ) as http,
-        connect(env.url, env.keys["second"].token) as remote,
+        connect(env.url, env.keys["second"].token) as source_remote,
     ):
-        home = await fail_derby(env, remote, http)
-        names = {t.name for t in (await remote.list_tools()).tools}
-        assert {"request_home_recovery", "cancel_home_recovery"} <= names
-        p = await call(
-            remote, "request_home_recovery", {"job_id": "home-one", "source_job_id": "derby-source"}
-        )
-        assert p["ok"] and p["state"] == "awaiting_approval", p
-        assert not home.opens
-        # The old generic/capture approval route must not approve this operation.
-        old = (await http.post("/operator/plan", json={"plan_hash": p["plan_hash"]})).json()
-        assert not old["ok"] and not home.opens
-        r = (
-            await http.post("/operator/home-recovery-review", json={"plan_hash": p["plan_hash"]})
-        ).json()
-        assert r["ok"], r
-        body = {
-            "plan_hash": p["plan_hash"],
-            "review_revision": r["review_revision"],
-            "attestation": ATTESTATION,
-        }
-        headers = None
-        if change == "remote_approve":
-            headers = {"Authorization": "Bearer " + env.keys["second"].token}
-        elif change == "wrong_attestation":
-            body["attestation"] = "DEVICE HOME AND FIRMWARE VERIFIED"
-        elif change == "cancel":
-            await call(
-                remote, "cancel_home_recovery", {"job_id": "home-one", "plan_hash": p["plan_hash"]}
+        home = await fail_derby(env, source_remote, http)
+        async with connect(env.url, env.keys[requester].token) as remote:
+            names = {t.name for t in (await remote.list_tools()).tools}
+            assert {"request_home_recovery", "cancel_home_recovery"} <= names
+            response = await remote.call_tool(
+                "request_home_recovery",
+                {"request": {"job_id": "home-one", "source_job_id": "derby-source"}},
             )
-        elif change == "revoke":
-            env.registry.revoke(env.keys["second"].metadata.key_id)
-        response = await http.post("/operator/home-recovery-approve", json=body, headers=headers)
-        approval = response.json()
-        if change:
-            assert not approval.get("ok", False) and not home.opens, approval
-            assert env.resident.job("derby-source")["reviewed"] == 0
-            return
-        assert approval["ok"], approval
-        await env.resident.home_recovery.entries[p["plan_hash"]].task
-        status = await call(remote, "job_status", {"job_id": "home-one"})
-        assert status["state"] == "succeeded", status
-        assert home.writes == [b"q"] and home.closes == 1
-        assert [x["event"] for x in status["recovery_audit"]] == [
-            "source_close_confirmed",
-            "requested",
-            "attempt_consumed",
-            "serial_open",
-            "q_written",
-            "fresh_home_observed",
-            "serial_close",
-            "fresh_home_and_close_confirmed",
-        ]
-        assert env.resident.job("derby-source")["reviewed"] == 1
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Native Windows same-user pipe and formal CLI")
-async def test_exact_recovery_operator_window_through_formal_cli(registry_service, tmp_path):
-    env = registry_service
-    async with (
-        httpx2.AsyncClient(
-            base_url=env.url.removesuffix("/mcp"),
-            trust_env=False,
-            headers={"Authorization": "Bearer " + LOCAL},
-        ) as http,
-        connect(env.url, env.keys["second"].token) as remote,
-    ):
-        home = await fail_derby(env, remote, http)
-        p = await call(
-            remote,
-            "request_home_recovery",
-            {"job_id": "home-window", "source_job_id": "derby-source"},
-        )
-        assert p["ok"], p
-        plan = p["plan"]
-        scope = HomeRecoveryLaunchScope(
-            plan_hash=p["plan_hash"],
-            **{k: plan[k] for k in HomeRecoveryLaunchScope.model_fields if k != "plan_hash"},
-        )
-        exe = Path(sys.executable)
-        digest = hashlib.sha256(await asyncio.to_thread(exe.read_bytes)).hexdigest()
-        slot = HomeRecoveryLaunchSlot(
-            exe,
-            digest,
-            tmp_path,
-            env.url,
-            LOCAL,
-            current_user_sid(),
-            scope=scope,
-            process=PythonCliProcess(),
-        )
-        endpoint = WindowsOperatorLaunchPipe(slot)
-        try:
-            r = await exchange(endpoint, {**scope.model_dump(), "action": "home-recovery-review"})
-            assert r["ok"], r
-            approved = await exchange(
-                endpoint,
-                {
-                    **scope.model_dump(),
-                    "action": "home-recovery-approve",
-                    "review_revision": r["review"]["review_revision"],
-                    "attestation": ATTESTATION,
-                },
-            )
-            assert approved["ok"] and slot.closed and slot._local_token is None, approved
+            if requester != "second":
+                assert response.structured_content["ok"] is False
+                assert not home.opens and not home.writes
+                assert env.resident.job("derby-source")["reviewed"] == 0
+                return
+            assert not response.is_error, response
+            p = response.structured_content
+            assert p["ok"] and p["state"] == "running", p
+            assert "attestation" not in p and "review_revision" not in p
             await env.resident.home_recovery.entries[p["plan_hash"]].task
-            assert env.resident.job("home-window")["state"] == "succeeded"
+            status = await call(remote, "job_status", {"job_id": "home-one"})
+            assert status["state"] == "succeeded", status
+            assert home.writes == [b"q"] and home.closes == 1
+            assert [x["event"] for x in status["recovery_audit"]] == [
+                "source_close_confirmed",
+                "attempt_consumed",
+                "serial_open",
+                "q_written",
+                "fresh_home_observed",
+                "serial_close",
+                "fresh_home_and_close_confirmed",
+            ]
+            assert env.resident.job("derby-source")["reviewed"] == 1
+            repeated = await remote.call_tool(
+                "request_home_recovery",
+                {"request": {"job_id": "home-two", "source_job_id": "derby-source"}},
+            )
+            assert repeated.structured_content["ok"] is False and home.writes == [b"q"]
+            for route in ("home-recovery-review", "home-recovery-approve"):
+                retired = await http.post("/operator/" + route, json={"plan_hash": p["plan_hash"]})
+                assert retired.status_code == 410
             assert home.writes == [b"q"]
-        finally:
-            endpoint.close()

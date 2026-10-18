@@ -11,7 +11,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "packaging"))
-from release_windows import MEMBERS, create_archive, release_version, verify_archive  # noqa: E402
+from release_windows import (  # noqa: E402
+    MEMBERS,
+    create_archive,
+    digest,
+    record_build_runtime,
+    release_version,
+    verify_archive,
+)
 
 
 class WindowsReleaseTests(unittest.TestCase):
@@ -25,10 +32,26 @@ class WindowsReleaseTests(unittest.TestCase):
         struct.pack_into("<I", pe, 60, 64)
         pe[64:68] = b"PE\0\0"
         struct.pack_into("<H", pe, 68, 0x8664)
+        pe.extend(
+            struct.pack("!8sIIII64s", b"MEI\014\013\012\013\016", 88, 0, 0, 314, b"python314.dll")
+        )
         self.exe.write_bytes(pe)
         self.version = release_version("refs/heads/test")
         self.ref = f"refs/tags/v{self.version}"
         self.commit = "a" * 40
+        self.runtime_path = Path(str(self.exe) + ".build.json")
+        self.runtime = {
+            "schema_version": 1,
+            "python_version": "3.14.3",
+            "uv_version": "0.12.19",
+            "source_commit": self.commit,
+            "exe_sha256": digest(self.exe.read_bytes()),
+            "uv_lock_sha256": digest((ROOT / "uv.lock").read_bytes()),
+            "build_requirements_sha256": digest(
+                (ROOT / "packaging/requirements-windows-build.txt").read_bytes()
+            ),
+        }
+        self.runtime_path.write_text(json.dumps(self.runtime), encoding="utf-8")
 
     def archive(self):
         return create_archive(self.exe, self.folder / "dist", self.ref, self.commit)
@@ -59,7 +82,51 @@ class WindowsReleaseTests(unittest.TestCase):
         manifest = verify_archive(archive, self.ref, self.commit)
         self.assertEqual(manifest["version"], self.version)
         self.assertEqual(manifest["source_commit"], self.commit)
+        self.assertEqual(manifest["python_version"], "3.14.3")
         self.assertTrue(Path(str(archive) + ".sha256").is_file())
+
+    def test_manifest_records_build_python_instead_of_archiver_runtime(self):
+        from unittest.mock import patch
+
+        with patch("release_windows.platform.python_version", return_value="3.13.16"):
+            archive = self.archive()
+        manifest = verify_archive(archive, self.ref, self.commit)
+        self.assertEqual(manifest["python_version"], "3.14.3")
+
+    def test_build_runtime_receipt_binds_exe_source_and_lock(self):
+        for field in ("exe_sha256", "source_commit", "uv_lock_sha256", "build_requirements_sha256"):
+            with self.subTest(field=field):
+                self.runtime_path.write_text(json.dumps(dict(self.runtime, **{field: "0" * 64})))
+                with self.assertRaisesRegex(ValueError, "build_runtime_binding"):
+                    self.archive()
+
+    def test_314_exe_cannot_be_relabelled_as_313_by_receipt_edit(self):
+        self.runtime_path.write_text(json.dumps(dict(self.runtime, python_version="3.13.16")))
+        with self.assertRaisesRegex(ValueError, "build_runtime_abi"):
+            self.archive()
+
+    def test_archive_receipt_cannot_be_modified_after_publication(self):
+        archive = self.archive()
+        self.rewrite(
+            archive,
+            "build-runtime.json",
+            json.dumps(dict(self.runtime, uv_version="9.9.9")).encode(),
+        )
+        with self.assertRaisesRegex(ValueError, "manifest"):
+            verify_archive(archive, self.ref, self.commit)
+
+    def test_actual_build_interpreter_writes_hash_bound_receipt(self):
+        from unittest.mock import patch
+
+        with (
+            patch("release_windows.platform.python_version", return_value="3.14.3"),
+            patch(
+                "release_windows.subprocess.check_output",
+                side_effect=["", self.commit + "\n", "uv 0.12.19\n"],
+            ),
+        ):
+            receipt = record_build_runtime(self.exe)
+        self.assertEqual(json.loads(receipt.read_text()), self.runtime)
 
     def test_modified_executable_is_rejected(self):
         archive = self.archive()

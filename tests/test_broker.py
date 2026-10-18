@@ -27,6 +27,7 @@ async def broker(tmp_path):
     instance = Broker(
         Settings(state_dir=tmp_path / "state", mock_stage_seconds=0.001),
         lock_path=tmp_path / "device.lockfile",
+        principal_valid=lambda *args: True,
     )
     await instance.start()
     yield instance
@@ -37,17 +38,15 @@ def plan(broker, token, job="job-one", test=Workflow.DIAGNOSTICS):
     return broker.prepare(PrepareRequest(session=token, job_id=job, test=test))["plan_hash"]
 
 
-async def test_approval_is_local_exact_and_atomic(broker):
-    token = broker.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+async def test_explicit_authenticated_execute_is_atomic_and_deduplicated(broker):
+    token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")["session"]
     digest = plan(broker, token)
-    request = ExecuteRequest(session=token, plan_hash=digest)
-    with pytest.raises(BrokerError, match="operator_approval_required"):
-        broker.execute(request)
-    with pytest.raises(ValueError, match="approval_not_granted"):
-        approve_plan(broker.settings.state_dir, digest, lambda _: "yes")
-    approve_plan(broker.settings.state_dir, digest, lambda _: f"APPROVE {digest}")
+    request = ExecuteRequest(session=token, plan_hash=digest, wait_for_approval=True)
+    with pytest.raises(ValueError, match="approval_interface_retired"):
+        approve_plan(broker.settings.state_dir, digest, lambda _: pytest.fail("must not prompt"))
     first = broker.execute(request)
     second = broker.execute(request)
+    assert first["state"] == "queued"
     assert first["id"] == second["id"]
     assert second["deduplicated"]
     assert broker._store().db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
@@ -57,11 +56,10 @@ async def test_approval_is_local_exact_and_atomic(broker):
 
 
 async def test_two_clients_one_complete_workflow(broker):
-    token = broker.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+    token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")["session"]
     with pytest.raises(BrokerError, match="device_busy"):
         broker.acquire(AcquireRequest(owner=Origin.REMOTE))
     digest = plan(broker, token, test=Workflow.WORKFLOW)
-    broker._store().approve(digest)
     broker.execute(ExecuteRequest(session=token, plan_hash=digest))
     await asyncio.sleep(0)
     with pytest.raises(BrokerError, match="active_job_cannot_release"):
@@ -89,10 +87,11 @@ async def test_cancel_only_queued_and_capacity(tmp_path):
         Settings(state_dir=tmp_path, max_queue=1, allow_mock_execution=True),
         backend=backend,
         lock_path=tmp_path / "device.lockfile",
+        principal_valid=lambda *args: True,
     )
     await b.start()
     try:
-        token = b.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+        token = b.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")["session"]
         a = plan(b, token, "a")
         b.execute(ExecuteRequest(session=token, plan_hash=a))
         await asyncio.sleep(0)
@@ -112,9 +111,8 @@ async def test_cancel_only_queued_and_capacity(tmp_path):
 
 
 async def test_disconnect_quarantines_and_offline_review(broker):
-    token = broker.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+    token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")["session"]
     digest = plan(broker, token)
-    broker._store().approve(digest)
     broker.backend.disconnect_next = True
     broker.execute(ExecuteRequest(session=token, plan_hash=digest))
     await broker.queue.join()
@@ -137,9 +135,8 @@ async def test_no_capability_or_backend_exception_in_persistent_data(broker):
             )
 
     broker.backend = Failing()
-    token = broker.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+    token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")["session"]
     digest = plan(broker, token)
-    broker._store().approve(digest)
     broker.execute(ExecuteRequest(session=token, plan_hash=digest))
     await broker.queue.join()
     visible = json.dumps([broker.status(), broker.read_logs(LogRequest()), broker.job("job-one")])

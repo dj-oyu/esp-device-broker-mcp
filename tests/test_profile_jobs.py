@@ -206,6 +206,7 @@ async def test_queue_cancel_read_scope_config_and_old_review_boundaries(
     with pytest.raises(BrokerError, match="recovery_review_required"):
         prepare(service, "after-old-review")
     assert broker.job("old-review")["state"] == "needs_review"
+    assert broker.job("old-review")["reviewed"] == 0
 
 
 @pytest.mark.parametrize("uncertainty", ["process", "output_lock", "database"])
@@ -257,7 +258,7 @@ def test_restart_does_not_replay_or_clear_old_review(tmp_path: Path):
         store.recover()
         assert store.job("profile-queued")["state"] == "cancelled"
         assert store.job("profile-running")["state"] == "needs_review"
-        assert store.job("legacy-queued")["state"] == "needs_review"
+        assert store.job("legacy-queued")["state"] == "cancelled"
         assert store.needs_review()
     finally:
         store.close()

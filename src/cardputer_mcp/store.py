@@ -1,5 +1,6 @@
 """SQLite is accessed only by the resident broker (or offline operator under its lock)."""
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
@@ -47,6 +48,24 @@ class Store:
         CREATE TABLE IF NOT EXISTS home_recovery_approvals (
             recovery_job TEXT PRIMARY KEY, principal_id TEXT NOT NULL, review_revision TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS execution_requests (
+            job_id TEXT PRIMARY KEY, plan_hash TEXT NOT NULL, principal_id TEXT NOT NULL,
+            created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS execution_audit (
+            sequence INTEGER PRIMARY KEY, job_id TEXT NOT NULL, plan_hash TEXT NOT NULL,
+            principal_id TEXT, event TEXT NOT NULL,
+            created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS operation_migrations (
+            version TEXT PRIMARY KEY, created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS home_recovery_executions (
+            recovery_job TEXT PRIMARY KEY, source_job TEXT NOT NULL UNIQUE,
+            source_hash TEXT NOT NULL, recovery_hash TEXT NOT NULL,
+            principal_id TEXT NOT NULL, proof TEXT NOT NULL,
+            created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS jobs (
             id TEXT PRIMARY KEY, plan_hash TEXT NOT NULL, state TEXT NOT NULL,
             stage TEXT, result TEXT, diagnostic TEXT, reviewed INTEGER NOT NULL DEFAULT 0,
@@ -70,6 +89,30 @@ class Store:
         if "diagnostic" not in columns:
             self.db.execute("ALTER TABLE jobs ADD COLUMN diagnostic TEXT")
         self.db.commit()
+        self.migrate_explicit_requests()
+
+    def migrate_explicit_requests(self) -> None:
+        """Retire legacy pending work once; historical grants never become requests."""
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            marker = "explicit_client_requests_v1"
+            if self.db.execute(
+                "SELECT 1 FROM operation_migrations WHERE version=?", (marker,)
+            ).fetchone():
+                return
+            self.db.execute("""INSERT INTO execution_audit(job_id,plan_hash,event)
+                SELECT id,plan_hash,CASE WHEN state='running'
+                    THEN 'legacy_running_quarantined' ELSE 'legacy_pending_cancelled' END
+                FROM jobs WHERE state IN ('awaiting_approval','queued','running')""")
+            self.db.execute("""UPDATE jobs SET state='cancelled',
+                result='explicit_requests_migration_no_replay', finished=CURRENT_TIMESTAMP
+                WHERE state IN ('awaiting_approval','queued')""")
+            self.db.execute("""UPDATE jobs SET state='needs_review', reviewed=0,
+                result='explicit_requests_migration_running_uncertain', finished=CURRENT_TIMESTAMP
+                WHERE state='running'""")
+            # Keep the old grants and decision records as historical evidence.
+            # No new execution path reads them or turns them into client intent.
+            self.db.execute("INSERT INTO operation_migrations(version) VALUES(?)", (marker,))
 
     def recover(self) -> None:
         self.db.execute("""UPDATE jobs SET state='cancelled',
@@ -77,14 +120,10 @@ class Store:
             WHERE state='awaiting_approval'""")
         self.db.execute("""UPDATE jobs SET state='cancelled',
             result='broker_restart_no_replay', finished=CURRENT_TIMESTAMP
-            WHERE state='queued' AND EXISTS (
-                SELECT 1 FROM plans WHERE plans.hash=jobs.plan_hash
-                AND CASE WHEN json_valid(plans.payload) THEN
-                    json_extract(plans.payload,'$.execution_context')='registered_project'
-                ELSE 0 END)""")
-        self.db.execute("""UPDATE jobs SET state='needs_review',
+            WHERE state='queued'""")
+        self.db.execute("""UPDATE jobs SET state='needs_review', reviewed=0,
             result='broker_restart_no_replay', finished=CURRENT_TIMESTAMP
-            WHERE state IN ('queued','running')""")
+            WHERE state='running'""")
         self.db.execute("""UPDATE device_requests SET state='needs_review',
             reason='broker_restart_no_replay', finished=CURRENT_TIMESTAMP
             WHERE state IN ('waiting','owning')""")
@@ -100,6 +139,47 @@ class Store:
                 WHERE state='needs_review' AND reviewed=0 LIMIT 1"""
             ).fetchone()
         )
+
+    def profile_needs_review(self) -> bool:
+        """Exclude only intact, known device plans from the profile barrier.
+
+        Unknown/missing/corrupt plans and registered-project failures stay
+        fail-closed, including after restart. Device requests have a separate
+        physical-device table and cannot own a source/build resource.
+        """
+        rows = self.db.execute(
+            """SELECT jobs.id, jobs.plan_hash, plans.payload FROM jobs
+            LEFT JOIN plans ON jobs.plan_hash=plans.hash
+            WHERE jobs.state='needs_review' AND jobs.reviewed=0"""
+        )
+        device_tests = {
+            "diagnostics",
+            "firmware_workflow",
+            "passive_observe",
+            "firmware_observe",
+            "restart_and_observe",
+            "firmware_backup",
+            "firmware_flash",
+            "firmware_restore",
+            "hello",
+            "capture_home",
+            "derby_smoke",
+        }
+        for job_id, digest, payload in rows:
+            try:
+                plan = json.loads(payload)
+                canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+                if (
+                    not isinstance(plan, dict)
+                    or hashlib.sha256(canonical).hexdigest() != digest
+                    or plan.get("job_id") != job_id
+                    or plan.get("test") not in device_tests
+                    or plan.get("execution_context") is not None
+                ):
+                    return True
+            except (TypeError, ValueError):
+                return True
+        return False
 
     def home_source(self, source_job: str) -> dict[str, Any] | None:
         row = self.db.execute(
@@ -130,8 +210,7 @@ class Store:
         recovery: str,
         expected: dict[str, Any],
         recovery_hash: str,
-        operator: str,
-        revision: str,
+        principal_id: str,
     ) -> None:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
@@ -144,48 +223,83 @@ class Store:
                 or origin["reviewed"]
                 or origin["plan_hash"] != expected["plan_hash"]
                 or current is None
-                or current["state"] != "awaiting_approval"
+                or current["state"] != "queued"
                 or current["plan_hash"] != recovery_hash
+                or expected.get("principal_id") != principal_id
+                or self.db.execute(
+                    "SELECT 1 FROM execution_requests WHERE job_id=? AND plan_hash=? "
+                    "AND principal_id=?",
+                    (recovery, recovery_hash, principal_id),
+                ).fetchone()
+                is None
             ):
                 raise ValueError("home_recovery_source_changed")
             self.db.execute(
                 "UPDATE home_closed_sources SET attempted=1 WHERE source_job=?", (source,)
             )
             self.db.execute(
-                "UPDATE jobs SET state='running' WHERE id=? AND state='awaiting_approval'",
+                "UPDATE jobs SET state='running' WHERE id=? AND state='queued'",
                 (recovery,),
             )
             self.home_audit(source, recovery, "attempt_consumed")
             self.db.execute(
-                "INSERT INTO home_recovery_approvals VALUES(?,?,?)", (recovery, operator, revision)
+                "INSERT INTO home_recovery_executions"
+                "(recovery_job,source_job,source_hash,recovery_hash,principal_id,proof) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    recovery,
+                    source,
+                    expected["plan_hash"],
+                    recovery_hash,
+                    principal_id,
+                    json.dumps(expected, sort_keys=True),
+                ),
             )
 
     def finish_home_recovery(
-        self, source: str, recovery: str, source_hash: str, recovery_hash: str
+        self,
+        source: str,
+        recovery: str,
+        source_hash: str,
+        recovery_hash: str,
+        guard: Callable[[], bool],
     ) -> None:
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
+        def matches() -> bool:
             row = self.job(source)
             current = self.job(recovery)
             proof = self.home_source(source)
-            approved = self.db.execute(
-                "SELECT 1 FROM home_recovery_approvals WHERE recovery_job=?", (recovery,)
+            execution = self.db.execute(
+                "SELECT * FROM home_recovery_executions WHERE recovery_job=? AND source_job=? "
+                "AND source_hash=? AND recovery_hash=?",
+                (recovery, source, source_hash, recovery_hash),
             ).fetchone()
-            if (
-                row is None
-                or row["state"] != "needs_review"
-                or row["reviewed"] != 0
-                or row["plan_hash"] != source_hash
-                or current is None
-                or current["state"] != "running"
-                or current["plan_hash"] != recovery_hash
-                or proof is None
-                or proof["attempted"] != 1
-                or approved is None
-            ):
+            return bool(
+                row is not None
+                and row["state"] == "needs_review"
+                and row["reviewed"] == 0
+                and row["plan_hash"] == source_hash
+                and current is not None
+                and current["state"] == "running"
+                and current["plan_hash"] == recovery_hash
+                and proof is not None
+                and proof["attempted"] == 1
+                and execution is not None
+                and execution["principal_id"] == proof["payload"].get("principal_id")
+                and json.loads(execution["proof"]) == proof["payload"]
+            )
+
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            if not matches():
                 raise ValueError("home_recovery_source_changed")
-            # Preserve the failed job/result. Only its physical-HOME review barrier is resolved.
             self.home_audit(source, recovery, "fresh_home_and_close_confirmed")
+            # Audit hooks and authentication callbacks can expire or revoke the
+            # request. Check authority and all durable bindings after both, with
+            # no callback between these final checks and the state update.
+            if guard() is not True or not matches():
+                raise ValueError("home_recovery_final_commit_not_authorized")
+            # Preserve the failed result; only confirmed physical HOME resolves
+            # this source's uncertainty barrier, never a manual decision.
             self.db.execute("UPDATE jobs SET reviewed=1 WHERE id=?", (source,))
             self.db.execute(
                 "UPDATE jobs SET state='succeeded',result='fresh_home_closed',"
@@ -219,13 +333,42 @@ class Store:
         self.db.commit()
 
     def add_awaiting_job(self, job_id: str, digest: str) -> None:
-        # Only the inert audit row is durable. The execution intent and its
-        # monotonic deadline belong to this broker process, never SQLite.
-        self.db.execute(
-            "INSERT INTO jobs (id,plan_hash,state) VALUES (?,?,'awaiting_approval')",
-            (job_id, digest),
-        )
-        self.db.commit()
+        raise ValueError("approval_interface_retired")
+
+    def enqueue_requested(self, job_id: str, digest: str, principal_id: str) -> None:
+        """Commit one explicit request and its audit without consulting legacy grants.
+
+        The broker authenticates scopes, lease and device before admission and
+        again before I/O. This receipt records that request; it is no reusable
+        authority, and startup never reconstructs a queue from these rows.
+        """
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            plan = self.plan(digest)
+            if (
+                not isinstance(principal_id, str)
+                or not principal_id
+                or plan is None
+                or plan.get("job_id") != job_id
+                or hashlib.sha256(
+                    json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                != digest
+                or (plan.get("principal_id") is not None and plan["principal_id"] != principal_id)
+            ):
+                raise ValueError("explicit_request_invalid")
+            self.db.execute(
+                "INSERT INTO jobs(id,plan_hash,state) VALUES(?,?,'queued')", (job_id, digest)
+            )
+            self.db.execute(
+                "INSERT INTO execution_requests(job_id,plan_hash,principal_id) VALUES(?,?,?)",
+                (job_id, digest, principal_id),
+            )
+            self.db.execute(
+                "INSERT INTO execution_audit(job_id,plan_hash,principal_id,event) "
+                "VALUES(?,?,?,'client_requested')",
+                (job_id, digest, principal_id),
+            )
 
     def set_job(
         self,
@@ -285,7 +428,9 @@ class Store:
         """One durable commit: only a fully validated result can select a receipt."""
         try:
             self.db.execute("BEGIN IMMEDIATE")
-            row = self.db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+            row = self.db.execute(
+                "SELECT state,plan_hash FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
             if row is None or row[0] != "running" or guard() is not True:
                 raise ValueError("firmware_final_commit_not_authorized")
             self.db.execute(
@@ -328,6 +473,16 @@ class Store:
                 )
             if guard() is not True:
                 raise ValueError("firmware_final_commit_not_authorized")
+            final = self.db.execute(
+                "SELECT state,plan_hash,result FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            if (
+                final is None
+                or final["state"] != "succeeded"
+                or final["plan_hash"] != row["plan_hash"]
+                or final["result"] != result
+            ):
+                raise ValueError("firmware_final_commit_not_authorized")
             self.db.commit()
             self._console_state(job_id, "succeeded")
         except BaseException:
@@ -345,10 +500,7 @@ class Store:
         self.db.close()
 
     def approve(self, digest: str) -> None:
-        if self.plan(digest) is None:
-            raise ValueError("plan_not_found")
-        self.db.execute("INSERT OR IGNORE INTO approvals VALUES (?)", (digest,))
-        self.db.commit()
+        raise ValueError("approval_interface_retired")
 
     def approved_enqueue(
         self,
@@ -359,25 +511,7 @@ class Store:
         policy_authorized: bool = False,
         awaiting_approval: bool = False,
     ) -> None:
-        # Authorization consumption and durable enqueue form ONE transaction.
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
-            approved = self.db.execute("SELECT 1 FROM approvals WHERE hash=?", (digest,)).fetchone()
-            if not allow_mock and not policy_authorized and not approved:
-                raise ValueError("operator_approval_required")
-            if awaiting_approval:
-                changed = self.db.execute(
-                    """UPDATE jobs SET state='queued',result=NULL,finished=NULL
-                    WHERE id=? AND plan_hash=? AND state='awaiting_approval'""",
-                    (job_id, digest),
-                )
-                if changed.rowcount != 1:
-                    raise ValueError("execution_intent_not_available")
-            else:
-                self.db.execute(
-                    "INSERT INTO jobs (id,plan_hash,state) VALUES (?,?,'queued')", (job_id, digest)
-                )
-            self.db.execute("DELETE FROM approvals WHERE hash=?", (digest,))
+        raise ValueError("approval_interface_retired")
 
     def record_count(self, table: str) -> int:
         if table not in ("jobs", "plans", "work_sessions", "device_requests"):

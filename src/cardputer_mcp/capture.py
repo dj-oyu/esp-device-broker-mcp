@@ -88,7 +88,7 @@ class LegacyCaptureDecoder:
     closes an incomplete decoder too, so a timed-out capture cannot later be
     revived by bytes from another operation. A successful finish is idempotent.
     The caller must establish a fresh serial boundary before sending its one
-    approved capture command; this legacy protocol carries no capture nonce.
+    requested capture command; this legacy protocol carries no capture nonce.
     """
 
     def __init__(self) -> None:

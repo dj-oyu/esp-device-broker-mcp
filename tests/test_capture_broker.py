@@ -26,7 +26,6 @@ from cardputer_mcp.models import (
     PrepareRequest,
 )
 from cardputer_mcp.models import TestName as DeviceTest
-from cardputer_mcp.operator import approve_plan
 from cardputer_mcp.store import Store
 
 PRINCIPAL = "synthetic-capture-owner"
@@ -57,6 +56,7 @@ async def running(
         backend=backend or MockBackend(0.001),
         clock=clock or Clock(),
         lock_path=path / "device.lockfile",
+        principal_valid=lambda *args: True,
     )
     await instance.start()
     try:
@@ -84,15 +84,10 @@ def enqueue(broker: Broker, session: str, job_id: str) -> ExecuteRequest:
     return request
 
 
-def approve_image(broker: Broker, job_id: str) -> None:
-    """Simulate a local operator reviewing this exact in-memory image."""
-    with pytest.raises(BrokerError, match="^capture_delivery_approval_required$"):
-        broker.read_capture(job_id, PRINCIPAL)
-    preview = broker.operator_image(job_id)
-    assert preview["delivery_state"] == "pending"
-    assert broker.operator_decide_image(
-        job_id, preview["sha256"], preview["delivery_revision"], "approve"
-    ) == {"job_id": job_id, "delivery_state": "approved"}
+def assert_image_available(broker: Broker, job_id: str) -> None:
+    """Delivery follows the requester's authenticated capture operation."""
+    assert broker.read_capture(job_id, PRINCIPAL).png == mock_image().png
+    assert broker.operator_image(job_id)["delivery_state"] == "available"
 
 
 def unavailable(broker: Broker, job_id: str, principal: str = PRINCIPAL) -> None:
@@ -110,36 +105,23 @@ async def test_capture_requires_principal_bound_lease_before_preparing(tmp_path:
         unavailable(broker, "anonymous")
 
 
-async def test_capture_exact_approval_consumed_once_and_execute_deduplicated(
-    tmp_path: Path,
-) -> None:
+async def test_capture_explicit_execution_and_delivery_are_deduplicated(tmp_path: Path) -> None:
     async with running(tmp_path, allow_mock_execution=False) as broker:
         session = acquire(broker)
-        first = prepare(broker, session, "approved")
-        other = prepare(broker, session, "unapproved")
-        request = ExecuteRequest(session=session, plan_hash=first["plan_hash"])
-        assert first["approval_required"]
-        with pytest.raises(BrokerError, match="^operator_approval_required$"):
-            broker.execute(request)
-        with pytest.raises(ValueError, match="^approval_not_granted$"):
-            approve_plan(broker.settings.state_dir, first["plan_hash"], lambda _: "yes")
-        approve_plan(
-            broker.settings.state_dir,
-            first["plan_hash"],
-            lambda _: f"APPROVE {first['plan_hash']}",
+        first = prepare(broker, session, "requested")
+        prepare(broker, session, "not-requested")
+        request = ExecuteRequest(
+            session=session, plan_hash=first["plan_hash"], wait_for_approval=True
         )
-        with pytest.raises(BrokerError, match="^operator_approval_required$"):
-            broker.execute(ExecuteRequest(session=session, plan_hash=other["plan_hash"]))
+        assert first["approval_required"] is False
         assert not broker.execute(request)["deduplicated"]
         assert broker.execute(request)["deduplicated"]
         await broker.queue.join()
         assert broker.execute(request)["deduplicated"]
         assert broker.backend.calls == 1
         assert broker._store().db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
-        assert broker.job("approved")["result"] == "synthetic_capture_not_device"
-        approve_image(broker, "approved")
-        assert broker.read_capture("approved", PRINCIPAL).png == mock_image().png
-        unavailable(broker, "unapproved")
+        assert_image_available(broker, "requested")
+        unavailable(broker, "not-requested")
 
 
 async def test_capture_principal_isolation_release_and_repeated_reads_do_not_recapture(
@@ -149,7 +131,7 @@ async def test_capture_principal_isolation_release_and_repeated_reads_do_not_rec
         session = acquire(broker)
         enqueue(broker, session, "private")
         await broker.queue.join()
-        approve_image(broker, "private")
+        assert_image_available(broker, "private")
         image = broker.read_capture("private", PRINCIPAL)
         for principal in ("different-principal", "", "ephemeral:remote_mcp"):
             unavailable(broker, "private", principal)
@@ -171,7 +153,7 @@ async def test_capture_expires_at_five_minutes_without_read_refresh_or_recapture
         enqueue(broker, session, "expires")
         await broker.queue.join()
         broker.release(LeaseRequest(session=session))
-        approve_image(broker, "expires")
+        assert_image_available(broker, "expires")
         clock.now = 399.999
         assert broker.read_capture("expires", PRINCIPAL).png
         clock.now = 400.0
@@ -193,7 +175,7 @@ async def test_capture_memory_cache_evicts_oldest_completion_at_eight(tmp_path: 
             assert len(broker.captures) <= 8
         unavailable(broker, "capture-0")
         for number in range(1, 9):
-            approve_image(broker, f"capture-{number}")
+            assert_image_available(broker, f"capture-{number}")
             assert broker.read_capture(f"capture-{number}", PRINCIPAL).png
         assert broker.job("capture-0")["state"] == "succeeded"
         assert broker.backend.calls == 9
@@ -205,7 +187,7 @@ async def test_expired_capture_releases_worker_reference_and_pixel_memory(tmp_pa
         session = acquire(broker)
         enqueue(broker, session, "discard-pixels")
         await broker.queue.join()
-        approve_image(broker, "discard-pixels")
+        assert_image_available(broker, "discard-pixels")
         image = broker.read_capture("discard-pixels", PRINCIPAL)
         retained = weakref.ref(image)
         del image
@@ -262,7 +244,7 @@ async def test_capture_pixels_unavailable_and_owner_held_until_close_completes(
         await broker.queue.join()
         assert not backend.hardware_connected and backend.active == 0
         assert broker.job("closing")["state"] == "succeeded"
-        approve_image(broker, "closing")
+        assert_image_available(broker, "closing")
         assert broker.read_capture("closing", PRINCIPAL).png
 
 
@@ -318,7 +300,7 @@ async def test_capture_shutdown_waits_for_active_close_and_cancels_queued_work(
         backend.close_allowed.set()
         enqueue(broker, session, "completed")
         await broker.queue.join()
-        approve_image(broker, "completed")
+        assert_image_available(broker, "completed")
         image = broker.read_capture("completed", PRINCIPAL)
         retained = weakref.ref(image)
         del image
@@ -396,8 +378,9 @@ async def test_capture_restart_retains_history_but_never_pixels_or_pending_repla
             snapshot.close()
     async with running(restart_path) as restarted:
         assert restarted.job("completed")["state"] == "succeeded"
+        assert restarted.job("running")["state"] == "needs_review"
+        assert restarted.job("queued")["state"] == "cancelled"
         for job_id in ("running", "queued"):
-            assert restarted.job(job_id)["state"] == "needs_review"
             assert restarted.job(job_id)["result"] == "broker_restart_no_replay"
         for job_id in ("completed", "running", "queued"):
             unavailable(restarted, job_id)
@@ -411,7 +394,7 @@ async def test_capture_pixels_never_enter_history_logs_or_files(tmp_path: Path) 
         session = acquire(broker)
         enqueue(broker, session, "private-image")
         await broker.queue.join()
-        approve_image(broker, "private-image")
+        assert_image_available(broker, "private-image")
         image = broker.read_capture("private-image", PRINCIPAL)
         visible = json.dumps(
             [broker.status(), broker.job("private-image"), broker.read_logs(LogRequest())]
@@ -426,7 +409,16 @@ async def test_capture_pixels_never_enter_history_logs_or_files(tmp_path: Path) 
             "PIX 0 ",
         ):
             assert forbidden not in visible
-            assert forbidden not in history
+            if forbidden != PRINCIPAL:
+                assert forbidden not in history
+        # The private execution audit records the requesting principal; public
+        # history and logs above continue to omit it.
+        assert (
+            broker._store()
+            .db.execute("SELECT principal_id FROM execution_requests WHERE job_id='private-image'")
+            .fetchone()[0]
+            == PRINCIPAL
+        )
         files = [path for path in broker.settings.state_dir.rglob("*") if path.is_file()]
         assert {path.suffix for path in files} <= {
             ".sqlite3",

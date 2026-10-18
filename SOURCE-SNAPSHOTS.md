@@ -41,7 +41,7 @@ MCP accepts only the project ID, full lowercase 40-hex commit, or an opaque rece
    USB lease. Read_build_logs
    returns the existing hashed manifest plus source_provenance, linking the exact
    receipt, repository, commit, Git tree and SHA-256 source manifest.
-5. Prepare/approve/execute firmware_flash from that successful build job and
+5. Prepare/execute firmware_flash from that successful build job and
    existing registered device/recovery receipt. Readback/expected boot verification
    and LKG behavior are unchanged. Logs/capture use their existing permissions.
 

@@ -8,10 +8,9 @@ sessions, each with an independent unguessable resume token.
 Source fetch and build use their exact principal-bound registered-project plans,
 not the physical lease below. They accept prepare/execute/cancel without session.
 They do not hold USB ownership and a 300-second device lease is not their execution
-deadline or a human approval timer. Device requests retain their existing FIFO,
-lease generation and exact approval rules. For those manual device requests,
-approval waiting still uses the original lease-bound intent deadline; this update
-does not silently extend it.
+deadline. Device requests retain FIFO, lease generation and exact immutable-plan
+bindings. An explicit device execution uses the original lease-bound intent
+deadline; subsequent renewal does not silently extend it.
 
 ## New authenticated tools
 
@@ -22,7 +21,7 @@ does not silently extend it.
 3. `resume_work_session({resume_token})`: reconnects within the SAME broker epoch
    and reads the request. With valid control scope, returns the current private
    physical lease under `lease.session` when owning
-4. Use existing prepare/approve/execute/renew/release tools with that physical
+4. Use existing prepare/execute/renew/release tools with that physical
    lease. Every grant creates a new capability and lease generation
 5. `cancel_device_request({resume_token,request_id})` cancels WAITING only;
    `close_work_session({resume_token})` closes an idle session, never interrupts active work
