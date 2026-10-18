@@ -127,6 +127,8 @@ class ProfileJobs:
         # Callbacks above may invalidate configuration or authorization.
         if not self._binding_live(plan):
             raise BrokerError("profile_or_principal_no_longer_valid")
+        if self._uncertain():
+            raise BrokerError("recovery_review_required")
         store.put_plan(digest, plan)
         return dict(plan_hash=digest, plan=plan, storage=storage, approval_required=False)
 
@@ -152,7 +154,6 @@ class ProfileJobs:
             return bool(
                 authorized
                 and not broker.closing
-                and not self._uncertain()
                 and broker._state_lock.is_locked
                 and plan["broker_epoch"] == broker.epoch
                 and registration == plan["registration_sha256"]
@@ -180,6 +181,8 @@ class ProfileJobs:
             raise BrokerError("recovery_review_required")
         if not self._binding_live(plan):
             raise BrokerError("profile_or_principal_no_longer_valid")
+        if self._uncertain():
+            raise BrokerError("recovery_review_required")
         if self.queue.qsize() >= self.broker.settings.max_queue:
             raise BrokerError("queue_full")
         if store.record_count("jobs") >= 10000:
@@ -273,6 +276,10 @@ class ProfileJobs:
         )
 
     async def _watch(self, plan: dict[str, Any]) -> None:
+        # Authority checks must remain live through owned process teardown.
+        # BuildProcess temporarily marks uncertainty during normal reader joins;
+        # do not turn that resource hold into irreversible job cancellation.
+        # Admission/dispatch and post-worker completion still check uncertainty.
         while True:
             if self.broker.clock() >= self.deadline:
                 self._stop(plan, "execution_deadline_expired")
@@ -295,7 +302,7 @@ class ProfileJobs:
                 if plan is None or digest_plan(plan) != job["plan_hash"]:
                     store.set_job(job_id, "needs_review", "profile_plan_inconsistent")
                     continue
-                if self._uncertain() or not self._binding_live(plan):
+                if not self._binding_live(plan) or self._uncertain():
                     store.set_job(job_id, "cancelled", "profile_or_principal_no_longer_valid")
                     continue
                 self._sync_settings()
@@ -322,7 +329,7 @@ class ProfileJobs:
                         result = await broker.firmware_build.execute(
                             plan, stage, defer_publish=True
                         )
-                    if not self._live(plan):
+                    if self._uncertain() or not self._live(plan):
                         self._stop(plan, "profile_or_principal_no_longer_valid")
                         raise ValueError("profile_job_stopped")
                     committing = True

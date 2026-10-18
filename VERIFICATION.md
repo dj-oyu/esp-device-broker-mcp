@@ -569,3 +569,26 @@ is not a fully passing suite, and blocked HTTP/key tests require a normal truste
 filesystem environment before release. Native Windows,
 physical firmware operations and the deployed MCP connection remain unverified
 by this source-only change; deployment is a separate step.
+
+
+### Follow-up: owned build teardown and watchdog
+
+Independent review found that BuildProcess.run sets uncertain=True temporarily
+while joining output readers even after a normal process exit. Treating that flag
+as authority revocation inside ProfileJobs._binding_live could irreversibly set
+stop_requested from the 100 ms watchdog during healthy cleanup. A deterministic
+regression using the real FirmwareBuild.execute / BuildProcess.run lifecycle and
+gated synthetic OS readers reproduced this on bf04cf8 before the fix.
+
+Keep configuration/principal/deadline/cancellation authority live during owned
+teardown; evaluate resource uncertainty separately at admission, dispatch, and
+after the worker returns, before publication. The owning process/reader hold and
+all unconfirmed-cleanup flags are retained. No successful job/artifact is published
+on cleanup failure, and further admission stays blocked. Five lifecycle regressions
+cover successful delayed cleanup, retained cleanup failure, explicit cancellation,
+principal revocation and deadline expiry while cleanup crosses the watchdog.
+
+The five regressions plus admission and existing build tests passed together
+(59 tests); Ruff lint/format and strict mypy passed. Prior-head CI/artifacts are
+historical evidence only; same-head CI and distribution verification must be
+repeated for this follow-up before any deployment.
