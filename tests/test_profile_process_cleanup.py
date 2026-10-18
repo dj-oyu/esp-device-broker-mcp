@@ -11,18 +11,45 @@ from test_profile_jobs import register
 
 from cardputer_mcp import build_process
 from cardputer_mcp.broker import BrokerError
-from cardputer_mcp.models import CancelRequest, ExecuteRequest, Origin, PrepareRequest
+from cardputer_mcp.models import (
+    AcquireRequest,
+    CancelRequest,
+    ExecuteRequest,
+    Origin,
+    PrepareRequest,
+)
 from cardputer_mcp.models import TestName as Action
 
 
 @pytest.mark.parametrize(
-    "cleanup_confirmed,interruption",
-    [(True, "none"), (False, "none"), (True, "cancel"), (True, "revoke"), (True, "deadline")],
+    "cleanup_confirmed,interruption,parallel_device",
+    [
+        (True, "none", False),
+        (False, "none", False),
+        (True, "cancel", False),
+        (True, "revoke", False),
+        (True, "deadline", False),
+        (True, "none", True),
+        (False, "none", True),
+    ],
 )
 async def test_owned_cleanup_crosses_watchdog_without_revoking_build(
-    broker, tmp_path, monkeypatch, cleanup_confirmed, interruption
+    broker, tmp_path, monkeypatch, cleanup_confirmed, interruption, parallel_device
 ):
     register(SimpleNamespace(resident=broker), tmp_path)
+    device = None
+    if parallel_device:
+        broker.backend.gate = asyncio.Event()
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")["session"]
+        prepared_device = broker.prepare(
+            PrepareRequest(session=token, job_id="device", test=Action.WORKFLOW)
+        )
+        broker.execute(ExecuteRequest(session=token, plan_hash=prepared_device["plan_hash"]))
+        intent = broker._execution_intents["device"]
+        device = prepared_device["plan"], intent
+        await asyncio.sleep(0)
+        assert broker.active_job == "device"
+        assert broker._running_job_binding_live(*device)
     process = broker.firmware_build.process
     reader_release = threading.Event()
     cleanup_release = threading.Event()
@@ -109,6 +136,25 @@ async def test_owned_cleanup_crosses_watchdog_without_revoking_build(
             assert process.active and process.uncertain
             assert not process.stop_requested.is_set()
             assert not broker.profile_jobs.stops
+            if device is not None:
+                # This is the real callback shared by running flash/smoke and
+                # final LKG commit, while another lane owns its reader drain.
+                assert broker.job("device")["state"] == "running"
+                assert process.cleanup_pending
+                assert broker._execution_uncertain()  # New admission still holds.
+                assert broker._running_job_binding_live(*device)
+                for target, attribute in (
+                    (broker.profile_jobs, "state_uncertain"),
+                    (broker.firmware_build, "output_uncertain"),
+                    (broker.firmware_source.snapshots, "uncertain"),
+                    (broker.backend, "ownership_uncertain"),
+                ):
+                    with monkeypatch.context() as hazard:
+                        hazard.setattr(target, attribute, True, raising=False)
+                        assert not broker._running_job_binding_live(*device)
+                with monkeypatch.context() as orphan:
+                    orphan.setattr(broker.profile_jobs, "active", None)
+                    assert not broker._running_job_binding_live(*device)
             if interruption == "cancel":
                 broker.profile_jobs.cancel(
                     CancelRequest(job_id="cleanup"), "owner", Origin.REMOTE.value
@@ -129,6 +175,7 @@ async def test_owned_cleanup_crosses_watchdog_without_revoking_build(
             assert job["state"] == "succeeded"
             assert published == [True]
             assert not process.active and not process.uncertain
+            assert not process.cleanup_pending
             assert not broker.profile_jobs._uncertain()
             broker.profile_jobs.prepare(
                 PrepareRequest(job_id="followup", test=Action.BUILD, project_id="fixture"),
@@ -139,9 +186,12 @@ async def test_owned_cleanup_crosses_watchdog_without_revoking_build(
             assert job["state"] == "needs_review"
             assert job["result"] == "build_process_exit_unconfirmed"
             assert process.active and process.uncertain
+            assert not process.cleanup_pending
             assert broker.profile_jobs.state_uncertain
             assert broker._physical_busy()
             assert published == []
+            if device is not None:
+                assert not broker._running_job_binding_live(*device)
             with pytest.raises(BrokerError, match="recovery_review_required"):
                 broker.profile_jobs.prepare(
                     PrepareRequest(job_id="blocked", test=Action.BUILD, project_id="fixture"),
@@ -160,3 +210,6 @@ async def test_owned_cleanup_crosses_watchdog_without_revoking_build(
             threading.Thread.join(reader, 2)
             assert not reader.is_alive()
         process.active = process.uncertain = False
+        if parallel_device:
+            broker.backend.gate.set()
+            await asyncio.wait_for(broker.queue.join(), 2)

@@ -600,3 +600,29 @@ running/cleanup distinction from authorizing publication if a resource becomes
 uncertain during final authorization. The combined cleanup/admission/build suite
 passed 60 tests, with Ruff lint/format and strict mypy passing. This final follow-up
 requires its own head CI and artifact; intermediate artifacts remain superseded.
+
+
+### Cross-lane follow-up: peer profile cleanup versus running device authority
+
+A second deterministic regression on e5333e7 kept a device workflow running while
+an independent profile build used real BuildProcess.run with a gated reader join.
+The actual _running_job_binding_live callback used by flash/smoke returned false
+during healthy owned profile cleanup. Both concurrent variants failed before the
+fix; this was separate from the profile's own watchdog cancellation.
+
+BuildProcess now marks cleanup_pending only while the cleanup outcome is still
+undecided, and clears it on known stop/reader failure and every cleanup exit.
+The active/uncertain flags and owned process/reader release logic are unchanged.
+Only a currently running device's binding may disregard a live profile owner's
+pending process cleanup. Admission/dispatch still see the uncertainty. Failed
+cleanup, an absent profile owner, profile state/output/cache uncertainty and the
+device's own ownership uncertainty still invalidate the running device callback.
+After failed cleanup returns, remaining process ownership and future admission
+remain held; no history acknowledgement or successful artifact is fabricated.
+
+The gated lifecycle tests now include both concurrent outcomes and stable hazard
+injections during pending cleanup. Cleanup/admission/build/flash binding/process
+monitor/Windows ownership regressions passed together (115 tests). Ruff lint,
+format and strict mypy passed. This cross-lane head requires fresh same-head CI;
+all prior artifacts remain superseded. The durable receipt read branch is held
+separately and has no code changes in this PR.

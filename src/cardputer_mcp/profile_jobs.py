@@ -32,13 +32,22 @@ class ProfileJobs:
         self.uncertain = False
         self.state_uncertain = False
 
-    def _uncertain(self) -> bool:
+    def _uncertain(self, *, allow_owned_cleanup: bool = False) -> bool:
+        process = self.broker.firmware_build.process
+        # Only a live profile owner with an undecided cleanup may hold a peer.
+        # Failed cleanup clears cleanup_pending before releasing any ownership.
+        owned_cleanup = (
+            allow_owned_cleanup
+            and self.active is not None
+            and process.active
+            and process.cleanup_pending
+        )
         return bool(
             self.uncertain
             or self.state_uncertain
             or self.broker.firmware_source.snapshots.uncertain
             or self.broker.firmware_build.output_uncertain
-            or self.broker.firmware_build.process.uncertain
+            or (process.uncertain and not owned_cleanup)
             or (
                 self.active is None
                 and self.broker.active_job is None

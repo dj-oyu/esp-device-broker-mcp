@@ -119,6 +119,7 @@ class BuildProcess:
         self.stop_requested = threading.Event()
         self.active = False
         self.uncertain = False
+        self.cleanup_pending = False
         self.owner: win.OwnedWindowsProcess | None = None
 
     def run(
@@ -250,35 +251,44 @@ class BuildProcess:
                 raise ValueError("build_interrupted_needs_review")
             return code
         finally:
-            self.uncertain = True
-            stopped = True
-            if self.owner is not None:
-                stopped = self.owner.stop(5)
+            self.cleanup_pending = True
+            try:
+                self.uncertain = True
+                stopped = True
+                if self.owner is not None:
+                    stopped = self.owner.stop(5)
+                    if stopped:
+                        self.owner.close()
+                        self.owner = None
+                elif process is not None:
+                    kill_group = getattr(os, "killpg", None)
+                    kill_signal = getattr(signal, "SIGKILL", None)
+                    if kill_group is None or kill_signal is None:
+                        raise ValueError("build_tree_stop_unconfirmed")
+                    try:
+                        kill_group(process.pid, kill_signal)
+                    except ProcessLookupError:
+                        pass
+                    process.wait(timeout=5)
+                    try:
+                        kill_group(process.pid, 0)
+                        stopped = False
+                    except ProcessLookupError:
+                        pass
+                if not stopped:
+                    # A known stop failure is no longer an undecided teardown.
+                    self.cleanup_pending = False
+                for reader in readers:
+                    reader.join(timeout=5)
+                    stopped = stopped and not reader.is_alive()
+                    if not stopped:
+                        self.cleanup_pending = False
                 if stopped:
-                    self.owner.close()
-                    self.owner = None
-            elif process is not None:
-                kill_group = getattr(os, "killpg", None)
-                kill_signal = getattr(signal, "SIGKILL", None)
-                if kill_group is None or kill_signal is None:
+                    for pipe in pipes:
+                        pipe.close()
+                self.uncertain = not stopped
+                self.active = not stopped
+                if not stopped:
                     raise ValueError("build_tree_stop_unconfirmed")
-                try:
-                    kill_group(process.pid, kill_signal)
-                except ProcessLookupError:
-                    pass
-                process.wait(timeout=5)
-                try:
-                    kill_group(process.pid, 0)
-                    stopped = False
-                except ProcessLookupError:
-                    pass
-            for reader in readers:
-                reader.join(timeout=5)
-                stopped = stopped and not reader.is_alive()
-            if stopped:
-                for pipe in pipes:
-                    pipe.close()
-            self.uncertain = not stopped
-            self.active = not stopped
-            if not stopped:
-                raise ValueError("build_tree_stop_unconfirmed")
+            finally:
+                self.cleanup_pending = False

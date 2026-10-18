@@ -444,7 +444,9 @@ class Broker:
                 or plan.get("job_id") != intent.job_id
                 or digest_plan(plan) != intent.plan_hash
                 or store.plan(intent.plan_hash) != plan
-                or self._execution_uncertain()
+                # A peer build's still-owned normal teardown is not revoked
+                # device authority. Admission and failed cleanup remain gated.
+                or self._execution_uncertain(allow_profile_cleanup=True)
                 or not self._execution_lease_binding_live(intent)
                 or not self._device_lock.is_locked
                 or not self._state_lock.is_locked
@@ -489,7 +491,7 @@ class Broker:
         )
         return self.queue.qsize() + awaiting >= self.settings.max_queue
 
-    def _execution_uncertain(self) -> bool:
+    def _execution_uncertain(self, *, allow_profile_cleanup: bool = False) -> bool:
         """Current resource/state uncertainty, never historical job outcomes.
 
         Active work is handled separately by the owner/worker queue. These
@@ -500,7 +502,7 @@ class Broker:
             self.execution_uncertain
             or getattr(self.backend, "ownership_uncertain", False)
             or self.firmware_flash.uncertain
-            or self.profile_jobs._uncertain()
+            or self.profile_jobs._uncertain(allow_owned_cleanup=allow_profile_cleanup)
         )
 
     def _physical_busy(self) -> bool:
