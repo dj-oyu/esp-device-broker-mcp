@@ -72,7 +72,7 @@ class LiveWindow:
         for frame, name in ((jobs, "Jobs"), (events, "Events"), (connection, "Connection")):
             notebook.add(frame, text=name)
         jobs.columnconfigure(0, weight=3)
-        jobs.columnconfigure(1, weight=2)
+        jobs.columnconfigure(1, weight=2, minsize=260)
         jobs.rowconfigure(1, weight=1)
         ttk.Label(jobs, text="Recent jobs", style="Section.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, 8)
@@ -91,11 +91,7 @@ class LiveWindow:
             detail, textvariable=self.detail_heading, style="Section.TLabel", wraplength=420
         )
         self.detail_heading_label.grid(row=0, sticky="ew")
-        detail.bind(
-            "<Configure>",
-            lambda event: self.detail_heading_label.configure(wraplength=max(1, event.width)),
-        )
-        detail_box, self.detail_text = self._text(detail, height=11, wrap="word")
+        detail_box, self.detail_text = self._text(detail, height=6, wrap="word")
         detail_box.grid(row=1, sticky="nsew", pady=(8, 12))
         controls = ttk.Frame(detail)
         controls.grid(row=2, sticky="ew", pady=(0, 8))
@@ -112,17 +108,18 @@ class LiveWindow:
         log_box, self.log_text = self._text(detail, height=10, wrap="none")
         log_box.grid(row=3, sticky="nsew")
         self.log_status = tk.StringVar(value=self.logs.message)
-        ttk.Label(detail, textvariable=self.log_status, wraplength=420).grid(
-            row=4, sticky="ew", pady=(6, 0)
-        )
+        self.log_status_label = ttk.Label(detail, textvariable=self.log_status, wraplength=420)
+        self.log_status_label.grid(row=4, sticky="ew", pady=(6, 0))
         self.preview_area = ttk.Frame(detail, width=240, height=135)
         self.preview_area.grid_propagate(False)
         self.preview_image = tk.Label(self.preview_area, borderwidth=0)
         self.preview_image.pack(fill="both", expand=True)
         self.preview_status = tk.StringVar(value=self.preview_state.message)
-        ttk.Label(detail, textvariable=self.preview_status, wraplength=420).grid(
-            row=6, sticky="ew", pady=(6, 0)
+        self.preview_status_label = ttk.Label(
+            detail, textvariable=self.preview_status, wraplength=420
         )
+        self.preview_status_label.grid(row=6, sticky="ew", pady=(6, 0))
+        detail.bind("<Configure>", self._resize_details)
         events.columnconfigure(0, weight=1)
         events.rowconfigure(1, weight=1)
         ttk.Label(events, text="Observed job changes", style="Section.TLabel").grid(
@@ -140,6 +137,14 @@ class LiveWindow:
         self.runner.start(self.state.generation)
         self._render()
         self.timer = root.after(50, self._drain)
+
+    def _resize_details(self, event: Any) -> None:
+        for label in (
+            self.detail_heading_label,
+            self.log_status_label,
+            self.preview_status_label,
+        ):
+            label.configure(wraplength=max(1, event.width))
 
     @staticmethod
     def _table(parent: Any, columns: tuple[str, ...], widths: tuple[int, ...]) -> Any:

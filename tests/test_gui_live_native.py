@@ -114,7 +114,7 @@ def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(m
         root = tk.Tk()
     except tk.TclError:
         pytest.skip("Native Tk requires a desktop display")
-    root.withdraw()
+    root.geometry("860x600")
     monkeypatch.setattr(gui_live, "LiveRunner", Runner)
     now = [time.monotonic()]
     monkeypatch.setattr(gui_live.time, "monotonic", lambda: now[0])
@@ -152,11 +152,17 @@ def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(m
             )
         )
         window._drain()
-        root.update_idletasks()
+        root.update()
         assert window.preview_photo is not None
         assert (window.preview_photo.width(), window.preview_photo.height()) == (240, 135)
         assert window.preview_image.cget("image") == str(window.preview_photo)
         assert "TEST / NOT DEVICE" in window.preview_status.get()
+        assert window.preview_image.winfo_width() >= 240
+        assert window.preview_image.winfo_height() >= 135
+        for widget in (window.preview_area, window.preview_status_label, window.log_status_label):
+            parent = widget.master
+            assert widget.winfo_x() + widget.winfo_width() <= parent.winfo_width()
+            assert widget.winfo_y() + widget.winfo_height() <= parent.winfo_height()
         name = str(window.preview_photo)
         assert name in root.tk.call("image", "names")
         now[0] += 5
