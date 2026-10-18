@@ -386,3 +386,89 @@ def test_plan_documents_photo_trigger_without_timed_fallback():
     )
     plan = backend.prepare(Action.DERBY)
     assert plan["smoke"]["capture"] == "one_s_only_at_current_observed_photo_no_fallback_v2"
+
+
+@pytest.mark.parametrize(
+    "split_at",
+    [None, 10, len(scene("res")) + 8, len(scene("res")) + 29],
+    ids=["same-chunk", "split-result", "split-end-token", "split-restored-pad"],
+)
+def test_demo_end_closes_scene_identity_window_across_read_chunks(split_at):
+    events = schedule()
+    # Ending the demo restores the normal race, then emits its pad scene. All
+    # three records may arrive together; only res belongs to the demo window.
+    ending = (
+        scene("res") + b"DERBY DEMO END 5000,19,0,100\n" + scene("pad", race="19", seed="CD987654")
+    )
+    chunks = [ending] if split_at is None else [ending[:split_at], ending[split_at:]]
+    events[-2:] = [(85, chunk) for chunk in chunks]
+    wire = TimedWire(events)
+    image, code, report, _ = run(wire)
+    assert image.png and report.demo_cycle_observed
+    assert code == "derby_demo_cycle_observed_render_buffer_lcd_unverified"
+    assert report.photo_context_correlation == "same_observed_phase_race_seed"
+    assert [event.phase for event in report.events if event.kind == "scene"] == [
+        "gate",
+        "race",
+        "photo",
+        "res",
+    ]
+    assert all(event.race in (None, "1000001") for event in report.events)
+    assert wire.writes.count(b"s") == wire.writes.count(b"q") == 1
+    assert report.exit_home_observed and not report.photo_pixels_verified
+
+
+@pytest.mark.parametrize(
+    "before_end",
+    [
+        scene("res", race="19"),
+        scene("res", seed="CD987654"),
+        scene("pad", race="19", seed="CD987654") + scene("res"),
+        scene("race") + scene("res"),
+    ],
+    ids=["wrong-race", "wrong-seed", "restored-pad-before-end", "wrong-phase-order"],
+)
+def test_demo_end_boundary_keeps_pre_end_identity_and_order_strict(before_end):
+    events = schedule()
+    events[-2:] = [
+        (
+            85,
+            before_end
+            + b"DERBY DEMO END 5000,19,0,100\n"
+            + scene("pad", race="19", seed="CD987654"),
+        )
+    ]
+    wire = TimedWire(events)
+    image, code, report, _ = run(wire)
+    assert image.png and not report.demo_cycle_observed
+    assert code == "derby_image_observed_demo_cycle_or_photo_phase_not_verified"
+    assert wire.writes.count(b"s") == wire.writes.count(b"q") == 1
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [b"DERBY DEMO END invalid\n", b"DERBY DEMO END \n", b"DERBY DEMO END 5000,19,0,100 extra\n"],
+)
+def test_malformed_end_does_not_close_scene_identity_window(boundary):
+    events = schedule()
+    events[-2:] = [
+        (
+            85,
+            scene("res")
+            + boundary
+            + scene("pad", race="19", seed="CD987654")
+            + b"DERBY DEMO END 5000,19,0,100\n",
+        )
+    ]
+    image, code, report, _ = run(TimedWire(events))
+    assert image.png and not report.demo_cycle_observed
+    assert code == "derby_image_observed_demo_cycle_or_photo_phase_not_verified"
+    assert len([event for event in report.events if event.kind == "demo_end"]) == 1
+
+
+def test_end_before_required_result_phase_cannot_be_repaired_by_post_end_scene():
+    events = schedule()
+    events[-2:] = [(85, b"DERBY DEMO END 5000,19,0,100\n" + scene("res"))]
+    image, code, report, _ = run(TimedWire(events))
+    assert image.png and not report.demo_cycle_observed
+    assert code == "derby_image_observed_demo_cycle_or_photo_phase_not_verified"
