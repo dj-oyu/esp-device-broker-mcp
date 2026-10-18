@@ -30,14 +30,31 @@ class ProfileJobs:
         self.stops: dict[str, str] = {}
         self.deadline = 0.0
         self.uncertain = False
+        self.state_uncertain = False
 
-    def _uncertain(self) -> bool:
+    def _uncertain(self, *, allow_owned_cleanup: bool = False) -> bool:
+        process = self.broker.firmware_build.process
+        # Only a live profile owner with an undecided cleanup may hold a peer.
+        # Failed cleanup clears cleanup_pending before releasing any ownership.
+        owned_cleanup = (
+            allow_owned_cleanup
+            and self.active is not None
+            and process.active
+            and process.cleanup_pending
+        )
         return bool(
             self.uncertain
-            or self.broker._store().profile_needs_review()
+            or self.state_uncertain
             or self.broker.firmware_source.snapshots.uncertain
             or self.broker.firmware_build.output_uncertain
-            or self.broker.firmware_build.process.uncertain
+            or (process.uncertain and not owned_cleanup)
+            or (
+                self.active is None
+                and self.broker.active_job is None
+                and (
+                    self.broker.firmware_source.active or self.broker.firmware_build.process.active
+                )
+            )
         )
 
     def start(self) -> None:
@@ -69,8 +86,8 @@ class ProfileJobs:
         broker, store = self.broker, self.broker._store()
         if broker.closing or not self._authorized(principal, origin):
             raise BrokerError("principal_not_authorized")
-        # Device recovery history does not own the independent source/build
-        # lane. Its actual process/output/cache uncertainty still blocks work.
+        # History is diagnostic. Current process/output/cache uncertainty
+        # still blocks this independent source/build lane.
         if self._uncertain():
             raise BrokerError("recovery_review_required")
         if request.test.value not in PROFILE_TESTS or request.project_id is None:
@@ -119,6 +136,8 @@ class ProfileJobs:
         # Callbacks above may invalidate configuration or authorization.
         if not self._binding_live(plan):
             raise BrokerError("profile_or_principal_no_longer_valid")
+        if self._uncertain():
+            raise BrokerError("recovery_review_required")
         store.put_plan(digest, plan)
         return dict(plan_hash=digest, plan=plan, storage=storage, approval_required=False)
 
@@ -167,6 +186,8 @@ class ProfileJobs:
             if existing["plan_hash"] != request.plan_hash:
                 raise BrokerError("job_id_conflict")
             return {**existing, "deduplicated": True}
+        if self._uncertain():
+            raise BrokerError("recovery_review_required")
         if not self._binding_live(plan):
             raise BrokerError("profile_or_principal_no_longer_valid")
         if self._uncertain():
@@ -264,6 +285,10 @@ class ProfileJobs:
         )
 
     async def _watch(self, plan: dict[str, Any]) -> None:
+        # Authority checks must remain live through owned process teardown.
+        # BuildProcess temporarily marks uncertainty during normal reader joins;
+        # do not turn that resource hold into irreversible job cancellation.
+        # Admission/dispatch and post-worker completion still check uncertainty.
         while True:
             if self.broker.clock() >= self.deadline:
                 self._stop(plan, "execution_deadline_expired")
@@ -286,7 +311,7 @@ class ProfileJobs:
                 if plan is None or digest_plan(plan) != job["plan_hash"]:
                     store.set_job(job_id, "needs_review", "profile_plan_inconsistent")
                     continue
-                if self._uncertain() or not self._binding_live(plan):
+                if not self._binding_live(plan) or self._uncertain():
                     store.set_job(job_id, "cancelled", "profile_or_principal_no_longer_valid")
                     continue
                 self._sync_settings()
@@ -299,8 +324,15 @@ class ProfileJobs:
                 def stage(name: str, job: str = job_id, db: Any = store) -> None:
                     db.set_stage(job, name)
 
-                def live(prepared: dict[str, Any] = plan) -> bool:
-                    return self._live(prepared)
+                publication = [False]
+
+                def live(
+                    prepared: dict[str, Any] = plan, publishing: list[bool] = publication
+                ) -> bool:
+                    # Running process monitors may observe owned teardown. Once
+                    # the worker has returned, publication must also recheck all
+                    # resource latches after any authentication callback.
+                    return self._live(prepared) and (not publishing[0] or not self._uncertain())
 
                 committing = False
                 try:
@@ -313,10 +345,11 @@ class ProfileJobs:
                         result = await broker.firmware_build.execute(
                             plan, stage, defer_publish=True
                         )
-                    if not self._live(plan):
+                    if self._uncertain() or not self._live(plan):
                         self._stop(plan, "profile_or_principal_no_longer_valid")
                         raise ValueError("profile_job_stopped")
                     committing = True
+                    publication[0] = True
                     if source:
                         broker.firmware_source.commit_success(plan, result, live)
                     else:
@@ -371,6 +404,7 @@ class ProfileJobs:
                     outcome = code if uncertain else reason or code
                     store.set_job(job_id, state, outcome, {"code": outcome})
                     if uncertain:
+                        self.state_uncertain = True
                         broker.logs.append(Event.REVIEW)
                 finally:
                     watch.cancel()

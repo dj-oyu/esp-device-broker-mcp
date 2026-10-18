@@ -281,8 +281,8 @@ Future authenticated Tunnel ingress (not connected) --------^
   read `job_status` instead of trying to execute an old capability
 - Restart cancels unstarted jobs and quarantines interrupted
   running jobs as needs_review. Nothing is replayed.
-  Existing unacknowledged reviews remain blocking; installation clears none
-- Device disconnects and uncertain adapter errors quarantine work for review.
+  Unacknowledged reviews remain diagnostic history; installation clears none
+- Device disconnects and uncertain adapter errors retain diagnostic failure history.
   Ordinary source/build failure with confirmed cleanup is terminal without review.
   There is no implicit retry, port substitution, reset, flash or recovery operation
 - Cache reads use `{epoch, sequence}` cursors. Different clients read identical
@@ -294,15 +294,43 @@ Future authenticated Tunnel ingress (not connected) --------^
 
 ### Interrupted work
 
-1. Inspect `uv run cardputer job JOB_ID` and `uv run cardputer status`
-2. Stop the broker
-3. Run `uv run cardputer review --state-dir YOUR_STATE_DIR --job JOB_ID`
-4. Inspect the saved result and type the exact `REVIEW JOB_ID` phrase
-5. Restart the broker, acquire a new lease and prepare a new job if appropriate
+Historical `needs_review` jobs and restart-invalidated device requests remain in
+SQLite with their original state, result, diagnostics and reviewed flag. They do
+not block a fresh authenticated operation by themselves. `needs_review` reports
+unacknowledged history; `execution_uncertain` reports current runtime uncertainty.
+The `history` counts include reviewed jobs too.
 
-Review acknowledgement does **not** rerun or mark the original action successful.
-Do not delete the database to hide an interrupted operation. In serial mode, an
-operator must establish the real physical state before acknowledgement.
+New operations still require the current authenticated principal, explicit execution
+request, live lease/intent and exact device/profile/artifact binding. Active work,
+remaining owned processes, unconfirmed port close, process/output/cache uncertainty
+and state-commit uncertainty continue to block the relevant resources. Failed work
+is never replayed; already queued device jobs are cancelled after a failure. A new
+job needs a new explicit request. Backup/LKG requirements and cancellation checks
+are unchanged. Restart never clears history or proves a physical firmware state;
+resource locks, target preflights and recovery receipt validation still apply.
+
+Inspect `cardputer job JOB_ID` and `cardputer status` before deciding what to do
+next. Retained device logs are memory-only, so inspect them before stopping a broker.
+A historical failure does not establish the current physical device state or claim
+that the failed action succeeded. An actual uncertain resource must be resolved by
+its owning lifecycle; acknowledging history cannot release that resource.
+
+Optional history acknowledgement is available offline only:
+
+1. Establish the physical/resource state and inspect the saved failure evidence.
+2. Stop the broker using its existing owner/supervisor procedure.
+3. Run `cardputer review --state-dir ABSOLUTE_EXISTING_STATE_DIR --job JOB_ID`.
+   This explicit command immediately acknowledges the job; there is no keyword prompt.
+   Restart-invalidated device requests instead use
+   `cardputer review-request --state-dir ABSOLUTE_EXISTING_STATE_DIR --request-id REQUEST_ID`.
+4. Restart with the same existing config, credentials and state working directory.
+
+Use the deployed `cardputer.exe` for a Windows distribution, or `uv run cardputer`
+for a source installation. Resolve relative `state_dir` against the deployment's
+original working directory. Review returns `reviewed: true` and `replayed: false`;
+it does not rerun or mark the original action successful. Do not delete or manually
+alter the database to hide an interrupted operation. No acknowledgement is required
+solely to start a safe new job.
 
 ## MCP tools
 

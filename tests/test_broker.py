@@ -117,8 +117,9 @@ async def test_disconnect_quarantines_and_offline_review(broker):
     broker.execute(ExecuteRequest(session=token, plan_hash=digest))
     await broker.queue.join()
     assert broker.job("job-one")["state"] == "needs_review"
-    with pytest.raises(BrokerError, match="recovery_review_required"):
-        broker.prepare(PrepareRequest(session=token, job_id="blocked"))
+    broker.prepare(PrepareRequest(session=token, job_id="fresh"))
+    assert broker.job("job-one")["reviewed"] == 0
+    assert broker.backend.calls == 1
     with pytest.raises(ValueError, match="stop_broker"):
         acknowledge_recovery(broker.settings.state_dir, "job-one", lambda _: "REVIEW job-one")
     await broker.close()

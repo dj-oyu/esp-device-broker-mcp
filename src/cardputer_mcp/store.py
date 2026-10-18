@@ -141,12 +141,7 @@ class Store:
         )
 
     def profile_needs_review(self) -> bool:
-        """Exclude only intact, known device plans from the profile barrier.
-
-        Unknown/missing/corrupt plans and registered-project failures stay
-        fail-closed, including after restart. Device requests have a separate
-        physical-device table and cannot own a source/build resource.
-        """
+        """Classify historical reviews for diagnostics, never execution admission."""
         rows = self.db.execute(
             """SELECT jobs.id, jobs.plan_hash, plans.payload FROM jobs
             LEFT JOIN plans ON jobs.plan_hash=plans.hash

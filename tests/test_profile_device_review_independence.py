@@ -6,10 +6,10 @@ import pytest
 from test_profile_jobs import register
 from test_registry_http import registry_service as registry_service
 
-from cardputer_mcp.broker import BrokerError, digest_plan
+from cardputer_mcp.broker import digest_plan
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import SourceRepository
-from cardputer_mcp.models import AcquireRequest, Origin
+from cardputer_mcp.models import AcquireRequest, LeaseRequest, Origin
 
 
 @pytest.mark.parametrize("operation", ["firmware_fetch_source", "firmware_build"])
@@ -73,11 +73,11 @@ async def test_unrelated_device_review_does_not_gate_explicit_profile_job(
             store.put_request("old-request", None, 30, state="needs_review")
             historical = store.request("old-request")
         assert store.needs_review()
-        with pytest.raises(BrokerError, match="recovery_review_required"):
-            broker.acquire(
-                AcquireRequest(owner=Origin.REMOTE),
-                principal_id=service.keys["second"].metadata.principal_id,
-            )
+        lease = broker.acquire(
+            AcquireRequest(owner=Origin.REMOTE),
+            principal_id=service.keys["second"].metadata.principal_id,
+        )
+        broker.release(LeaseRequest(session=lease["session"]))
         if boundary == "prepare":
             request["job_id"] = "later-profile"
             prepared = await call(remote, "prepare_test", request)
