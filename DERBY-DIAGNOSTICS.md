@@ -27,8 +27,10 @@ The wire contract is pinned to firmware commit
 not an assertion that those firmware bytes are installed. `DERBY_TLM` must be a
 complete bare version-1 line with exactly the emitted fields and ten cumulative
 camera intervals. Camera/error messages additionally accept the firmware's
-bounded `I/W/E (timestamp) js:` logging form and known ANSI colors. Arbitrary
-prefixes are rejected. No raw console text, pixel rows, exception suffixes,
+bounded `I/W/E (timestamp) js:` logging form and known ANSI colors. Native OOM
+additionally accepts only `E (timestamp) app: OOM ...`, optionally with the known
+paired red ANSI color. Other app messages and arbitrary prefixes are rejected.
+No raw console text, pixel rows, exception suffixes,
 arbitrary plan names or credentials are retained in the diagnostic payload.
 
 Fully received fatal events are recorded before the existing fault stop. A fatal
@@ -71,5 +73,5 @@ chosen, and equal app hashes do not establish installed identity or a receipt
 chain. This report does not authorize any later device action.
 
 Primary contract sources at the pinned firmware commit are
-`main/pocket/derby_telemetry.c`, `main/ui/jsconsole.c`,
+`main/pocket/derby_telemetry.c`, `main/ui/jsconsole.c`, `main/app_session.c`,
 `tools/games/derby_observation.py` and `docs/platform/derby-telemetry.json`.

@@ -149,6 +149,15 @@ _SEED = re.compile(rb"[0-9A-F]{8}\Z")
 # main/ui/jsconsole.c at wire_contract_commit emits console.log via ESP_LOGI
 # with tag "js" and at most 200 message bytes. Do not generalize logger tags.
 _JS_LOG_PREFIX = re.compile(rb"^(?P<color>\x1b\[(?:0;)?3[123]m)?[IWE] \([0-9]{1,20}\) js: ")
+# main/app_session.c emits native OOM through ESP_LOGE("app", ...). Only this
+# error category admits the app envelope, with the source logger's red color.
+_APP_OOM_LOG_PREFIX = re.compile(
+    rb"^(?P<color>\x1b\[(?:0;)?31m)?E \([0-9]{1,20}\) app: (?=OOM(?: |$))"
+)
+_APP_OOM_BODY = re.compile(
+    rb"OOM n=(0|[1-9][0-9]{0,9}) first_req=(0|[1-9][0-9]{0,9}) "
+    rb"used=(0|[1-9][0-9]{0,9})"
+)
 _COLOR_RESET = b"\x1b[0m"
 _CAMERAS = {
     b"WIDE": 0,
@@ -225,8 +234,12 @@ def _event_body(line: bytes) -> bytes | None:
         return None
     line = line.removesuffix(b"\r")
     prefix = _JS_LOG_PREFIX.match(line)
+    app_oom = False
     if prefix is None:
-        return line
+        prefix = _APP_OOM_LOG_PREFIX.match(line)
+        if prefix is None:
+            return line
+        app_oom = True
     body = line[prefix.end() :]
     if prefix.group("color") is not None:
         if not body.endswith(_COLOR_RESET):
@@ -234,7 +247,14 @@ def _event_body(line: bytes) -> bytes | None:
         body = body[: -len(_COLOR_RESET)]
     elif body.endswith(_COLOR_RESET):
         return None
-    return body if len(body) <= 200 and body.startswith(b"DERBY ") else None
+    if len(body) > 200:
+        return None
+    if app_oom:
+        native = _APP_OOM_BODY.fullmatch(body)
+        if native is None or any(int(value) > U32_MAX for value in native.groups()):
+            return None
+        return b"app: " + body
+    return body if body.startswith(b"DERBY ") else None
 
 
 def _event(line: bytes, at_ms: int) -> DerbyDiagnosticEvent | None:

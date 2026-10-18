@@ -77,6 +77,12 @@ def test_tlm_without_lf_is_not_promoted_to_a_record_at_deadline():
         (b"DERBY DEMOFAIL SYNTHETIC_PRIVATE_EXCEPTION", "demo_fail", None),
         (b"DERBY FRAMEFAIL gate SYNTHETIC_PRIVATE_EXCEPTION", "frame_fail", "gate"),
         (b"DERBY LOADFAIL SYNTHETIC_PRIVATE_PLAN SYNTHETIC_PRIVATE_EXCEPTION", "load_fail", None),
+        (b"E (123) app: OOM n=1 first_req=8192 used=150000", "oom", None),
+        (
+            b"\x1b[0;31mE (123) app: OOM n=1 first_req=8192 used=150000\x1b[0m\r",
+            "oom",
+            None,
+        ),
     ],
 )
 @pytest.mark.parametrize("split", [None, 8])
@@ -102,10 +108,20 @@ def test_complete_fatal_category_is_collected_before_stop_without_suffix(fault, 
     assert port.writes == [] and not port.chunks
 
 
-def test_partial_fatal_stops_immediately_without_consuming_the_remaining_row():
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [b"DERBY DEMOFAIL", b" SYNTHETIC_PRIVATE_EXCEPTION\n"],
+        [
+            b"\x1b[0;31mE (123) app: OOM",
+            b" n=1 first_req=8192 used=150000\x1b[0m\r\n",
+        ],
+    ],
+)
+def test_partial_fatal_stops_immediately_without_consuming_the_remaining_row(chunks):
     clock = Clock()
     port = FakePort(clock)
-    port.chunks.extend([b"DERBY DEMOFAIL", b" SYNTHETIC_PRIVATE_EXCEPTION\n"])
+    port.chunks.extend(chunks)
     reader = Reader(port, lambda _: None, clock, 180)
     reader.derby_mode = True
     collector = reader.derby_diagnostics = DerbyDiagnosticsCollector(clock=clock, origin=0)

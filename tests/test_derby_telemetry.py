@@ -336,6 +336,61 @@ def test_source_js_logger_prefix_preserves_only_fixed_events(level, color, endin
         assert private not in public
 
 
+@pytest.mark.parametrize("color", [b"", b"\x1b[31m", b"\x1b[0;31m"])
+@pytest.mark.parametrize("ending", [b"", b"\r"])
+@pytest.mark.parametrize(
+    "detail",
+    [
+        b"n=1 first_req=8192 used=150000",
+        b"n=4294967295 first_req=4294967295 used=4294967295",
+        b"n=1 first_req=0 used=0",
+    ],
+)
+def test_source_native_app_oom_envelope_retains_only_fixed_category(color, ending, detail):
+    c = collector()
+    c.feed(wire())
+    c.feed(color + b"E (123) app: OOM " + detail + (b"\x1b[0m" if color else b"") + ending)
+    c.feed(later())
+    report = c.snapshot()
+    assert [event.kind for event in report.events] == ["oom"]
+    assert report.events[0].camera is None and report.events[0].phase is None
+    assert not report.cameras  # The intervening error breaks an apparent valid window.
+    assert not report.quality.partial_line_or_fault_possible
+    for private in ("app:", "OOM", "first_req=", "used=", "\\u001b"):
+        assert private not in report.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        b"I (123) app: OOM n=1 first_req=8192 used=150000",
+        b"W (123) app: OOM n=1 first_req=8192 used=150000",
+        b"E (123) other: OOM n=1 first_req=8192 used=150000",
+        b"E (123) app: HEAPPROBE_OOM quota=1 allocator=0",
+        b"E (123) app: DERBY CAM WIDE 2",
+        b"E (123) app: DERBY_TLM v=1",
+        b"E (123) app: OOM_OTHER PRIVATE",
+        b"E (123) app: OOM n=01 first_req=8192 used=150000",
+        b"E (123) app: OOM n=4294967296 first_req=8192 used=150000",
+        b"E (123) app: OOM n=1 first_req=4294967296 used=150000",
+        b"E (123) app: OOM n=1 first_req=8192 used=4294967296",
+        b"E (123) app: OOM n=1 first_req=8192 used=150000 PRIVATE",
+        b"arbitrary E (123) app: OOM n=1 first_req=8192 used=150000",
+        b"E (not-a-number) app: OOM n=1 first_req=8192 used=150000",
+        b"E (" + b"1" * 21 + b") app: OOM n=1 first_req=8192 used=150000",
+        b"\x1b[0;32mE (123) app: OOM n=1 first_req=8192 used=150000\x1b[0m",
+        b"\x1b[0;31mE (123) app: OOM n=1 first_req=8192 used=150000",
+        b"E (123) app: OOM n=1 first_req=8192 used=150000\x1b[0m",
+        b"E (123) app: OOM n=1 first_req=8192 used=150000\r\r",
+        b"E (123) app: OOM " + b"S" * 200,
+    ],
+)
+def test_native_app_oom_does_not_broaden_tags_levels_prefixes_or_bounds(line):
+    c = collector()
+    c.feed(line)
+    assert not c.snapshot().events and not c.snapshot().samples
+
+
 @pytest.mark.parametrize(
     "line",
     [
