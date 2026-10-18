@@ -3,14 +3,19 @@
 import asyncio
 import hashlib
 import sqlite3
+from collections.abc import Callable
+from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from .broker import BrokerError, digest_plan
 from .build_locations import BuildLocationError
 from .build_process import ProcessDeadlineExpired
+from .config import Settings
 from .firmware_build import BuildPreflightFailure, hash_file
 from .logs import Event
 from .models import CancelRequest, ExecuteRequest, Origin, PrepareRequest, TestName
+from .source_preflight import SourceReadWorker, settings_identity, source_inputs
 from .source_snapshot import SourceError
 
 if TYPE_CHECKING:
@@ -19,6 +24,16 @@ if TYPE_CHECKING:
 PROFILE_TESTS = frozenset({TestName.SOURCE.value, TestName.BUILD.value})
 # Whole-job limits, independent of connection lifetime and physical leases.
 PROFILE_SECONDS = {TestName.SOURCE.value: 180, TestName.BUILD.value: 1800}
+
+
+@dataclass(frozen=True)
+class _SourcePreflight:
+    store: Any
+    epoch: str
+    settings: Settings
+    settings_hash: str
+    details: dict[str, Any]
+    storage: dict[str, Any]
 
 
 class ProfileJobs:
@@ -31,6 +46,7 @@ class ProfileJobs:
         self.deadline = 0.0
         self.uncertain = False
         self.state_uncertain = False
+        self.source_reads = SourceReadWorker()
 
     def _uncertain(self, *, allow_owned_cleanup: bool = False) -> bool:
         process = self.broker.firmware_build.process
@@ -82,7 +98,59 @@ class ProfileJobs:
         self.broker.firmware_source.snapshots.settings = self.broker.settings
         self.broker.firmware_build.settings = self.broker.settings
 
-    def prepare(self, request: PrepareRequest, principal: str, origin: str) -> dict[str, Any]:
+    async def prepare_source(
+        self,
+        request: PrepareRequest,
+        principal: str,
+        origin: str,
+        *,
+        reauthorize: Callable[[], tuple[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        broker, store = self.broker, self.broker._store()
+        if broker.closing or not self._authorized(principal, origin):
+            raise BrokerError("principal_not_authorized")
+        if self._uncertain():
+            raise BrokerError("recovery_review_required")
+        if request.test != TestName.SOURCE or request.project_id is None:
+            raise BrokerError("registered_build_project_required")
+        self._registration(request.project_id)
+        settings, epoch = broker.settings, broker.epoch
+        captured = settings.model_copy(deep=True)
+        identity = settings_identity(captured)
+        owned_request = request.model_copy(deep=True)
+        if owned_request.project_id is None or owned_request.source_commit is None:
+            raise SourceError("source_full_commit_required")
+        details, storage = await self.source_reads.run(
+            partial(
+                source_inputs,
+                captured,
+                owned_request.project_id,
+                owned_request.source_commit,
+                principal,
+            )
+        )
+        if reauthorize is not None and reauthorize() != (principal, origin):
+            raise BrokerError("principal_not_authorized")
+        evidence = _SourcePreflight(store, epoch, settings, identity, details, storage)
+        return self.prepare(owned_request, principal, origin, _source=evidence)
+
+    def _source_current(self, evidence: _SourcePreflight) -> bool:
+        broker = self.broker
+        return (
+            broker.store is evidence.store
+            and broker.epoch == evidence.epoch
+            and broker.settings is evidence.settings
+            and settings_identity(broker.settings) == evidence.settings_hash
+        )
+
+    def prepare(
+        self,
+        request: PrepareRequest,
+        principal: str,
+        origin: str,
+        *,
+        _source: _SourcePreflight | None = None,
+    ) -> dict[str, Any]:
         broker, store = self.broker, self.broker._store()
         if broker.closing or not self._authorized(principal, origin):
             raise BrokerError("principal_not_authorized")
@@ -93,10 +161,19 @@ class ProfileJobs:
         if request.test.value not in PROFILE_TESTS or request.project_id is None:
             raise BrokerError("registered_build_project_required")
         registration = self._registration(request.project_id)
-        self._sync_settings()
+        if _source is not None:
+            if request.test != TestName.SOURCE or not self._source_current(_source):
+                raise BrokerError("profile_or_principal_no_longer_valid")
+        else:
+            self._sync_settings()
         if request.test == TestName.SOURCE:
-            details = broker.firmware_source.prepare(request, principal)
-            storage = {"source_cache": broker.firmware_source.snapshots.usage(request.project_id)}
+            if _source is not None:
+                details, storage = _source.details, _source.storage
+            else:
+                details = broker.firmware_source.prepare(request, principal)
+                storage = {
+                    "source_cache": broker.firmware_source.snapshots.usage(request.project_id)
+                }
         else:
             if request.source_receipt is not None:
                 broker.firmware_source.authorize_receipt(
@@ -138,6 +215,16 @@ class ProfileJobs:
             raise BrokerError("profile_or_principal_no_longer_valid")
         if self._uncertain():
             raise BrokerError("recovery_review_required")
+        if _source is not None and not self._source_current(_source):
+            raise BrokerError("profile_or_principal_no_longer_valid")
+        # The awaited SOURCE path must recheck history after the final authority
+        # callback, which can itself update durable state or configuration.
+        if _source is not None:
+            existing = store.job(request.job_id)
+            if existing and existing["plan_hash"] != digest:
+                raise BrokerError("job_id_conflict")
+            if store.plan(digest) is None and store.record_count("plans") >= 10000:
+                raise BrokerError("history_full_archive_offline")
         store.put_plan(digest, plan)
         return dict(plan_hash=digest, plan=plan, storage=storage, approval_required=False)
 
@@ -421,6 +508,7 @@ class ProfileJobs:
                 self.queue.task_done()
 
     async def close(self) -> None:
+        await self.source_reads.close()
         if self.active is not None:
             job = self.broker._store().job(self.active)
             if job is not None:
