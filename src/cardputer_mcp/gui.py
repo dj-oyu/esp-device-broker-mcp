@@ -396,7 +396,6 @@ class QueueController:
             and not snapshot.active_job
             and not snapshot.owner.release_blocked
             and not snapshot.ownership_uncertain
-            and not snapshot.needs_review
         )
 
     def _ready(self) -> bool:
@@ -779,7 +778,7 @@ class _Window:
                 text=snapshot.backend, bg="#ffedd5" if snapshot.backend == "SERIAL" else "#cffafe"
             )
             self.health.set(
-                f"Needs review: {'YES' if snapshot.needs_review else 'no'}    |    "
+                f"Historical needs review: {'YES' if snapshot.needs_review else 'no'}    |    "
                 f"Ownership uncertain: {'YES' if snapshot.ownership_uncertain else 'no'}"
                 + ("    |    STALE STATE: refresh required" if not model.fresh else "")
             )

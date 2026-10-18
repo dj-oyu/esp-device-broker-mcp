@@ -531,3 +531,98 @@ ChatGPT Plugins connection Refresh flow, then retest in a new conversation.
 Server listChanged behavior alone does not establish a host metadata refresh.
 No local Codex/agent or external synchronization script is required for normal
 source fetch → receipt build → explicit flash → logs/capture operation.
+
+
+## Current-state admission instead of historical review gating
+
+Based on main 16523b397e286ae547f33dcf286f018f68db9c20. Historical unacknowledged
+jobs and device requests remain unchanged and visible. New device ownership,
+FIFO grants, prepare/execute, dispatch and running authority use current runtime
+uncertainty instead of querying historical review flags. Registered source/build
+jobs likewise use current process/output/cache/state uncertainty. State publication
+failures latch uncertainty in the live broker; offline review cannot clear it.
+Current owner/port/process holds, authentication, explicit intent, binding,
+cancellation, independent backup and atomic LKG selection remain required.
+The GUI labels the flag as history and allows safe idle ownership release.
+
+New deterministic regressions cover historical capture/flash/unknown-plan failures
+at acquire, preparation, submission, dispatch and running boundaries; restart
+history/no replay; FIFO handover; live process/port/cache/output/state hazards;
+profile history and commit failure; and verified synthetic flash/LKG publication
+with historical failure at preparation, execution and readback. These use synthetic
+backends and ROM bytes, never physical USB or a production state database.
+
+Ruff lint/format and strict mypy passed (75 source modules). The dedicated current
+state suite passed 27 tests; synthetic flash policy/lifecycle coverage passed 38
+tests. Windows distribution unittest checks passed 14 tests. Frozen dependency
+sync used the unchanged lockfile and an explicit writable temporary cache.
+
+The unmodified base full suite in this Linux execution environment passed 2667
+tests with 1 skipped, 48 failures and 198 errors (49 subtests passed). The key
+registry rejects the environment's mapped root-directory ownership with
+unsafe_key_registry_permissions; root and temporary-directory metadata were
+checked, and the same failures occur before application execution on the base.
+Security checks were not relaxed. The final branch passed 2697 tests with 1 skipped,
+48 failures and 198 errors (49 subtests passed). All 246 failed/error node IDs
+exactly match the unmodified base; no branch-only failures/errors occurred. This
+is not a fully passing suite, and blocked HTTP/key tests require a normal trusted
+filesystem environment before release. Native Windows,
+physical firmware operations and the deployed MCP connection remain unverified
+by this source-only change; deployment is a separate step.
+
+
+### Follow-up: owned build teardown and watchdog
+
+Independent review found that BuildProcess.run sets uncertain=True temporarily
+while joining output readers even after a normal process exit. Treating that flag
+as authority revocation inside ProfileJobs._binding_live could irreversibly set
+stop_requested from the 100 ms watchdog during healthy cleanup. A deterministic
+regression using the real FirmwareBuild.execute / BuildProcess.run lifecycle and
+gated synthetic OS readers reproduced this on bf04cf8 before the fix.
+
+Keep configuration/principal/deadline/cancellation authority live during owned
+teardown; evaluate resource uncertainty separately at admission, dispatch, and
+after the worker returns, before publication. The owning process/reader hold and
+all unconfirmed-cleanup flags are retained. No successful job/artifact is published
+on cleanup failure, and further admission stays blocked. Five lifecycle regressions
+cover successful delayed cleanup, retained cleanup failure, explicit cancellation,
+principal revocation and deadline expiry while cleanup crosses the watchdog.
+
+The five regressions plus admission and existing build tests passed together
+(59 tests); Ruff lint/format and strict mypy passed. Prior-head CI/artifacts are
+historical evidence only; same-head CI and distribution verification must be
+repeated for this follow-up before any deployment.
+
+
+Publication also rechecks resource latches after authentication callbacks, once
+worker teardown has returned. An additional callback regression prevents the
+running/cleanup distinction from authorizing publication if a resource becomes
+uncertain during final authorization. The combined cleanup/admission/build suite
+passed 60 tests, with Ruff lint/format and strict mypy passing. This final follow-up
+requires its own head CI and artifact; intermediate artifacts remain superseded.
+
+
+### Cross-lane follow-up: peer profile cleanup versus running device authority
+
+A second deterministic regression on e5333e7 kept a device workflow running while
+an independent profile build used real BuildProcess.run with a gated reader join.
+The actual _running_job_binding_live callback used by flash/smoke returned false
+during healthy owned profile cleanup. Both concurrent variants failed before the
+fix; this was separate from the profile's own watchdog cancellation.
+
+BuildProcess now marks cleanup_pending only while the cleanup outcome is still
+undecided, and clears it on known stop/reader failure and every cleanup exit.
+The active/uncertain flags and owned process/reader release logic are unchanged.
+Only a currently running device's binding may disregard a live profile owner's
+pending process cleanup. Admission/dispatch still see the uncertainty. Failed
+cleanup, an absent profile owner, profile state/output/cache uncertainty and the
+device's own ownership uncertainty still invalidate the running device callback.
+After failed cleanup returns, remaining process ownership and future admission
+remain held; no history acknowledgement or successful artifact is fabricated.
+
+The gated lifecycle tests now include both concurrent outcomes and stable hazard
+injections during pending cleanup. Cleanup/admission/build/flash binding/process
+monitor/Windows ownership regressions passed together (115 tests). Ruff lint,
+format and strict mypy passed. This cross-lane head requires fresh same-head CI;
+all prior artifacts remain superseded. The durable receipt read branch is held
+separately and has no code changes in this PR.

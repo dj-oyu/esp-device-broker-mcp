@@ -7,7 +7,7 @@ import pytest
 from test_serial_backend import backend, config
 
 from cardputer_mcp.backend import DeviceDisconnected, DeviceOperationFailure
-from cardputer_mcp.broker import Broker, BrokerError
+from cardputer_mcp.broker import Broker
 from cardputer_mcp.config import Settings
 from cardputer_mcp.models import AcquireRequest, ExecuteRequest, LogRequest, Origin, PrepareRequest
 from cardputer_mcp.models import TestName as Action
@@ -59,10 +59,9 @@ async def test_failure_code_and_safe_counts_persist_without_replay(tmp_path, fai
         assert details["received_bytes"] == (len(reply) if failure_kind == "noise" else 0)
         assert details["received_lines"] == (1 if failure_kind == "noise" else 0)
         assert port.opens == port.closes == 1
-        with pytest.raises(BrokerError, match="recovery_review_required"):
-            broker.prepare(
-                PrepareRequest(session=token, job_id="must-not-retry", test=Action.HELLO)
-            )
+        broker.prepare(PrepareRequest(session=token, job_id="fresh-request", test=Action.HELLO))
+        assert broker.job("failure-diagnostics") == result
+        assert port.opens == port.closes == 1
         persisted = "\n".join(broker._store().db.iterdump())
         visible = json.dumps(broker.read_logs(LogRequest()))
         for secret in ("SYNTHETIC_ONLY", "SYNTHETIC_WRITE_SECRET", token):

@@ -73,10 +73,15 @@ def test_durable_manifest_is_independent_of_log_retention(receipt, retention):
         ("broker-build-identity.json", "corrupt"),
     ],
 )
-def test_invalid_receipt_never_falls_back_to_ram_manifest(receipt, file, mutation):
+@pytest.mark.parametrize("retention", ["restart", "fresh"])
+def test_invalid_receipt_never_falls_back_to_ram_manifest(receipt, file, mutation, retention):
     root, manifest = receipt.publish()
     receipt.restart()
     receipt.builder.manifests["build-0"] = ("alice", manifest)
+    if retention == "fresh":
+        logs = BuildLogs("alice")
+        logs.append("warning: synthetic retained output")
+        receipt.builder.logs["build-0"] = logs
     path = root / file
     if mutation == "missing":
         path.unlink()
@@ -85,7 +90,11 @@ def test_invalid_receipt_never_falls_back_to_ram_manifest(receipt, file, mutatio
     result = receipt.builder.read_logs(
         BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
     )
-    assert result["expired"] and result["gap"]
+    assert result["expired"] is (retention == "restart")
+    if retention == "restart":
+        assert result["gap"]
+    else:
+        assert result["entries"]
     assert result["artifact_status"] == "unavailable"
     assert "manifest" not in result
     assert str(root) not in json.dumps(result)
@@ -187,7 +196,9 @@ async def test_mcp_unavailable_artifact_preserves_log_gap_and_success_history(re
         assert broker.job("build-0")["state"] == "succeeded"
 
 
-@pytest.mark.parametrize("mutation", ["revoke", "registration", "job_state"])
+@pytest.mark.parametrize(
+    "mutation", ["none", "revoke", "registration", "job_state", "plan_hash", "epoch"]
+)
 async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
     receipt, monkeypatch, mutation
 ):
@@ -232,10 +243,22 @@ async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
                 auth._tokens[Origin.REMOTE] = "c" * 64
             elif mutation == "registration":
                 broker.settings.build_projects.clear()
-            else:
+            elif mutation == "job_state":
                 broker._store().set_job("build-0", "needs_review", "synthetic_invalidation")
+            elif mutation == "plan_hash":
+                store = broker._store()
+                store.db.execute("UPDATE jobs SET plan_hash=? WHERE id='build-0'", ("f" * 64,))
+                store.db.commit()
+            elif mutation == "epoch":
+                broker.epoch = "f" * 32
         finally:
             release.set()
         result = await asyncio.wait_for(reading, 3)
-        assert result["ok"] is False and "manifest" not in result
-        assert result["error"] in {"authentication_required", "build_log_not_available"}
+        if mutation == "none":
+            assert result["ok"] and result["artifact_status"] == "verified"
+            again = await call(owner, "read_build_logs", {"job_id": "build-0"})
+            assert again["ok"] and again["artifact_status"] == "verified"
+            assert again["manifest"] == result["manifest"]
+        else:
+            assert result["ok"] is False and "manifest" not in result
+            assert result["error"] in {"authentication_required", "build_log_not_available"}

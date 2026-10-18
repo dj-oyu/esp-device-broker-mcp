@@ -233,7 +233,6 @@ def test_release_requires_matching_selected_generation_and_idle_owner() -> None:
     "field,value",
     [
         ("active_job", "job-running"),
-        ("needs_review", True),
         ("ownership_uncertain", True),
     ],
 )
@@ -613,3 +612,11 @@ def test_window_close_callback_only_stops_gui_worker_and_destroys_window() -> No
     assert window.controller.closed and not window.controller.fresh
     assert window.commands.get_nowait() is None
     assert api.calls == []
+
+
+def test_history_does_not_disable_safe_idle_owner_release() -> None:
+    data = state()
+    data["needs_review"] = True
+    controller = ready(data)
+    controller.selected_lease = "lease-owner"
+    assert controller.can_release()

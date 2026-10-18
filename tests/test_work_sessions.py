@@ -419,11 +419,11 @@ async def test_restart_invalidates_secrets_and_marks_ownership_and_waiting_revie
             resume(second, owner)
         with pytest.raises(BrokerError, match="invalid_session"):
             release(second, own)
-        with pytest.raises(BrokerError, match="recovery_review_required"):
-            second.acquire(AcquireRequest(owner=Origin.LOCAL))
+        fresh = second.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+        second.release(LeaseRequest(session=fresh))
         new = create(second)
-        with pytest.raises(BrokerError, match="recovery_review_required"):
-            request(second, new)
+        assert request(second, new)["request"]["state"] == "owning"
+        assert second._store().recovery_requests() == recovery
         assert backend.calls == 0
     finally:
         await second.close()

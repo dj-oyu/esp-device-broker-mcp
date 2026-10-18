@@ -231,6 +231,7 @@ class Broker:
         self.worker: asyncio.Task[None] | None = None
         self.store: Store | None = None
         self.closing = False
+        self.execution_uncertain = False
         self.captures: dict[str, RetainedCapture] = {}
         self.capture_delivery_consents: dict[str, CaptureDeliveryConsent] = {}
         self.device_observations: dict[str, RetainedDeviceObservation] = {}
@@ -443,7 +444,9 @@ class Broker:
                 or plan.get("job_id") != intent.job_id
                 or digest_plan(plan) != intent.plan_hash
                 or store.plan(intent.plan_hash) != plan
-                or store.needs_review()
+                # A peer build's still-owned normal teardown is not revoked
+                # device authority. Admission and failed cleanup remain gated.
+                or self._execution_uncertain(allow_profile_cleanup=True)
                 or not self._execution_lease_binding_live(intent)
                 or not self._device_lock.is_locked
                 or not self._state_lock.is_locked
@@ -488,9 +491,24 @@ class Broker:
         )
         return self.queue.qsize() + awaiting >= self.settings.max_queue
 
+    def _execution_uncertain(self, *, allow_profile_cleanup: bool = False) -> bool:
+        """Current resource/state uncertainty, never historical job outcomes.
+
+        Active work is handled separately by the owner/worker queue. These
+        latches survive completed callbacks until teardown; an offline review
+        cannot clear them. A fresh broker still performs all resource preflights.
+        """
+        return bool(
+            self.execution_uncertain
+            or getattr(self.backend, "ownership_uncertain", False)
+            or self.firmware_flash.uncertain
+            or self.profile_jobs._uncertain(allow_owned_cleanup=allow_profile_cleanup)
+        )
+
     def _physical_busy(self) -> bool:
         return bool(
             self.active_job is not None
+            or self.backend.hardware_connected
             or self.backend.active
             or (self.profile_jobs.active is None and self.firmware_source.active)
             or (self.profile_jobs.active is None and self.firmware_build.process.active)
@@ -591,7 +609,7 @@ class Broker:
             self.closing
             or self.session is not None
             or self._physical_busy()
-            or self._store().needs_review()
+            or self._execution_uncertain()
             or not self.waiters
         ):
             return
@@ -671,6 +689,7 @@ class Broker:
             "work_session_count": sum(w.state == "open" for w in self.work_sessions.values()),
             "history": store.counts(),
             "needs_review": store.needs_review(),
+            "execution_uncertain": self._execution_uncertain(),
             "execution_policy": "authenticated_explicit_request",
             "hardware_backend": "serial_operations_opt_in"
             if self.backend.name == "serial"
@@ -687,7 +706,7 @@ class Broker:
         self._expire()
         if self.closing:
             raise BrokerError("broker_closing")
-        if self._store().needs_review():
+        if self._execution_uncertain():
             raise BrokerError("recovery_review_required")
         if self.session or self.waiters or self._physical_busy():
             raise BrokerError("device_busy")
@@ -892,7 +911,7 @@ class Broker:
             return self._work_result(work, scopes)
         if not self._principal_live(work):
             raise BrokerError("principal_not_authorized")
-        if self._store().needs_review():
+        if self._execution_uncertain():
             raise BrokerError("recovery_review_required")
         if len(self.waiters) >= self.settings.max_waiters:
             raise BrokerError("wait_queue_full")
@@ -1005,6 +1024,7 @@ class Broker:
             "owner": owner,
             "active_job": self.active_job,
             "needs_review": store.needs_review(),
+            "execution_uncertain": self._execution_uncertain(),
             "ownership_uncertain": bool(getattr(self.backend, "ownership_uncertain", False)),
             "recovery_requests": store.recovery_requests(),
         }
@@ -1075,7 +1095,7 @@ class Broker:
             and session.principal_id is None
         ):
             raise BrokerError("authentication_required")
-        if store.needs_review():
+        if self._execution_uncertain():
             raise BrokerError("recovery_review_required")
         storage = None
         try:
@@ -1193,7 +1213,7 @@ class Broker:
             if existing["plan_hash"] != request.plan_hash:
                 raise BrokerError("job_id_conflict")
             return {**existing, "deduplicated": True}
-        if store.needs_review():
+        if self._execution_uncertain():
             raise BrokerError("recovery_review_required")
         if self._execution_capacity_full():
             raise BrokerError("queue_full")
@@ -1230,7 +1250,7 @@ class Broker:
             or self.session is not session
             or not self._execution_intent_binding_live(intent)
             or self.closing
-            or store.needs_review()
+            or self._execution_uncertain()
             or self._execution_capacity_full()
             or store.record_count("jobs") >= 10000
             or store.job(job_id) is not None
@@ -1724,7 +1744,7 @@ class Broker:
                     or not math.isfinite(self.clock())
                     or self.clock() >= lease.deadline
                     or self.closing
-                    or store.needs_review()
+                    or self._execution_uncertain()
                     or self._physical_busy()
                     or self.backend.hardware_connected
                     or not self._device_lock.is_locked
@@ -2019,6 +2039,7 @@ class Broker:
                             )
                             store.set_job(job_id, "succeeded", completed, diagnostic)
                     except Exception as failure:
+                        self.execution_uncertain = True
                         if plan["test"] == TestName.SOURCE.value:
                             code = (
                                 failure.code
@@ -2058,6 +2079,11 @@ class Broker:
                             # Failure to retain closure evidence never grants recovery.
                             pass
                     self._expire()
+            except Exception:
+                # A failed durable-state operation must not leave an apparently
+                # idle lane admitting more work. History is not the runtime latch.
+                self.execution_uncertain = True
+                self.logs.append(Event.REVIEW)
             finally:
                 if job_id is not None:
                     self.capture_delivery_consents.pop(job_id, None)

@@ -144,9 +144,9 @@ async def test_reviewed_history_does_not_mask_another_current_review_or_guard(tm
             assert card(timeline, "current-failure")["reviewed"] is False
             assert timeline.snapshot()["cards"][0]["job_id"] == "current-failure"
         assert broker.operator_snapshot()["needs_review"] is True
-        with pytest.raises(BrokerError, match="^recovery_review_required$"):
-            broker.acquire(AcquireRequest(owner=Origin.LOCAL))
-        assert store.db.total_changes == changes
+        assert broker.status()["execution_uncertain"] is False
+        broker.acquire(AcquireRequest(owner=Origin.LOCAL))
+        assert store.db.total_changes > changes
         assert broker.backend.calls == 0 and broker.queue.empty()
 
 

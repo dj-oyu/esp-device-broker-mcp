@@ -56,7 +56,7 @@ FLASH_EFFECTS = [
     ),
     (
         "Writes only attested manifest regions or the exact device-bound backup; "
-        "interrupted/uncertain work needs review"
+        "interrupted work remains diagnostic history; current uncertainty blocks execution"
     ),
     (
         "Flash/restore: one 100 ms normal-boot reset and up to 30 s passive IDF/ELF "
