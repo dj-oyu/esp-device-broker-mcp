@@ -6,6 +6,7 @@ import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import partial
 from math import isfinite
 from pathlib import Path
 from time import time
@@ -58,6 +59,7 @@ from .models import (
     TestName,
 )
 from .operator_api import OperatorAPI
+from .source_preflight import settings_identity, source_usage
 from .source_snapshot import SourceError
 
 
@@ -710,6 +712,26 @@ def create_server(
                 )
             return owned(request, ctx, lambda: resident.prepare(request))
 
+        if request.test == TestName.SOURCE:
+            try:
+
+                def current_owner() -> tuple[str, str]:
+                    owner = principal(ctx, "control")
+                    if "read" not in owner.scopes:
+                        raise BrokerError("insufficient_scope")
+                    return owner.principal_id, owner.origin.value
+
+                owner_id, origin = current_owner()
+                result = await resident.profile_jobs.prepare_source(
+                    request, owner_id, origin, reauthorize=current_owner
+                )
+                return {"ok": True, **result}
+            except BrokerError as exc:
+                return {"ok": False, "error": str(exc)}
+            except SourceError as exc:
+                return {"ok": False, "error": exc.code}
+            except ValueError:
+                return {"ok": False, "error": "invalid_request"}
         return _result(prepare)
 
     @server.tool(annotations=execution)
@@ -831,10 +853,41 @@ def create_server(
             store = resident._store()
             job = store.job(request.job_id)
             plan = store.plan(job["plan_hash"]) if job is not None else None
-            if plan is not None and plan.get("test") == TestName.SOURCE.value:
+            if plan is not None and job is not None and plan.get("test") == TestName.SOURCE.value:
                 if plan.get("source_principal") != owner.principal_id:
                     raise BrokerError("source_log_not_available")
-                return resident.firmware_source.read_logs(request, owner.principal_id)
+                source = resident.firmware_source
+                epoch, settings = resident.epoch, resident.settings
+                captured = settings.model_copy(deep=True)
+                identity = settings_identity(captured)
+                result = source.read_logs(request, owner.principal_id, include_cache=False)
+                try:
+                    usage: dict[str, Any] = await resident.profile_jobs.source_reads.run(
+                        partial(source_usage, captured, plan["project_id"])
+                    )
+                except SourceError as exc:
+                    if "diagnostic" not in result:
+                        raise
+                    usage = {"available": False, "code": exc.code}
+                current_owner = principal(ctx, "read")
+                if (
+                    resident.closing
+                    or resident.store is not store
+                    or resident.epoch != epoch
+                    or resident.firmware_source is not source
+                    or resident.settings is not settings
+                    or settings_identity(resident.settings) != identity
+                    or current_owner.principal_id != owner.principal_id
+                    or current_owner.origin != owner.origin
+                    or store.job(request.job_id) != job
+                    or store.plan(job["plan_hash"]) != plan
+                ):
+                    raise BrokerError("source_log_not_available")
+                # The cache read can outlive RAM retention or log eviction. Read
+                # the same cursor again only after the current grant is checked.
+                result = source.read_logs(request, owner.principal_id, include_cache=False)
+                result["source_cache"] = usage
+                return result
             if plan is not None and plan.get("test") in {t.value for t in FLASH_TESTS}:
                 if plan.get("flash_principal") != owner.principal_id:
                     raise BrokerError("flash_log_not_available")
