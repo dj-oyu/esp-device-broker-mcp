@@ -46,9 +46,24 @@ jobs:
           uv sync --frozen --python python
       - name: Lint and format
         run: |
-          uv run --frozen ruff check src tests
-          uv run --frozen ruff format --check src tests
+          uv run --frozen ruff check src tests packaging/full_suite.py packaging/ci_process_tree.py
+          uv run --frozen ruff format --check src tests packaging/full_suite.py packaging/ci_process_tree.py
       - name: Native strict typing
-        run: uv run --frozen mypy src
+        run: uv run --frozen mypy src packaging/full_suite.py packaging/ci_process_tree.py
       - name: Complete tests with synthetic devices and credentials
-        run: uv run --frozen pytest -q --tb=short -o faulthandler_timeout=90
+        id: tests
+        run: uv run --frozen python packaging/full_suite.py
+      - name: Preserve synthetic-suite diagnostics
+        if: always() && steps.tests.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: synthetic-suite-${{ matrix.os }}-py${{ matrix.python }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-diagnostics/pytest.log
+            test-diagnostics/stacks.log
+            test-diagnostics/phase.json
+            test-diagnostics/timeout.json
+            test-diagnostics/result.json
+            test-diagnostics/junit.xml
+          if-no-files-found: error
+          retention-days: 7

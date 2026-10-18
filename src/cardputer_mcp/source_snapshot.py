@@ -9,13 +9,16 @@ import os
 import re
 import shutil
 import stat
+import threading
 import time
 import urllib.request
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from .flash_backup import BackupStore
 
@@ -41,6 +44,11 @@ LIMITS = {
     "submodule_count": 16,
 }
 
+CACHE_SCAN_SECONDS = 5.0
+CACHE_SCAN_ENTRIES = 1_000_000
+_CACHE_LOCKS: WeakValueDictionary[str, Any] = WeakValueDictionary()
+_CACHE_LOCKS_GUARD = threading.Lock()
+
 
 SOURCE_ERROR_CODES = frozenset(
     {
@@ -55,6 +63,7 @@ SOURCE_ERROR_CODES = frozenset(
         "source_cache_full",
         "source_cache_limit",
         "source_cache_root_conflict",
+        "source_cache_scan_limit",
         "source_cache_unknown_entry",
         "source_commit_metadata_mismatch",
         "source_cleanup_unconfirmed",
@@ -633,6 +642,30 @@ class SourceSnapshots:
         self.settings, self.transport = settings, transport
         self.uncertain = False
 
+    @contextmanager
+    def cache_guard(self, project_id: str) -> Iterator[None]:
+        """Serialize this process's cache users without waiting on another owner.
+
+        Keep the guard through fetch publication and cleanup. Reentrant calls
+        such as fetch -> usage stay on their owning worker thread.
+        """
+        project = self.settings.build_projects.get(project_id)
+        registration = getattr(project, "source_repository", None)
+        if registration is None:
+            raise SourceError("registered_source_repository_required")
+        key = os.path.normcase(str(registration.cache_root.resolve()))
+        with _CACHE_LOCKS_GUARD:
+            lock = _CACHE_LOCKS.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                _CACHE_LOCKS[key] = lock
+        if not lock.acquire(blocking=False):
+            raise SourceError("source_fetch_busy")
+        try:
+            yield
+        finally:
+            lock.release()
+
     def registration(self, project_id: str) -> tuple[Any, Any]:
         project = self.settings.build_projects.get(project_id)
         registration = getattr(project, "source_repository", None)
@@ -659,17 +692,35 @@ class SourceSnapshots:
             raise SourceError("source_private_acl_confirmation_required")
         return project, registration
 
-    def usage(self, project_id: str) -> dict[str, int]:
+    def usage(self, project_id: str, *, stop: threading.Event | None = None) -> dict[str, int]:
+        with self.cache_guard(project_id):
+            return self._usage(project_id, stop)
+
+    def _usage(self, project_id: str, stop: threading.Event | None) -> dict[str, int]:
         _, registration = self.registration(project_id)
         root = registration.cache_root
         size = count = 0
+        entries = 0
+        deadline = time.monotonic() + CACHE_SCAN_SECONDS
+
+        def check() -> None:
+            nonlocal entries
+            if stop is not None and stop.is_set():
+                raise SourceError("source_fetch_interrupted")
+            entries += 1
+            if entries > CACHE_SCAN_ENTRIES or time.monotonic() >= deadline:
+                raise SourceError("source_cache_scan_limit")
+
+        check()
         if root.exists():
             for path in root.iterdir():
+                check()
                 _not_link(path)
                 if not path.is_dir():
                     raise SourceError("source_cache_unknown_entry")
                 count += 1
                 for item in path.rglob("*"):
+                    check()
                     _not_link(item)
                     if item.is_file():
                         size += item.stat().st_size
@@ -698,6 +749,12 @@ class SourceSnapshots:
         )
 
     def fetch(
+        self, plan: dict[str, Any], live: Callable[[], bool], stage: Callable[[str], None]
+    ) -> dict[str, Any]:
+        with self.cache_guard(plan["project_id"]):
+            return self._fetch(plan, live, stage)
+
+    def _fetch(
         self, plan: dict[str, Any], live: Callable[[], bool], stage: Callable[[str], None]
     ) -> dict[str, Any]:
         project_id, principal = plan["project_id"], plan["source_principal"]
@@ -788,6 +845,12 @@ class SourceSnapshots:
                 raise SourceError("source_cleanup_unconfirmed") from None
 
     def resolve(self, project_id: str, receipt: str, principal: str) -> tuple[Path, dict[str, Any]]:
+        with self.cache_guard(project_id):
+            return self._resolve(project_id, receipt, principal)
+
+    def _resolve(
+        self, project_id: str, receipt: str, principal: str
+    ) -> tuple[Path, dict[str, Any]]:
         _, registration = self.registration(project_id)
         if re.fullmatch(r"[a-f0-9]{64}", receipt) is None:
             raise SourceError("source_receipt_invalid")

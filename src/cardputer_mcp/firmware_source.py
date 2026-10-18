@@ -117,7 +117,9 @@ class FirmwareSource:
         self.store().set_job(plan["job_id"], "succeeded", result, {"source": summary})
         self.committed = plan["job_id"]
 
-    def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
+    def read_logs(
+        self, request: Any, principal: str, *, include_cache: bool = True
+    ) -> dict[str, Any]:
         logs = self.logs.get(request.job_id)
         if logs is None:
             result = dict(
@@ -145,6 +147,8 @@ class FirmwareSource:
         )
         if failed:
             result["diagnostic"] = {"code": failure_code}
+        if not include_cache:
+            return result
         try:
             result["source_cache"] = self.snapshots.usage(plan["project_id"])
         except Exception as failure:

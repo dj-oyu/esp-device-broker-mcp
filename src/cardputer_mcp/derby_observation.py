@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import ConfigDict, Field
 
+from .derby_telemetry import DerbyDiagnostics
 from .models import StrictModel
 
 NO_CAPTURE = "derby_photo_not_verified_no_capture"
@@ -66,6 +67,7 @@ class DerbyObservation(StrictModel):
             r"observation_incomplete)$"
         )
     )
+    diagnostics: DerbyDiagnostics | None = None
 
     def no_capture_completed(self) -> bool:
         return (
