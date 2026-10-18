@@ -7,7 +7,9 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 from .gui_timeline import MAX_CARDS, MAX_RETENTION_IDENTITIES, TimelineCard, TimelineSnapshot
@@ -20,6 +22,21 @@ LIVE = "Live updates connected."
 DISCONNECTED = "Live updates disconnected. Showing the last validated status."
 RESYNC_REQUIRED = "Live updates lost continuity. Reconnect to refresh status."
 CLOSED = "Live view closed."
+DISCONNECT_MESSAGES: Mapping[str, str] = MappingProxyType(
+    {
+        "authentication_failed": (
+            "Local broker authentication failed. Check the connection credentials, then reconnect."
+        ),
+        "delivery_gap": "Live updates exceeded the delivery limit. Reconnect to refresh status.",
+        "invalid_response": (
+            "The broker returned an invalid live response. Reconnect to refresh status."
+        ),
+        "unreachable": ("Cannot reach the local broker. Check that it is running, then reconnect."),
+        "rejected": (
+            "The broker rejected live updates. Check access and broker status, then reconnect."
+        ),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -77,10 +94,12 @@ def select(state: LiveState, job_id: str) -> LiveState:
     return replace(state, selected_job_id=job_id)
 
 
-def disconnect(state: LiveState, generation: int) -> LiveState:
+def disconnect(state: LiveState, generation: int, reason: str | None = None) -> LiveState:
+    """Select fixed local guidance from a reason code; never echo transport text."""
     if state.connection == "closed" or generation != state.generation:
         return state
-    return replace(state, connection="disconnected", message=DISCONNECTED)
+    message = DISCONNECT_MESSAGES.get(reason, DISCONNECTED) if type(reason) is str else DISCONNECTED
+    return replace(state, connection="disconnected", message=message)
 
 
 def close(state: LiveState) -> LiveState:

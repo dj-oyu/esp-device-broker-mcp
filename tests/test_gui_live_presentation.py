@@ -17,10 +17,12 @@ from cardputer_mcp.gui_live_presentation import (
     MAX_LOG_LINES,
     LogRequestState,
     LogView,
+    logs_applicable,
     read_log_result,
     replace_text,
     sync_rows,
 )
+from cardputer_mcp.gui_live_preview import PreviewState
 from cardputer_mcp.gui_live_state import LiveState, begin, disconnect, select
 from cardputer_mcp.gui_live_transport import TransportEvent
 from cardputer_mcp.gui_timeline import CANCEL_UNCERTAIN
@@ -250,6 +252,7 @@ def test_deleted_selected_row_does_not_clear_the_missing_selection_detail():
 
 def test_close_cancels_view_only_and_ignores_late_second_close():
     window = object.__new__(LiveWindow)
+    window.preview_image = Mock()
     window.state = replace(LiveState(), connection="live", generation=3)
     window.action_pending = False
     window.root, window.runner, window.api = Mock(), Mock(), Mock()
@@ -297,6 +300,9 @@ def live_window():
     window.state = select(ready(snapshot([card("a"), card("b")])), "a")
     window.logs = read_log_result(LogView(), response([(1, "old")]))
     window.log_requests = LogRequestState()
+    window.preview_state = PreviewState()
+    window.preview_photo = window.displayed_preview = None
+    window.preview_image, window.preview_area, window.preview_status = Mock(), Mock(), Mock()
     window.close_prompt = False
     window.tunnel_panel = None
     window.action_pending = False
@@ -621,3 +627,46 @@ def test_native_tk_append_keeps_visible_line_when_a_desktop_is_available():
         assert text.index("@0,0") == top
     finally:
         root.destroy()
+
+
+@pytest.mark.parametrize(
+    "test,expected",
+    [
+        (None, True),
+        ("firmware_fetch_source", True),
+        ("firmware_build", True),
+        ("firmware_backup", True),
+        ("firmware_flash", True),
+        ("firmware_restore", True),
+        ("capture_home", False),
+        ("derby_smoke", False),
+        ("diagnostics", False),
+        ("firmware_observe", False),
+    ],
+)
+def test_private_log_applicability_uses_model_request_names(test, expected):
+    assert logs_applicable(test) is expected
+
+
+def test_known_nonlog_job_does_not_request_http_and_discards_old_body():
+    window = live_window()
+    window.state = select(
+        ready(snapshot([card("a", test="capture_home", cancel_available=False)])), "a"
+    )
+    window.log_requests = window.log_requests.started(25)
+    window._read_logs()
+    window.runner.read_logs.assert_not_called()
+    assert window.logs.phase == "not_applicable" and window.logs.lines == ()
+    assert not window.log_requests.pending and not window.log_requests.dirty
+
+
+def test_valid_empty_output_is_distinct_from_unavailable_and_loading():
+    empty = read_log_result(LogView(), response([], sequence=0))
+    assert empty.phase == "empty" and empty.message.startswith("No output")
+    assert LogView("loading").message == "Reading permitted output..."
+    assert (
+        len({empty.message, LogView("unavailable").message, LogView("not_applicable").message}) == 3
+    )
+    text = "日本語 ... … — ·"
+    received = read_log_result(empty, response([(1, text)]))
+    assert received.phase == "available" and received.lines == (text,)

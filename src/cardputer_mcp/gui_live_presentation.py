@@ -4,16 +4,37 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from .models import FLASH_TESTS, TestName
+
 MAX_LOG_LINES = 256
 MAX_LOG_BYTES = 128 * 1024
+LOG_TESTS = frozenset({TestName.SOURCE, TestName.BUILD, *FLASH_TESTS})
+
+
+def logs_applicable(test: str | None) -> bool:
+    """Unknown historical request types keep the existing guarded read path."""
+    return test is None or test in LOG_TESTS
 
 
 def sync_rows(tree: Any, rows: list[tuple[str, str, tuple[str, ...]]]) -> None:
     """Patch stable IDs without stealing keyboard focus or the reading position."""
     selected, focused = tuple(tree.selection()), tree.focus()
     horizontal, vertical = tree.xview(), tree.yview()
+    previous_order = tuple(tree.get_children())
+    anchor = ""
+    if previous_order and callable(getattr(tree, "identify_row", None)):
+        # The heading is not a row. Find the first visible item, including when
+        # the selected/focused item is elsewhere in the list.
+        for y in range(tree.winfo_height()):
+            anchor = tree.identify_row(y)
+            if anchor:
+                break
     wanted = {identifier for identifier, _, _ in rows}
-    removed = [identifier for identifier in tree.get_children() if identifier not in wanted]
+    removed = [identifier for identifier in previous_order if identifier not in wanted]
+    if anchor and anchor not in wanted:
+        position = previous_order.index(anchor)
+        candidates = (*previous_order[position + 1 :], *reversed(previous_order[:position]))
+        anchor = next((identifier for identifier in candidates if identifier in wanted), "")
     if removed:
         tree.delete(*removed)
     for position, (identifier, text, values) in enumerate(rows):
@@ -32,7 +53,10 @@ def sync_rows(tree: Any, rows: list[tuple[str, str, tuple[str, ...]]]) -> None:
         tree.focus(focused)
     if horizontal and tree.xview() != horizontal:
         tree.xview_moveto(horizontal[0])
-    if vertical and tree.yview() != vertical:
+    if anchor and tree.exists(anchor) and rows:
+        # Restore the stable row, not its former fraction of a changing list.
+        tree.yview_moveto(tree.index(anchor) / len(rows))
+    elif vertical and tree.yview() != vertical:
         tree.yview_moveto(vertical[0])
 
 
@@ -98,7 +122,16 @@ class LogRequestState:
 
 @dataclass(frozen=True)
 class LogView:
-    phase: Literal["idle", "loading", "available", "expired", "denied", "unavailable"] = "idle"
+    phase: Literal[
+        "idle",
+        "loading",
+        "available",
+        "empty",
+        "not_applicable",
+        "expired",
+        "denied",
+        "unavailable",
+    ] = "idle"
     epoch: str = ""
     sequence: int = 0
     lines: tuple[str, ...] = ()
@@ -113,8 +146,10 @@ class LogView:
     def message(self) -> str:
         return {
             "idle": "Select a job to read its permitted output.",
-            "loading": "Reading permitted output…",
+            "loading": "Reading permitted output...",
             "available": "Output received for the requesting principal",
+            "empty": "No output is retained for this job yet.",
+            "not_applicable": "Private output does not apply to this job type.",
             "expired": "Output expired or not retained. Build receipts have independent retention.",
             "denied": "Private output belongs to another principal. Job status remains visible.",
             "unavailable": "Output unavailable. No job or device operation was requested.",
@@ -171,7 +206,7 @@ def read_log_result(view: LogView, response: Any) -> LogView:
             size -= len(lines.pop(0).encode("utf-8"))
             clipped = True
         return LogView(
-            "available",
+            "available" if lines else "empty",
             epoch,
             sequence,
             tuple(lines),

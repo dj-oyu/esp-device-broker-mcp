@@ -10,6 +10,8 @@ from test_gui_images import row as image_row
 from test_gui_retention_review import observed_card
 
 from cardputer_mcp.gui_live_state import (
+    DISCONNECT_MESSAGES,
+    DISCONNECTED,
     RESYNC_REQUIRED,
     LiveState,
     apply,
@@ -197,6 +199,82 @@ def test_reconnect_fences_stale_generation_and_retains_last_validated_projection
     recovered = apply(connecting, snapshot(sequence=4), connecting.generation, 1003)
     assert recovered.connection == "live" and recovered.cursor == cursor(4)
     assert recovered.selected_job_id == "job_image_1"
+
+
+@pytest.mark.parametrize(
+    "reason,expected",
+    [
+        (
+            "authentication_failed",
+            "Local broker authentication failed. Check the connection credentials, then reconnect.",
+        ),
+        (
+            "delivery_gap",
+            "Live updates exceeded the delivery limit. Reconnect to refresh status.",
+        ),
+        (
+            "invalid_response",
+            "The broker returned an invalid live response. Reconnect to refresh status.",
+        ),
+        (
+            "unreachable",
+            "Cannot reach the local broker. Check that it is running, then reconnect.",
+        ),
+        (
+            "rejected",
+            "The broker rejected live updates. Check access and broker status, then reconnect.",
+        ),
+    ],
+)
+def test_disconnect_reason_provides_fixed_guidance_and_preserves_validated_projection(
+    reason: str, expected: str
+) -> None:
+    live = select(ready(), "job_image_1")
+    disconnected = disconnect(live, live.generation, reason)
+    assert disconnected.connection == "disconnected" and disconnected.message == expected
+    assert disconnected.snapshot is live.snapshot and disconnected.timeline is live.timeline
+    assert disconnected.cursor is live.cursor and disconnected.selected_job_id == "job_image_1"
+    assert disconnected.generation == live.generation
+    assert live.connection == "live"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        None,
+        "",
+        "unknown",
+        "AUTHENTICATION_FAILED",
+        " authentication_failed ",
+        "authentication_failed token=SYNTHETIC_PRIVATE_TOKEN",
+        "https://SYNTHETIC_PRIVATE_TOKEN@example.invalid/private/path",
+        {"error": "SYNTHETIC_PRIVATE_TOKEN"},
+        ["SYNTHETIC_PRIVATE_TOKEN"],
+        1,
+    ],
+)
+def test_disconnect_unknown_or_raw_reason_never_exposes_transport_data(reason: Any) -> None:
+    live = ready()
+    disconnected = disconnect(live, live.generation, reason)
+    assert disconnected.message == DISCONNECTED
+    assert "SYNTHETIC_PRIVATE_TOKEN" not in repr(disconnected)
+    assert "example.invalid" not in disconnected.message
+    assert disconnect(live, live.generation).message == DISCONNECTED
+
+
+def test_disconnect_reason_mapping_is_distinct_and_immutable() -> None:
+    assert len(set(DISCONNECT_MESSAGES.values())) == 5
+    with pytest.raises(TypeError):
+        DISCONNECT_MESSAGES["unreachable"] = "SYNTHETIC_PRIVATE_TOKEN"  # type: ignore[index]
+
+
+@pytest.mark.parametrize("reason", [None, *DISCONNECT_MESSAGES, "SYNTHETIC_PRIVATE_TOKEN"])
+def test_disconnect_reason_cannot_change_closed_or_newer_generation(reason: str | None) -> None:
+    live = ready()
+    newer = begin(live)
+    assert disconnect(newer, live.generation, reason) is newer
+    closed = close(live)
+    assert disconnect(closed, closed.generation, reason) is closed
 
 
 def test_same_cursor_reconnect_snapshot_establishes_new_generation_as_live() -> None:

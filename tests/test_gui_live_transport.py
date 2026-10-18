@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import Any
 
 import httpx2
@@ -15,6 +16,7 @@ from cardputer_mcp import gui_live_transport
 from cardputer_mcp.gui_live_transport import (
     AUTH_FAILED,
     DELIVERY_GAP,
+    IMAGE_EXPIRED,
     INVALID_RESPONSE,
     MAX_DELIVERIES,
     MAX_RESPONSE_BYTES,
@@ -582,3 +584,435 @@ def test_hung_client_startup_times_out_and_eventually_releases_owned_resources(m
     assert closed.is_set()
     captured = capsys.readouterr()
     assert captured.out == captured.err == ""
+
+
+def test_explicit_image_read_is_once_bounded_authenticated_and_independent_of_logs(runner_factory):
+    make, options = runner_factory
+    held = threading.Event()
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if request.url.path == "/operator/live":
+            if json.loads(request.content)["cursor"] is None:
+                return httpx2.Response(200, json=envelope())
+            held.set()
+            await asyncio.Future()
+        if request.url.path == "/operator/image":
+            return httpx2.Response(200, json={"ok": True, "retained": "preview JSON"})
+        return httpx2.Response(200, json={"ok": True, "entries": []})
+
+    runner = make(handler)
+    runner.start(1)
+    assert held.wait(1)
+    assert all(request.url.path == "/operator/live" for request in requests)
+    runner.drain()
+    image_id = runner.read_image(1, "capture_A", expires_at=time.monotonic() + 10)
+    events = wait_until(runner.drain)
+    assert len(events) == 1
+    assert events[0].kind == "image" and events[0].generation == 1
+    assert events[0].payload == {
+        "job_id": "capture_A",
+        "request_id": image_id,
+        "response": {"ok": True, "retained": "preview JSON"},
+    }
+    request = requests[-1]
+    assert request.url.path == "/operator/image"
+    assert json.loads(request.content) == {"job_id": "capture_A"}
+    assert request.headers["authorization"] == f"Bearer {TOKEN}"
+    assert TOKEN not in str(request.url) and TOKEN.encode() not in request.content
+    assert request.extensions["timeout"]["read"] == 5.0
+    assert options[0]["limits"].max_connections == 3
+    assert options[0]["limits"].max_keepalive_connections == 3
+    assert not runner._live_task.done()
+    log_id = runner.read_logs(1, "capture_A")
+    assert wait_until(runner.drain)[0].payload["request_id"] == log_id
+    assert len([request for request in requests if request.url.path == "/operator/image"]) == 1
+    with pytest.raises(ValueError):
+        runner.read_image(1, "../invalid")
+
+
+def test_replacing_image_read_rejects_late_a_b_a_completion_without_cancelling_logs(runner_factory):
+    make, _ = runner_factory
+    live_held = threading.Event()
+    logs_held = threading.Event()
+    image_held = threading.Event()
+    cancelled = threading.Event()
+    image_jobs = []
+
+    async def handler(request):
+        payload = json.loads(request.content)
+        if request.url.path == "/operator/live":
+            if payload["cursor"] is None:
+                return httpx2.Response(200, json=envelope())
+            live_held.set()
+            await asyncio.Future()
+        if request.url.path == "/operator/job-logs":
+            logs_held.set()
+            await asyncio.Future()
+        image_jobs.append(payload["job_id"])
+        if len(image_jobs) == 1:
+            image_held.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelled.set()
+                return httpx2.Response(200, json={"ok": True, "body": "STALE A"})
+        return httpx2.Response(200, json={"ok": True, "body": "current " + payload["job_id"]})
+
+    runner = make(handler)
+    runner.start(1)
+    assert live_held.wait(1)
+    runner.drain()
+    runner.read_logs(1, "job_A")
+    assert logs_held.wait(1)
+    old_id = runner.read_image(1, "job_A")
+    assert image_held.wait(1)
+    middle_id = runner.read_image(1, "job_B")
+    assert wait_until(runner.drain)[0].payload["request_id"] == middle_id
+    current_id = runner.read_image(1, "job_A")
+    events = wait_until(runner.drain)
+    assert old_id < middle_id < current_id
+    assert cancelled.is_set()
+    assert events[0].payload == {
+        "job_id": "job_A",
+        "request_id": current_id,
+        "response": {"ok": True, "body": "current job_A"},
+    }
+    assert not runner._log_task.done() and not runner._live_task.done()
+    assert "STALE" not in repr(events)
+
+
+@pytest.mark.parametrize("action", ["pause", "reconnect", "close"])
+def test_image_read_is_cancelled_and_late_result_fenced_by_view_lifecycle(runner_factory, action):
+    make, _ = runner_factory
+    live_held = threading.Event()
+    image_held = threading.Event()
+    cancelled = threading.Event()
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if request.url.path == "/operator/image":
+            image_held.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelled.set()
+                return httpx2.Response(200, json={"ok": True, "body": "late preview"})
+        if json.loads(request.content)["cursor"] is None:
+            return httpx2.Response(200, json=envelope())
+        live_held.set()
+        await asyncio.Future()
+
+    runner = make(handler)
+    runner.start(1)
+    assert live_held.wait(1)
+    runner.drain()
+    runner.read_image(1, "job_A")
+    assert image_held.wait(1)
+    if action == "close":
+        runner.close()
+    elif action == "pause":
+        runner.pause(1)
+    else:
+        runner.reconnect(2)
+    assert cancelled.wait(1)
+    assert all(event.kind != "image" for event in runner.drain())
+    runner.read_image(1, "job_B")
+    assert len([request for request in requests if request.url.path == "/operator/image"]) == 1
+
+
+@pytest.mark.parametrize(
+    "status,body,expected",
+    [
+        (302, b"private body", REJECTED),
+        (401, b"private body", AUTH_FAILED),
+        (403, b"private body", AUTH_FAILED),
+        (200, b"invalid JSON with private body", INVALID_RESPONSE),
+        (200, b"x" * (MAX_RESPONSE_BYTES + 1), INVALID_RESPONSE),
+    ],
+)
+def test_image_failures_are_safe_bounded_and_never_retry_or_disconnect_live(
+    runner_factory, status, body, expected
+):
+    make, _ = runner_factory
+    held = threading.Event()
+    images = []
+
+    async def handler(request):
+        if request.url.path == "/operator/image":
+            images.append(request)
+            return httpx2.Response(
+                status, content=body, headers={"location": "http://secret.example/" + TOKEN}
+            )
+        if json.loads(request.content)["cursor"] is None:
+            return httpx2.Response(200, json=envelope())
+        held.set()
+        await asyncio.Future()
+
+    runner = make(handler)
+    runner.start(1)
+    assert held.wait(1)
+    runner.drain()
+    request_id = runner.read_image(1, "job_A")
+    events = wait_until(runner.drain)
+    assert len(events) == len(images) == 1
+    assert events[0].kind == "image"
+    assert events[0].payload == {"job_id": "job_A", "request_id": request_id, "error": expected}
+    assert "private body" not in repr(events) and TOKEN not in repr(events)
+    assert not runner._live_task.done()
+
+
+def test_delivery_overflow_cancels_image_read_and_drops_late_preview(runner_factory):
+    make, _ = runner_factory
+    held = threading.Event()
+    image_held = threading.Event()
+    image_cancelled = threading.Event()
+    flood = []
+
+    async def handler(request):
+        if request.url.path == "/operator/image":
+            image_held.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                image_cancelled.set()
+                return httpx2.Response(200, json={"ok": True, "body": "late preview"})
+        cursor = json.loads(request.content)["cursor"]
+        if cursor is None:
+            return httpx2.Response(200, json=envelope())
+        if not flood:
+            gate = asyncio.get_running_loop().create_future()
+            flood.append(gate)
+            held.set()
+            await gate
+        return httpx2.Response(
+            200, json=envelope("delta", cursor["sequence"] + 1, base_cursor=cursor)
+        )
+
+    runner = make(handler)
+    runner.start(1)
+    assert held.wait(1)
+    runner.drain()
+    runner.read_image(1, "job_A")
+    assert image_held.wait(1)
+    runner._loop.call_soon_threadsafe(flood[0].set_result, None)
+    assert image_cancelled.wait(1)
+    events = runner.drain()
+    assert len(events) == 1 and events[0].kind == "disconnected"
+    assert events[0].payload == {"error": DELIVERY_GAP}
+    assert runner._gap_generation == 1
+
+
+def test_real_three_connection_budget_allows_held_live_log_and_image_without_cancellation():
+    held = {path: threading.Event() for path in ("live", "job-logs", "image")}
+    releases = {path: threading.Event() for path in held}
+    requests = []
+
+    class Server(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            path = self.path.removeprefix("/operator/")
+            requests.append((path, self.headers.get("Authorization"), payload))
+            if path == "live" and payload["cursor"] is None:
+                response = envelope()
+            else:
+                held[path].set()
+                if not releases[path].wait(timeout=3):
+                    return
+                response = (
+                    envelope("heartbeat") if path == "live" else {"ok": True, "retained": path}
+                )
+            body = json.dumps(response).encode()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass  # The runner cancels its owned held live connection on close.
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Server)
+    worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+    worker.start()
+    runner = LiveRunner(OperatorClient(f"http://127.0.0.1:{server.server_port}", TOKEN))
+    try:
+        runner.start(1)
+        assert held["live"].wait(1)
+        runner.drain()
+        log_id = runner.read_logs(1, "job_A")
+        assert held["job-logs"].wait(1)
+        image_id = runner.read_image(1, "job_B")
+        assert held["image"].wait(1)
+        assert not runner._live_task.done() and not runner._log_task.done()
+        releases["job-logs"].set()
+        releases["image"].set()
+        events = []
+
+        def completed():
+            events.extend(runner.drain())
+            return len(events) == 2
+
+        wait_until(completed)
+        assert {event.kind for event in events} == {"logs", "image"}
+        assert {event.kind: event.payload["request_id"] for event in events} == {
+            "logs": log_id,
+            "image": image_id,
+        }
+        assert all(auth == f"Bearer {TOKEN}" for _, auth, _ in requests)
+        assert [path for path, _, _ in requests].count("image") == 1
+        assert not runner._live_task.done()
+    finally:
+        runner.close()
+        for release in releases.values():
+            release.set()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+
+
+@pytest.mark.parametrize(
+    "deadline", [0.0, -1.0, float("nan"), float("inf"), float("-inf"), True, TOKEN, 10**500]
+)
+def test_invalid_or_expired_image_deadline_returns_fixed_error_without_http(
+    runner_factory, deadline
+):
+    make, _ = runner_factory
+    held = threading.Event()
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if json.loads(request.content).get("cursor", "not live") is None:
+            return httpx2.Response(200, json=envelope())
+        held.set()
+        await asyncio.Future()
+
+    runner = make(handler)
+    runner.start(1)
+    assert held.wait(1)
+    runner.drain()
+    request_id = runner.read_image(1, "capture_A", expires_at=deadline)
+    events = wait_until(runner.drain)
+    assert len(events) == 1 and events[0].kind == "image"
+    assert events[0].payload == {
+        "job_id": "capture_A",
+        "request_id": request_id,
+        "error": IMAGE_EXPIRED,
+    }
+    assert all(request.url.path == "/operator/live" for request in requests)
+    assert TOKEN not in repr(events)
+    assert runner._image_task is None
+
+
+def test_image_deadline_is_rechecked_after_worker_queue_delay(runner_factory, monkeypatch):
+    make, _ = runner_factory
+    held = threading.Event()
+    blocked = threading.Event()
+    release = threading.Event()
+    requests = []
+    clock = [1000.0]
+    monkeypatch.setattr(gui_live_transport, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    async def handler(request):
+        requests.append(request)
+        if json.loads(request.content).get("cursor", "not live") is None:
+            return httpx2.Response(200, json=envelope())
+        held.set()
+        await asyncio.Future()
+
+    def busy_worker():
+        blocked.set()
+        release.wait(timeout=1)
+
+    runner = make(handler)
+    runner.start(1)
+    assert held.wait(1)
+    runner.drain()
+    runner._loop.call_soon_threadsafe(busy_worker)
+    assert blocked.wait(1)
+    try:
+        request_id = runner.read_image(1, "capture_A", expires_at=1001.0)
+        clock[0] = 1002.0
+    finally:
+        release.set()
+    events = wait_until(runner.drain)
+    assert events[0].payload == {
+        "job_id": "capture_A",
+        "request_id": request_id,
+        "error": IMAGE_EXPIRED,
+    }
+    assert all(request.url.path == "/operator/live" for request in requests)
+
+
+def test_image_deadline_guard_is_immediately_before_http_send(runner_factory, monkeypatch):
+    make, _ = runner_factory
+    held = threading.Event()
+    requests = []
+    clock = [1000.0]
+    monkeypatch.setattr(gui_live_transport, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    async def handler(request):
+        requests.append(request)
+        if json.loads(request.content).get("cursor", "not live") is None:
+            return httpx2.Response(200, json=envelope())
+        held.set()
+        await asyncio.Future()
+
+    runner = make(handler)
+    runner.start(1)
+    assert held.wait(1)
+    runner.drain()
+    build = runner._client.build_request
+
+    def build_request(*args, **kwargs):
+        request = build(*args, **kwargs)
+        if request.url.path == "/operator/image":
+            clock[0] = 1002.0
+        return request
+
+    monkeypatch.setattr(runner._client, "build_request", build_request)
+    runner.read_image(1, "capture_A", expires_at=1001.0)
+    events = wait_until(runner.drain)
+    assert events[0].payload["error"] == IMAGE_EXPIRED
+    assert all(request.url.path == "/operator/live" for request in requests)
+
+
+def test_old_generation_image_request_cannot_invalidate_current_pending_preview(runner_factory):
+    make, _ = runner_factory
+    live_held = threading.Event()
+    image_held = threading.Event()
+    release = []
+
+    async def handler(request):
+        if request.url.path == "/operator/image":
+            gate = asyncio.get_running_loop().create_future()
+            release.append(gate)
+            image_held.set()
+            await gate
+            return httpx2.Response(200, json={"ok": True, "body": "current preview"})
+        if json.loads(request.content)["cursor"] is None:
+            return httpx2.Response(200, json=envelope())
+        live_held.set()
+        await asyncio.Future()
+
+    runner = make(handler)
+    runner.start(2)
+    assert live_held.wait(1)
+    runner.drain()
+    current_id = runner.read_image(2, "capture_A")
+    assert image_held.wait(1)
+    assert runner.read_image(1, "capture_B") == 0
+    runner._loop.call_soon_threadsafe(release[0].set_result, None)
+    events = wait_until(runner.drain)
+    assert len(events) == 1
+    assert events[0].generation == 2 and events[0].payload["request_id"] == current_id
+    assert events[0].payload["response"]["body"] == "current preview"

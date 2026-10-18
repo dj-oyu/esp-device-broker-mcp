@@ -6,6 +6,7 @@ deliveries and requests, and a delivery gap requires an explicit new subscriptio
 
 import asyncio
 import json
+import math
 import re
 import threading
 import time
@@ -15,7 +16,7 @@ from typing import Any, Literal
 
 import httpx2
 
-from .models import BuildLogRequest
+from .models import BuildLogRequest, JobRequest
 from .operator_client import OperatorClient, OperatorClientError
 
 MAX_RESPONSE_BYTES = 512 * 1024
@@ -27,11 +28,12 @@ AUTH_FAILED = "Local operator authentication failed. Check CARDPUTER_LOCAL_TOKEN
 INVALID_RESPONSE = "The broker returned an invalid live response. Reconnect to resynchronize."
 REJECTED = "The broker rejected the live request. Reconnect to resume live updates."
 DELIVERY_GAP = "Live updates exceeded the delivery limit. Reconnect to resynchronize."
+IMAGE_EXPIRED = "The retained image is no longer available. Refresh before requesting its preview."
 
 
 @dataclass(frozen=True)
 class TransportEvent:
-    kind: Literal["message", "disconnected", "logs"]
+    kind: Literal["message", "disconnected", "logs", "image"]
     generation: int
     payload: dict[str, Any]
     started_at: float
@@ -54,8 +56,19 @@ def _cursor(value: Any) -> dict[str, Any]:
     return {"epoch": value["epoch"], "sequence": value["sequence"]}
 
 
+def _image_available(expires_at: float | None) -> bool:
+    if expires_at is None:
+        return True
+    if type(expires_at) not in (int, float):
+        return False
+    try:
+        return math.isfinite(expires_at) and time.monotonic() < expires_at
+    except OverflowError:
+        return False
+
+
 class LiveRunner:
-    """One background event loop, one held live read and one selected-job read.
+    """One event loop, one held live read, one log read, and one explicit image read.
 
     ``drain`` belongs to the GUI thread. A caller must increment its generation
     when reconnecting; old generations and closed-view results are discarded.
@@ -78,7 +91,9 @@ class LiveRunner:
         self._client: httpx2.AsyncClient | None = None
         self._live_task: asyncio.Task[None] | None = None
         self._log_task: asyncio.Task[None] | None = None
+        self._image_task: asyncio.Task[None] | None = None
         self._log_serial = 0
+        self._image_serial = 0
         self._thread = threading.Thread(target=self._run, name="operator-live-reader", daemon=True)
         self._thread.start()
         ready = self._ready.wait(timeout=STARTUP_WAIT_SECONDS)
@@ -94,7 +109,7 @@ class LiveRunner:
             trust_env=False,
             follow_redirects=False,
             timeout=httpx2.Timeout(35.0, connect=2.0, write=5.0, pool=2.0),
-            limits=httpx2.Limits(max_connections=2, max_keepalive_connections=2),
+            limits=httpx2.Limits(max_connections=3, max_keepalive_connections=3),
         )
 
     def _run(self) -> None:
@@ -144,6 +159,7 @@ class LiveRunner:
             self._paused_generation = None
             self._events.clear()
             self._log_serial += 1
+            self._image_serial += 1
             loop = self._loop
             if loop is not None:
                 loop.call_soon_threadsafe(self._begin, generation)
@@ -165,6 +181,7 @@ class LiveRunner:
             self._paused_generation = generation
             self._events.clear()
             self._log_serial += 1
+            self._image_serial += 1
             loop = self._loop
             if loop is not None:
                 loop.call_soon_threadsafe(self._pause_reads, generation)
@@ -176,7 +193,7 @@ class LiveRunner:
         self._cancel_reads()
 
     def _cancel_reads(self) -> None:
-        for task in (self._live_task, self._log_task):
+        for task in (self._live_task, self._log_task, self._image_task):
             if task is not None:
                 task.cancel()
 
@@ -186,6 +203,7 @@ class LiveRunner:
         self._cancel_reads()
         self._live_task = asyncio.create_task(self._subscribe(generation))
         self._log_task = None
+        self._image_task = None
 
     def read_logs(self, generation: int, job_id: str, cursor: dict[str, Any] | None = None) -> int:
         request = BuildLogRequest.model_validate(
@@ -222,6 +240,57 @@ class LiveRunner:
             self._log_task.cancel()
         self._log_task = asyncio.create_task(self._read_logs(generation, serial, request))
 
+    def read_image(self, generation: int, job_id: str, *, expires_at: float | None = None) -> int:
+        """Read a retained preview once; never request another capture or device job."""
+        request = JobRequest(job_id=job_id).model_dump(mode="json")
+        expired = not _image_available(expires_at)
+        with self._lock:
+            if (
+                self._closed
+                or self._generation != generation
+                or self._gap_generation == generation
+                or self._paused_generation == generation
+            ):
+                return 0
+            self._image_serial += 1
+            serial = self._image_serial
+            loop = self._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(
+                    self._begin_image, generation, serial, request, expires_at, expired
+                )
+            return serial
+
+    def _begin_image(
+        self,
+        generation: int,
+        serial: int,
+        request: dict[str, Any],
+        expires_at: float | None,
+        expired: bool,
+    ) -> None:
+        if not self._current(generation):
+            return
+        with self._lock:
+            if serial != self._image_serial:
+                return
+        if self._image_task is not None:
+            self._image_task.cancel()
+        if expired:
+            self._image_task = None
+            self._emit(
+                TransportEvent(
+                    "image",
+                    generation,
+                    {"job_id": request["job_id"], "request_id": serial, "error": IMAGE_EXPIRED},
+                    time.monotonic(),
+                )
+            )
+            return
+        self._image_task = asyncio.create_task(
+            self._read_image(generation, serial, request, expires_at)
+        )
+
     def drain(self) -> list[TransportEvent]:
         with self._lock:
             events = list(self._events)
@@ -254,7 +323,12 @@ class LiveRunner:
         return not overflow
 
     async def _request(
-        self, path: str, payload: dict[str, Any], *, logs: bool = False
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        read_once: bool = False,
+        expires_at: float | None = None,
     ) -> dict[str, Any]:
         client = self._client
         if client is None:
@@ -264,10 +338,12 @@ class LiveRunner:
             self._base_url + path,
             json=payload,
             headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"},
-            timeout=httpx2.Timeout(5.0, connect=2.0) if logs else client.timeout,
+            timeout=httpx2.Timeout(5.0, connect=2.0) if read_once else client.timeout,
         )
         # AsyncClient owns a jar, but no response cookie is an operator credential.
         request.headers.pop("cookie", None)
+        if not _image_available(expires_at):
+            raise _TransportFailure(IMAGE_EXPIRED)
         try:
             response = await client.send(request, stream=True, follow_redirects=False)
             try:
@@ -294,7 +370,7 @@ class LiveRunner:
                     raise _TransportFailure(INVALID_RESPONSE) from None
                 if not isinstance(data, dict) or type(data.get("ok")) is not bool:
                     raise _TransportFailure(INVALID_RESPONSE)
-                if not logs and data["ok"] is not True:
+                if not read_once and data["ok"] is not True:
                     raise _TransportFailure(REJECTED)
                 return data
             finally:
@@ -342,7 +418,7 @@ class LiveRunner:
         started_at = time.monotonic()
         payload: dict[str, Any] = {"job_id": request["job_id"], "request_id": serial}
         try:
-            payload["response"] = await self._request("/operator/job-logs", request, logs=True)
+            payload["response"] = await self._request("/operator/job-logs", request, read_once=True)
         except _TransportFailure as error:
             payload["error"] = str(error)
         except asyncio.CancelledError:
@@ -353,6 +429,30 @@ class LiveRunner:
             current = serial == self._log_serial
         if current:
             self._emit(TransportEvent("logs", generation, payload, started_at))
+
+    async def _read_image(
+        self,
+        generation: int,
+        serial: int,
+        request: dict[str, Any],
+        expires_at: float | None,
+    ) -> None:
+        started_at = time.monotonic()
+        payload: dict[str, Any] = {"job_id": request["job_id"], "request_id": serial}
+        try:
+            payload["response"] = await self._request(
+                "/operator/image", request, read_once=True, expires_at=expires_at
+            )
+        except _TransportFailure as error:
+            payload["error"] = str(error)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            payload["error"] = UNREACHABLE
+        with self._lock:
+            current = serial == self._image_serial
+        if current:
+            self._emit(TransportEvent("image", generation, payload, started_at))
 
     def close(self) -> None:
         with self._lock:

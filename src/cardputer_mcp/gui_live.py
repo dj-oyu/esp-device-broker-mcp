@@ -1,5 +1,6 @@
 """Tk adapter for the live projection. Workers own IO; Tk owns all widgets."""
 
+import base64
 import queue
 import threading
 import time
@@ -9,12 +10,21 @@ from .gui import Outcome, QueueController, http_diagnostics_summary, mcp_catalog
 from .gui_live_presentation import (
     LogRequestState,
     LogView,
+    logs_applicable,
     read_log_result,
     replace_text,
     sync_rows,
 )
+from .gui_live_preview import FAILED, PreviewState
 from .gui_live_state import LiveState, apply, begin, close, disconnect, select
-from .gui_live_transport import LiveRunner
+from .gui_live_transport import (
+    AUTH_FAILED,
+    DELIVERY_GAP,
+    INVALID_RESPONSE,
+    REJECTED,
+    UNREACHABLE,
+    LiveRunner,
+)
 from .gui_theme import apply_theme
 from .gui_timeline import TimelineOperation, perform_timeline
 from .operator_client import OperatorClient
@@ -28,6 +38,9 @@ class LiveWindow:
         self.root, self.api, self.tunnel_panel = root, api, tunnel_panel
         self.state = begin(LiveState())
         self.logs = LogView()
+        self.preview_state = PreviewState()
+        self.preview_photo: Any = None
+        self.displayed_preview: Any = None
         self.log_requests = LogRequestState()
         self.close_prompt = False
         self.queue_controller = QueueController()
@@ -46,7 +59,7 @@ class LiveWindow:
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(1, weight=1)
         ttk.Label(header, text="Cardputer", style="App.TLabel").grid(row=0, column=0)
-        self.status = tk.StringVar(value="Connecting…")
+        self.status = tk.StringVar(value="Connecting...")
         self.action_status = tk.StringVar(value="")
         ttk.Label(header, textvariable=self.status).grid(row=0, column=1, sticky="e", padx=12)
         ttk.Button(header, text="Reconnect", command=self._reconnect).grid(row=0, column=2)
@@ -73,20 +86,42 @@ class LiveWindow:
         detail.grid(row=0, column=1, rowspan=3, sticky="nsew")
         detail.columnconfigure(0, weight=1)
         detail.rowconfigure(3, weight=1)
-        ttk.Label(detail, text="Selected job", style="Section.TLabel").grid(row=0, sticky="w")
+        self.detail_heading = tk.StringVar(value="Selected job")
+        self.detail_heading_label = ttk.Label(
+            detail, textvariable=self.detail_heading, style="Section.TLabel", wraplength=420
+        )
+        self.detail_heading_label.grid(row=0, sticky="ew")
+        detail.bind(
+            "<Configure>",
+            lambda event: self.detail_heading_label.configure(wraplength=max(1, event.width)),
+        )
         detail_box, self.detail_text = self._text(detail, height=11, wrap="word")
         detail_box.grid(row=1, sticky="nsew", pady=(8, 12))
         controls = ttk.Frame(detail)
         controls.grid(row=2, sticky="ew", pady=(0, 8))
         self.log_button = ttk.Button(controls, text="Read permitted logs", command=self._read_logs)
-        self.log_button.pack(side="left")
-        self.job_cancel = ttk.Button(controls, text="Cancel job…", command=self._cancel_job)
-        self.job_cancel.pack(side="right")
+        controls.columnconfigure(0, weight=1)
+        controls.columnconfigure(1, weight=1)
+        self.log_button.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self.preview_button = ttk.Button(
+            controls, text="Preview retained image", command=self._preview
+        )
+        self.preview_button.grid(row=1, column=0, columnspan=2, sticky="w")
+        self.job_cancel = ttk.Button(controls, text="Cancel job...", command=self._cancel_job)
+        self.job_cancel.grid(row=0, column=1, sticky="e", padx=(8, 0), pady=(0, 6))
         log_box, self.log_text = self._text(detail, height=10, wrap="none")
         log_box.grid(row=3, sticky="nsew")
         self.log_status = tk.StringVar(value=self.logs.message)
         ttk.Label(detail, textvariable=self.log_status, wraplength=420).grid(
             row=4, sticky="ew", pady=(6, 0)
+        )
+        self.preview_area = ttk.Frame(detail, width=240, height=135)
+        self.preview_area.grid_propagate(False)
+        self.preview_image = tk.Label(self.preview_area, borderwidth=0)
+        self.preview_image.pack(fill="both", expand=True)
+        self.preview_status = tk.StringVar(value=self.preview_state.message)
+        ttk.Label(detail, textvariable=self.preview_status, wraplength=420).grid(
+            row=6, sticky="ew", pady=(6, 0)
         )
         events.columnconfigure(0, weight=1)
         events.rowconfigure(1, weight=1)
@@ -177,7 +212,7 @@ class LiveWindow:
         controls = ttk.Frame(parent)
         controls.grid(row=2, sticky="ew", pady=(0, 12))
         self.release_button = ttk.Button(
-            controls, text="Release idle owner…", command=self._release
+            controls, text="Release idle owner...", command=self._release
         )
         self.release_button.pack(side="left")
         ttk.Button(controls, text="HTTP diagnostics", command=lambda: self._diagnostic(False)).pack(
@@ -187,7 +222,9 @@ class LiveWindow:
             side="left"
         )
         if self.tunnel_panel is not None:
-            ttk.Button(controls, text="Tunnel…", command=self.tunnel_panel.show).pack(side="right")
+            ttk.Button(controls, text="Tunnel...", command=self.tunnel_panel.show).pack(
+                side="right"
+            )
         wait_box, self.wait_tree = self._table(
             parent, ("position", "state", "session"), (90, 120, 220)
         )
@@ -213,6 +250,7 @@ class LiveWindow:
             return
         if selected == self.state.selected_job_id:
             return
+        self.preview_state = PreviewState()
         self.state = select(self.state, selected)
         self.logs, self.log_requests = LogView(), LogRequestState()
         self._render()
@@ -225,6 +263,13 @@ class LiveWindow:
         self._controls()
 
     def _read_logs(self) -> None:
+        card = self.state.selected_card
+        if card is not None and not logs_applicable(card.test):
+            self.logs = LogView("not_applicable")
+            self.log_requests = self.log_requests.settled()
+            self._render_logs()
+            self._controls()
+            return
         if (
             self.state.connection != "live"
             or not self.state.selected_card
@@ -241,6 +286,7 @@ class LiveWindow:
     def _reconnect(self) -> None:
         if self.state.connection == "closed" or self.action_pending:
             return
+        self.preview_state = PreviewState()
         self.state = begin(self.state)
         self.log_requests = LogRequestState()
         self.runner.reconnect(self.state.generation)
@@ -275,9 +321,33 @@ class LiveWindow:
                     if self.log_requests.dirty:
                         self._read_logs()
             elif event.kind == "disconnected":
-                self.state = disconnect(self.state, event.generation)
+                self.preview_state = PreviewState()
+                reasons = {
+                    AUTH_FAILED: "authentication_failed",
+                    DELIVERY_GAP: "delivery_gap",
+                    INVALID_RESPONSE: "invalid_response",
+                    UNREACHABLE: "unreachable",
+                    REJECTED: "rejected",
+                }
+                error = event.payload.get("error")
+                self.state = disconnect(
+                    self.state,
+                    event.generation,
+                    reason=reasons.get(error) if type(error) is str else None,
+                )
                 self.log_requests = LogRequestState()
                 self._render()
+            elif event.kind == "image":
+                self._reconcile_preview()
+                self.preview_state = self.preview_state.accept(
+                    event.generation,
+                    event.payload.get("job_id", ""),
+                    event.payload.get("request_id", 0),
+                    event.payload.get("response"),
+                    event.started_at,
+                    time.monotonic(),
+                )
+                self._render_preview()
             elif (
                 event.kind == "logs"
                 and event.payload.get("job_id") == self.state.selected_job_id
@@ -312,6 +382,7 @@ class LiveWindow:
                     self._reconnect()
         except queue.Empty:
             pass
+        self._render_preview()
         self._controls()
         self.timer = self.root.after(50, self._drain)
 
@@ -326,7 +397,7 @@ class LiveWindow:
                     card.result,
                 ):
                     self.events.append(
-                        f"{card.job_id} · {card.state} · {card.stage or '—'} · {card.result or '—'}"
+                        f"{card.job_id} | {card.state} | {card.stage or '-'} | {card.result or '-'}"
                     )
         if (
             previous.cursor
@@ -345,7 +416,7 @@ class LiveWindow:
         sync_rows(
             self.job_tree,
             [
-                (card.job_id, card.job_id, (card.test or "—", card.state, card.stage or "—"))
+                (card.job_id, card.job_id, (card.test or "-", card.state, card.stage or "-"))
                 for card in cards
             ],
         )
@@ -362,18 +433,27 @@ class LiveWindow:
         )
         card = self.state.selected_card
         detail = "Select a job to inspect its status and permitted logs."
+        heading = "Selected job"
         if card:
-            detail = (
-                f"{card.job_id}\n\nRequest  {card.test or 'Unknown'}\nState  {card.state}\n"
-                f"Stage  {card.stage or '—'}\nResult  {card.result or '—'}\n\n"
-                f"Created  {card.created_utc or '—'}\nFinished  {card.finished_utc or '—'}\n"
+            heading = f"{card.job_id} | {card.state}"
+            fields = [f"Request  {card.test or 'Unknown'}"]
+            if card.stage:
+                fields.append(f"Stage  {card.stage}")
+            if card.result:
+                fields.append(f"Result  {card.result}")
+            dates = []
+            if card.created_utc:
+                dates.append(f"Created  {card.created_utc}")
+            if card.finished_utc:
+                dates.append(f"Finished  {card.finished_utc}")
+            dates.append(
                 f"Historical review  {'recorded' if card.reviewed else 'not marked reviewed'}"
             )
+            detail = "\n".join(fields) + "\n\n" + "\n".join(dates)
         elif self.state.selected_job_id:
-            detail = (
-                f"{self.state.selected_job_id}\n\n"
-                "This selected job is no longer in the retained view."
-            )
+            heading = f"{self.state.selected_job_id} | Outside retained view"
+            detail = "This selected job is no longer in the retained view."
+        self.detail_heading.set(heading)
         if not live:
             detail += "\n\nConnection is not live. Job execution may continue at the broker."
         replace_text(self.detail_text, detail)
@@ -384,9 +464,9 @@ class LiveWindow:
             owner = snapshot.owner
             self.queue_controller.selected_lease = owner.lease_id if owner else ""
             self.connection_status.set(
-                f"{snapshot.backend} · Owner: {owner.owner if owner else 'none'} · "
+                f"{snapshot.backend} | Owner: {owner.owner if owner else 'none'} | "
                 f"Active job: {snapshot.active_job or 'none'}\n"
-                f"Historical review: {'present' if snapshot.needs_review else 'none'} · "
+                f"Historical review: {'present' if snapshot.needs_review else 'none'} | "
                 f"Current ownership uncertainty: {'yes' if snapshot.ownership_uncertain else 'no'}"
             )
             sync_rows(
@@ -395,18 +475,23 @@ class LiveWindow:
                     (
                         row.request_id,
                         row.request_id,
-                        (str(row.position or "—"), row.state, row.session_id),
+                        (str(row.position or "-"), row.state, row.session_id),
                     )
                     for row in snapshot.waiters
                 ],
             )
         self._render_logs()
+        self._render_preview()
         self._controls()
 
     def _render_logs(self) -> None:
+        card = self.state.selected_card
+        if card is not None and not logs_applicable(card.test):
+            self.logs = LogView("not_applicable")
+            self.log_requests = self.log_requests.settled()
         message = self.logs.message
         if self.log_requests.pending:
-            message = "Reading permitted output…"
+            message = "Reading permitted output..."
         if self.logs.gap:
             message += " Some output is missing or was omitted."
         self.log_status.set(message)
@@ -416,7 +501,14 @@ class LiveWindow:
         ready = self._actions_ready()
         card = self.state.selected_card
         self.log_button.configure(
-            state="normal" if ready and card and not self.log_requests.pending else "disabled"
+            state="normal"
+            if ready and card and logs_applicable(card.test) and not self.log_requests.pending
+            else "disabled"
+        )
+        self.preview_button.configure(
+            state="normal"
+            if ready and self.preview_state.can_read(time.monotonic())
+            else "disabled"
         )
         self.job_cancel.configure(
             state="normal" if ready and card and card.cancel_available else "disabled"
@@ -434,13 +526,72 @@ class LiveWindow:
             state="normal" if ready and self.queue_controller.can_move(1) else "disabled"
         )
 
+    def _reconcile_preview(self) -> None:
+        card = self.state.selected_card
+        self.preview_state = self.preview_state.reconcile(
+            self.state.generation,
+            self.state.timeline.broker_epoch if self.state.timeline else "",
+            card.image if card else None,
+            self.state.connection == "live",
+            time.monotonic(),
+        )
+
+    def _preview(self) -> None:
+        self._reconcile_preview()
+        if not self._actions_ready() or not self.preview_state.can_read(time.monotonic()):
+            self._render_preview()
+            return
+        assert self.preview_state.row is not None
+        request_id = self.runner.read_image(
+            self.state.generation,
+            self.preview_state.row.job_id,
+            expires_at=self.preview_state.row.expires_at,
+        )
+        self.preview_state = self.preview_state.started(request_id)
+        self._render_preview()
+        self._controls()
+
+    def _render_preview(self) -> None:
+        self._reconcile_preview()
+        preview = self.preview_state.preview
+        if preview is not None and (
+            self.displayed_preview is None or self.displayed_preview.png is not preview.png
+        ):
+            import tkinter as tk
+
+            try:
+                photo = tk.PhotoImage(
+                    master=self.root,
+                    data=base64.b64encode(preview.png).decode("ascii"),
+                    format="png",
+                )
+                self._reconcile_preview()
+                if self.preview_state.preview is not None:
+                    self.preview_photo = photo
+                    self.displayed_preview = preview
+                    self.preview_image.configure(image=photo)
+                    self.preview_area.grid(row=5, sticky="w", pady=(8, 0))
+            except Exception:
+                self.preview_state = PreviewState(
+                    self.preview_state.generation,
+                    self.preview_state.epoch,
+                    self.preview_state.row,
+                    message=FAILED,
+                )
+        if self.preview_state.preview is None:
+            self.preview_image.configure(image="")
+            self.preview_area.grid_remove()
+            self.preview_photo = None
+            self.displayed_preview = None
+        self.preview_status.set(self.preview_state.message)
+
     def _run_action(
         self, action: Any, *, diagnostic: bool = False, queue_operation: bool = False
     ) -> None:
         if self.action_pending or self._is_closing() or self.state.connection == "closed":
             return
         self.action_pending = True
-        self.action_status.set("Request pending…")
+        self.action_status.set("Request pending...")
         self._controls()
 
         def worker() -> None:
@@ -565,6 +716,10 @@ class LiveWindow:
         if self.action_pending or self.state.connection == "closed":
             return
         self.state = close(self.state)
+        self.preview_state = PreviewState()
+        self.preview_photo = None
+        self.displayed_preview = None
+        self.preview_image.configure(image="")
         if self.timer is not None:
             self.root.after_cancel(self.timer)
             self.timer = None
