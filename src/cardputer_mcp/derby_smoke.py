@@ -178,11 +178,18 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
             started = True
             record("demo_start")
             reader.emit("derby_demo_start_observed")
-        if started and (
-            match := re.fullmatch(
-                rb"DERBY SCENE (pad|gate|race|photo|res) race=([0-9]{1,20}) "
-                rb"seed=([0-9A-Fa-f]{1,16}) plans=[0-9]{1,10} reg=[0-9]{1,10}",
-                line,
+        # END closes this demo's scene evidence even when read_once delivers
+        # the restored normal-race pad in the same chunk. Later scenes cannot
+        # invalidate the completed identity or fill a missing required phase.
+        if (
+            started
+            and not ended
+            and (
+                match := re.fullmatch(
+                    rb"DERBY SCENE (pad|gate|race|photo|res) race=([0-9]{1,20}) "
+                    rb"seed=([0-9A-Fa-f]{1,16}) plans=[0-9]{1,10} reg=[0-9]{1,10}",
+                    line,
+                )
             )
         ):
             phase, race, seed = match[1].decode(), match[2].decode(), match[3].decode().upper()
