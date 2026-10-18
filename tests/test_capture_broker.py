@@ -331,6 +331,56 @@ async def test_capture_shutdown_waits_for_active_close_and_cancels_queued_work(
         assert backend.calls == 2
 
 
+@pytest.mark.parametrize("service_name", ["home_recovery", "profile_jobs"])
+async def test_capture_shutdown_drops_retained_bytes_before_service_close_await(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service_name: str
+) -> None:
+    backend = ClosingCapture()
+    async with running(tmp_path, backend=backend) as broker:
+        session = acquire(broker)
+        backend.close_allowed.set()
+        enqueue(broker, session, "completed")
+        await broker.queue.join()
+        image = broker.read_capture("completed", PRINCIPAL)
+        retained = weakref.ref(image)
+        del image
+        backend.close_allowed.clear()
+        backend.pixels_ready.clear()
+        enqueue(broker, session, "active")
+        await asyncio.wait_for(backend.pixels_ready.wait(), timeout=2)
+        enqueue(broker, session, "queued")
+        entered, allowed = asyncio.Event(), asyncio.Event()
+        service = getattr(broker, service_name)
+        original_close = service.close
+
+        async def gated_close() -> None:
+            entered.set()
+            await allowed.wait()
+            await original_close()
+
+        monkeypatch.setattr(service, "close", gated_close)
+        closing = asyncio.create_task(broker.close())
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            # Maintenance can publish queued cancellation while service shutdown
+            # is suspended. Neither that state nor denied reads prove RAM release.
+            broker.maintenance_tick()
+            assert broker.job("queued")["state"] == "cancelled"
+            unavailable(broker, "completed")
+            gc.collect()
+            assert retained() is None
+            assert not broker.captures
+            assert not broker.capture_delivery_consents
+            assert not broker.device_observations
+            assert not closing.done() and backend.active == 1
+            assert broker._device_lock.is_locked and broker._state_lock.is_locked
+        finally:
+            allowed.set()
+            backend.close_allowed.set()
+            await asyncio.wait_for(closing, timeout=2)
+        assert not broker._device_lock.is_locked and backend.calls == 2
+
+
 async def test_capture_cancelled_queue_never_runs_or_replays(tmp_path: Path) -> None:
     backend = ClosingCapture()
     async with running(tmp_path, backend=backend, max_queue=1) as broker:

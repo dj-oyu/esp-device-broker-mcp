@@ -291,14 +291,16 @@ class Broker:
         if self.store is None:
             return
         self.closing = True
+        # Release completed private output before any service shutdown can yield.
+        # Denying new reads alone must not leave these bytes retained in RAM.
+        self.captures.clear()
+        self.capture_delivery_consents.clear()
+        self.device_observations.clear()
         await self.home_recovery.close()
         await self.profile_jobs.close()
         self.firmware_build.request_stop()
         self.firmware_flash.request_stop()
         self._clear_local_home_diagnostic()
-        self.captures.clear()
-        self.capture_delivery_consents.clear()
-        self.device_observations.clear()
         self._flash_bindings.clear()
         self._execution_bindings.clear()
         if self.maintenance:
