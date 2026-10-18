@@ -531,3 +531,41 @@ ChatGPT Plugins connection Refresh flow, then retest in a new conversation.
 Server listChanged behavior alone does not establish a host metadata refresh.
 No local Codex/agent or external synchronization script is required for normal
 source fetch → receipt build → explicit flash → logs/capture operation.
+
+
+## Current-state admission instead of historical review gating
+
+Based on main 16523b397e286ae547f33dcf286f018f68db9c20. Historical unacknowledged
+jobs and device requests remain unchanged and visible. New device ownership,
+FIFO grants, prepare/execute, dispatch and running authority use current runtime
+uncertainty instead of querying historical review flags. Registered source/build
+jobs likewise use current process/output/cache/state uncertainty. State publication
+failures latch uncertainty in the live broker; offline review cannot clear it.
+Current owner/port/process holds, authentication, explicit intent, binding,
+cancellation, independent backup and atomic LKG selection remain required.
+The GUI labels the flag as history and allows safe idle ownership release.
+
+New deterministic regressions cover historical capture/flash/unknown-plan failures
+at acquire, preparation, submission, dispatch and running boundaries; restart
+history/no replay; FIFO handover; live process/port/cache/output/state hazards;
+profile history and commit failure; and verified synthetic flash/LKG publication
+with historical failure at preparation, execution and readback. These use synthetic
+backends and ROM bytes, never physical USB or a production state database.
+
+Ruff lint/format and strict mypy passed (75 source modules). The dedicated current
+state suite passed 27 tests; synthetic flash policy/lifecycle coverage passed 38
+tests. Windows distribution unittest checks passed 14 tests. Frozen dependency
+sync used the unchanged lockfile and an explicit writable temporary cache.
+
+The unmodified base full suite in this Linux execution environment passed 2667
+tests with 1 skipped, 48 failures and 198 errors (49 subtests passed). The key
+registry rejects the environment's mapped root-directory ownership with
+unsafe_key_registry_permissions; root and temporary-directory metadata were
+checked, and the same failures occur before application execution on the base.
+Security checks were not relaxed. The final branch passed 2697 tests with 1 skipped,
+48 failures and 198 errors (49 subtests passed). All 246 failed/error node IDs
+exactly match the unmodified base; no branch-only failures/errors occurred. This
+is not a fully passing suite, and blocked HTTP/key tests require a normal trusted
+filesystem environment before release. Native Windows,
+physical firmware operations and the deployed MCP connection remain unverified
+by this source-only change; deployment is a separate step.

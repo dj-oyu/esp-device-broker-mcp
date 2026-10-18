@@ -46,7 +46,9 @@ packaging change does not add build/flash capabilities or migrate to 6.1.
 Serial actions retain explicit startup opt-in, authentication, owned leases and
 separate immutable-plan execution requests. Product approval flows are retired.
 On upgrade, legacy pending/unstarted jobs are cancelled without replay; uncertain
-running work remains quarantined. Preserve the existing state directory.
+running work remains recorded as diagnostic history. History alone does not block
+a new explicitly requested job; current resource uncertainty still blocks. Preserve
+the existing state directory.
 The existing PowerShell source launchers still target the source checkout's venv;
 use `cardputer.exe` directly for this distribution.
 

@@ -345,7 +345,7 @@ async def test_revocation_in_last_auth_callback_cannot_start_device(env):
 
 
 @pytest.mark.parametrize("late_revoke", [False, True])
-async def test_failed_or_late_revoked_flash_preserves_lkg_and_halts(env, late_revoke):
+async def test_failed_or_late_revoked_flash_preserves_lkg_and_current_guards(env, late_revoke):
     env.configure()
     prepared = env.prepare("uncertain", build_job_id="build-one")
     original = env.broker.firmware_flash.commit_success
@@ -367,8 +367,49 @@ async def test_failed_or_late_revoked_flash_preserves_lkg_and_halts(env, late_re
     assert env.broker.job("uncertain")["state"] == "needs_review"
     assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
     assert env.driver.closed and env.store.needs_review()
-    with pytest.raises(BrokerError, match="recovery_review_required"):
-        env.prepare("blocked", build_job_id="build-one")
+    if late_revoke:
+        assert env.broker.status()["execution_uncertain"] is True
+        with pytest.raises(BrokerError, match="recovery_review_required"):
+            env.prepare("blocked", build_job_id="build-one")
+    else:
+        assert env.broker.status()["execution_uncertain"] is False
+        env.prepare("fresh", build_job_id="build-one")
+
+
+@pytest.mark.parametrize("boundary", ["prepare", "execute", "readback"])
+async def test_historical_flash_failure_does_not_block_verified_new_flash(env, boundary):
+    before = None
+
+    def historical_failure():
+        env.store.add_job("old-readback", "e" * 64)
+        env.store.set_stage("old-readback", "flash_readback_verify")
+        env.store.set_job("old-readback", "needs_review", "flash_authority_changed_needs_review")
+        return env.store.job("old-readback")
+
+    if boundary == "prepare":
+        before = historical_failure()
+    prepared = env.prepare("fresh-flash", build_job_id="build-one")
+    assert env.store.job("fresh-flash") is None
+    if boundary == "execute":
+        before = historical_failure()
+    elif boundary == "readback":
+        original = env.store.set_stage
+
+        def stage(job, name):
+            nonlocal before
+            if job == "fresh-flash" and name == "flash_readback_verify" and before is None:
+                before = historical_failure()
+            return original(job, name)
+
+        env.store.set_stage = stage
+    env.execute(prepared)
+    await env.broker.queue.join()
+    assert env.broker.job("fresh-flash")["state"] == "succeeded"
+    assert env.store.job("old-readback") == before
+    current = env.store.firmware_current("fixture", "alice")
+    assert current["receipt"] == env.selected
+    assert current["completed_job"] == "fresh-flash"
+    assert env.driver.closed and env.broker.status()["execution_uncertain"] is False
 
 
 def test_registration_is_explicit_strict_and_flash_only():

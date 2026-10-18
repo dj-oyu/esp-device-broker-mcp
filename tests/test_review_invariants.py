@@ -165,7 +165,7 @@ async def test_review_explicit_retries_do_not_duplicate_work(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_review_recovery_never_replays_and_blocks_acquire(tmp_path: Path) -> None:
+async def test_review_recovery_never_replays_and_allows_fresh_acquire(tmp_path: Path) -> None:
     state = tmp_path / "state"
     state.mkdir()
     store = Store(state / "history.sqlite3")
@@ -185,8 +185,8 @@ async def test_review_recovery_never_replays_and_blocks_acquire(tmp_path: Path) 
         assert broker.job("queued")["state"] == "cancelled"
         assert broker.job("running")["state"] == "needs_review"
         assert broker.status()["needs_review"] is True
-        with pytest.raises(BrokerError, match="recovery_review_required"):
-            broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")
+        broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")
+        assert broker.job("running")["reviewed"] == 0
         await asyncio.sleep(0)
         assert backend.calls == 0
     finally:

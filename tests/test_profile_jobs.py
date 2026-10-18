@@ -203,8 +203,7 @@ async def test_queue_cancel_read_scope_config_and_old_review_boundaries(
     broker._store().put_plan(old_hash, {"job_id": "old-review"})
     broker._store().add_job("old-review", old_hash)
     broker._store().set_job("old-review", "needs_review", "legacy_unreviewed")
-    with pytest.raises(BrokerError, match="recovery_review_required"):
-        prepare(service, "after-old-review")
+    prepare(service, "after-old-review")
     assert broker.job("old-review")["state"] == "needs_review"
     assert broker.job("old-review")["reviewed"] == 0
 
