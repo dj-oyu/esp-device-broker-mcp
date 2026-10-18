@@ -19,6 +19,7 @@ from .backend import BackendResult, DeviceOperationFailure
 from .capture import CapturedImage, CaptureError, LegacyCaptureDecoder
 from .config import SerialSettings
 from .derby_observation import DerbyObservation
+from .derby_telemetry import DerbyDiagnosticsCollector
 from .device_observation import MAX_RECEIVE_BYTES, DeviceLogCollector, DeviceObservation
 from .home_line import HomeLineProbe
 from .models import TestName
@@ -127,6 +128,7 @@ class Reader:
         self.port, self.emit, self.clock, self.deadline = port, emit, clock, deadline
         self.phase_observer: Callable[[bytes], None] | None = None
         self.derby_observation: Callable[[], DerbyObservation] | None = None
+        self.derby_diagnostics: DerbyDiagnosticsCollector | None = None
         self.derby_mode = False
         self.pending = b""
         self.lines: list[bytes] = []
@@ -184,6 +186,11 @@ class Reader:
             self.diagnostic_pending_bytes = len(diagnostic_lines[-1])
             for diagnostic_line in diagnostic_lines[:-1]:
                 self.receive_diagnostics.observe_line(diagnostic_line)
+                if self.derby_diagnostics is not None:
+                    # Feed exact complete wire lines before normalization and
+                    # fatal checks. The collector retains only bounded numbers
+                    # and fixed categories, never console text or frame pixels.
+                    self.derby_diagnostics.feed(diagnostic_line)
                 if self.phase_observer is not None:
                     # Record bounded host-observed markers in wire order, even
                     # if a subsequent frame record fails decoder validation.
@@ -200,6 +207,8 @@ class Reader:
         if FAULT.search(cleaned) or (
             self.derby_mode and re.search(rb"DEMOFAIL|FRAMEFAIL|LOADFAIL|DEGRADE|app: OOM", cleaned)
         ):
+            if self.derby_diagnostics is not None and self.diagnostic_pending_bytes:
+                self.derby_diagnostics.mark_partial_line_or_fault()
             raise self.failure("serial_fault_marker")
         self.fault_tail = cleaned[-256:]
         capture_finished = self.capture_decoder is not None and self.capture_decoder.complete
@@ -315,6 +324,9 @@ class Reader:
         self.lines.clear()
         self.phase_observer = None
         self.derby_observation = None
+        if self.derby_diagnostics is not None:
+            self.derby_diagnostics.clear()
+            self.derby_diagnostics = None
         self.fault_tail = b""
         self.capture_decoder = None
         self.local_home_probe = None

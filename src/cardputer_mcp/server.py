@@ -27,6 +27,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from .auth import AuthState
 from .broker import Broker, BrokerError
 from .config import Settings
+from .derby_reports import binding_unchanged, private_job, shared_job
 from .home_recovery import CancelHomeRecovery, RequestHomeRecovery
 from .http_diagnostics import (
     INGRESS_CONTEXT_KEY,
@@ -779,7 +780,7 @@ def create_server(
                 )
             return owned(request, ctx, lambda: resident.execute(request))
 
-        return _result(execute)
+        return _result(lambda: shared_job(execute()))
 
     @server.tool(annotations=mutating)
     async def request_home_recovery(
@@ -813,7 +814,34 @@ def create_server(
 
         def get_job() -> dict[str, Any]:
             job = resident.job(request.job_id)
-            plan = resident._store().plan(job["plan_hash"])
+            store = resident._store()
+            plan = store.plan(job["plan_hash"])
+            if plan is not None and plan.get("test") == TestName.DERBY.value:
+                try:
+                    owner = principal(ctx, "read")
+                except BrokerError:
+                    if auth_required:
+                        raise
+                    return shared_job(job)
+                epoch = resident.epoch
+                result = private_job(store, job, plan, owner.principal_id)
+                if "derby_diagnostics" in result:
+                    try:
+                        current = principal(ctx, "read")
+                    except BrokerError:
+                        if auth_required:
+                            raise
+                        return shared_job(job)
+                    if (
+                        resident.store is not store
+                        or resident.epoch != epoch
+                        or resident.closing
+                        or current.principal_id != owner.principal_id
+                        or current.origin != owner.origin
+                        or not binding_unchanged(store, job, plan, current.principal_id)
+                    ):
+                        return shared_job(job)
+                return result
             if plan is not None and plan.get("operation") == "home_recovery":
                 owner = principal(ctx, "read")
                 if plan["principal_id"] != owner.principal_id:
@@ -830,7 +858,7 @@ def create_server(
                 owner = principal(ctx, "read")
                 if plan.get("principal_id") != owner.principal_id:
                     raise BrokerError("owned_registered_project_job_required")
-            return job
+            return shared_job(job)
 
         return _result(lambda: read(ctx, get_job))
 
@@ -1024,7 +1052,7 @@ def create_server(
                 return resident.profile_jobs.cancel(request, owner.principal_id, owner.origin.value)
             return owned(request, ctx, lambda: resident.cancel(request))
 
-        return _result(cancel)
+        return _result(lambda: shared_job(cancel()))
 
     @server.tool(annotations=mutating)
     async def create_work_session(

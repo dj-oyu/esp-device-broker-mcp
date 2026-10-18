@@ -8,6 +8,7 @@ from typing import Any
 from .backend import DeviceOperationFailure
 from .capture import CapturedImage, CaptureError, LegacyCaptureDecoder
 from .derby_observation import NO_CAPTURE, DerbyEvent, DerbyObservation
+from .derby_telemetry import DerbyDiagnosticsCollector
 
 CAPTURE_SECONDS = 18
 EXIT_SECONDS = 12
@@ -73,6 +74,8 @@ def take_frame(
 
 def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
     origin = reader.clock()
+    diagnostics = DerbyDiagnosticsCollector(clock=reader.clock, origin=origin)
+    reader.derby_diagnostics = diagnostics
     events: list[DerbyEvent] = []
     truncated = False
     started = ended = False
@@ -104,6 +107,10 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
         return consistent and started and ended and sequence == ["gate", "race", "photo", "res"]
 
     def snapshot() -> DerbyObservation:
+        if reader.diagnostic_pending_bytes:
+            # A stopped read may have exposed a fault before LF. Do not read
+            # again or promote that raw tail into a complete telemetry row.
+            diagnostics.mark_partial_line_or_fault()
         return DerbyObservation(
             events=tuple(events),
             events_truncated=truncated,
@@ -118,6 +125,7 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
             image_acquired=image is not None,
             exit_home_observed=home,
             capture_reason=reason,
+            diagnostics=diagnostics.snapshot(),
         )
 
     reader.derby_observation = snapshot
