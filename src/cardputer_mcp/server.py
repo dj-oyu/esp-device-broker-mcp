@@ -1,5 +1,6 @@
 """Official MCP SDK v2, one lifespan-owned broker, Streamable HTTP only."""
 
+import asyncio
 import base64
 import json
 from collections.abc import AsyncIterator, Callable
@@ -778,13 +779,15 @@ def create_server(
 
         Default warning/error plus progress, with diagnostic context; no path input.
         Cursor reads do not consume output. Expiry, restart and eviction report gaps.
-        A successful build includes a hashed manifest; it grants no flash permission.
+        A successful build includes a revalidated durable manifest even after RAM log
+        expiry/restart. expired/gap still report lost logs. artifact_status is
+        verified, unavailable or busy. No manifest grants flash permission.
         Flash summaries survive log expiry/restart and contain bounded matched IDF/ELF
         evidence. Full BIN readback hashes plus boot prefix support artifact matching;
         boot text alone is not authenticated or cryptographic identity proof.
         """
 
-        def get_logs() -> dict[str, Any]:
+        async def get_logs() -> dict[str, Any]:
             owner = principal(ctx, "read")
             store = resident._store()
             job = store.job(request.job_id)
@@ -801,23 +804,65 @@ def create_server(
                 plan is None
                 or plan.get("test") != TestName.BUILD.value
                 or plan.get("build_principal") != owner.principal_id
+                or job is None
             ):
                 raise BrokerError("build_log_not_available")
-            if request.job_id not in resident.firmware_build.logs:
-                return dict(
-                    entries=[],
-                    expired=True,
-                    gap=True,
-                    has_more=False,
-                    reason="not_started_or_history_not_retained",
-                    next_cursor=dict(epoch=resident.epoch, sequence=0),
-                )
+            builder = resident.firmware_build
+            epoch = resident.epoch
+            settings = resident.settings
+            build_settings = builder.settings
+            project_id = plan.get("project_id") if job["state"] == "succeeded" else None
+            project = build_settings.build_projects.get(project_id) if project_id else None
+            registration = project.model_dump_json() if project is not None else None
             try:
-                return resident.firmware_build.read_logs(request, owner.principal_id)
+                result = await asyncio.to_thread(
+                    builder.read_logs,
+                    request,
+                    owner.principal_id,
+                    project_id=project_id,
+                    broker_epoch=epoch,
+                )
             except ValueError as exc:
                 raise BrokerError(str(exc)) from None
+            # Hash IO awaited another thread. Recheck the current read grant and
+            # the exact broker/job/registration before returning private receipts.
+            current_owner = principal(ctx, "read")
+            if (
+                resident.closing
+                or resident.store is not store
+                or resident.epoch != epoch
+                or resident.firmware_build is not builder
+                or resident.settings is not settings
+                or builder.settings is not build_settings
+            ):
+                raise BrokerError("build_log_not_available")
+            current_job = store.job(request.job_id)
+            current_project = (
+                builder.settings.build_projects.get(project_id) if project_id else None
+            )
+            current_registration = (
+                current_project.model_dump_json() if current_project is not None else None
+            )
+            if (
+                current_owner.principal_id != owner.principal_id
+                or current_owner.origin != owner.origin
+                or current_registration != registration
+                or current_job is None
+                or current_job["plan_hash"] != job["plan_hash"]
+                or (project_id is not None and current_job["state"] != "succeeded")
+                or store.plan(job["plan_hash"]) != plan
+            ):
+                raise BrokerError("build_log_not_available")
+            return result
 
-        return _result(get_logs)
+        try:
+            return {"ok": True, **await get_logs()}
+        except BrokerError as exc:
+            return {"ok": False, "error": str(exc)}
+        except SourceError as exc:
+            return {"ok": False, "error": exc.code}
+        except ValueError:
+            return {"ok": False, "error": "invalid_request"}
 
     @server.tool(annotations=read_only)
     async def read_device_logs(request: JobRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
