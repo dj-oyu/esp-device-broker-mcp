@@ -41,13 +41,22 @@ class DurableBuildArtifactTests(unittest.TestCase):
         )
         self.builder = FirmwareBuild(self.settings, self.history)
 
-    def publish(self, job="build-0", *, finish=True, publish=True, worker=False, elf_bytes=None):
+    def publish(
+        self,
+        job="build-0",
+        *,
+        finish=True,
+        publish=True,
+        worker=False,
+        elf_bytes=None,
+        owner="alice",
+    ):
         fingerprint = hashlib.sha256(job.encode()).hexdigest()
         environment = "e" * 64
         plan = dict(
             job_id=job,
             test="firmware_build",
-            build_principal="alice",
+            build_principal=owner,
             project_id="fixture",
             fingerprint=fingerprint,
         )
@@ -97,10 +106,10 @@ class DurableBuildArtifactTests(unittest.TestCase):
             if worker:
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     executor.submit(
-                        self.builder.artifacts.publish, job, "alice", root, manifest
+                        self.builder.artifacts.publish, job, owner, root, manifest
                     ).result()
             else:
-                self.builder.artifacts.publish(job, "alice", root, manifest)
+                self.builder.artifacts.publish(job, owner, root, manifest)
         if finish:
             self.store.set_job(job, "succeeded", "firmware_build_succeeded_no_flash")
         return root, manifest

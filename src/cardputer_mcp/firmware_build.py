@@ -308,6 +308,7 @@ class FirmwareBuild:
         self.logs: dict[str, BuildLogs] = {}
         self.manifests: dict[str, tuple[str, dict[str, Any]]] = {}
         self._lock = threading.RLock()
+        self._receipt_read_lock = threading.Lock()
         self._committed_job: str | None = None
         self._build_lock: Any = None
         self._pending: dict[str, tuple[str, Path, dict[str, Any]]] = {}
@@ -954,15 +955,56 @@ class FirmwareBuild:
             ):
                 raise BuildLocationError("build_output_identity_mismatch")
 
-    def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
+    def read_logs(
+        self,
+        request: Any,
+        principal: str,
+        *,
+        project_id: str | None = None,
+        broker_epoch: str = "0" * 32,
+    ) -> dict[str, Any]:
+        """Log retention and successful artifact retention are independent.
+
+        The server supplies project_id only for a persisted succeeded owned job.
+        Durable resolution independently rechecks that ownership and every byte.
+        Run this potentially large hash read off the broker event loop.
+        """
         with self._lock:
             logs = self.logs.get(request.job_id)
             if logs is None:
-                raise ValueError("build_log_not_available")
-            result = logs.read(principal, request)
+                result = dict(
+                    entries=[],
+                    expired=True,
+                    gap=True,
+                    has_more=False,
+                    reason="not_started_or_history_not_retained",
+                    next_cursor=dict(epoch=broker_epoch, sequence=0),
+                )
+            else:
+                result = logs.read(principal, request)
             if result["expired"]:
                 self.manifests.pop(request.job_id, None)
-            manifest = self.manifests.get(request.job_id)
-            if manifest and manifest[0] == principal and not result["expired"]:
-                result["manifest"] = manifest[1]
-            return result
+            # Standalone builders without a history DB keep bounded RAM receipts.
+            # Production history never falls back to an unverified RAM manifest.
+            if project_id is None and self.artifacts.history is None:
+                manifest = self.manifests.get(request.job_id)
+                if manifest and manifest[0] == principal and not result["expired"]:
+                    result["manifest"] = manifest[1]
+        if project_id is not None:
+            if not self._receipt_read_lock.acquire(blocking=False):
+                result["artifact_status"] = "busy"
+                return result
+            try:
+                try:
+                    _, manifest_data = self.resolve_flash_manifest(
+                        request.job_id, principal, project_id
+                    )
+                except Exception:
+                    # Do not leak paths/OS errors, adopt files or return a stale cache.
+                    result["artifact_status"] = "unavailable"
+                else:
+                    result["manifest"] = manifest_data
+                    result["artifact_status"] = "verified"
+            finally:
+                self._receipt_read_lock.release()
+        return result

@@ -370,3 +370,34 @@ the old bytes; old references then fail hash/manifest validation. References do 
 promise immutable artifact storage. No rollback, retry, GC, retention migration or
 file deletion is added. Preserve the existing state working directory and local
 project/output registrations across upgrades. ESP-IDF remains external 6.0.1.
+
+
+## Durable receipt reads independent of log retention
+
+For a successful owned build, `read_build_logs` revalidates the persisted build
+reference and returns its public `manifest` even after log expiry, eviction or
+broker restart. The result still reports `expired=true`, `gap=true`, empty entries
+and the existing missing-history reason when RAM output is gone. It does not
+reconstruct lost logs, rerun the build or change the job's outcome.
+
+`artifact_status` is `verified` only after registered output/root identity,
+manifest/plan/fingerprint binding and every binary/ELF/layout/security receipt
+size/hash check succeeds. `unavailable` means no manifest is returned (including
+missing, corrupt or unregistered artifacts); a stale RAM manifest is never used
+instead. `busy` means another receipt hash read is in progress and no manifest is
+returned by this read. Hash IO runs off the broker event loop, with one concurrent
+receipt hash reader per builder. Bounded log reads and other broker reads remain
+available. A subsequent explicit read can retry a busy receipt lookup.
+
+Current read authorization and the original build principal remain mandatory.
+The grant, broker/job identity and registration are checked again after hash IO,
+before delivery. No absolute output path or raw filesystem error is exposed.
+The manifest contains hashed relative artifact/layout/security receipts and grants
+no flash permission. Source and flash log paths keep their existing behavior.
+This read adds no schema, configuration, authentication-scope or dependency changes.
+
+Synthetic regression coverage includes authenticated MCP broker restart, expired
+RAM logs, corrupted manifests/identity/layout/security/binary/ELF bytes, file loss,
+unsuccessful jobs, another principal, concurrent-reader limits, event-loop progress
+and grant/registration/job invalidation during hash IO. Existing durable path/link
+and hash checks are reused; no native build, USB or production DB is involved.
