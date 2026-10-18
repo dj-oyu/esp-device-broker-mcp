@@ -44,6 +44,7 @@ MODERN = LATEST_MODERN_VERSION
 CLIENT_INFO = {"name": "synthetic-tunnel-contract", "version": "0.0.0"}
 EXPECTED_TOOLS = {
     "client_identity",
+    "list_registered_targets",
     "device_status",
     "read_logs",
     "acquire_session",

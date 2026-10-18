@@ -87,6 +87,8 @@ def invalid_arguments(
 
 
 def validate_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+    if name == "list_registered_targets" and arguments:
+        return invalid_arguments("unexpected_field")
     model = REQUEST_MODELS.get(name)
     if model is None:
         return None
