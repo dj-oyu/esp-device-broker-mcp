@@ -20,6 +20,7 @@ from mcp.types import (
     TextContent,
     ToolAnnotations,
 )
+from pydantic import TypeAdapter, ValidationError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .auth import AuthState
@@ -45,6 +46,7 @@ from .models import (
     CloseWorkSessionRequest,
     CreateWorkSessionRequest,
     ExecuteRequest,
+    Identifier,
     JobRequest,
     LeaseRequest,
     LogRequest,
@@ -575,6 +577,17 @@ def create_server(
     read_only = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
     mutating = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
     execution = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
+    identifier = TypeAdapter(Identifier)
+
+    def registered_ids(registrations: dict[str, Any]) -> list[str]:
+        ids = []
+        for key in registrations:
+            try:
+                ids.append(identifier.validate_python(key, strict=True))
+            except ValidationError:
+                # Legacy local config can contain names that no MCP request accepts.
+                continue
+        return sorted(ids)
 
     @server.tool(annotations=read_only)
     async def client_identity(ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -593,6 +606,32 @@ def create_server(
             }
 
         return _result(identify)
+
+    @server.tool(annotations=read_only)
+    async def list_registered_targets(ctx: Context[Any, Any]) -> dict[str, Any]:
+        """List current addressable registered IDs with read scope; no hardware access.
+
+        Pass no arguments. Use project_id for source/build and device_id for
+        backup/flash/restore. Registration does not establish operation eligibility
+        or a physical connection. Paths, selectors and credentials stay private.
+        Names outside the request ID format (1–64 letters/digits/underscore/hyphen)
+        are omitted; they cannot be used in prepare_test.
+        """
+
+        def targets() -> dict[str, Any]:
+            principal(ctx, "read")
+            current = resident.settings
+            return {
+                "build_projects": [
+                    {"project_id": project_id}
+                    for project_id in registered_ids(current.build_projects)
+                ],
+                "flash_devices": [
+                    {"device_id": device_id} for device_id in registered_ids(current.flash_devices)
+                ],
+            }
+
+        return _result(targets)
 
     @server.tool(annotations=read_only)
     async def device_status(ctx: Context[Any, Any]) -> dict[str, Any]:

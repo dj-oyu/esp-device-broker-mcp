@@ -86,6 +86,7 @@ async def test_real_mcp_http_disconnect_retry_handover(authenticated_service):
         names = {tool.name for tool in advertised.tools}
         assert names == {
             "client_identity",
+            "list_registered_targets",
             "device_status",
             "read_logs",
             "acquire_session",
