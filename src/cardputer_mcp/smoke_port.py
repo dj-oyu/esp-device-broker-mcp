@@ -14,8 +14,18 @@ class SmokePort:
         self.inner, self.live, self.stop = port, live, stop
 
     def check(self) -> None:
-        if self.stop.is_set() or self.live is None or self.live() is not True:
-            raise SerialFailure("operation_interrupted_review_required")
+        try:
+            if self.stop.is_set() or self.live is None or self.live() is not True:
+                raise SerialFailure("operation_interrupted_review_required")
+        except SerialFailure as failure:
+            failure.diagnostic.setdefault("failure_origin", "authority_or_stop_check")
+            raise
+        except Exception:
+            # A failed authority lookup cannot authorize IO. Identify the guard,
+            # without asserting revocation, cancellation, or a timeout cause.
+            lookup_failure = SerialFailure("operation_interrupted_review_required")
+            lookup_failure.diagnostic["failure_origin"] = "authority_or_stop_check"
+            raise lookup_failure from None
 
     def __getattr__(self, key: str) -> Any:
         return getattr(self.inner, key)

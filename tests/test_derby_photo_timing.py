@@ -1,5 +1,6 @@
 """Synthetic host clocks and serial only; no physical photo/pixel attestation."""
 
+import json
 import threading
 from collections import deque
 from copy import deepcopy
@@ -8,6 +9,7 @@ import pytest
 from test_derby_smoke import Wire
 
 from cardputer_mcp.config import SerialSettings
+from cardputer_mcp.derby_observation import DerbyObservation
 from cardputer_mcp.derby_smoke import derby_smoke
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.ports import PortInfo
@@ -472,3 +474,65 @@ def test_end_before_required_result_phase_cannot_be_repaired_by_post_end_scene()
     image, code, report, _ = run(TimedWire(events))
     assert image.png and not report.demo_cycle_observed
     assert code == "derby_image_observed_demo_cycle_or_photo_phase_not_verified"
+
+
+@pytest.mark.parametrize(
+    "interruption", ["authority", "stop", "os_read_error", "non_os_read_error"]
+)
+async def test_interruption_before_photo_cutoff_does_not_report_a_deadline(interruption):
+    wire = TimedWire(schedule())
+    valid = [True]
+    read = wire.read
+    config = SerialSettings(
+        selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
+        expected_firmware_sha256="a" * 64,
+    )
+    backend = SerialBackend(
+        config,
+        inventory=lambda: [PortInfo(port="COM42", vid=1, pid=2, serial_number="synthetic")],
+        factory=lambda: wire,
+        clock=lambda: wire.now,
+    )
+
+    def interrupted_read(size=4096):
+        if wire.running and wire.now - wire.ready_at >= 23:
+            if interruption == "authority":
+                valid[0] = False
+            elif interruption == "stop":
+                backend.smoke_stop.set()
+            elif interruption == "os_read_error":
+                raise OSError("SYNTHETIC_PRIVATE_READ_ERROR")
+            else:
+                raise RuntimeError("SYNTHETIC_PRIVATE_READ_ERROR")
+        return read(size)
+
+    wire.read = interrupted_read
+    plan = {"test": Action.DERBY.value, **backend.prepare(Action.DERBY)}
+    with pytest.raises(SerialFailure) as caught:
+        await backend.execute_smoke(plan, lambda _: None, lambda: valid[0])
+    assert caught.value.code == (
+        "serial_read_failed"
+        if interruption == "os_read_error"
+        else "serial_operation_uncertain"
+        if interruption == "non_os_read_error"
+        else "operation_interrupted_review_required"
+    )
+    assert caught.value.diagnostic["failure_origin"] == (
+        "port_read_os_error"
+        if interruption == "os_read_error"
+        else "port_read_error"
+        if interruption == "non_os_read_error"
+        else "authority_or_stop_check"
+    )
+    report = DerbyObservation.model_validate_json(
+        json.dumps(caught.value.diagnostic["derby_observation"])
+    )
+    assert wire.now - wire.ready_at < 120
+    assert report.capture_reason == "observation_incomplete"
+    assert not report.image_acquired and not report.exit_home_observed
+    assert not report.model_copy(update={"exit_home_observed": True}).no_capture_completed()
+    assert all(event.reason != "photo_not_observed_before_deadline" for event in report.events)
+    assert b"s" not in wire.writes and b"q" not in wire.writes
+    assert wire.closed and backend.active == 0 and not backend.hardware_connected
+    assert not backend.ownership_uncertain
+    assert "SYNTHETIC_PRIVATE" not in str(caught.value.diagnostic)

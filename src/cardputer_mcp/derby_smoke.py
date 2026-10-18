@@ -84,7 +84,7 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
     demo_epoch = 0
     capturing = context_changed = attempted = home = False
     image: CapturedImage | None = None
-    reason = "photo_not_observed_before_deadline"
+    reason = "observation_incomplete"
 
     def record(kind: str, **fields: Any) -> None:
         nonlocal truncated, consistent
@@ -255,6 +255,8 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
             reason = "demo_ended_without_photo"
         elif stop < start:
             reason = "insufficient_capture_exit_budget"
+        elif reader.clock() >= stop:
+            reason = "photo_not_observed_before_deadline"
         record("capture_skipped", reason=reason)
     reader.phase_observer = None
     # Exit is an explicitly requested step. Revocation suppresses this write too.
