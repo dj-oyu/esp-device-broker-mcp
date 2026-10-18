@@ -1,0 +1,371 @@
+"""Owned, read-only async effects for the GUI's main-thread live reducer.
+
+The worker never calls Tk or mutates a broker job. Generations fence both queued
+deliveries and requests, and a delivery gap requires an explicit new subscription.
+"""
+
+import asyncio
+import json
+import re
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import Any, Literal
+
+import httpx2
+
+from .models import BuildLogRequest
+from .operator_client import OperatorClient, OperatorClientError
+
+MAX_RESPONSE_BYTES = 512 * 1024
+MAX_DELIVERIES = 32
+STARTUP_WAIT_SECONDS = 2.0
+STARTUP_FAILED = "Cannot start the live reader. Reopen the local operator window."
+UNREACHABLE = "Cannot reach the local broker. Reconnect to resume live updates."
+AUTH_FAILED = "Local operator authentication failed. Check CARDPUTER_LOCAL_TOKEN."
+INVALID_RESPONSE = "The broker returned an invalid live response. Reconnect to resynchronize."
+REJECTED = "The broker rejected the live request. Reconnect to resume live updates."
+DELIVERY_GAP = "Live updates exceeded the delivery limit. Reconnect to resynchronize."
+
+
+@dataclass(frozen=True)
+class TransportEvent:
+    kind: Literal["message", "disconnected", "logs"]
+    generation: int
+    payload: dict[str, Any]
+    started_at: float
+
+
+class _TransportFailure(Exception):
+    """Carries only fixed, safe diagnostics."""
+
+
+def _cursor(value: Any) -> dict[str, Any]:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"epoch", "sequence"}
+        or not isinstance(value.get("epoch"), str)
+        or re.fullmatch("[a-f0-9]{32}", value["epoch"]) is None
+        or type(value.get("sequence")) is not int
+        or not 0 <= value["sequence"] <= 2**63 - 1
+    ):
+        raise _TransportFailure(INVALID_RESPONSE)
+    return {"epoch": value["epoch"], "sequence": value["sequence"]}
+
+
+class LiveRunner:
+    """One background event loop, one held live read and one selected-job read.
+
+    ``drain`` belongs to the GUI thread. A caller must increment its generation
+    when reconnecting; old generations and closed-view results are discarded.
+    """
+
+    def __init__(self, api: OperatorClient) -> None:
+        # Revalidate even when a caller supplies a duck-typed OperatorClient.
+        credentials = OperatorClient(api.base_url, api._token)
+        self._base_url = credentials.base_url
+        self._token = credentials._token
+        self._lock = threading.Lock()
+        self._events: deque[TransportEvent] = deque()
+        self._generation: int | None = None
+        self._gap_generation: int | None = None
+        self._paused_generation: int | None = None
+        self._closed = False
+        self._startup_failed = False
+        self._ready = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._client: httpx2.AsyncClient | None = None
+        self._live_task: asyncio.Task[None] | None = None
+        self._log_task: asyncio.Task[None] | None = None
+        self._log_serial = 0
+        self._thread = threading.Thread(target=self._run, name="operator-live-reader", daemon=True)
+        self._thread.start()
+        ready = self._ready.wait(timeout=STARTUP_WAIT_SECONDS)
+        with self._lock:
+            failed = not ready or self._startup_failed or self._client is None
+            if failed:
+                self._closed = True
+        if failed:
+            raise OperatorClientError(STARTUP_FAILED) from None
+
+    def _make_client(self) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(
+            trust_env=False,
+            follow_redirects=False,
+            timeout=httpx2.Timeout(35.0, connect=2.0, write=5.0, pool=2.0),
+            limits=httpx2.Limits(max_connections=2, max_keepalive_connections=2),
+        )
+
+    def _run(self) -> None:
+        loop = None
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
+            self._client = self._make_client()
+            with self._lock:
+                if self._closed:
+                    return
+            self._ready.set()
+            loop.run_forever()
+        except Exception:
+            # Thread tracebacks can contain transport URLs, headers or tokens.
+            with self._lock:
+                self._startup_failed = True
+        finally:
+            self._ready.set()
+            if loop is not None:
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    if self._client is not None:
+                        loop.run_until_complete(self._client.aclose())
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                except Exception:
+                    pass
+                finally:
+                    loop.close()
+
+    def start(self, generation: int) -> None:
+        self.reconnect(generation)
+
+    def reconnect(self, generation: int) -> None:
+        if type(generation) is not int:
+            raise ValueError("generation must be an integer")
+        with self._lock:
+            if self._closed or (self._generation is not None and generation <= self._generation):
+                return
+            self._generation = generation
+            self._gap_generation = None
+            self._paused_generation = None
+            self._events.clear()
+            self._log_serial += 1
+            loop = self._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(self._begin, generation)
+
+    def _current(self, generation: int) -> bool:
+        with self._lock:
+            return (
+                not self._closed
+                and self._generation == generation
+                and self._gap_generation != generation
+                and self._paused_generation != generation
+            )
+
+    def pause(self, generation: int) -> None:
+        """Cancel reads after reducer validation fails; reconnect explicitly resumes."""
+        with self._lock:
+            if self._closed or self._generation != generation:
+                return
+            self._paused_generation = generation
+            self._events.clear()
+            self._log_serial += 1
+            loop = self._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(self._pause_reads, generation)
+
+    def _pause_reads(self, generation: int) -> None:
+        with self._lock:
+            if self._generation != generation or self._paused_generation != generation:
+                return
+        self._cancel_reads()
+
+    def _cancel_reads(self) -> None:
+        for task in (self._live_task, self._log_task):
+            if task is not None:
+                task.cancel()
+
+    def _begin(self, generation: int) -> None:
+        if not self._current(generation):
+            return
+        self._cancel_reads()
+        self._live_task = asyncio.create_task(self._subscribe(generation))
+        self._log_task = None
+
+    def read_logs(self, generation: int, job_id: str, cursor: dict[str, Any] | None = None) -> int:
+        request = BuildLogRequest.model_validate(
+            {
+                "job_id": job_id,
+                "cursor": cursor,
+                "levels": ["error", "warning", "info", "debug", "unknown"],
+                "context": 0,
+                "limit": 100,
+            }
+        ).model_dump(mode="json")
+        with self._lock:
+            self._log_serial += 1
+            serial = self._log_serial
+            if (
+                self._closed
+                or self._generation != generation
+                or self._gap_generation == generation
+                or self._paused_generation == generation
+            ):
+                return serial
+            loop = self._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(self._begin_logs, generation, serial, request)
+            return serial
+
+    def _begin_logs(self, generation: int, serial: int, request: dict[str, Any]) -> None:
+        if not self._current(generation):
+            return
+        with self._lock:
+            if serial != self._log_serial:
+                return
+        if self._log_task is not None:
+            self._log_task.cancel()
+        self._log_task = asyncio.create_task(self._read_logs(generation, serial, request))
+
+    def drain(self) -> list[TransportEvent]:
+        with self._lock:
+            events = list(self._events)
+            self._events.clear()
+        return events
+
+    def _emit(self, event: TransportEvent) -> bool:
+        overflow = False
+        with self._lock:
+            if (
+                self._closed
+                or self._generation != event.generation
+                or self._gap_generation == event.generation
+                or self._paused_generation == event.generation
+            ):
+                return False
+            if len(self._events) >= MAX_DELIVERIES:
+                self._events.clear()
+                self._gap_generation = event.generation
+                self._events.append(
+                    TransportEvent(
+                        "disconnected", event.generation, {"error": DELIVERY_GAP}, event.started_at
+                    )
+                )
+                overflow = True
+            else:
+                self._events.append(event)
+        if overflow:
+            self._cancel_reads()
+        return not overflow
+
+    async def _request(
+        self, path: str, payload: dict[str, Any], *, logs: bool = False
+    ) -> dict[str, Any]:
+        client = self._client
+        if client is None:
+            raise _TransportFailure(UNREACHABLE)
+        request = client.build_request(
+            "POST",
+            self._base_url + path,
+            json=payload,
+            headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"},
+            timeout=httpx2.Timeout(5.0, connect=2.0) if logs else client.timeout,
+        )
+        # AsyncClient owns a jar, but no response cookie is an operator credential.
+        request.headers.pop("cookie", None)
+        try:
+            response = await client.send(request, stream=True, follow_redirects=False)
+            try:
+                client.cookies.clear()
+                if response.status_code in (401, 403):
+                    raise _TransportFailure(AUTH_FAILED)
+                if response.status_code != 200:
+                    raise _TransportFailure(REJECTED)
+                declared = response.headers.get("content-length")
+                if declared is not None:
+                    try:
+                        if int(declared) > MAX_RESPONSE_BYTES:
+                            raise _TransportFailure(INVALID_RESPONSE)
+                    except ValueError:
+                        raise _TransportFailure(INVALID_RESPONSE) from None
+                body = bytearray()
+                async for chunk in response.aiter_bytes(chunk_size=8192):
+                    if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
+                        raise _TransportFailure(INVALID_RESPONSE)
+                    body.extend(chunk)
+                try:
+                    data = json.loads(body)
+                except (ValueError, RecursionError):
+                    raise _TransportFailure(INVALID_RESPONSE) from None
+                if not isinstance(data, dict) or type(data.get("ok")) is not bool:
+                    raise _TransportFailure(INVALID_RESPONSE)
+                if not logs and data["ok"] is not True:
+                    raise _TransportFailure(REJECTED)
+                return data
+            finally:
+                await response.aclose()
+        except httpx2.HTTPError:
+            raise _TransportFailure(UNREACHABLE) from None
+
+    async def _subscribe(self, generation: int) -> None:
+        cursor = None
+        started_at = time.monotonic()
+        try:
+            while self._current(generation):
+                started_at = time.monotonic()
+                data = await self._request("/operator/live", {"cursor": cursor})
+                if (
+                    type(data.get("schema_version")) is not int
+                    or data["schema_version"] != 1
+                    or data.get("kind") not in ("snapshot", "reset", "delta", "heartbeat")
+                ):
+                    raise _TransportFailure(INVALID_RESPONSE)
+                next_cursor = _cursor(data.get("cursor"))
+                kind = data["kind"]
+                if (
+                    (cursor is None and kind not in ("snapshot", "reset"))
+                    or (kind == "delta" and _cursor(data.get("base_cursor")) != cursor)
+                    or (kind == "heartbeat" and next_cursor != cursor)
+                ):
+                    raise _TransportFailure(INVALID_RESPONSE)
+                if not self._emit(TransportEvent("message", generation, data, started_at)):
+                    return
+                cursor = next_cursor
+        except _TransportFailure as error:
+            self._emit(
+                TransportEvent("disconnected", generation, {"error": str(error)}, started_at)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never deliver exception text: transports may include URLs or headers.
+            self._emit(
+                TransportEvent("disconnected", generation, {"error": UNREACHABLE}, started_at)
+            )
+
+    async def _read_logs(self, generation: int, serial: int, request: dict[str, Any]) -> None:
+        started_at = time.monotonic()
+        payload: dict[str, Any] = {"job_id": request["job_id"], "request_id": serial}
+        try:
+            payload["response"] = await self._request("/operator/job-logs", request, logs=True)
+        except _TransportFailure as error:
+            payload["error"] = str(error)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            payload["error"] = UNREACHABLE
+        with self._lock:
+            current = serial == self._log_serial
+        if current:
+            self._emit(TransportEvent("logs", generation, payload, started_at))
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._events.clear()
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                loop.call_soon_threadsafe(self._stop)
+        self._thread.join(timeout=1.0)
+
+    def _stop(self) -> None:
+        self._cancel_reads()
+        assert self._loop is not None
+        self._loop.stop()

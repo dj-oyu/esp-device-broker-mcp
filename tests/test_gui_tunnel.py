@@ -530,7 +530,7 @@ def test_run_normalizes_only_valid_loopback_url_for_tunnel(
 ) -> None:
     import tkinter as tk
 
-    from cardputer_mcp import gui, gui_tunnel
+    from cardputer_mcp import gui, gui_live, gui_tunnel
 
     class Root:
         def mainloop(self) -> None:
@@ -544,7 +544,7 @@ def test_run_normalizes_only_valid_loopback_url_for_tunnel(
 
     monkeypatch.setattr(tk, "Tk", Root)
     monkeypatch.setattr(gui_tunnel, "TunnelPanel", panel)
-    monkeypatch.setattr(gui, "_Window", lambda *args: None)
+    monkeypatch.setattr(gui_live, "LiveWindow", lambda *args: None)
     config = tmp_path / "broker.toml"
     gui.run(
         "http://127.0.0.1:8765" + suffix,

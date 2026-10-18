@@ -6,6 +6,7 @@ import json
 import os
 import re
 import threading
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -182,6 +183,7 @@ class FirmwareFlash:
         self.engine: FlashLifecycle | None = None
         self.job_id: str | None = None
         self.logs: dict[str, BuildLogs] = {}
+        self.on_logs_change: Callable[[], None] | None = None
         self.results: dict[str, dict[str, Any]] = {}
         self.promotions: dict[str, dict[str, str]] = {}
         self._cancelled_jobs: set[str] = set()
@@ -590,7 +592,9 @@ class FirmwareFlash:
                 raise FlashFailure("flash_cancelled_needs_review")
             self.engine = FlashLifecycle(driver)
             self.job_id = plan["job_id"]
-        log = BuildLogs(plan["flash_principal"], job_id=plan["job_id"])
+        log = BuildLogs(
+            plan["flash_principal"], job_id=plan["job_id"], on_change=self.on_logs_change
+        )
         log.redactions = tuple(
             value
             for key, value in os.environ.items()

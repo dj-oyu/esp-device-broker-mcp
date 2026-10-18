@@ -1,6 +1,7 @@
 """Bounded fan-out of generated events, never raw device bytes or request arguments."""
 
 from collections import deque
+from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -23,7 +24,8 @@ class Event(StrEnum):
 
 
 class LogBook:
-    def __init__(self, capacity: int) -> None:
+    def __init__(self, capacity: int, *, on_change: Callable[[], None] | None = None) -> None:
+        self.on_change = on_change
         self.epoch = uuid4().hex
         self.sequence = 0
         self.entries: deque[dict[str, Any]] = deque(maxlen=capacity)
@@ -40,6 +42,12 @@ class LogBook:
                 "stage": stage,
             }
         )
+
+        if self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception:
+                pass
 
     def read(self, request: LogRequest) -> dict[str, Any]:
         cursor = request.cursor
