@@ -32,7 +32,7 @@ Large/truncated Git tree metadata fails closed. There is no automatic cleanup.
 
 New snapshots containing submodules use receipt schema 2. The receipt and source
 summary contain `submodules` records with `path`, `repository`, `commit`,
-`tree_sha1`, `archive_sha256`, and `source_sha256`. The approved build plan and
+`tree_sha1`, `archive_sha256`, and `source_sha256`. The immutable build plan and
 firmware manifest preserve these records and use
 `dependency_policy=gitlinks_fixed_commits_no_fetch`. Build configuration keeps
 `IDF_COMPONENT_MANAGER=0`; submodule initialization never occurs during build.
@@ -51,6 +51,6 @@ separate explicit dependency decision; no implicit SDK fetch is allowed.
 
 Deployment acceptance: refresh the running server/client metadata using the
 existing host procedure, use the reviewed firmware full commit, explicitly
-review/approve source fetch, confirm the expected minimp3 record, then prepare
-and approve only the intended ESP-IDF 6.0.1 build. Local Codex is not required by
+prepare/execute source fetch, confirm the expected minimp3 record, then prepare
+and explicitly execute only the intended ESP-IDF 6.0.1 build. Local Codex is not required by
 the runtime. No flash or device test is part of this change.

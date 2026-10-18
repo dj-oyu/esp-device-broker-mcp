@@ -1,13 +1,14 @@
-"""Actual local approval and MCP/image boundaries with a synthetic serial port."""
+"""Explicit authenticated execution and MCP/image boundaries with a synthetic serial port."""
 
 import asyncio
 import json
 import threading
+from types import SimpleNamespace
 
 import httpx2
 import pytest
 from test_derby_smoke import Wire
-from test_registry_http import registry_service as registry_service
+from test_serial_http import serial_service as serial_service
 
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import SerialSettings
@@ -15,11 +16,31 @@ from cardputer_mcp.ports import PortInfo
 from cardputer_mcp.serial_backend import SerialBackend
 
 
+@pytest.fixture
+async def derby_service(serial_service):
+    """Exercise actual HTTP authentication without a filesystem key registry."""
+    url, resident, _ = serial_service
+    return SimpleNamespace(
+        url=url,
+        resident=resident,
+        keys={
+            "second": SimpleNamespace(
+                token="b" * 64,
+                metadata=SimpleNamespace(principal_id="ephemeral:remote_mcp"),
+            ),
+            "local": SimpleNamespace(
+                token="a" * 64,
+                metadata=SimpleNamespace(principal_id="ephemeral:local_cli"),
+            ),
+        },
+    )
+
+
 @pytest.mark.parametrize("interruption", [None, "no_photo", "cancel", "lease_expired"])
-async def test_fixed_smoke_local_approval_then_principal_bound_image(
-    registry_service, interruption
+async def test_fixed_smoke_explicit_request_then_principal_bound_image(
+    derby_service, interruption
 ):
-    service = registry_service
+    service = derby_service
     key = service.keys["second"]
     wire = Wire(phases=interruption != "no_photo")
     entered = threading.Event()
@@ -73,23 +94,9 @@ async def test_fixed_smoke_local_approval_then_principal_bound_image(
                 "test": "derby_smoke",
             },
         )
-        assert prepared["ok"] and prepared["approval_required"], prepared
+        assert prepared["ok"] and not prepared["approval_required"], prepared
         assert not wire.writes and not wire.is_open
         execution = {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
-        denied = await call(remote, "execute_test", execution)
-        assert denied["error"] == "operator_approval_required"
-        detail = (
-            await http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})
-        ).json()
-        approved = await http.post(
-            "/operator/approve-plan",
-            json={
-                "plan_hash": prepared["plan_hash"],
-                "review_revision": detail["review_revision"],
-                "attestation": "DEVICE HOME AND FIRMWARE VERIFIED",
-            },
-        )
-        assert approved.status_code == 200 and approved.json()["ok"], approved.text
         result = await call(remote, "execute_test", execution)
         assert result["ok"], result
         if interruption in ("cancel", "lease_expired"):
@@ -126,11 +133,7 @@ async def test_fixed_smoke_local_approval_then_principal_bound_image(
         assert job["result"] == "derby_demo_cycle_observed_render_buffer_lcd_unverified"
         assert wire.closed and wire.writes[-2:] == [b"s", b"q"]
         preview = service.resident.operator_image("derby-one")
-        assert preview["delivery_state"] == "pending"
-        denied_image = await remote.call_tool("read_capture", {"request": {"job_id": "derby-one"}})
-        assert denied_image.is_error
-        assert denied_image.structured_content["error"] == "capture_delivery_approval_required"
-        service.resident.operator_decide_image(
-            "derby-one", preview["sha256"], preview["delivery_revision"], "approve"
-        )
+        assert preview["delivery_state"] == "available"
+        captured = await remote.call_tool("read_capture", {"request": {"job_id": "derby-one"}})
+        assert not captured.is_error and any(c.type == "image" for c in captured.content)
         assert service.resident.read_capture("derby-one", key.metadata.principal_id).png

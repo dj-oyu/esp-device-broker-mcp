@@ -13,7 +13,7 @@ Runtime integration is in progress; this PR is not ready for hardware use.
   the IO worker only stages immutable candidates. Cancel, crash, failed verification
   or uncertain close keeps the prior successful version.
 - Freeze recovery receipt/hash at prepare time, including an implicit choice of
-  the current receipt. Execute and approve that exact target, never dynamic latest.
+  the current receipt. Explicitly execute that exact target, never dynamic latest.
 - A successful explicit restore makes its verified target current. Build time
   does not choose the current version. Restoration is never executed implicitly.
 - Prioritize the same partition/security layout and a single factory app. Do not

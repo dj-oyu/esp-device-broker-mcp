@@ -250,7 +250,7 @@ def derby_smoke(reader: Any) -> tuple[CapturedImage | None, str]:
             reason = "insufficient_capture_exit_budget"
         record("capture_skipped", reason=reason)
     reader.phase_observer = None
-    # Exit is an explicit approved step. Revocation suppresses this write too.
+    # Exit is an explicitly requested step. Revocation suppresses this write too.
     record("exit_requested", reason="observation_complete" if ended else "observation_deadline")
     reader.command(b"q", rb"HOME_READY", timeout=EXIT_SECONDS)
     home = True

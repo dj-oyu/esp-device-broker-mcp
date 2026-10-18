@@ -136,63 +136,14 @@ class OperatorClient:
     def diagnostics(self) -> dict[str, Any]:
         return parse_http_diagnostics(self._request("GET", "/operator/http-diagnostics"))
 
-    def policy_options(self) -> dict[str, Any]:
-        return self._request("GET", "/operator/policy-options")
 
-    def policies(self) -> dict[str, Any]:
-        return self._request("GET", "/operator/policies")
 
-    def create_policy(self, data: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", "/operator/policy-create", data)
 
-    def update_policy(self, data: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", "/operator/policy-update", data)
 
-    def revoke_policy(self, policy_id: str, expected_revision: int) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            "/operator/policy-revoke",
-            {
-                "policy_id": policy_id,
-                "expected_revision": expected_revision,
-            },
-        )
 
-    def arm_capture(self, data: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", "/operator/capture-arm", data)
 
-    def plans(self) -> dict[str, Any]:
-        return self._request("GET", "/operator/plans")
 
-    def plan(self, plan_hash: str) -> dict[str, Any]:
-        return self._request("POST", "/operator/plan", {"plan_hash": plan_hash})
 
-    def approve(
-        self,
-        plan_hash: str,
-        review_revision: str,
-        attestation: str,
-        retain_local_home_line: bool = False,
-        allow_image_delivery: bool = False,
-    ) -> dict[str, Any]:
-        if type(retain_local_home_line) is not bool:
-            raise OperatorClientError("Invalid local diagnostic consent.")
-        data: dict[str, Any] = {
-            "plan_hash": plan_hash,
-            "review_revision": review_revision,
-            "attestation": attestation,
-        }
-        if retain_local_home_line:
-            data["retain_local_home_line"] = True
-        if type(allow_image_delivery) is not bool:
-            raise OperatorClientError("Invalid capture delivery consent.")
-        if allow_image_delivery:
-            data["allow_image_delivery"] = True
-        return self._request(
-            "POST",
-            "/operator/approve-plan",
-            data,
-        )
 
     def cancel_job(self, job_id: str, plan_hash: str, broker_epoch: str) -> dict[str, Any]:
         return self._request(
@@ -209,17 +160,7 @@ class OperatorClient:
             {"job_id": job_id, "plan_hash": plan_hash, "diagnostic_id": diagnostic_id},
         )
 
-    def home_recovery_review(self, plan_hash: str) -> dict[str, Any]:
-        return self._request("POST", "/operator/home-recovery-review", {"plan_hash": plan_hash})
 
-    def home_recovery_approve(
-        self, plan_hash: str, revision: str, attestation: str
-    ) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            "/operator/home-recovery-approve",
-            {"plan_hash": plan_hash, "review_revision": revision, "attestation": attestation},
-        )
 
     def images(self) -> dict[str, Any]:
         return self._request("GET", "/operator/images")
@@ -227,19 +168,6 @@ class OperatorClient:
     def image(self, job_id: str) -> dict[str, Any]:
         return self._request("POST", "/operator/image", {"job_id": job_id})
 
-    def decide_image(
-        self, job_id: str, sha256: str, delivery_revision: str, decision: str
-    ) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            "/operator/image-decision",
-            {
-                "job_id": job_id,
-                "sha256": sha256,
-                "delivery_revision": delivery_revision,
-                "decision": decision,
-            },
-        )
 
     def catalog(self) -> dict[str, Any]:
         from .mcp_diagnostics import MCPDiagnosticsError, probe

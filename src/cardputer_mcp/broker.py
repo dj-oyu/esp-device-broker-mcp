@@ -10,7 +10,7 @@ import secrets
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -25,9 +25,9 @@ from .capture import CapturedImage
 from .config import Settings
 from .device_observation import DeviceObservation
 from .firmware_build import BuildPreflightFailure
+from .flash_binding import FlashBinding, live_binding, prepare_binding, validate_binding
 from .flash_lifecycle import FlashFailure
 from .flash_manifest import FlashAdmissionError
-from .flash_policy import FlashAuthorization
 from .home_line import HomeLineProbe
 from .logs import Event, LogBook
 from .models import (
@@ -89,7 +89,7 @@ class DeviceWait:
 
 @dataclass(frozen=True, repr=False)
 class ExecutionIntent:
-    """Process-local request to run exactly one plan after local approval."""
+    """Process-local request to run exactly one plan from an explicit authenticated request."""
 
     epoch: str
     plan_hash: str
@@ -99,6 +99,8 @@ class ExecutionIntent:
     owner: str
     work_session_id: str | None
     deadline: float
+    lease_ref: Session | None = None
+    work_ref: WorkSession | None = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -118,7 +120,7 @@ class RetainedCapture:
     deadline: float
     origin: str
     born_utc: str
-    delivery_state: str = "pending"
+    delivery_state: str = "available"
     policy_target: str = ""
 
 
@@ -232,12 +234,8 @@ class Broker:
         self.captures: dict[str, RetainedCapture] = {}
         self.capture_delivery_consents: dict[str, CaptureDeliveryConsent] = {}
         self.device_observations: dict[str, RetainedDeviceObservation] = {}
-        self.capture_policies: Any = None
-        self.policy_jobs: dict[str, Any] = {}
-        from .flash_policy import FlashPolicies
-
-        self.flash_policies = FlashPolicies(self)
-        self.flash_policy_jobs: dict[str, FlashAuthorization] = {}
+        self._flash_bindings: dict[str, FlashBinding] = {}
+        self._execution_bindings: dict[str, str] = {}
         self._execution_intents: dict[str, ExecutionIntent] = {}
         self.local_home_diagnostic: LocalHomeDiagnostic | None = None
         self._device_lock = FileLock(
@@ -292,8 +290,8 @@ class Broker:
         self.captures.clear()
         self.capture_delivery_consents.clear()
         self.device_observations.clear()
-        self.policy_jobs.clear()
-        self.flash_policy_jobs.clear()
+        self._flash_bindings.clear()
+        self._execution_bindings.clear()
         if self.maintenance:
             self.maintenance.cancel()
             try:
@@ -344,8 +342,8 @@ class Broker:
                 job = store.job(job_id)
                 if job and job["state"] == "queued":
                     store.set_job(job_id, "cancelled", reason)
-                    self.policy_jobs.pop(job_id, None)
-                    self.flash_policy_jobs.pop(job_id, None)
+                    self._flash_bindings.pop(job_id, None)
+                    self._execution_bindings.pop(job_id, None)
                     self.capture_delivery_consents.pop(job_id, None)
                     self.logs.append(Event.CANCELLED)
         if stopping:
@@ -361,7 +359,8 @@ class Broker:
             self._store().set_job(intent.job_id, "cancelled", reason)
             self.logs.append(Event.CANCELLED)
         self._execution_intents.pop(intent.job_id, None)
-        self.flash_policy_jobs.pop(intent.job_id, None)
+        self._execution_bindings.pop(intent.job_id, None)
+        self._flash_bindings.pop(intent.job_id, None)
         self.capture_delivery_consents.pop(intent.job_id, None)
 
     def _execution_intent_binding_live(self, intent: ExecutionIntent) -> bool:
@@ -384,6 +383,7 @@ class Broker:
             or lease is None
             or not math.isfinite(lease.deadline)
             or now >= lease.deadline
+            or (intent.lease_ref is not None and lease is not intent.lease_ref)
             or lease.id != intent.lease_id
             or lease.principal_id != intent.principal_id
             or lease.owner != intent.owner
@@ -394,6 +394,7 @@ class Broker:
             work = self.work_sessions.get(intent.work_session_id)
             if (
                 work is None
+                or work is not intent.work_ref
                 or work.state != "open"
                 or not math.isfinite(work.deadline)
                 or now >= work.deadline
@@ -425,6 +426,41 @@ class Broker:
             and plan.get("backend") == self.backend.name
             and plan.get("device") == self.backend.device
         )
+
+    def _running_job_binding_live(
+        self, plan: dict[str, Any], intent: ExecutionIntent, *, committing: bool = False
+    ) -> bool:
+        """Recheck the running job itself after callbacks, including atomic commit."""
+        try:
+            store = self._store()
+            row = store.db.execute(
+                "SELECT plan_hash,state,result FROM jobs WHERE id=?", (intent.job_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["plan_hash"] != intent.plan_hash
+                or self.active_job != intent.job_id
+                or plan.get("job_id") != intent.job_id
+                or digest_plan(plan) != intent.plan_hash
+                or store.plan(intent.plan_hash) != plan
+                or store.needs_review()
+                or not self._execution_lease_binding_live(intent)
+                or not self._device_lock.is_locked
+                or not self._state_lock.is_locked
+                or (committing and not store.db.in_transaction)
+            ):
+                return False
+            return bool(
+                row["state"] == "running"
+                or (
+                    committing
+                    and plan.get("test") in {test.value for test in FLASH_TESTS}
+                    and row["state"] == "succeeded"
+                    and row["result"] == f"firmware_{plan['flash_operation']}_completed"
+                )
+            )
+        except Exception:
+            return False
 
     def pending_execution(self, plan_hash: str) -> ExecutionIntent | None:
         """A bounded, callback-free lookup for local approval/review only."""
@@ -498,8 +534,6 @@ class Broker:
             request = self.device_requests.get(session.request_id)
             if request is not None:
                 request.state = state
-        if self.capture_policies is not None:
-            self.capture_policies.invalidate_session()
         self.session = None
         self.capture_delivery_consents.clear()
         self._queue_sequence += 1
@@ -632,7 +666,7 @@ class Broker:
             "profile_active_job": self.profile_jobs.active,
             "profile_queue_depth": self.profile_jobs.queue.qsize(),
             "profile_uncertain": self.profile_jobs._uncertain(),
-            "profile_approval_policy": "registered_project",
+            "profile_execution_policy": "registered_project",
             "owner": session.owner if session else None,
             "lease_remaining_seconds": max(0, round(session.deadline - self.clock(), 3))
             if session
@@ -642,9 +676,7 @@ class Broker:
             "work_session_count": sum(w.state == "open" for w in self.work_sessions.values()),
             "history": store.counts(),
             "needs_review": store.needs_review(),
-            "approval_policy": "operator_opted_in_to_mock"
-            if self.settings.allow_mock_execution
-            else "local_operator_per_plan",
+            "execution_policy": "authenticated_explicit_request",
             "hardware_backend": "serial_operations_opt_in"
             if self.backend.name == "serial"
             else "available_opt_in_only",
@@ -1100,36 +1132,16 @@ class Broker:
         if store.plan(digest) is None and store.record_count("plans") >= 10000:
             raise BrokerError("history_full_archive_offline")
         store.put_plan(digest, payload)
-        policy_available = False
-        if request.test == TestName.CAPTURE and self.capture_policies is not None:
-            try:
-                authorization = self.capture_policies.authorize_capture(payload, record_use=False)
-                policy_available = (
-                    authorization is not None
-                    and self.capture_policies.validate_capture(authorization, payload)
-                )
-            except Exception:
-                policy_available = False
-        flash_available = (
-            request.test == TestName.FLASH and self.flash_policies.authorize(payload) is not None
-        )
-        result = {
+        return {
             "plan_hash": digest,
             "plan": payload,
             **({"storage": storage} if storage is not None else {}),
-            "approval_required": not flash_available
-            and (
-                request.test in ({TestName.BUILD, TestName.SOURCE} | FLASH_TESTS)
-                or (not self.settings.allow_mock_execution and not policy_available)
-            ),
+            "approval_required": False,
         }
-        if request.test == TestName.CAPTURE:
-            result["policy_permit_available"] = policy_available
-        return result
 
     @staticmethod
     def _log_delivery(session: Session) -> dict[str, Any]:
-        """The immutable approval explicitly names the bounded log recipient."""
+        """The immutable plan explicitly names the bounded log recipient."""
         if session.principal_id is None:
             raise BrokerError("authentication_required")
         return {
@@ -1141,6 +1153,16 @@ class Broker:
             "max_line_bytes": 1024,
             "max_rendered_bytes": 32768,
         }
+
+    def _runtime_binding(self) -> str:
+        """Callback-free configuration snapshot, separate from observed device proof."""
+        config = getattr(self.backend, "config", None)
+        return digest_plan({
+            "settings": self.settings.model_dump(mode="json"),
+            "backend": self.backend.name,
+            "device": self.backend.device,
+            "backend_config": config.model_dump(mode="json") if config is not None else None,
+        })
 
     def execute(self, request: ExecuteRequest) -> dict[str, Any]:
         store = self._store()
@@ -1166,6 +1188,8 @@ class Broker:
             session.owner,
             session.work_session_id,
             session.deadline,
+            session,
+            self.work_sessions.get(session.work_session_id or ""),
         )
         existing = store.job(job_id)
         if existing:
@@ -1178,135 +1202,57 @@ class Broker:
             raise BrokerError("queue_full")
         if store.record_count("jobs") >= 10000:
             raise BrokerError("history_full_archive_offline")
-        authorization = None
-        approved = store.db.execute(
-            "SELECT 1 FROM approvals WHERE hash=?", (request.plan_hash,)
-        ).fetchone()
-        if (
-            not approved
-            and payload["test"] == TestName.CAPTURE.value
-            and self.capture_policies is not None
-        ):
-            authorization = self.capture_policies.authorize_capture(payload)
-            if authorization is not None and not self.capture_policies.validate_capture(
-                authorization, payload
-            ):
-                raise BrokerError("capture_policy_no_longer_valid")
-        flash_authorization = (
-            self.flash_policies.authorize(payload)
-            if not approved and payload["test"] == TestName.FLASH.value
+        # Fresh preflight preserves device, firmware and registered-tool binding.
+        # It cannot grant authority: only this authenticated request can enqueue.
+        from .plan_approval import PlanApprovals
+
+        binding = self._runtime_binding()
+        PlanApprovals(self).validate_current(request.plan_hash, session)
+        flash_binding = (
+            prepare_binding(self, payload)
+            if payload["test"] in {t.value for t in FLASH_TESTS}
             else None
         )
-        allow_mock = (
-            self.settings.backend == "mock"
-            and self.settings.allow_mock_execution
-            and payload["test"]
-            not in ({TestName.BUILD.value, TestName.SOURCE.value} | {t.value for t in FLASH_TESTS})
-        )
+        valid = self.principal_valid
+        try:
+            authorized = (
+                session.principal_id is not None
+                and valid is not None
+                and valid(session.principal_id, session.owner, frozenset({"read", "control"}))
+                is True
+            )
+        except Exception:
+            authorized = False
+        if not authorized or session.principal_id is None:
+            raise BrokerError("principal_not_authorized")
+        # No callbacks or awaits after these final identity/lease/hash checks.
         if (
-            request.wait_for_approval
-            and not approved
-            and not allow_mock
-            and authorization is None
-            and flash_authorization is None
-        ):
-            # Policy callbacks must not extend the original request's lifetime
-            # or register work under a replacement lease/principal.
-            current = self._lease(request.session)
-            if current is not session or not self._execution_intent_binding_live(intent):
-                raise BrokerError("execution_intent_not_available")
-            if store.needs_review():
-                raise BrokerError("recovery_review_required")
-            if self._execution_capacity_full():
-                raise BrokerError("queue_full")
-            current_plan = store.plan(request.plan_hash)
-            if current_plan is None or digest_plan(current_plan) != request.plan_hash:
-                raise BrokerError("plan_not_found_or_changed")
-            store.add_awaiting_job(job_id, request.plan_hash)
-            self._execution_intents[job_id] = intent
-            return {**self.job(job_id), "deduplicated": False}
-        if flash_authorization is not None and (
-            self.session is not session
+            self.principal_valid is not valid
+            or self._runtime_binding() != binding
+            or (flash_binding is not None and not live_binding(self, flash_binding, payload))
+            or self.session is not session
             or not self._execution_intent_binding_live(intent)
-            or not self.flash_policies.live(flash_authorization, payload)
+            or self.closing
+            or store.needs_review()
             or self._execution_capacity_full()
             or store.record_count("jobs") >= 10000
             or store.job(job_id) is not None
+            or store.plan(request.plan_hash) != payload
+            or not self._state_lock.is_locked
+            or not self._device_lock.is_locked
         ):
-            raise BrokerError("flash_policy_no_longer_valid")
-        try:
-            store.approved_enqueue(
-                job_id,
-                request.plan_hash,
-                allow_mock,
-                policy_authorized=authorization is not None or flash_authorization is not None,
-            )
-        except ValueError as exc:
-            raise BrokerError("operator_approval_required") from exc
-        # No await between durable enqueue and queue insertion. Crash in between is
-        # recovered to needs_review; it never causes replay.
-        if authorization is not None:
-            self.policy_jobs[job_id] = authorization
-        if flash_authorization is not None:
-            self.flash_policy_jobs[job_id] = flash_authorization
-            self._execution_intents[job_id] = intent
+            raise BrokerError("execution_intent_not_available")
+        store.enqueue_requested(job_id, request.plan_hash, session.principal_id)
+        self._execution_intents[job_id] = intent
+        self._execution_bindings[job_id] = binding
+        if flash_binding is not None:
+            self._flash_bindings[job_id] = flash_binding
         self.queue.put_nowait(job_id)
         self.logs.append(Event.QUEUED)
         return {**self.job(job_id), "deduplicated": False}
 
     def dispatch_pending_execution(self, plan_hash: str) -> bool:
-        """Called synchronously only after the local operator approved this review."""
-        intent = next(
-            (item for item in self._execution_intents.values() if item.plan_hash == plan_hash),
-            None,
-        )
-        if intent is None:
-            return False
-        store = self._store()
-        live = True
-        if intent.principal_id is not None:
-            try:
-                live = (
-                    self.principal_valid is not None
-                    and self.principal_valid(
-                        intent.principal_id, intent.owner, frozenset({"read", "control"})
-                    )
-                    is True
-                )
-            except Exception:
-                live = False
-        # No callbacks or awaits between these final checks, the atomic
-        # awaiting->queued approval consumption, and inserting into the worker.
-        job = store.job(intent.job_id)
-        if not live or not self._execution_intent_live(intent):
-            self._cancel_execution_intent(intent, "execution_intent_not_available")
-            raise BrokerError("execution_intent_not_available")
-        if self.closing:
-            raise BrokerError("broker_closing")
-        if store.needs_review():
-            self._cancel_execution_intent(intent, "recovery_review_required")
-            raise BrokerError("recovery_review_required")
-        if (
-            self._physical_busy()
-            or self.backend.hardware_connected
-            or not self._device_lock.is_locked
-        ):
-            raise BrokerError("device_busy")
-        if not self.queue.empty() or store.counts().get("queued") or store.counts().get("running"):
-            raise BrokerError("device_jobs_pending")
-        if job is None or job["state"] != "awaiting_approval":
-            raise BrokerError("execution_intent_not_available")
-        if self.queue.full():
-            raise BrokerError("queue_full")
-        try:
-            # Later settings/policies cannot turn a pending request into an
-            # automatic permission. This path always consumes manual approval.
-            store.approved_enqueue(intent.job_id, plan_hash, False, awaiting_approval=True)
-        except ValueError:
-            raise BrokerError("execution_intent_not_available") from None
-        self.queue.put_nowait(intent.job_id)
-        self.logs.append(Event.QUEUED)
-        return True
+        raise BrokerError("approval_interface_retired")
 
     def cancel(self, request: CancelRequest) -> dict[str, Any]:
         session = self._lease(request.session)
@@ -1392,7 +1338,7 @@ class Broker:
         return retained
 
     def read_device_logs(self, job_id: str, principal_id: str) -> dict[str, Any]:
-        """Read only the requesting principal's explicitly approved completed report."""
+        """Read only the requesting principal's explicitly requested completed report."""
         retained = self._device_observation(job_id)
         if not secrets.compare_digest(retained.principal_id, principal_id):
             raise BrokerError("device_logs_not_available")
@@ -1436,92 +1382,7 @@ class Broker:
     def _make_capture_delivery_consent(
         self, plan: dict[str, Any], lease: Session
     ) -> CaptureDeliveryConsent:
-        if plan["test"] != TestName.CAPTURE.value or lease.principal_id is None:
-            raise BrokerError("capture_delivery_consent_not_available")
-        pending = self.pending_execution(digest_plan(plan))
-        intent = pending or ExecutionIntent(
-            self.epoch,
-            digest_plan(plan),
-            plan["job_id"],
-            lease.id,
-            lease.principal_id,
-            lease.owner,
-            lease.work_session_id,
-            lease.deadline,
-        )
-        consent = CaptureDeliveryConsent(
-            intent,
-            lease,
-            self.work_sessions.get(lease.work_session_id or ""),
-            self._capture_delivery_target(),
-        )
-        if not self._capture_delivery_authorized(consent, plan):
-            raise BrokerError("capture_delivery_consent_not_available")
-        if len(self.capture_delivery_consents) >= 64:
-            raise BrokerError("capture_delivery_consent_not_available")
-        return consent
-
-    def _capture_delivery_binding_live(
-        self, consent: CaptureDeliveryConsent, plan: dict[str, Any]
-    ) -> bool:
-        intent = consent.intent
-        job = self._store().job(intent.job_id)
-        return bool(
-            self.session is consent.lease
-            and self.work_sessions.get(intent.work_session_id or "") is consent.work
-            and self._execution_intent_binding_live(intent)
-            and plan.get("test") == TestName.CAPTURE.value
-            and plan.get("job_id") == intent.job_id
-            and plan.get("broker_epoch") == intent.epoch
-            and plan.get("session_id") == intent.lease_id
-            and digest_plan(plan) == intent.plan_hash
-            and self._store().plan(intent.plan_hash) == plan
-            and self._capture_delivery_target() == consent.target
-            and self._device_lock.is_locked
-            and self._state_lock.is_locked
-            and not self._store().needs_review()
-            and (
-                job is None
-                or (
-                    job["plan_hash"] == intent.plan_hash
-                    and job["state"] in ("awaiting_approval", "queued", "running")
-                )
-            )
-        )
-
-    def _capture_delivery_authorized(
-        self, consent: CaptureDeliveryConsent, plan: dict[str, Any]
-    ) -> bool:
-        try:
-            valid = self.principal_valid
-            authorized = (
-                valid is not None
-                and valid(
-                    consent.intent.principal_id or "",
-                    consent.intent.owner,
-                    frozenset({"read", "control"}),
-                )
-                is True
-            )
-            return bool(
-                authorized
-                and self.principal_valid is valid
-                and self._capture_delivery_binding_live(consent, plan)
-            )
-        except Exception:
-            return False
-
-    def _consume_capture_delivery(self, plan: dict[str, Any]) -> bool:
-        job_id = plan["job_id"]
-        consent = self.capture_delivery_consents.get(job_id)
-        allowed = bool(
-            consent is not None
-            and self.active_job == job_id
-            and self._capture_delivery_authorized(consent, plan)
-            and self.capture_delivery_consents.get(job_id) is consent
-        )
-        self.capture_delivery_consents.pop(job_id, None)
-        return allowed
+        raise BrokerError("approval_interface_retired")
 
     def read_capture(self, job_id: str, principal_id: str) -> CapturedImage:
         """Read completed pixels from memory only, after per-request authentication."""
@@ -1537,15 +1398,17 @@ class Broker:
             or not secrets.compare_digest(retained.principal_id, principal_id)
         ):
             raise BrokerError("capture_not_available")
-        if retained.delivery_state != "approved" and not (
-            retained.delivery_state == "pending"
-            and self._image_policy_allowed(job_id, retained, record_use=True)
-        ):
-            raise BrokerError(
-                "capture_delivery_rejected"
-                if retained.delivery_state == "rejected"
-                else "capture_delivery_approval_required"
+        epoch = self.epoch
+        valid = self.principal_valid
+        try:
+            authorized = (
+                valid is not None
+                and valid(principal_id, retained.origin, frozenset({"read"})) is True
             )
+        except Exception:
+            authorized = False
+        if not authorized or self.principal_valid is not valid or self.epoch != epoch:
+            raise BrokerError("capture_not_available")
         if self._operator_capture(job_id) is not retained:
             raise BrokerError("capture_not_available")
         return retained.image
@@ -1553,15 +1416,7 @@ class Broker:
     def _image_policy_allowed(
         self, job_id: str, retained: RetainedCapture, *, record_use: bool = False
     ) -> bool:
-        if self.capture_policies is None or retained.delivery_state == "rejected":
-            return False
-        try:
-            return (
-                self.capture_policies.authorize_image(job_id, retained, record_use=record_use)
-                is True
-            )
-        except Exception:
-            return False
+        return False
 
     def _operator_capture(self, job_id: str) -> RetainedCapture:
         self._store()
@@ -1594,7 +1449,7 @@ class Broker:
             "born_utc": retained.born_utc,
             "remaining_seconds": max(0, round(retained.deadline - self.clock(), 3)),
             "delivery_state": retained.delivery_state,
-            "policy_allowed": self._image_policy_allowed(job_id, retained),
+            "policy_allowed": False,
         }
 
     def operator_images(self) -> dict[str, Any]:
@@ -1649,31 +1504,7 @@ class Broker:
     def operator_decide_image(
         self, job_id: str, sha256: str, delivery_revision: str, decision: str
     ) -> dict[str, Any]:
-        retained = self._operator_capture(job_id)
-        if decision not in ("approve", "reject"):
-            raise BrokerError("invalid_image_decision")
-        if not secrets.compare_digest(sha256, retained.image.sha256) or not secrets.compare_digest(
-            delivery_revision, self._delivery_revision(job_id, retained)
-        ):
-            raise BrokerError("stale_image_preview")
-        target = "approved" if decision == "approve" else "rejected"
-        if retained.delivery_state not in ("pending", target):
-            raise BrokerError("image_decision_final")
-        if target == "approved" and self.principal_valid is not None:
-            try:
-                valid = self.principal_valid(
-                    retained.principal_id, retained.origin, frozenset({"read"})
-                )
-            except Exception:
-                valid = False
-            if valid is not True:
-                raise BrokerError("image_recipient_not_authorized")
-        if self._operator_capture(job_id) is not retained or not secrets.compare_digest(
-            delivery_revision, self._delivery_revision(job_id, retained)
-        ):
-            raise BrokerError("stale_image_preview")
-        self.captures[job_id] = replace(retained, delivery_state=target)
-        return {"job_id": job_id, "delivery_state": target}
+        raise BrokerError("approval_interface_retired")
 
     def job(self, job_id: str) -> dict[str, Any]:
         job = self._store().job(job_id)
@@ -1736,76 +1567,15 @@ class Broker:
     def _make_local_home_diagnostic(
         self, plan: dict[str, Any], lease: Session
     ) -> LocalHomeDiagnostic:
-        """Called only by the manual operator approval path, after exact review."""
-        from .serial_backend import SerialBackend
-
-        self._prune_local_home_diagnostic()
-        if (
-            self.settings.backend != "serial"
-            or not isinstance(self.backend, SerialBackend)
-            or plan["test"] != TestName.CAPTURE.value
-            or plan["backend"] != "serial"
-            or plan["broker_epoch"] != self.epoch
-            or plan["session_id"] != lease.id
-            or self.session is not lease
-            or not lease.principal_id
-        ):
-            raise BrokerError("local_home_diagnostic_not_available")
-        previous = self.local_home_diagnostic
-        if previous is not None and not previous.consumed and not previous.invalidated:
-            raise BrokerError("local_home_diagnostic_already_armed")
-        now = self.clock()
-        if not math.isfinite(now) or not math.isfinite(lease.deadline) or now >= lease.deadline:
-            raise BrokerError("local_home_diagnostic_not_available")
-        entry = LocalHomeDiagnostic(
-            uuid4().hex,
-            self.epoch,
-            plan["job_id"],
-            digest_plan(plan),
-            lease.principal_id,
-            lease.owner,
-            lease.id,
-            min(now + 300, lease.deadline),
-        )
-        if not self._home_line_principal_live(entry):
-            raise BrokerError("local_home_diagnostic_not_available")
-        return entry
-
-    def _install_local_home_diagnostic(self, entry: LocalHomeDiagnostic) -> None:
-        self._clear_local_home_diagnostic()
-        self.local_home_diagnostic = entry
-
-    def _local_home_opt_in_current(self, plan: dict[str, Any], lease: Session) -> bool:
-        self._prune_local_home_diagnostic()
-        entry = self.local_home_diagnostic
-        return bool(
-            entry is not None
-            and not entry.consumed
-            and not entry.invalidated
-            and entry.epoch == self.epoch
-            and entry.job_id == plan["job_id"]
-            and entry.plan_hash == digest_plan(plan)
-            and entry.lease_id == lease.id
-            and entry.principal_id == lease.principal_id
-            and entry.origin == lease.owner
-            and self._home_line_binding_live(entry, lease)
-        )
+        raise BrokerError("approval_interface_retired")
 
     def _take_local_home_probe(
         self, plan: dict[str, Any], lease: Session, *, policy_authorized: bool
     ) -> HomeLineProbe | None:
-        self._prune_local_home_diagnostic()
-        entry = self.local_home_diagnostic
-        if entry is None or entry.plan_hash != digest_plan(plan) or entry.job_id != plan["job_id"]:
-            return None
-        if policy_authorized or not self._local_home_opt_in_current(plan, lease):
-            raise BrokerError("local_home_diagnostic_no_longer_valid")
-        # approved_enqueue consumed the durable manual approval before this
-        # worker runs. The one-shot in-memory opt-in was installed only by that
-        # exact manual approval; policy-authorized enqueue cannot consume it.
-        entry.consumed = True
-        entry.probe = HomeLineProbe(self.clock, self.clock() + 120)
-        return entry.probe
+        # The old approval opt-in is retired. Explicit execution never expands
+        # raw serial retention or silently inherits an old diagnostic grant.
+        self._clear_local_home_diagnostic()
+        return None
 
     def operator_home_line_metadata(self, job_id: str, plan_hash: str) -> dict[str, Any] | None:
         """Metadata only. This method is intentionally absent from MCP surfaces."""
@@ -1865,6 +1635,9 @@ class Broker:
                 if job["state"] != "queued":
                     continue
                 queued_intent = self._execution_intents.get(job_id)
+                if queued_intent is None:
+                    store.set_job(job_id, "cancelled", "execution_intent_not_available")
+                    continue
                 requires_current_principal = (
                     queued_intent is not None or self.principal_valid is not None
                 )
@@ -1907,40 +1680,14 @@ class Broker:
                         store.set_job(job_id, "cancelled", "principal_or_lease_no_longer_valid")
                         self.logs.append(Event.CANCELLED)
                         continue
-                authorization = self.policy_jobs.get(job_id)
-                if authorization is not None:
-                    try:
-                        valid = (
-                            self.capture_policies is not None
-                            and self.capture_policies.validate_capture(authorization, plan)
-                        )
-                    except Exception:
-                        valid = False
-                    if valid is not True:
-                        store.set_job(job_id, "cancelled", "capture_policy_no_longer_valid")
-                        self.logs.append(Event.CANCELLED)
-                        continue
-                flash_authorization = self.flash_policy_jobs.get(job_id)
-                if flash_authorization is not None and not self.flash_policies.validate(
-                    flash_authorization, plan
-                ):
-                    store.set_job(job_id, "cancelled", "flash_policy_no_longer_valid")
-                    self.logs.append(Event.CANCELLED)
-                    continue
-                try:
-                    local_home_probe = self._take_local_home_probe(
-                        plan, lease, policy_authorized=authorization is not None
-                    )
-                except BrokerError:
-                    store.set_job(job_id, "cancelled", "local_home_diagnostic_no_longer_valid")
-                    self.logs.append(Event.CANCELLED)
-                    continue
+                local_home_probe = None
                 capture_target = ""
-                if self.capture_policies is not None:
-                    try:
-                        capture_target = self.capture_policies.target()
-                    except Exception:
-                        pass
+                current_valid = self.principal_valid
+                current_binding = self._execution_bindings.get(job_id)
+                flash_binding = self._flash_bindings.get(job_id)
+                if flash_binding is not None and not validate_binding(self, flash_binding, plan):
+                    self._cancel_execution_intent(queued_intent, "flash_binding_invalid")
+                    continue
                 current_authorized = True
                 if lease.principal_id is not None and (
                     requires_current_principal or self.principal_valid is not None
@@ -1964,13 +1711,11 @@ class Broker:
                 if (
                     current_job is None
                     or not current_authorized
-                    or (
-                        flash_authorization is not None
-                        and (
-                            self.flash_policy_jobs.get(job_id) is not flash_authorization
-                            or not self.flash_policies.live(flash_authorization, plan)
-                        )
-                    )
+                    or queued_intent is None
+                    or self.principal_valid is not current_valid
+                    or self._runtime_binding() != current_binding
+                    or (flash_binding is not None and not live_binding(self, flash_binding, plan))
+                    or not self._state_lock.is_locked
                     or current_job["state"] != "queued"
                     or current_job["plan_hash"] != job["plan_hash"]
                     or current_plan != plan
@@ -2009,6 +1754,34 @@ class Broker:
                 capture_principal = self.session.principal_id
                 store.set_job(job_id, "running")
                 result: str | BackendResult = ""
+
+                def running_authorized() -> bool:
+                    valid = self.principal_valid
+                    try:
+                        authorized = (
+                            lease.principal_id is not None
+                            and valid is not None
+                            and valid(
+                                lease.principal_id, lease.owner, frozenset({"read", "control"})
+                            )
+                            is True
+                        )
+                        return bool(
+                            authorized
+                            and self.principal_valid is valid
+                            and self._runtime_binding() == current_binding
+                            and self.session is lease
+                            and self._execution_lease_binding_live(queued_intent)
+                            and self._device_lock.is_locked
+                            and self._state_lock.is_locked
+                            and self.active_job == job_id
+                            and store.plan(job["plan_hash"]) == plan
+                            and digest_plan(plan) == job["plan_hash"]
+                            and self._running_job_binding_live(plan, queued_intent)
+                        )
+                    except Exception:
+                        return False
+
                 try:
 
                     def on_stage(name: str, job: str = job_id, db: Store = store) -> None:
@@ -2023,7 +1796,6 @@ class Broker:
                             plan: dict[str, Any] = plan,
                             lease: Session = lease,
                             capture_principal: str | None = capture_principal,
-                            flash_authorization: FlashAuthorization | None = flash_authorization,
                             committing: bool = False,
                         ) -> bool:
                             current = self.session
@@ -2052,20 +1824,27 @@ class Broker:
                                 return False
                             if self.principal_valid is None:
                                 return False
+                            valid = self.principal_valid
+                            binding = self._runtime_binding()
                             authorized = (
-                                self.principal_valid(
+                                valid(
                                     capture_principal, current.owner, frozenset({"read", "control"})
                                 )
                                 is True
                             )
-                            return authorized and (
-                                flash_authorization is None
-                                or (
-                                    self.flash_policy_jobs.get(plan["job_id"])
-                                    is flash_authorization
-                                    and self.flash_policies.live(
-                                        flash_authorization, plan, committing=committing
-                                    )
+                            return bool(
+                                authorized
+                                and self.principal_valid is valid
+                                and self._runtime_binding() == binding
+                                and self._runtime_binding() == current_binding
+                                and flash_binding is not None
+                                and live_binding(self, flash_binding, plan)
+                                and self.session is lease
+                                and self._execution_lease_binding_live(queued_intent)
+                                and self._device_lock.is_locked
+                                and self._state_lock.is_locked
+                                and self._running_job_binding_live(
+                                    plan, queued_intent, committing=committing
                                 )
                             )
 
@@ -2076,21 +1855,7 @@ class Broker:
                             lease: Session = lease,
                             capture_principal: str | None = capture_principal,
                         ) -> bool:
-                            return (
-                                not self.closing
-                                and self.session is lease
-                                and capture_principal is not None
-                                and lease.principal_id == capture_principal
-                                and math.isfinite(self.clock())
-                                and self.clock() < lease.deadline
-                                and self._device_lock.is_locked
-                                and self._state_lock.is_locked
-                                and self.principal_valid is not None
-                                and self.principal_valid(
-                                    capture_principal, lease.owner, frozenset({"read", "control"})
-                                )
-                                is True
-                            )
+                            return running_authorized()
 
                         result = await self.firmware_source.execute(plan, on_stage, source_live)
                     elif plan["test"] == TestName.BUILD.value:
@@ -2107,35 +1872,13 @@ class Broker:
                             lease: Session = lease,
                             capture_principal: str | None = capture_principal,
                         ) -> bool:
-                            return (
-                                not self.closing
-                                and self.session is lease
-                                and capture_principal is not None
-                                and lease.principal_id == capture_principal
-                                and math.isfinite(self.clock())
-                                and self.clock() < lease.deadline
-                                and self._device_lock.is_locked
-                                and self._state_lock.is_locked
-                                and self.principal_valid is not None
-                                and self.principal_valid(
-                                    capture_principal, lease.owner, frozenset({"read", "control"})
-                                )
-                                is True
-                            )
+                            return running_authorized()
 
                         result = await self.backend.execute_smoke(plan, on_stage, smoke_live)
                         if not smoke_live() or self.backend.smoke_stop.is_set():
                             raise BrokerError("operation_interrupted_review_required")
-                    elif local_home_probe is None:
-                        result = await self.backend.execute(plan, on_stage)
                     else:
-                        from .serial_backend import SerialBackend
-
-                        if not isinstance(self.backend, SerialBackend):
-                            raise BrokerError("local_home_diagnostic_not_available")
-                        result = await self.backend.execute_with_local_probe(
-                            plan, on_stage, local_home_probe
-                        )
+                        result = await self.backend.execute(plan, on_stage)
                     if plan["test"] == TestName.DERBY.value:
                         from .derby_observation import NO_CAPTURE, DerbyObservation
 
@@ -2213,9 +1956,7 @@ class Broker:
                             self.clock() + 300,
                             self.session.owner if self.session is not None else "",
                             datetime.now(UTC).isoformat(),
-                            delivery_state="approved"
-                            if self._consume_capture_delivery(plan)
-                            else "pending",
+                            delivery_state="available",
                             policy_target=capture_target,
                         )
                 except (FlashFailure, FlashAdmissionError) as failure:
@@ -2232,20 +1973,14 @@ class Broker:
                         store.set_job(job_id, "needs_review", failure.code, {"code": failure.code})
                     else:
                         store.set_job(job_id, "needs_review", "backend_error_no_retry")
-                    if self.capture_policies is not None:
-                        self.capture_policies.invalidate_session()
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except DeviceOperationFailure as failure:
                     store.set_job(job_id, "needs_review", failure.code, failure.diagnostic)
-                    if self.capture_policies is not None:
-                        self.capture_policies.invalidate_session()
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except DeviceDisconnected:
                     store.set_job(job_id, "needs_review", "device_disconnected_no_retry")
-                    if self.capture_policies is not None:
-                        self.capture_policies.invalidate_session()
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except Exception:
@@ -2260,8 +1995,6 @@ class Broker:
                         )
                     else:
                         store.set_job(job_id, "needs_review", "backend_error_no_retry")
-                    if self.capture_policies is not None:
-                        self.capture_policies.invalidate_session()
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 else:
@@ -2329,7 +2062,7 @@ class Broker:
             finally:
                 if job_id is not None:
                     self.capture_delivery_consents.pop(job_id, None)
-                    self.policy_jobs.pop(job_id, None)
-                    self.flash_policy_jobs.pop(job_id, None)
+                    self._flash_bindings.pop(job_id, None)
+                    self._execution_bindings.pop(job_id, None)
                     self._execution_intents.pop(job_id, None)
                 self.queue.task_done()

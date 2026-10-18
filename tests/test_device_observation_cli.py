@@ -31,50 +31,13 @@ def write_plan(tmp_path, change=None):
     return digest, port
 
 
-def test_cli_one_exact_approval_discloses_recipient_data_and_bounds(tmp_path):
+@pytest.mark.parametrize("answer", ["", "APPROVE", "yes"])
+def test_cli_approval_is_retired_without_prompt_or_database_mutation(tmp_path, answer):
     digest, port = write_plan(tmp_path)
     prompts = []
-
-    def confirm(prompt):
-        prompts.append(prompt)
-        return f"APPROVE {digest}"
-
-    assert approve_plan(tmp_path, digest, confirm) == {"approved": True, "plan_hash": digest}
-    assert len(prompts) == 1
-    for phrase in (
-        "30 seconds / 64 KiB",
-        "ephemeral:remote_mcp",
-        "private data",
-        "redaction is not guaranteed complete",
-        "five minutes",
-        "No commands, reset command, flash",
-        "ELF prefix is not the firmware binary SHA256",
-    ):
-        assert phrase in prompts[0]
-    assert port.opens == 0 and port.writes == []
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("max_lines", 257),
-        ("retention_seconds", True),
-        ("origin", "other"),
-        ("principal_id", "unsafe\ntext"),
-    ],
-)
-def test_cli_rejects_invalid_delivery_schema_before_prompt(tmp_path, field, value):
-    digest, port = write_plan(tmp_path, lambda plan: plan["log_delivery"].update({field: value}))
-    prompts = []
-    with pytest.raises(ValueError, match="^plan_not_found_or_changed$"):
-        approve_plan(tmp_path, digest, lambda prompt: prompts.append(prompt) or "")
-    assert prompts == [] and port.opens == 0
-
-
-def test_cli_rejected_approval_does_not_persist_permission(tmp_path):
-    digest, _port = write_plan(tmp_path)
-    with pytest.raises(ValueError, match="^approval_not_granted$"):
-        approve_plan(tmp_path, digest, lambda _prompt: "NO")
+    with pytest.raises(ValueError, match="^approval_interface_retired$"):
+        approve_plan(tmp_path, digest, lambda prompt: prompts.append(prompt) or answer)
+    assert prompts == [] and port.opens == 0 and port.writes == []
     store = Store(tmp_path / "history.sqlite3")
     try:
         assert store.db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0

@@ -2,19 +2,26 @@
 
 import json
 from collections.abc import Callable
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .broker import Broker, BrokerError
-from .capture_policy import CapturePolicyError
-from .home_recovery import ATTESTATION
 from .models import Digest, Identifier, Origin
 from .operator_timeline import OperatorTimeline
 from .plan_approval import PlanApprovals
 
 _MAX_BODY = 2048
+RETIRED_ROUTES = frozenset(
+    {
+        "/operator/plans", "/operator/plan", "/operator/approve-plan",
+        "/operator/home-recovery-review", "/operator/home-recovery-approve",
+        "/operator/image-decision", "/operator/policy-options", "/operator/policies",
+        "/operator/policy-create", "/operator/policy-update", "/operator/policy-revoke",
+        "/operator/capture-arm",
+    }
+)
 
 
 class OperatorPrincipal(Protocol):
@@ -50,30 +57,6 @@ class ReleaseIdle(BaseModel):
     lease_id: Identifier
 
 
-class ReviewPlan(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    plan_hash: Digest
-
-
-class ApprovePlan(ReviewPlan):
-    review_revision: Digest
-    attestation: Literal[
-        "",
-        "DEVICE FREE AND FIRMWARE VERIFIED",
-        "DEVICE HOME AND FIRMWARE VERIFIED",
-        "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ",
-        "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN",
-        "DEVICE AND FIRMWARE RECOVERY VERIFIED FOR THIS EXACT PLAN",
-    ]
-    retain_local_home_line: bool = False
-    allow_image_delivery: bool = False
-
-
-class ApproveHomeRecovery(ReviewPlan):
-    review_revision: Digest
-    attestation: str
-
-
 class PreviewImage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     job_id: Identifier
@@ -82,50 +65,6 @@ class PreviewImage(BaseModel):
 class PreviewHomeLine(PreviewImage):
     plan_hash: Digest
     diagnostic_id: str = Field(pattern=r"^[a-f0-9]{32}$")
-
-
-class DecideImage(PreviewImage):
-    sha256: Digest
-    delivery_revision: Digest
-    decision: Literal["approve", "reject"]
-
-
-class CreateCapturePolicy(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    principal_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_:.+-]+$")
-    mode: Literal["session", "persistent"]
-    capture_home: bool
-    image_delivery: bool
-    ttl_seconds: int = Field(ge=1, le=604800)
-    expected_target: Digest
-    expected_lease_id: Identifier | None = None
-    acknowledge_effects: Literal[True]
-
-
-class UpdateCapturePolicy(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    policy_id: str = Field(pattern=r"^capture_policy_[a-f0-9]{32}$")
-    expected_revision: int = Field(ge=1, le=2147483647)
-    capture_home: bool
-    image_delivery: bool
-    ttl_seconds: int = Field(ge=1, le=604800)
-    expected_target: Digest
-    acknowledge_effects: Literal[True]
-
-
-class RevokeCapturePolicy(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    policy_id: str = Field(pattern=r"^capture_policy_[a-f0-9]{32}$")
-    expected_revision: int = Field(ge=1, le=2147483647)
-
-
-class ArmCapture(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    lease_id: Identifier
-    expected_target: Digest
-    ttl_seconds: int = Field(ge=1, le=604800)
-    attestation: Literal["DEVICE HOME AND FIRMWARE VERIFIED"]
-    acknowledge_effects: Literal[True]
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -228,6 +167,11 @@ class OperatorAPI:
         if scope["method"] != routes[path]:
             await self._respond(send, 405, {"ok": False, "error": "method_not_allowed"})
             return
+        if path in RETIRED_ROUTES:
+            # Old review/approval requests must never turn into execution. The
+            # existing authentication and local control scope remain required.
+            await self._respond(send, 410, {"ok": False, "error": "product_approval_retired"})
+            return
         payload: Any = None
         if scope["method"] == "POST":
             if headers.get(b"content-type", b"").split(b";", 1)[0] != b"application/json":
@@ -263,41 +207,6 @@ class OperatorAPI:
         try:
             if path == "/operator/http-diagnostics" and self.diagnostics is not None:
                 result = self.diagnostics()
-            elif path in (
-                "/operator/policy-options",
-                "/operator/policies",
-                "/operator/policy-create",
-                "/operator/policy-update",
-                "/operator/policy-revoke",
-                "/operator/capture-arm",
-            ):
-                policies = self.broker.capture_policies
-                if policies is None:
-                    raise BrokerError("capture_policies_unavailable")
-                if path == "/operator/policy-options":
-                    result = policies.options()
-                elif path == "/operator/policies":
-                    result = policies.list()
-                elif path == "/operator/policy-create":
-                    create = CreateCapturePolicy.model_validate(payload)
-                    result = {
-                        "policy": policies.create(
-                            **create.model_dump(exclude={"acknowledge_effects"})
-                        )
-                    }
-                elif path == "/operator/policy-update":
-                    update = UpdateCapturePolicy.model_validate(payload)
-                    result = {
-                        "policy": policies.update(
-                            **update.model_dump(exclude={"acknowledge_effects"})
-                        )
-                    }
-                elif path == "/operator/policy-revoke":
-                    revoke = RevokeCapturePolicy.model_validate(payload)
-                    result = {"policy": policies.revoke(**revoke.model_dump())}
-                else:
-                    arm = ArmCapture.model_validate(payload)
-                    result = {"arming": policies.arm(**arm.model_dump())}
             elif path == "/operator/timeline":
                 result = self.timeline.snapshot()
                 for card in result["cards"]:
@@ -323,33 +232,6 @@ class OperatorAPI:
                     "state": cancelled["state"],
                     "stop_requested": cancelled.get("stop_requested", False),
                 }
-            elif path == "/operator/plans":
-                result = self.plans.list_pending()
-            elif path == "/operator/plan":
-                review = ReviewPlan.model_validate(payload)
-                result = self.plans.detail(review.plan_hash)
-            elif path == "/operator/home-recovery-review":
-                review = ReviewPlan.model_validate(payload)
-                result = self.broker.home_recovery.review(review.plan_hash)
-            elif path == "/operator/home-recovery-approve":
-                approval_home = ApproveHomeRecovery.model_validate(payload)
-                if approval_home.attestation != ATTESTATION:
-                    raise BrokerError("home_recovery_attestation_required")
-                result = self.broker.home_recovery.approve(
-                    approval_home.plan_hash,
-                    approval_home.review_revision,
-                    approval_home.attestation,
-                    principal.principal_id,
-                )
-            elif path == "/operator/approve-plan":
-                approval = ApprovePlan.model_validate(payload)
-                result = self.plans.approve(
-                    approval.plan_hash,
-                    approval.review_revision,
-                    approval.attestation,
-                    approval.retain_local_home_line,
-                    approval.allow_image_delivery,
-                )
             elif path == "/operator/local-home-line":
                 home_line = PreviewHomeLine.model_validate(payload)
                 result = self.broker.operator_home_line(
@@ -360,11 +242,6 @@ class OperatorAPI:
             elif path == "/operator/image":
                 preview = PreviewImage.model_validate(payload)
                 result = self.broker.operator_image(preview.job_id)
-            elif path == "/operator/image-decision":
-                decision = DecideImage.model_validate(payload)
-                result = self.broker.operator_decide_image(
-                    decision.job_id, decision.sha256, decision.delivery_revision, decision.decision
-                )
             elif path == "/operator/state":
                 result = self.broker.operator_snapshot()
             elif path == "/operator/cancel":
@@ -380,10 +257,6 @@ class OperatorAPI:
             else:
                 release = ReleaseIdle.model_validate(payload)
                 result = self.broker.operator_release_idle(release.lease_id)
-        except CapturePolicyError:
-            await self._respond(
-                send, 200, {"ok": False, "error": "capture_policy_request_rejected"}
-            )
         except BrokerError as error:
             await self._respond(send, 200, {"ok": False, "error": str(error)})
         except ValueError:

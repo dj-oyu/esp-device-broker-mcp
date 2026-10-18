@@ -1,4 +1,4 @@
-"""Registered Windows ROM-only driver. Constructed only for approved execution."""
+"""Registered Windows ROM-only driver. Constructed only for explicitly requested execution."""
 
 import asyncio
 import hashlib

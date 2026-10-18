@@ -1,7 +1,6 @@
 # HOME render-buffer capture
 
-`capture_home` is a bounded job in the existing queue. Version 0.8 adds
-[GUI approvals and optional capture permissions](CAPTURE-PERMISSIONS.md). `read_capture` reads its
+`capture_home` is a bounded job in the existing queue. `read_capture` reads its
 completed PNG without opening USB. Mock mode returns an image with **TEST / NOT
 DEVICE** visibly drawn into the pixels. The serial implementation is covered by
 synthetic-port tests. One user-run Windows HOME capture has succeeded; this does
@@ -44,88 +43,29 @@ reports `coherent_frame` and `lcd_transfer_ack` as `unknown`.
 This legacy protocol has no request nonce and no cryptographic firmware identity.
 A fresh HOME acknowledgement and quiet boundary narrow stale-data confusion;
 they cannot attest the physical display. The local operator must verify the
-configured firmware and close competing serial tools before approving a plan.
+configured firmware and close competing serial tools before explicitly executing a plan.
 No frame is returned after a timeout, invalid frame, unexpected app marker,
 disconnect, or uncertain close. Such jobs require review and are never retried.
 
-## Mock first, then an explicitly approved physical job
+## Prepare, execute and retrieve
 
-1. Start the authenticated mock broker through the normal GUI/launcher. Obtain a
-   logical work session and device lease with your authenticated client.
-2. Call `prepare_test` with `request.session`, a new `request.job_id`, and
-   `request.test = "capture_home"`. Inspect the returned plan.
-3. If approval is required, the local operator reviews and approves its exact hash
-   through the [live local CLI](#live-local-cli-approval-and-image-delivery).
-   Capture may also be permitted by an explicit operator key policy; otherwise
-   use the job's inline approval in the GUI timeline or this CLI. The existing explicit mock setting still applies.
-4. Call `execute_test` with the lease and plan hash, then inspect `job_status`.
-   A repeated execution request for the same job is deduplicated.
-5. On success, approve the actual image through the local CLI or GUI timeline card,
-   unless exact capture opt-in or an explicit operator policy permits delivery. Then call
-   `read_capture` with `request.job_id`. Its MCP result contains
-   ImageContent plus metadata; stdio forwards both. The host application decides
-   how to display or attach the PNG. A JSON-only CLI status call does not save it.
-6. Release the idle lease explicitly. Reading the retained image remains possible
-   with the same current authenticated identity until it expires.
+1. Use the authenticated broker and obtain an owned live device lease.
+2. Call `prepare_test` with `session`, a new `job_id` and `test="capture_home"`.
+   Inspect the exact device, effects and expected firmware configuration.
+3. Call `execute_test` with that lease and exact `plan_hash`. It queues directly;
+   `wait_for_approval` is deprecated and ignored. Poll `job_status`.
+4. On success, call `read_capture` with the job ID using the original current
+   authenticated principal and read scope. No image approval or capture policy
+   is required. The MCP result contains ImageContent and metadata; the host
+   decides how to display or attach it.
+5. Release the idle lease. Retained-image reads remain possible until expiry.
 
-For real hardware, select the serial backend explicitly, configure the expected
-firmware hash and USB fingerprint, and inspect the exact capture plan locally.
-Approval requires `DEVICE HOME AND FIRMWARE VERIFIED` and expressly acknowledges
-Esc/navigation and unsaved-state risk, USB-open risk, and allowing the
-requesting client to retrieve/transmit rendered pixels to its AI service.
-The broker never creates its own permission grants. Existing explicit operator
-policies may permit a capture plan; otherwise use the GUI timeline's inline approval or the local CLI. Existing `needs_review` history is not
-cleared by upgrading, switching tools, reading images, or restarting.
-
-## Live local CLI approval and image delivery
-
-If the resident supervisor is the only process holding the local token, use the
-optional [one-capture supervisor entry](SUPERVISOR-OPERATOR-CLI.md). It requires
-explicit local authorization and integration; it is not enabled by this upgrade.
-
-Use the existing resident broker with `CARDPUTER_LOCAL_TOKEN` supplied privately
-in the process environment. The following commands require `--auth-source
-environment`, a local CLI identity, and an HTTP loopback broker URL. They do not
-start another broker, write approval rows directly, or drive the GUI.
-
-```powershell
-cardputer --auth-source environment plan-review --plan PLAN_HASH
-cardputer --auth-source environment approve-live --plan PLAN_HASH --review-revision REVIEW_REVISION --attestation "DEVICE HOME AND FIRMWARE VERIFIED"
-```
-
-`plan-review` displays the full exact plan, revision, current submission state,
-required attestation, image recipient and capture effects. `approve-live` accepts
-only a prepared, unsubmitted plan: approval alone never starts it. If the client
-already submitted `execute_test(wait_for_approval=true)`, review again and use
-`approve-and-start` instead. That action queues only the exact submitted job once;
-the requesting client does not need to execute again. A changed submission state,
-stale revision, expired authority, wrong target or wrong HOME/firmware attestation
-is refused. Never substitute the real-device attestation for physical verification.
-
-To explicitly permit this capture's one resulting image for the requesting
-principal and its AI service, add `--allow-image-delivery` to the approval command.
-The recipient is the one named by `plan-review`; it cannot be selected or changed
-by a CLI flag. This opt-in is held only in RAM and binds the original plan, job,
-principal, broker epoch, lease/work-session identity, target and original deadline.
-It is consumed only for that capture result and cannot move to another job.
-Renewal does not extend the opt-in, and cancellation, failure, revocation or restart
-does not revive it. It creates no session or permanent policy. Image retention
-remains five minutes from completion; repeat reads and decisions do not extend it.
-
-Without that opt-in, review and decide on the completed image through the same
-local operator API:
-
-```powershell
-cardputer --auth-source environment image-review --job JOB_ID
-cardputer --auth-source environment image-decision --job JOB_ID --sha256 IMAGE_SHA256 --delivery-revision DELIVERY_REVISION --decision approve
-```
-
-The review emits JSON containing the local PNG preview as base64 and its exact
-digest/revision. `image-decision` also accepts `reject`. Neither action captures
-another image or sends it remotely. After approval, the original currently
-authenticated principal can use MCP `read_capture` within the existing retention.
-On a lost approval response, inspect current job/image state before another
-decision; the CLI never automatically retries a mutation.
+Serial startup still requires explicit opt-in and registered USB/firmware
+configuration. Establish that the target is at HOME and close competing serial
+applications before execution: Esc may exit an app and lose unsaved state.
+Configured hashes do not cryptographically attest the running firmware.
+Legacy local approval, image-decision and supervisor arming commands are retired.
+Installing this change does not acknowledge existing uncertain work.
 
 ## Privacy and retention
 
@@ -137,15 +77,15 @@ return `capture_not_available`; reading never triggers a replacement capture.
 The job's fixed success/failure result remains in ordinary durable history.
 
 Every MCP image read requires a currently valid authenticated key with read scope,
-the same principal that owned the capture job, and either exact image approval or
-a currently valid operator image-delivery policy. Revoked or expired keys cannot
+the same principal that owned the capture job, a succeeded closed capture job,
+and an unexpired retained image. Revoked or expired keys cannot
 retrieve images. A replacement key is a new principal and does not inherit old
 images. Two tools deliberately sharing one key can read one another's captures;
 distinct work sessions are not distinct security identities. The trusted local operator can preview retained images through the local-only
 operator API. The MCP image-read tool remains bound to the original principal.
 
 After the client retrieves a PNG, this broker cannot control copies retained by
-the client, chat service, or user. Approve capture only when the intended output
+the client, chat service, or user. Explicitly request capture only when the intended output
 may be shared with that client. Cache limits do not promise secure RAM erasure.
 
 No current-app capture, firmware modification, flash, upload, OCR, remote file
@@ -184,7 +124,7 @@ cannot explain every received line. A line spanning the command boundary is
 marked `cross_command_partial`; even an `exact` shape is not proof of fresh HOME.
 Incomplete lines have no shape. Every command resets this single-record slot.
 The metadata travels through existing failure diagnostics/history; it does not
-enable the opt-in raw preview below, retain text/fragments/hashes, add reads or
+enable raw previews, retain text/fragments/hashes, add reads or
 commands, alter exact marker acceptance, or acknowledge a review.
 
 For a failure with `expected_marker = "HOME_READY"`, the frame command has not
@@ -193,47 +133,12 @@ not that the five-minute image retention period elapsed. Interrupted/restarted
 jobs can instead have an unknown outcome. Existing review requirements remain;
 upgrading, viewing diagnostics, or waiting never retries the job.
 
-## Optional one-line local diagnosis
+## Retired local raw-line option
 
-Version 0.9.3 offers an unchecked option beside the manual **serial capture**
-approval: keep one HOME diagnostic line locally for this job. The operator must
-still review the exact plan and enter the HOME/firmware attestation. Existing
-capture policies never enable this diagnostic by themselves. The setting is not
-persistent, cannot be requested over MCP, and does not execute a job.
-
-Only the first complete line containing the fixed HOME token, received after
-the approved Esc write and before the HOME wait ends, is eligible. At most
-1,024 wire bytes are retained in RAM, with a 120-second deadline from execution
-start. A longer candidate consumes the single selection but stores no excerpt;
-the GUI reports **line too long**, not a truncated complete line. Capture/pixel
-record families are rejected. Before-command traffic is never selected.
-
-After the job ends, the same local timeline card shows the selected line and its
-remaining lifetime. Spaces, tabs, CR, ANSI escapes, backslashes and non-ASCII bytes
-are displayed using visible escape sequences; the GUI never interprets them.
-The fixed shape summary distinguishes padding, token position and repeated
-prefixes without exposing their text. This does not change the strict HOME
-acknowledgement or turn arbitrary token-containing messages into valid markers.
-
-The line may contain private application text or credentials. It is available
-only through the authenticated local operator route, bound to the exact job,
-plan, broker epoch and original principal. Ordinary MCP status, jobs, logs,
-timeline metadata and SQLite contain no line text. There is no automatic save,
-clipboard copy, upload, or cloud-sharing command. The operator can inspect it
-locally and manually share only a selected, checked portion when appropriate.
-
-Expiry, broker shutdown/restart, or loss of the original principal's required
-scopes clears the retained line. GUI expiry, stale/failed authentication refresh,
-identity changes and closing clear its display. Lease release alone does not
-extend or shorten the remaining diagnostic lifetime. Closing a busy device still
-holds ownership until the existing safe boundary; diagnostic expiry never
-interrupts hardware work. Copies manually shared by the operator are outside
-this lifetime, and RAM cleanup is not a promise of forensic secure erasure.
-
-This is a diagnostic feature, not a fix for an unverified wire format. No failed
-job is retried, no review record is cleared, and no control-line setting is
-changed by enabling it. Existing private TOML, state and client keys remain in
-place during the usual source update.
+The approval-bound one-line HOME preview is retired with its approval UI. This
+change does not silently enable raw-line collection or enlarge log retention.
+The bounded metadata-only receive diagnostics above remain available. Historical
+raw text was not persisted and cannot be recovered from diagnostic counts.
 
 ## Protocol sources
 

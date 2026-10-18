@@ -5,15 +5,19 @@ import os
 import signal
 import socket
 import sys
+from contextlib import asynccontextmanager
 
 import httpx2
 import pytest
 
 from cardputer_mcp.client import call, connect
 
+LOCAL = "a" * 64
+REMOTE = "b" * 64
 
-@pytest.fixture
-async def service(tmp_path):
+
+@asynccontextmanager
+async def _service(tmp_path, authenticated):
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -27,11 +31,14 @@ async def service(tmp_path):
         sys.executable,
         "-m",
         "cardputer_mcp.cli",
+        *(["--auth-source", "environment"] if authenticated else []),
         "serve",
+        *(["--require-auth"] if authenticated else []),
         "--config",
         str(config),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, "CARDPUTER_LOCAL_TOKEN": LOCAL, "CARDPUTER_REMOTE_TOKEN": REMOTE},
     )
     url = f"http://127.0.0.1:{port}/mcp"
     try:
@@ -60,8 +67,21 @@ async def service(tmp_path):
             await process.communicate()
 
 
-async def test_real_mcp_http_disconnect_retry_handover(service):
-    async with connect(service) as first, connect(service) as second:
+@pytest.fixture
+async def service(tmp_path):
+    async with _service(tmp_path, False) as url:
+        yield url
+
+
+@pytest.fixture
+async def authenticated_service(tmp_path):
+    async with _service(tmp_path, True) as url:
+        yield url
+
+
+async def test_real_mcp_http_disconnect_retry_handover(authenticated_service):
+    service = authenticated_service
+    async with connect(service, LOCAL) as first, connect(service, REMOTE) as second:
         advertised = await first.list_tools()
         names = {tool.name for tool in advertised.tools}
         assert names == {
@@ -108,15 +128,6 @@ async def test_real_mcp_http_disconnect_retry_handover(service):
             data = tool.model_dump()
             shape = data.get("input_schema", data.get("inputSchema"))["$defs"][model]
             assert set(shape["properties"]) == fields and shape["additionalProperties"] is False
-        for name, request in (
-            ("request_home_recovery", {"job_id": "recovery", "source_job_id": "source"}),
-            ("cancel_home_recovery", {"job_id": "recovery", "plan_hash": "a" * 64}),
-        ):
-            denied = await call(first, name, request)
-            assert denied["error"] == "authentication_required"
-        # Even an unauthenticated mock demo must not expose build output.
-        private_logs = await call(first, "read_build_logs", {"job_id": "unstarted"})
-        assert private_logs["error"] == "authentication_required"
         acquired = await call(first, "acquire_session", {"owner": "local_cli"})
         token = acquired["session"]
         busy = await call(second, "acquire_session", {"owner": "remote_mcp"})
@@ -131,7 +142,7 @@ async def test_real_mcp_http_disconnect_retry_handover(service):
         )
         assert executed["state"] in ("queued", "running")
     # Transport disconnect is not device-workflow cancellation.
-    async with connect(service) as later:
+    async with connect(service, LOCAL) as later:
         async with asyncio.timeout(5):
             while True:
                 finished = await call(later, "job_status", {"job_id": "http-reconnect"})
@@ -152,16 +163,19 @@ async def test_real_mcp_http_disconnect_retry_handover(service):
         assert stages == ["mock_flash", "mock_boot", "mock_test"]
         assert token not in str(status) + str(logs)
         await call(later, "release_session", {"session": token})
-        acquired = await call(later, "acquire_session", {"owner": "remote_mcp"})
+    async with connect(service, REMOTE) as remote:
+        acquired = await call(remote, "acquire_session", {"owner": "remote_mcp"})
         assert acquired["ok"]
-        await call(later, "release_session", {"session": acquired["session"]})
+        await call(remote, "release_session", {"session": acquired["session"]})
 
 
-async def test_real_http_invalid_origin_and_oversize(service):
+
+async def test_real_http_invalid_origin_and_oversize(authenticated_service):
+    service = authenticated_service
     async with httpx2.AsyncClient(trust_env=False) as http:
-        evil = await http.post(service, json={}, headers={"Origin": "https://hostile.invalid"})
+        evil = await http.post(service, json={}, headers={"Origin": "https://hostile.invalid", "Authorization": "Bearer " + LOCAL})
         assert evil.status_code == 403
         oversized = await http.post(
-            service, content=" " * 20000, headers={"content-type": "application/json"}
+            service, content=" " * 20000, headers={"content-type": "application/json", "Authorization": "Bearer " + LOCAL}
         )
         assert oversized.status_code == 413

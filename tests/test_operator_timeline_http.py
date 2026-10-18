@@ -33,25 +33,13 @@ async def test_timeline_keeps_job_context_from_plan_through_image_delivery(regis
         started_at = time.monotonic()
         timeline = (await local.get("/operator/timeline")).json()
         parsed = TimelineSnapshot.parse(timeline, started_at)
-        assert parsed.cards[0].review is not None
-        assert timeline["ok"] and timeline["plans_available"]
+        assert parsed.cards[0].review is None
+        assert timeline["ok"] and not timeline["plans_available"]
         card = next(row for row in timeline["cards"] if row["job_id"] == "timeline-capture")
-        assert card["state"] == "approval_required" and card["image"] is None
+        assert card["state"] == "prepared" and card["image"] is None
         assert card["plan_hash"] == plan["plan_hash"]
-        approved = await local.post(
-            "/operator/approve-plan",
-            json={
-                "plan_hash": card["plan_hash"],
-                "review_revision": card["review"]["review_revision"],
-                "attestation": "",
-            },
-        )
-        assert approved.json()["ok"] and service.backend.calls == 0
-        approved_timeline = (await local.get("/operator/timeline")).json()
-        card = next(
-            row for row in approved_timeline["cards"] if row["job_id"] == "timeline-capture"
-        )
-        assert card["state"] == "approved" and card["review"] is None
+        retired = await local.post("/operator/approve-plan", json={"plan_hash": plan["plan_hash"]})
+        assert retired.status_code == 410 and service.backend.calls == 0
         executed = await call(
             remote, "execute_test", {"session": lease["session"], "plan_hash": plan["plan_hash"]}
         )
@@ -60,10 +48,10 @@ async def test_timeline_keeps_job_context_from_plan_through_image_delivery(regis
         completed = (await local.get("/operator/timeline")).json()
         completed_model = TimelineSnapshot.parse(completed, time.monotonic())
         card = next(row for row in completed["cards"] if row["job_id"] == "timeline-capture")
-        assert card["state"] == "succeeded" and card["image"]["delivery_state"] == "pending"
+        assert card["state"] == "succeeded" and card["image"]["delivery_state"] == "available"
         assert "image_base64" not in str(completed)
-        denied = await remote.call_tool("read_capture", {"request": {"job_id": "timeline-capture"}})
-        assert denied.is_error
+        allowed = await remote.call_tool("read_capture", {"request": {"job_id": "timeline-capture"}})
+        assert not allowed.is_error
         preview = (await local.post("/operator/image", json={"job_id": "timeline-capture"})).json()
         preview_row = next(
             item.image for item in completed_model.cards if item.job_id == "timeline-capture"
@@ -72,19 +60,8 @@ async def test_timeline_keeps_job_context_from_plan_through_image_delivery(regis
         assert ImagePreview.parse(preview, preview_row, time.monotonic()).png
         assert preview["image_base64"]
         assert service.backend.calls == 1
-        # Viewing the local preview grants no remote pixel access.
-        denied = await remote.call_tool("read_capture", {"request": {"job_id": "timeline-capture"}})
-        assert denied.is_error
-        allowed = await local.post(
-            "/operator/image-decision",
-            json={
-                "job_id": "timeline-capture",
-                "sha256": preview["sha256"],
-                "delivery_revision": preview["delivery_revision"],
-                "decision": "approve",
-            },
-        )
-        assert allowed.json()["ok"]
+        retired = await local.post("/operator/image-decision", json={"job_id": "timeline-capture"})
+        assert retired.status_code == 410
         image = await remote.call_tool("read_capture", {"request": {"job_id": "timeline-capture"}})
         assert not image.is_error and any(item.type == "image" for item in image.content)
         assert service.backend.calls == 1

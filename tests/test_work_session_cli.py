@@ -44,16 +44,13 @@ def recovery(tmp_path: Path):
     return directory
 
 
-def test_review_request_requires_exact_acknowledgement(recovery):
-    with pytest.raises(ValueError, match="review_not_acknowledged"):
-        acknowledge_device_request_recovery(recovery, "synthetic-request", lambda _: "yes")
-    store = Store(recovery / "history.sqlite3")
-    assert store.needs_review()
-    store.close()
+def test_explicit_offline_recovery_needs_no_keyword_and_never_replays(recovery):
+    prompts = []
     result = acknowledge_device_request_recovery(
-        recovery, "synthetic-request", lambda _: "REVIEW REQUEST synthetic-request"
+        recovery, "synthetic-request", lambda prompt: prompts.append(prompt) or ""
     )
     assert result == {"reviewed": True, "request_id": "synthetic-request", "replayed": False}
+    assert not prompts
     store = Store(recovery / "history.sqlite3")
     assert not store.needs_review()
     assert store.request("synthetic-request")["state"] == "needs_review"

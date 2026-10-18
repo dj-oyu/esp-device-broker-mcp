@@ -34,7 +34,7 @@ process environment. Do not double-click the script, use `powershell -File`, or
 switch to an unrelated new terminal: children cannot change their parent's tokens.
 
 Starting the broker and checking status do not open USB. Device jobs still require
-a lease, an inspected immutable plan and explicit local approval. Continue with
+authentication, an owned lease, an inspected immutable plan and explicit execute. Continue with
 the passive-observation steps in [SERIAL.md](SERIAL.md) only when authorized.
 
 If a broker is already present, the script refuses to change credentials or stop

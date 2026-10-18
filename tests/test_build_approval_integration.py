@@ -1,18 +1,16 @@
-"""Real broker/store/GUI approval tests with a synthetic non-hardware backend."""
+"""Real broker/store explicit execution tests with a synthetic non-hardware backend."""
 
 import asyncio
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
 
 class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_serial_and_mock_gui_submission_approval_and_no_replay(self):
+    async def test_serial_and_mock_explicit_submission_and_no_replay(self):
         try:
             from cardputer_mcp.broker import Broker, BrokerError
             from cardputer_mcp.config import BuildProject, SerialSettings, Settings
-            from cardputer_mcp.gui_approvals import PlanReview, review_warning
             from cardputer_mcp.models import (
                 AcquireRequest,
                 CancelRequest,
@@ -20,7 +18,6 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 Origin,
                 PrepareRequest,
             )
-            from cardputer_mcp.plan_approval import PlanApprovals
             from cardputer_mcp.ports import DeviceSelector
         except ModuleNotFoundError as error:
             self.skipTest(str(error))
@@ -87,20 +84,13 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             project_id="registered",
                         )
                     )
-                    self.assertTrue(prepared["approval_required"])
+                    self.assertFalse(prepared["approval_required"])
                     request = ExecuteRequest(
                         session=lease, plan_hash=prepared["plan_hash"], wait_for_approval=True
                     )
                     submitted = broker.execute(request)
-                    self.assertEqual("awaiting_approval", submitted["state"])
+                    self.assertEqual("queued", submitted["state"])
                     self.assertTrue(broker.execute(request)["deduplicated"])
-                    approvals = PlanApprovals(broker)
-                    detail = approvals.detail(prepared["plan_hash"])
-                    review = PlanReview.parse({"ok": True, **detail}, time.monotonic())
-                    warning = review_warning(review)
-                    self.assertIn("BUILD executes", warning)
-                    self.assertIn("alice", warning)
-                    self.assertIn("log", warning)
                     calls = []
 
                     async def synthetic_build(plan, stage, calls=calls):
@@ -108,15 +98,11 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         return "firmware_build_succeeded_no_flash"
 
                     broker.firmware_build.execute = synthetic_build
-                    approved = approvals.approve(
-                        prepared["plan_hash"], detail["review_revision"], ""
-                    )
-                    self.assertTrue(approved["approved"])
                     await broker.queue.join()
                     self.assertEqual("succeeded", broker.job("buildjob")["state"])
                     self.assertTrue(broker.execute(request)["deduplicated"])
                     self.assertEqual(["buildjob"], calls)
-                    # A later explicit build can be cancelled after approval; its
+                    # A later explicit build can be cancelled after submission; its
                     # durable outcome must be review, with no success manifest.
                     second = broker.prepare(
                         PrepareRequest(
@@ -143,8 +129,6 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             session=lease, plan_hash=second["plan_hash"], wait_for_approval=True
                         )
                     )
-                    second_detail = approvals.detail(second["plan_hash"])
-                    approvals.approve(second["plan_hash"], second_detail["review_revision"], "")
                     await asyncio.wait_for(start.wait(), timeout=2)
                     cancelled = broker.cancel(CancelRequest(session=lease, job_id="canceljob"))
                     self.assertTrue(cancelled["stop_requested"])
@@ -167,7 +151,6 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
             Origin,
             PrepareRequest,
         )
-        from cardputer_mcp.plan_approval import PlanApprovals
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -218,9 +201,6 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         session=lease, plan_hash=prepared["plan_hash"], wait_for_approval=True
                     )
                 )
-                approvals = PlanApprovals(broker)
-                detail = approvals.detail(prepared["plan_hash"])
-                approvals.approve(prepared["plan_hash"], detail["review_revision"], "")
                 await broker.queue.join()
                 job = broker.job("diagnostic-failure")
                 self.assertEqual(job["state"], "needs_review")

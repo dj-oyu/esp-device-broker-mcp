@@ -13,8 +13,8 @@ integration coverage and still requires an authorized Windows device trial.
 
 ## Restart once and observe boot output
 
-`restart_and_observe` is a separate, explicitly approved operation. It uses the
-same lease, single serial owner and `read_device_logs` result path. The approval
+`restart_and_observe` is a separate, explicitly requested operation. It uses the
+same lease, single serial owner and `read_device_logs` result path. The immutable plan
 includes one programmed hardware-reset attempt and log delivery to the named
 principal. It may exit the running application and lose unsaved state. Capture
 auto-permissions never authorize this operation.
@@ -68,39 +68,27 @@ Hardware references: [ESP32-S3 TRM, table 33.4-4](https://documentation.espressi
 [Espressif USB reset limitations](https://docs.espressif.com/projects/esptool/en/latest/esp32s3/troubleshooting.html#leaving-download-mode-in-usb-serial-jtag-mode),
 [native USB identities](https://docs.espressif.com/projects/esp-iot-solution/en/latest/usb/usb_overview/usb_device_const_COM.html).
 
-## One explicit approval
+## Prepare and explicitly execute
 
-Prepare a job with the existing MCP `prepare_test` tool and
-`test: "firmware_observe"`, or `test: "restart_and_observe"` for the explicit
-restart workflow. The authenticated workflow lease must remain valid
-through preparation/approval; a 300-second lease leaves room to review the plan.
-The local GUI shows the device, 30-second limit, data handling, and exact
-requesting principal. Its single approval grants both reception and delivery
-of the bounded report to that principal. To avoid another agent round trip after
-approval, first call `execute_test` with the exact plan hash and
-`wait_for_approval: true`. It returns `awaiting_approval`; the GUI's **Approve &
-start** then queues the submitted job immediately. The original lease deadline
-still applies, and no approval or reset happens automatically. A plan that has
-only been prepared retains the separate approve-then-execute workflow.
+Prepare `firmware_observe` or, for one fixed reset, `restart_and_observe` using
+the existing `prepare_test` tool and a current authenticated owned lease.
+Inspect the device, limit, effects and requesting principal, then submit the
+exact `plan_hash` to `execute_test`. It queues without local approval;
+`wait_for_approval` is deprecated and ignored. Preparation alone performs no I/O.
 
-Device console output can contain private data. Recognizable credential patterns
-and PEM blocks are redacted, but this cannot detect every secret. Review the
-firmware's logging behavior before approving. No capture auto-permission grants
-log access and no new permanent permissions are created by this operation.
+Console output can contain private data. Redaction cannot detect every secret;
+consider firmware logging behavior before explicitly requesting reception and
+retrieval by the requesting client. No capture policy or permanent grant is used.
 
-The GUI says reception has started only after the serial port is open and the
-job reaches `firmware_observe`. Poll `job_status` until the job finishes. Read
-the completed report using `read_device_logs` with that job ID. The equivalent
-local client command is:
+Poll `job_status`, then call `read_device_logs` with that job ID from the original
+currently authenticated principal with read scope. The local equivalent is:
 
 ```powershell
 uv run cardputer --auth-source environment device-logs YOUR_JOB_ID
 ```
 
-Use the original authenticated launcher environment, or the already configured
-scoped-key client. This command only reads the completed cache; it never starts
-another serial operation. The stdout result intentionally contains the approved
-redacted report, so do not redirect it to a shared file unless intended.
+This reads the completed bounded cache and never starts serial work. Its output
+contains the redacted report; avoid shared files unless sharing is intended.
 
 ## Bounds and lifetime
 
@@ -148,7 +136,7 @@ The inspected PocketJS firmware has no harmless serial command for requesting
 this information again. If no boot output is arriving, passive
 `firmware_observe` can therefore contain no identity information. That passive
 operation never resets or reopens USB. A restart requires its own exact
-`restart_and_observe` approval, with the limits above. Neither operation
+`restart_and_observe` execution request, with the limits above. Neither operation
 guarantees that all early boot output will be captured.
 
 References: [ESP-IDF startup printing](https://github.com/espressif/esp-idf/blob/v6.0.1/components/esp_app_format/esp_app_desc.c#L122-L145),

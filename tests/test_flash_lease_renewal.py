@@ -65,16 +65,14 @@ async def test_running_renewal_crosses_original_expiry_and_both_atomic_guards(en
     env.driver.callback = callback
     env.store.finish_firmware = finish
     env.execute(prepared)
-    token = env.broker.flash_policy_jobs["renewed"]
+    token = env.broker.session
     await env.broker.queue.join()
     assert guards == [("running", 31.0, True), ("succeeded", 32.0, True)]
     assert env.broker.job("renewed")["state"] == "succeeded"
     assert env.store.firmware_current("fixture", "alice")["completed_job"] == "renewed"
     assert env.driver.closed
-    assert not env.broker.flash_policies.live(token, prepared["plan"], committing=True)
     # Renewing ownership after completion cannot revive the old authorization.
     env.broker.renew(RenewRequest(session=env.broker.session.capability, lease_seconds=30))
-    assert not env.broker.flash_policies.live(token, prepared["plan"], committing=True)
 
 
 @pytest.mark.parametrize("renewed", [False, True])
@@ -96,13 +94,12 @@ async def test_running_flash_expires_at_current_deadline_and_cannot_be_revived(e
     env.broker.firmware_flash.execute = execute
     env.driver.callback = callback
     env.execute(prepared)
-    token = env.broker.flash_policy_jobs["expired"]
+    token = env.broker.session
     await env.broker.queue.join()
     assert env.broker.job("expired")["state"] == "needs_review"
     assert env.store.firmware_current("fixture", "alice") == previous
     with pytest.raises(BrokerError, match="invalid_session|lease_expired"):
-        env.broker.renew(RenewRequest(session=token.lease.capability, lease_seconds=300))
-    assert not env.broker.flash_policies.live(token, prepared["plan"], committing=True)
+        env.broker.renew(RenewRequest(session=token.capability, lease_seconds=300))
 
 
 @pytest.mark.parametrize("guard_number", [1, 2])
@@ -113,7 +110,7 @@ async def test_running_flash_expires_at_current_deadline_and_cannot_be_revived(e
         "principal",
         "owner",
         "epoch",
-        "policy",
+        "registration",
         "revoked",
         "work_expired",
         "work_replaced",
@@ -146,8 +143,8 @@ async def test_renewal_preserves_authority_at_both_commit_guards(env, guard_numb
             broker.session.owner = "other"
         elif change == "epoch":
             broker.epoch = "other"
-        elif change == "policy":
-            env.configure(env.policy.model_copy(update={"enabled": False}))
+        elif change == "registration":
+            env.configure(allow_flash=False)
         elif change == "revoked":
             broker.principal_valid = lambda *args: False
         elif change == "work_expired":
@@ -188,15 +185,13 @@ async def test_queued_unattended_authorization_keeps_original_deadline(env):
     prepared = env.prepare("queued-expired", build_job_id="build-one")
     before = env.driver.writes
     env.execute(prepared)
-    token = env.broker.flash_policy_jobs["queued-expired"]
+    token = env.broker.session
     renew(env, clock)
     clock.now = 30.0
-    assert not env.broker.flash_policies.live(token, prepared["plan"])
     await env.broker.queue.join()
     assert env.broker.job("queued-expired")["state"] == "cancelled"
     assert env.driver.writes == before
     env.broker.renew(RenewRequest(session=env.broker.session.capability, lease_seconds=300))
-    assert not env.broker.flash_policies.live(token, prepared["plan"], committing=True)
 
 
 @pytest.mark.parametrize("guard_number", [1, 2])
@@ -223,12 +218,11 @@ async def test_renewal_cannot_revive_cancelled_running_flash(env, guard_number):
 
     env.store.finish_firmware = finish
     env.execute(prepared)
-    token = env.broker.flash_policy_jobs["cancel-renew"]
+    token = env.broker.session
     await env.broker.queue.join()
     assert calls == guard_number
     assert env.broker.job("cancel-renew")["state"] == "needs_review"
     assert env.store.firmware_current("fixture", "alice") == previous
-    assert not env.broker.flash_policies.live(token, prepared["plan"], committing=True)
 
 
 async def test_renewal_cannot_revive_explicitly_cancelled_queued_flash(env):
@@ -236,17 +230,16 @@ async def test_renewal_cannot_revive_explicitly_cancelled_queued_flash(env):
     prepared = env.prepare("cancel-queued", build_job_id="build-one")
     before = env.driver.writes
     env.execute(prepared)
-    token = env.broker.flash_policy_jobs["cancel-queued"]
-    env.broker.cancel(CancelRequest(session=token.lease.capability, job_id="cancel-queued"))
+    token = env.broker.session
+    env.broker.cancel(CancelRequest(session=token.capability, job_id="cancel-queued"))
     renew(env, clock)
     clock.now = 31.0
-    assert not env.broker.flash_policies.live(token, prepared["plan"], committing=True)
     await env.broker.queue.join()
     assert env.broker.job("cancel-queued")["state"] == "cancelled"
     assert env.driver.writes == before
 
 
-@pytest.mark.parametrize("change", ["lease", "policy", "work"])
+@pytest.mark.parametrize("change", ["lease", "registration", "work"])
 async def test_reentrant_renewal_cannot_bypass_binding_after_auth_callback(env, change):
     clock = setup(env, work=True)
     prepared = env.prepare("reentrant-renew", build_job_id="build-one")
@@ -261,8 +254,8 @@ async def test_reentrant_renewal_cannot_bypass_binding_after_auth_callback(env, 
             renew(env, clock)
             if change == "lease":
                 env.broker.session = replace(env.broker.session)
-            elif change == "policy":
-                env.configure(env.policy.model_copy(update={"enabled": False}))
+            elif change == "registration":
+                env.configure(allow_flash=False)
             else:
                 env.broker.work_sessions["work-one"].state = "closed"
         return True

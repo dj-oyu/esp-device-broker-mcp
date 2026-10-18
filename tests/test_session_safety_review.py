@@ -681,7 +681,7 @@ async def test_restart_has_no_resume_no_grant_and_no_automatic_replay(tmp_path: 
         assert broker.work_sessions == {}
         assert broker.device_requests == {}
         assert broker.job("old_running")["state"] == "needs_review"
-        assert broker.job("old_queued")["state"] == "needs_review"
+        assert broker.job("old_queued")["state"] == "cancelled"
         logical = create_session(broker)
         with pytest.raises(BrokerError, match="recovery_review_required"):
             ask_device(broker, logical)

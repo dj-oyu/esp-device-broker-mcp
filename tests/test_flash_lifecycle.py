@@ -102,9 +102,9 @@ class FlashLifecycleTests(unittest.TestCase):
             backup=self.backup if backup is None else backup,
         )
 
-    def test_exact_approval_and_reader_closed_are_required(self):
+    def test_exact_request_digest_and_reader_closed_are_required(self):
         for approved, closed in (("0" * 64, True), (self.plan.digest, False)):
-            with self.assertRaisesRegex(FlashFailure, "approval_or_handoff"):
+            with self.assertRaisesRegex(FlashFailure, "plan_or_handoff"):
                 self.run_plan(approved=approved, closed=closed)
         self.assertEqual(self.driver.writes, 0)
         self.assertFalse(self.driver.active)
@@ -252,9 +252,9 @@ class FlashLifecycleTests(unittest.TestCase):
         self.assertEqual(self.driver.writes, 0)
         self.assertTrue(self.driver.closed)
 
-    def test_restore_requires_its_own_exact_plan_approval(self):
+    def test_restore_requires_its_own_exact_plan_digest(self):
         plan = replace(self.plan, operation="restore", manifest_sha256=None)
-        with self.assertRaisesRegex(FlashFailure, "approval_or_handoff"):
+        with self.assertRaisesRegex(FlashFailure, "plan_or_handoff"):
             self.run_plan(plan, approved=self.plan.digest)
         self.assertEqual(self.driver.writes, 0)
         _, _, summary = self.run_plan(plan)

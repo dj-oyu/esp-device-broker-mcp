@@ -1,5 +1,48 @@
 # Verification
 
+## Explicit client operations (cloud verification)
+
+The product approval, image delivery decision, policy/arming, keyword and local
+approval relay flows are retired. An authenticated explicit operation retains
+immutable preflight, scope/lease, device/firmware configuration, registered input,
+ownership, cancellation, timeout, readback/boot/close and atomic LKG/audit checks.
+Legacy pending work is cancelled without replay; uncertain running work remains
+quarantined. No raw HOME retention was added.
+
+Supplemental Python 3.12 validation: **2650 passed, 45 subtests passed, 1 skipped**.
+The remaining **48 failed and 190 errors** all contain the existing
+`unsafe_key_registry_permissions` environment guard: the container process is
+UID 1000, while `/` is owned by UID 65534. The exact unchanged baseline
+`fe1fa38107907e14a132f45b34d589f74488400f` had 48 failed and 216 errors, all with
+that same guard. No ownership or authentication checks were relaxed for tests.
+There were no other failures in the final full run.
+
+The supplemental environment uses installed MCP 2.3.0 and official GitHub-tag
+sources for filelock 4.0.9 and pytest-asyncio 1.4.0 (24 imported source blobs
+verified against Git SHA). Frozen dependency setup was blocked by unavailable
+locked dependencies and package-download CONNECT 503 failures. This is **not** a
+frozen-lockfile pass. Ruff and mypy were unavailable and remain unverified.
+
+`compileall` for source/tests/packaging, `git diff --check`, the retired operator
+launch packaging smoke, and Windows release unit tests (9 tests) passed. Native
+Windows GUI rendering, real device behavior, live imported tool metadata and
+deployment were not verified. No hardware operation, flash, deployment, restart,
+GitHub publication, merge or live authorization change was performed.
+
+Independent review of the initial refactor found missing running-flash job binding,
+GUI retention clamps, observation result pairing and strict cancellation receipts.
+The follow-up restores these checks and adds 40 regression cases without deleting
+or newly skipping tests. The final Store transaction rereads state, plan hash and
+result after its last guard, so a detached job cannot select LKG. See
+[GUI security coverage review](GUI-SECURITY-COVERAGE.txt) for the deleted-test audit
+and retained-feature coverage; the original deletions were not all obsolete UI
+checks. The 238 environment-affected IDs and failure/error kinds are unchanged
+from the initial refactor's full run. Their bodies remain unverified; deployment
+readiness is not established by these supplemental results.
+
+The versioned sections below are historical results for their original sources
+and dependencies. Their approval workflows and counts do not describe this code.
+
 ## v0.12 Submitted execution and immediate local approval dispatch
 
 Final aggregate: **3028 tests passed** (77.46 seconds). Ruff lint and format checks

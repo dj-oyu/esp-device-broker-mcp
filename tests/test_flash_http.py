@@ -5,7 +5,6 @@ import hashlib
 import json
 import shutil
 import threading
-import time
 from dataclasses import replace
 
 import httpx2
@@ -19,11 +18,9 @@ from cardputer_mcp.build_locations import build_location, claim_build_directory
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import BuildProject
 from cardputer_mcp.flash_models import FlashDevice
-from cardputer_mcp.gui_approvals import review_warning
-from cardputer_mcp.gui_timeline import TimelineSnapshot, _CardView
 
 
-async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
+async def test_explicit_mcp_backup_flash_restore_and_cancel(
     registry_service, tmp_path
 ):
     service = registry_service
@@ -141,55 +138,13 @@ async def test_operator_approval_then_mcp_backup_flash_restore_and_cancel(
                     },
                 )
                 assert prepared["ok"], prepared
-                assert prepared["approval_required"]
-                denied = await call(
-                    remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
-                )
-                assert denied["error"] == "operator_approval_required"
-                detail = (
-                    await http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})
-                ).json()
-                timeline = (await http.get("/operator/timeline")).json()
-                assert timeline["ok"] and timeline["plans_available"], timeline
-                parsed = TimelineSnapshot.parse(timeline, time.monotonic())
-                pending = next(card for card in parsed.cards if card.job_id == job)
-                assert pending.review is not None
-                assert pending.review.attestation == detail["attestation"]
-                effects = _CardView._effects(pending.review)
-                assert effects == review_warning(pending.review)
-                assert "Target:" in effects and "Recovery:" in effects
-                assert prepared["plan"]["device_id"] in effects
-                assert "consent" in effects and "does not prove" in effects
-                if prepared["plan"].get("lkg_receipt"):
-                    assert prepared["plan"]["lkg_receipt"] in effects
-                if prepared["plan"].get("backup_job_id"):
-                    assert prepared["plan"]["backup_job_id"] in effects
-                if action == "firmware_backup":
-                    assert "reads full plaintext flash" in effects
-                    assert "does not write flash" in effects
-                elif action == "firmware_flash":
-                    assert "FLASH writes the exact displayed artifact" in effects
-                    assert "erases affected sectors" in effects
-                else:
-                    assert "RESTORE writes the exact displayed recovery target" in effects
-                    assert "erases affected sectors" in effects
-                assert "Observes serial output without sending commands" not in effects
-                attestation = (
-                    "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ"
-                    if action == "firmware_backup"
-                    else "DEVICE AND BACKUP VERIFIED FOR THIS EXACT FLASH PLAN"
-                )
-                if prepared["plan"]["recovery_kind"] == "artifact_bundle":
-                    attestation = "DEVICE AND FIRMWARE RECOVERY VERIFIED FOR THIS EXACT PLAN"
+                assert prepared["approval_required"] is False
+                # The old HTTP approval surface cannot execute or grant anything.
                 response = await http.post(
-                    "/operator/approve-plan",
-                    json={
-                        "plan_hash": prepared["plan_hash"],
-                        "review_revision": detail["review_revision"],
-                        "attestation": attestation,
-                    },
+                    "/operator/approve-plan", json={"plan_hash": prepared["plan_hash"]}
                 )
-                assert response.status_code == 200 and response.json()["ok"], response.text
+                assert response.status_code == 410
+                assert response.json()["error"] == "product_approval_retired"
                 return prepared
 
             backup = await approve("backup-one", "firmware_backup")

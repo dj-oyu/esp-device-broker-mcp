@@ -11,7 +11,7 @@ import pytest
 from mcp import Client
 from mcp.types import CallToolResult, ImageContent, TextContent
 from test_http_integration import service as service
-from test_registry_http import LOCAL, RegistryService
+from test_registry_http import RegistryService
 from test_registry_http import registry_service as registry_service
 
 from cardputer_mcp import server as server_module
@@ -37,30 +37,6 @@ async def read_capture(client: Client, job_id: str) -> CallToolResult:
     result = await client.call_tool("read_capture", {"request": {"job_id": job_id}})
     assert isinstance(result, CallToolResult)
     return result
-
-
-async def approve_image(service: RegistryService, job_id: str) -> dict[str, Any]:
-    """Use the real, local-only operator route before a remote image read."""
-    base = service.url.removesuffix("/mcp") + "/operator"
-    async with httpx2.AsyncClient(
-        trust_env=False, headers={"Authorization": f"Bearer {LOCAL}"}
-    ) as http:
-        response = await http.post(base + "/image", json={"job_id": job_id})
-        assert response.status_code == 200
-        preview = response.json()
-        assert preview["ok"] and preview["delivery_state"] == "pending"
-        response = await http.post(
-            base + "/image-decision",
-            json={
-                "job_id": job_id,
-                "sha256": preview["sha256"],
-                "delivery_revision": preview["delivery_revision"],
-                "decision": "approve",
-            },
-        )
-        assert response.status_code == 200
-        assert response.json() == {"ok": True, "job_id": job_id, "delivery_state": "approved"}
-        return preview
 
 
 def assert_unavailable(result: CallToolResult, error: str = "capture_not_available") -> None:
@@ -113,10 +89,6 @@ async def test_capture_http_delivers_image_content_hash_and_principal_isolation(
         session = acquired["session"]
         await capture(owner, "image-content", session)
         await service.resident.queue.join()
-        assert_unavailable(
-            await read_capture(owner, "image-content"), "capture_delivery_approval_required"
-        )
-        await approve_image(service, "image-content")
         result = await read_capture(owner, "image-content")
         pixels = assert_image(result)
         assert_unavailable(await read_capture(stranger, "image-content"))
@@ -148,10 +120,6 @@ async def test_capture_http_rechecks_credential_after_success(
         acquired = await call(owner, "acquire_session", {"owner": "remote_mcp"})
         await capture(owner, "credential-changed", acquired["session"])
         await service.resident.queue.join()
-        assert_unavailable(
-            await read_capture(owner, "credential-changed"), "capture_delivery_approval_required"
-        )
-        await approve_image(service, "credential-changed")
         assert_image(await read_capture(owner, "credential-changed"))
         if invalidation == "revoke":
             assert service.registry.revoke(key.metadata.key_id)
@@ -198,10 +166,6 @@ async def test_capture_http_reconnect_release_and_expiry_never_recaptures(
             reconnected, "execute_test", {"session": session, "plan_hash": plan["plan_hash"]}
         )
         assert repeated["deduplicated"]
-        assert_unavailable(
-            await read_capture(reconnected, "reconnect"), "capture_delivery_approval_required"
-        )
-        await approve_image(service, "reconnect")
         original = assert_image(await read_capture(reconnected, "reconnect"))
         assert (await call(reconnected, "release_session", {"session": session}))["released"]
     async with connect(service.url, key.token) as later:
@@ -283,11 +247,6 @@ async def test_three_clients_share_fifo_and_capture_by_key_without_duplicate_rec
                 {"session": session, "plan_hash": plan["plan_hash"]},
             )
             assert repeated["deduplicated"]
-            assert_unavailable(
-                await read_capture(claude_again, "three-clients"),
-                "capture_delivery_approval_required",
-            )
-            await approve_image(service, "three-clients")
             assert_image(await read_capture(claude_again, "three-clients"))
             assert_image(await read_capture(codex, "three-clients"))
             assert_unavailable(await read_capture(cloud, "three-clients"))

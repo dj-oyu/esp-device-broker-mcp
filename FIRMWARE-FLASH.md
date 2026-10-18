@@ -1,4 +1,4 @@
-# Separately approved firmware operations
+# Separately requested firmware operations
 
 Flash registrations are local, disabled by default, and separate from the
 ESP-IDF 6.0.1 build profile. Register an external Python executable with its SHA
@@ -8,11 +8,11 @@ An existing IDF Python environment need not be downgraded. No SDK is bundled.
 MCP `prepare_test` accepts `firmware_backup`, `firmware_flash`, and
 `firmware_restore`, a registered `device_id`, and successful owned job references.
 It accepts no executable path, serial command, offset, or arbitrary arguments.
-Every operation requires exact local approval, including with mock automatic
-execution enabled. Backup bytes stay in a private local directory.
+Every operation requires authenticated explicit execution of its exact prepared
+plan. No local approval, unattended grant or mock opt-in is required. Backup bytes stay in a private local directory.
 
-Flash requires the approved build's attested layout, sdkconfig, BIN and ELF
-receipts and either a device-bound initial full backup or retained verified LKG. Restore requires its own approval and
+Flash requires the successful owned build's attested layout, sdkconfig, BIN and ELF
+receipts and either a device-bound initial full backup or retained verified LKG. Restore requires its own explicit request and
 the original firmware BIN and ELF receipts registered locally. Security enabled
 or uncertain, encryption, existing stubs, and ROM ranges above 16 MiB fail closed.
 Initial chip detection has bounded fallback before identity verification; writes
@@ -20,8 +20,7 @@ have one attempt and block attempt, without reconnect/reflash or automatic resto
 
 Keep command side effects simple and explicit: backup reads and preserves a
 private receipt, flash installs and leaves the verified new firmware installed,
-and restore writes the exact prior backup only when separately requested and
-approved. No command silently invokes another MCP command. Failure stops for
+and restore writes the exact prior backup only when separately requested. No command silently invokes another MCP command. Failure stops for
 review without rollback, repeat writes or automatically invoking restore.
 
 Each native ROM probe/read/write connects in download mode and can reset the
@@ -34,13 +33,13 @@ reset assertion and reads; pulse deassertion and close remain allowed for cleanu
 
 Completion means exact readback, restart, and passive startup evidence matching
 ESP-IDF 6.0.1 and the expected ELF prefix. It sends no HELLO keys. HELLO remains an
-independent existing approval job. The ELF prefix is textual boot evidence;
+independent explicitly requested job. The ELF prefix is textual boot evidence;
 readback independently verifies the complete written BIN bytes.
 
 Cancellation and authority checks apply during passive reads as well as between
 native phases. Interrupted or uncertain work requires review. Device ownership
 is retained until owned processes and serial ports have certainly closed.
-Shared filtered logs disclose bounded redacted progress and approved boot logs,
+Shared filtered logs disclose bounded redacted progress and bounded boot logs,
 never raw backups or private tool paths. Mock verification does not authorize
 physical device access or prove a hardware flash succeeded.
 
@@ -91,7 +90,7 @@ build timestamp does not select a newer version behind the user's back.
 After first successful flash, omit `backup_job_id` to prepare another flash using
 the current LKG. Restore may omit recovery inputs to select the current target,
 or pass `lkg_receipt` to select a previously verified exact target. Prepare freezes
-that receipt/hash; approval and execute never substitute dynamic latest. A
+that receipt/hash; execute never substitute dynamic latest. A
 `backup_job_id` explicitly selects full-device recovery, including data.
 
 The fast artifact path supports one factory app with exactly bootloader, table
@@ -128,7 +127,8 @@ mutually exclusive; leaving both absent may select a retained verified LKG, and
 preflight rejects unavailable recovery. No URL, port, path or raw argv is accepted.
 firmware_backup requires session/device_id and no build/recovery inputs;
 firmware_restore requires session/device_id and verified recovery, no build_job_id.
-Existing exact approval and all principal/device/security checks still apply.
+Current principal/device/security checks, static registered operation capabilities,
+exclusive ownership and verified readback still apply.
 
 Malformed tool input returns is_error with a bounded structured response:
 {ok:false,error:invalid_tool_request,reason:<fixed code>,fields:[<safe field names>]}.

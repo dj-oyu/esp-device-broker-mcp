@@ -89,8 +89,7 @@ class FlashDriver(Protocol):
 class FlashLifecycle:
     """Called only by a broker holding its original lease/device/state locks.
 
-    Approval is an exact locally obtained plan digest, not a boolean supplied by
-    MCP. The live callback is rechecked between every side effect. An uncertain
+    The explicit request binds an exact immutable plan digest. The live callback is rechecked between every side effect. An uncertain
     close retains busy ownership; cancellation never claims synchronous shutdown.
     """
 
@@ -119,7 +118,7 @@ class FlashLifecycle:
     def run(
         self,
         plan: OperationPlan,
-        approved_digest: str,
+        requested_digest: str,
         *,
         live: Callable[[], bool],
         reader_closed: Callable[[], bool],
@@ -134,8 +133,8 @@ class FlashLifecycle:
         with self._lock:
             if self.active or self.uncertain or self.driver.active or self.driver.uncertain:
                 raise FlashFailure("flash_device_busy_or_uncertain")
-            if approved_digest != plan.digest or reader_closed() is not True:
-                raise FlashFailure("flash_approval_or_handoff_required")
+            if requested_digest != plan.digest or reader_closed() is not True:
+                raise FlashFailure("flash_plan_or_handoff_required")
             if plan.operation == "flash" and (
                 not isinstance(plan.expected_elf_sha256, str)
                 or len(plan.expected_elf_sha256) != 64

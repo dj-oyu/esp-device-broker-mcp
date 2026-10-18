@@ -13,7 +13,6 @@ from cardputer_mcp.broker import Broker
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import Settings
 from cardputer_mcp.models import Origin
-from cardputer_mcp.operator import approve_plan
 from cardputer_mcp.server import create_app
 
 
@@ -52,7 +51,7 @@ async def serial_service(tmp_path):
         await asyncio.wait_for(task, timeout=5)
 
 
-async def test_authenticated_serial_http_approval_and_owner_binding(serial_service):
+async def test_authenticated_serial_http_explicit_execution_and_owner_binding(serial_service):
     url, resident, port = serial_service
     async with httpx2.AsyncClient(trust_env=False) as http:
         rejected = await http.post(url, json={})
@@ -70,20 +69,8 @@ async def test_authenticated_serial_http_approval_and_owner_binding(serial_servi
         prepared = await call(
             local, "prepare_test", {"session": token, "job_id": "serial-http", "test": "hello"}
         )
-        assert prepared["ok"] and prepared["approval_required"]
+        assert prepared["ok"] and not prepared["approval_required"]
         assert port.opens == 0
-        denied = await call(
-            local, "execute_test", {"session": token, "plan_hash": prepared["plan_hash"]}
-        )
-        assert denied["error"] == "operator_approval_required"
-        assert port.opens == 0
-
-        def confirm(prompt):
-            if "DEVICE FREE AND FIRMWARE VERIFIED" in prompt:
-                return "DEVICE FREE AND FIRMWARE VERIFIED"
-            return "APPROVE " + prepared["plan_hash"]
-
-        approve_plan(resident.settings.state_dir, prepared["plan_hash"], confirm)
         stolen = await call(
             remote, "execute_test", {"session": token, "plan_hash": prepared["plan_hash"]}
         )

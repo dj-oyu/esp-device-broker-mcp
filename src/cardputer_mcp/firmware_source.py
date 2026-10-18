@@ -1,4 +1,4 @@
-"""Existing plan/job approval boundary for source fetch; no build or USB action."""
+"""Immutable plan/job boundary for source fetch; no build or USB action."""
 
 import asyncio
 import threading

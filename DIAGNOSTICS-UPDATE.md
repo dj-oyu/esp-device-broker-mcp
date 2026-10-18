@@ -2,7 +2,7 @@
 
 This patch corrects misleading failure classification. It does not claim to fix
 an unverified hardware/USB fault and does not change any serial control signal,
-command sequence, timeout, approval requirement or recovery gate.
+command sequence, timeout or physical-uncertainty recovery gate.
 
 Previously every serial validation/timeout failure was collapsed into
 `device_disconnected_no_retry`. That result did not prove a physical disconnect.
@@ -44,4 +44,4 @@ SQLite automatically adds a nullable diagnostic field. Existing jobs and review
 requirements are retained. An old failure's `diagnostic` is null: information that
 was not saved cannot be reconstructed. Do not clear review or retry just to fill
 that field. Any later physical operation still requires an explicit reviewed plan
-and fresh approval. This patch performs no automatic retry, reset or unquarantine.
+and a fresh explicit execution request. This patch performs no automatic retry, reset or unquarantine.

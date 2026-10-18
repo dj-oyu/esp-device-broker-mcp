@@ -257,7 +257,7 @@ def test_restart_does_not_replay_or_clear_old_review(tmp_path: Path):
         store.recover()
         assert store.job("profile-queued")["state"] == "cancelled"
         assert store.job("profile-running")["state"] == "needs_review"
-        assert store.job("legacy-queued")["state"] == "needs_review"
+        assert store.job("legacy-queued")["state"] == "cancelled"
         assert store.needs_review()
     finally:
         store.close()

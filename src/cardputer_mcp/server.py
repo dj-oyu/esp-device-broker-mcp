@@ -465,9 +465,6 @@ def create_server(
     authenticator = RequestAuth(holder, registry_holder)
     resident = broker or Broker(settings, serial_enabled=serial_enabled)
     resident.principal_valid = authenticator.principal_valid
-    from .capture_policy import CapturePolicies
-
-    resident.capture_policies = CapturePolicies(resident, authenticator.list_principals)
     runtime_path = settings.state_dir / "runtime-auth.json"
 
     def principal(ctx: Context[Any, Any], scope: KeyScope) -> Principal:
@@ -560,20 +557,17 @@ def create_server(
         instructions=(
             "Single-owner Cardputer broker. Mock mode is the default. Explicit serial mode "
             "supports bounded observation, HELLO and HOME render-buffer capture, with "
-            "authenticated clients and exact local operator approval. Acquire, prepare, then "
-            "execute_test with wait_for_approval=true to submit before approval. Local GUI "
-            "approval starts only explicitly submitted work without another client request. "
-            "Preparation alone does not request execution. Capture requires physical HOME "
-            "attestation; Esc can exit another app. "
-            "Images require local preview/send approval or an explicit operator key policy. "
-            "Read permitted captures within five minutes using the same identity. "
+            "authenticated, scoped clients. Acquire, prepare, then explicitly execute_test. "
+            "Preparation alone never requests execution. Capture uses a fresh HOME handshake; "
+            "Esc can exit another app. Read captures within five minutes using the same "
+            "authenticated identity and current read scope. "
             "Pixels do not prove LCD transfer. "
-            "request_home_recovery proposes one separately locally approved DERBY q exit "
+            "request_home_recovery explicitly requests one bounded DERBY q exit "
             "only after a recorded capture failure and confirmed close; no prior HOME "
             "attestation is asserted. It cannot resolve flash reviews or retry itself. "
             "No arbitrary shell/raw serial commands are available. Flash requires "
-            "registered device/build/backup and exact local approval. "
-            "Restart requires an exact locally approved plan."
+            "registered device/build/backup and verified identities. "
+            "Restart executes only on an explicit exact-plan request."
         ),
         log_level="WARNING",
     )
@@ -630,8 +624,8 @@ def create_server(
 
         Source fetch is an explicit registered-project/full-commit operation.
         It returns a principal-bound receipt; build can select it without worktree sync.
-        Registered source/build plans require current control authorization, not
-        operator approval or a physical lease. Omit session for these jobs.
+        Registered source/build plans require current control authorization and
+        no physical lease. Omit session for these jobs.
         Registered build scripts run as the local OS user; this is not a sandbox.
         Source fetch never builds or flashes. No caller-supplied URL/path/shell is accepted.
         firmware_flash requires request.job_id, test=firmware_flash, a live owned
@@ -643,11 +637,11 @@ def create_server(
         firmware_restore requires session/device_id and verified recovery, with no
         build_job_id or project_id. Explicit null optional references are allowed.
         All use request={...}; no caller-supplied port, path or raw flash arguments.
-        Backup, flash and restore are independent exact-approval operations.
+        Backup, flash and restore are independent explicit exact-plan operations.
         Flash may use a retained verified LKG instead of another full backup.
         Restore binds the exact recovery receipt at prepare time. Artifact recovery
         is firmware-only; an explicit full backup restore also rewrites device data.
-        DERBY smoke is a separately approved fixed row-12 launch, bounded automatic
+        DERBY smoke is an explicitly requested fixed row-12 launch, bounded automatic
         demo observation, one render-buffer capture and explicit q exit. It exposes
         no arbitrary keys; missing phase markers never prove a complete demo cycle.
         Their plans disclose ROM download-mode resets, writes and observation.
@@ -693,25 +687,22 @@ def create_server(
         ROM read limits are fixed by size: at least 300 s, then 60 s + 600 s/MiB,
         up to 9660 s for 16 MiB. No advancing progress for 60 s stops the job.
         Longer reads require explicit lease renewal; the broker never renews it.
-        Flash/restore write only their approved images/backup, verify readback,
+        Flash/restore write only their exact verified images/backup, verify readback,
         then perform one 100 ms normal-boot RTS pulse and passive observation
         (up to 30 s). A disconnect allows at most one same-USB reopen after close,
         without another reset pulse. Failure stops for review without retry or
-        automatic restore. HELLO remains a separate approved request.
+        automatic restore. HELLO remains a separate explicit request.
 
         Source/build execute within locally registered project settings without
-        manual approval or USB lease. Execution deadlines are independent of
+        a USB lease. Execution deadlines are independent of
         connection lifetime. Cancellation, principal revocation/expiry or changed
         registration stops work; confirmed normal failure permits a new job.
         Same job ID never replays. Flash/restore authorization remains separate.
 
-        For device operations, set wait_for_approval=true to submit before manual
-        approval. When approval
-        is still required it returns awaiting_approval immediately; local GUI
-        approval then queues that exact submitted job without another client call.
-        An already valid permit can queue immediately. Waiting ends with the original
-        lease deadline, cancellation, revocation or broker restart. Preparation
-        alone never submits execution. False preserves approve-then-execute mode.
+        An authenticated explicit request queues the exact prepared operation
+        after current scope, ownership, device and firmware checks. No operator
+        approval, keyword or arming step is required. Preparation alone never
+        submits execution. Old pending approvals never resume as new execution.
         """
 
         def execute() -> dict[str, Any]:
@@ -732,9 +723,9 @@ def create_server(
     async def request_home_recovery(
         request: RequestHomeRecovery, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
-        """Request one locally approved q after a proved-closed DERBY capture failure.
+        """Explicitly request one q after a proved-closed DERBY capture failure.
 
-        No USB opens until dedicated local approval. Thirty-second single-use
+        Requires current authenticated control authority. Fifteen-second single-use
         authority; fresh APP_STOPPED/HOME_READY and confirmed close are required.
         No reset, flash, screenshot, reconnect, retry or general review bypass.
         """
@@ -773,16 +764,6 @@ def create_server(
                         (plan["source_job_id"], request.job_id),
                     )
                 ]
-                approval = (
-                    resident._store()
-                    .db.execute(
-                        "SELECT principal_id,review_revision FROM home_recovery_approvals "
-                        "WHERE recovery_job=?",
-                        (request.job_id,),
-                    )
-                    .fetchone()
-                )
-                job["recovery_approval"] = dict(approval) if approval else None
             if plan is not None and plan.get("execution_context") == "registered_project":
                 owner = principal(ctx, "read")
                 if plan.get("principal_id") != owner.principal_id:
@@ -843,8 +824,8 @@ def create_server(
         """Read your completed firmware_observe or restart_and_observe report from RAM.
 
         Requires the same authenticated principal and current read permission. The
-        exact local plan approval permits delivery of bounded redacted device logs
-        to that principal. Known credential patterns are removed, not all secrets.
+        explicit read returns bounded redacted device logs to that principal.
+        Known credential patterns are removed, not all secrets.
         Firmware identity is unverified observed boot text; ELF prefixes are not
         firmware binary hashes. Never opens USB, resets, retries or recaptures.
         """
@@ -860,7 +841,7 @@ def create_server(
         """Read your completed capture from five-minute memory cache; never opens USB.
 
         Requires the same principal that requested capture_home or derby_smoke, current
-        read permission, and local image approval or a currently valid image-delivery policy.
+        read permission. No separate image-delivery approval is required.
         Mock images say TEST / NOT DEVICE. Render-buffer images do not
         prove snapshot coherence or LCD transfer acknowledgement. No automatic recapture.
         """
@@ -892,7 +873,7 @@ def create_server(
         """Cancel owned work. Source/build stops wait for confirmed worker/process exit.
 
         Source/build cancellation uses current control principal, no USB lease.
-        Device operation approval, ownership and interruption rules are unchanged.
+        Device ownership and interruption rules remain in force.
         """
 
         def cancel() -> dict[str, Any]:

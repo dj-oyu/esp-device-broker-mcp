@@ -65,26 +65,15 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
         await self.broker.close()
         self.temp.cleanup()
 
-    async def test_backup_requires_exact_local_approval_even_with_mock_auto_enabled(self):
+    async def test_backup_executes_explicit_authenticated_request_without_local_approval(self):
         result = self.broker.prepare(
             PrepareRequest(
                 session=self.token, job_id="backup-one", test=TestName.BACKUP, device_id="fixture"
             )
         )
-        self.assertTrue(result["approval_required"])
+        self.assertFalse(result["approval_required"])
         request = ExecuteRequest(session=self.token, plan_hash=result["plan_hash"])
-        with self.assertRaisesRegex(BrokerError, "operator_approval_required"):
-            self.broker.execute(request)
-        approvals = PlanApprovals(self.broker)
-        detail = approvals.detail(result["plan_hash"])
-        self.assertEqual(detail["attestation"], "flash_device_read_verified")
-        with self.assertRaises(ValueError):
-            approvals.approve(result["plan_hash"], detail["review_revision"], "wrong")
-        approvals.approve(
-            result["plan_hash"],
-            detail["review_revision"],
-            "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ",
-        )
+        self.assertEqual(self.driver.writes, 0)
         self.broker.execute(request)
         await self.broker.queue.join()
         self.assertEqual(self.broker.job("backup-one")["state"], "succeeded")
@@ -131,12 +120,6 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         approvals = PlanApprovals(self.broker)
-        detail = approvals.detail(result["plan_hash"])
-        approvals.approve(
-            result["plan_hash"],
-            detail["review_revision"],
-            "REGISTERED DEVICE VERIFIED FOR THIS BACKUP READ",
-        )
         self.broker.execute(ExecuteRequest(session=self.token, plan_hash=result["plan_hash"]))
         await self.broker.queue.join()
         job = self.broker.job("native-failed")

@@ -218,14 +218,14 @@ async def test_diagnostics_review_safe_timeout_detail_survives_backend_and_broke
         backend=backend,
         serial_enabled=True,
         lock_path=tmp_path / "synthetic.lock",
+        principal_valid=lambda *_: True,
     )
     await broker.start()
     try:
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL))["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")["session"]
         plan = broker.prepare(
             PrepareRequest(session=token, job_id="diagnostics-review", test=DeviceTest.HELLO)
         )
-        broker._store().approve(plan["plan_hash"])
         broker.execute(ExecuteRequest(session=token, plan_hash=plan["plan_hash"]))
         await asyncio.wait_for(broker.queue.join(), timeout=2)
         job = broker.job("diagnostics-review")

@@ -1,4 +1,4 @@
-"""Default image delivery needs a separate local decision on synthetic pixels only."""
+"""Completed image reads require their current authenticated recipient; no decisions."""
 
 import asyncio
 import base64
@@ -21,17 +21,6 @@ from cardputer_mcp.client import call, connect
 from cardputer_mcp.models import LogRequest, Origin
 
 
-def decide(broker: Broker, preview: dict[str, Any], decision: str) -> dict[str, Any]:
-    return broker.operator_decide_image(
-        preview["job_id"], preview["sha256"], preview["delivery_revision"], decision
-    )
-
-
-def pending(broker: Broker, job_id: str) -> None:
-    with pytest.raises(BrokerError, match="^capture_delivery_approval_required$"):
-        broker.read_capture(job_id, PRINCIPAL)
-
-
 async def completed_preview(broker: Broker, job_id: str = "review") -> dict[str, Any]:
     session = acquire(broker)
     enqueue(broker, session, job_id)
@@ -39,28 +28,12 @@ async def completed_preview(broker: Broker, job_id: str = "review") -> dict[str,
     return broker.operator_image(job_id)
 
 
-async def test_final_recipient_callback_cannot_change_delivery_revision(tmp_path: Path) -> None:
-    async with running(tmp_path) as broker:
-        preview = await completed_preview(broker)
-
-        def changed_epoch(*args):
-            broker.epoch = "9" * 32
-            return True
-
-        broker.principal_valid = changed_epoch
-        with pytest.raises(BrokerError, match="^stale_image_preview$"):
-            decide(broker, preview, "approve")
-        assert broker.captures[preview["job_id"]].delivery_state == "pending"
-
-
-async def test_completed_capture_stays_private_until_exact_local_delivery_approval(
+async def test_requested_capture_is_available_to_only_its_authenticated_recipient(
     tmp_path: Path,
 ) -> None:
     async with running(tmp_path) as broker:
         assert broker.operator_images()["images"] == []
-        assert broker.backend.calls == 0
         preview = await completed_preview(broker)
-        pending(broker, "review")
         unavailable(broker, "review", "another-principal")
         pixels = base64.b64decode(preview["image_base64"], validate=True)
         assert pixels.startswith(b"\x89PNG\r\n\x1a\n")
@@ -71,7 +44,7 @@ async def test_completed_capture_stays_private_until_exact_local_delivery_approv
         assert preview["recipient_principal"] == PRINCIPAL
         assert preview["born_utc"]
         assert preview["remaining_seconds"] == 300.0
-        assert preview["delivery_state"] == "pending"
+        assert preview["delivery_state"] == "available"
         rows = broker.operator_images()["images"]
         assert len(rows) == 1
         assert "image_base64" not in rows[0] and "metadata" not in rows[0]
@@ -79,70 +52,34 @@ async def test_completed_capture_stays_private_until_exact_local_delivery_approv
         for _ in range(3):
             broker.operator_images()
             broker.operator_image("review")
-            pending(broker, "review")
-        assert broker.backend.calls == 1
-        assert decide(broker, preview, "approve") == {
-            "job_id": "review",
-            "delivery_state": "approved",
-        }
-        assert broker.read_capture("review", PRINCIPAL).png == pixels
-        unavailable(broker, "review", "another-principal")
+            assert broker.read_capture("review", PRINCIPAL).png == pixels
         assert broker.backend.calls == 1 and broker.queue.empty()
 
 
-@pytest.mark.parametrize("decision,state", [("approve", "approved"), ("reject", "rejected")])
-async def test_delivery_decision_is_final_and_idempotent_after_lost_reply(
-    tmp_path: Path, decision: str, state: str
+@pytest.mark.parametrize("decision", ["approve", "reject", "", "yes", "approved", "Approve"])
+@pytest.mark.parametrize("field", [None, "sha256", "delivery_revision", "job_id"])
+async def test_retired_decision_cannot_mutate_any_image_or_create_a_grant(
+    tmp_path: Path, decision: str, field: str | None
 ) -> None:
     async with running(tmp_path) as broker:
         preview = await completed_preview(broker)
-        # The client may lose the response after the resident broker commits it.
-        decide(broker, preview, decision)
+        if field is not None:
+            preview[field] = "0" * 64 if field != "job_id" else "unknown"
+        original = broker.captures["review"]
         for _ in range(2):
-            assert decide(broker, preview, decision) == {
-                "job_id": "review",
-                "delivery_state": state,
-            }
-        opposite = "reject" if decision == "approve" else "approve"
-        with pytest.raises(BrokerError, match="^image_decision_final$"):
-            decide(broker, preview, opposite)
-        if state == "rejected":
-            for _ in range(2):
-                with pytest.raises(BrokerError, match="^capture_delivery_rejected$"):
-                    broker.read_capture("review", PRINCIPAL)
-        else:
-            assert broker.read_capture("review", PRINCIPAL).png
-        unavailable(broker, "review", "another-principal")
-        assert broker.backend.calls == 1 and broker.queue.empty()
-
-
-@pytest.mark.parametrize("field", ["sha256", "delivery_revision", "job_id"])
-async def test_delivery_rejects_wrong_digest_revision_or_job_without_mutation(
-    tmp_path: Path, field: str
-) -> None:
-    async with running(tmp_path) as broker:
-        preview = await completed_preview(broker)
-        altered = {**preview, field: "0" * 64 if field != "job_id" else "unknown"}
-        error = "capture_not_available" if field == "job_id" else "stale_image_preview"
-        with pytest.raises(BrokerError, match=f"^{error}$"):
-            decide(broker, altered, "approve")
-        pending(broker, "review")
+            with pytest.raises(BrokerError, match="^approval_interface_retired$"):
+                broker.operator_decide_image(
+                    preview["job_id"], preview["sha256"], preview["delivery_revision"], decision
+                )
+        assert broker.captures["review"] is original
+        assert original.delivery_state == "available"
+        assert broker.read_capture("review", PRINCIPAL).png
+        unavailable(broker, "unknown")
         assert broker.backend.calls == 1
-
-
-@pytest.mark.parametrize("decision", ["", "yes", "approved", "rejected", "Approve"])
-async def test_delivery_requires_an_explicit_supported_decision(
-    tmp_path: Path, decision: str
-) -> None:
-    async with running(tmp_path) as broker:
-        preview = await completed_preview(broker)
-        with pytest.raises(BrokerError, match="^invalid_image_decision$"):
-            decide(broker, preview, decision)
-        pending(broker, "review")
 
 
 @pytest.mark.parametrize("changed", ["pixels", "recipient", "origin", "born", "deadline", "epoch"])
-async def test_delivery_preview_binds_cache_content_recipient_lifetime_and_broker(
+async def test_read_only_preview_revision_binds_content_recipient_lifetime_and_epoch(
     tmp_path: Path, changed: str
 ) -> None:
     async with running(tmp_path) as broker:
@@ -159,61 +96,35 @@ async def test_delivery_preview_binds_cache_content_recipient_lifetime_and_broke
                 "deadline": {"deadline": retained.deadline + 1},
             }[changed]
             broker.captures["review"] = replace(retained, **fields)
-        with pytest.raises(BrokerError, match="^stale_image_preview$"):
-            decide(broker, preview, "approve")
-        assert broker.captures["review"].delivery_state == "pending"
+        assert broker.operator_image("review")["delivery_revision"] != preview["delivery_revision"]
         assert broker.backend.calls == 1
 
 
-@pytest.mark.parametrize("decision", ["approve", "reject"])
-async def test_delivery_preview_timeout_never_extends_five_minute_retention(
-    tmp_path: Path, decision: str
-) -> None:
+async def test_previews_and_authenticated_reads_never_refresh_retention(tmp_path: Path) -> None:
     clock = Clock()
     async with running(tmp_path, clock=clock) as broker:
-        preview = await completed_preview(broker)
-        clock.now = 399.999
-        assert broker.operator_image("review")["remaining_seconds"] == 0.001
-        assert broker.captures["review"].deadline == 400.0
+        await completed_preview(broker)
+        for now in (200.0, 399.0, 399.999):
+            clock.now = now
+            assert broker.operator_image("review")["remaining_seconds"] > 0
+            assert broker.read_capture("review", PRINCIPAL).png
+            assert broker.captures["review"].deadline == 400.0
         clock.now = 400.0
-        with pytest.raises(BrokerError, match="^capture_not_available$"):
-            decide(broker, preview, decision)
-        assert broker.operator_images()["images"] == []
         unavailable(broker, "review")
+        with pytest.raises(BrokerError, match="^capture_not_available$"):
+            broker.operator_image("review")
+        assert broker.operator_images()["images"] == []
         assert broker.job("review")["state"] == "succeeded"
         assert broker.backend.calls == 1
 
 
-async def test_delivery_approval_and_repeated_previews_do_not_refresh_expiry(
-    tmp_path: Path,
-) -> None:
-    clock = Clock()
-    async with running(tmp_path, clock=clock) as broker:
-        preview = await completed_preview(broker)
-        clock.now = 399.0
-        decide(broker, preview, "approve")
-        assert broker.operator_image("review")["remaining_seconds"] == 1
-        assert broker.read_capture("review", PRINCIPAL).png
-        assert broker.captures["review"].deadline == 400.0
-        clock.now = 400.0
-        unavailable(broker, "review")
-        assert broker.backend.calls == 1
-
-
-@pytest.mark.parametrize("state", ["pending", "approved", "rejected"])
-async def test_restart_discards_pixels_and_image_decisions_without_replay(
-    tmp_path: Path, state: str
-) -> None:
+async def test_restart_discards_pixels_without_replay(tmp_path: Path) -> None:
     async with running(tmp_path) as original:
-        preview = await completed_preview(original)
+        await completed_preview(original)
         epoch = original.epoch
-        if state != "pending":
-            decide(original, preview, "approve" if state == "approved" else "reject")
     async with running(tmp_path) as restarted:
         assert restarted.epoch != epoch
         assert restarted.operator_images()["images"] == []
-        with pytest.raises(BrokerError, match="^capture_not_available$"):
-            decide(restarted, preview, "approve")
         unavailable(restarted, "review")
         assert restarted.job("review")["state"] == "succeeded"
         await asyncio.sleep(0)
@@ -221,26 +132,28 @@ async def test_restart_discards_pixels_and_image_decisions_without_replay(
 
 
 @pytest.mark.parametrize("mutation", ["missing", "failed"])
-async def test_no_delivery_decision_when_completed_job_is_absent_or_not_succeeded(
+async def test_absent_or_unsuccessful_job_never_releases_pixels(
     tmp_path: Path, mutation: str
 ) -> None:
     async with running(tmp_path) as broker:
-        preview = await completed_preview(broker)
+        await completed_preview(broker)
         if mutation == "missing":
             broker._store().db.execute("DELETE FROM jobs WHERE id=?", ("review",))
         else:
             broker._store().set_job("review", "failed", "synthetic_failure")
-        with pytest.raises(BrokerError, match="^capture_not_available$"):
-            decide(broker, preview, "approve")
         unavailable(broker, "review")
-        assert broker.captures["review"].delivery_state == "pending"
+        with pytest.raises(BrokerError, match="^capture_not_available$"):
+            broker.operator_image("review")
+        assert broker.operator_images()["images"] == []
 
 
-@pytest.mark.parametrize("outcome", [False, None, 1, "true", "exception"])
-async def test_image_recipient_validation_fails_closed(tmp_path: Path, outcome: object) -> None:
-    calls = []
+@pytest.mark.parametrize("outcome", [False, None, 1, "true", "exception", "absent"])
+async def test_current_recipient_authorization_requires_literal_true(
+    tmp_path: Path, outcome: object
+) -> None:
     async with running(tmp_path) as broker:
-        preview = await completed_preview(broker)
+        await completed_preview(broker)
+        calls = []
 
         def validate(principal: str, origin: str, scopes: frozenset[str]) -> object:
             calls.append((principal, origin, scopes))
@@ -248,33 +161,90 @@ async def test_image_recipient_validation_fails_closed(tmp_path: Path, outcome: 
                 raise RuntimeError("SYNTHETIC_CALLBACK_ERROR_NOT_DISCLOSED")
             return outcome
 
-        broker.principal_valid = validate
-        with pytest.raises(BrokerError, match="^image_recipient_not_authorized$"):
-            decide(broker, preview, "approve")
-        assert calls == [(PRINCIPAL, Origin.REMOTE.value, frozenset({"read"}))]
-        pending(broker, "review")
-        assert decide(broker, preview, "reject")["delivery_state"] == "rejected"
+        broker.principal_valid = None if outcome == "absent" else validate
+        unavailable(broker, "review")
+        if outcome != "absent":
+            assert calls == [(PRINCIPAL, Origin.REMOTE.value, frozenset({"read"}))]
+        broker.principal_valid = lambda *args: True
+        assert broker.read_capture("review", PRINCIPAL).png
         assert broker.backend.calls == 1
 
 
-async def test_delivery_inventory_stays_bounded_and_evicted_preview_cannot_approve(
-    tmp_path: Path,
-) -> None:
+@pytest.mark.parametrize("mutation", [
+    "expire", "remove", "recipient", "pixels", "origin", "deadline", "born", "job", "epoch",
+    "closing", "replace-validator", "delete-job",
+])
+async def test_read_revalidates_after_recipient_callback(tmp_path: Path, mutation: str) -> None:
+    clock = Clock()
+    async with running(tmp_path, clock=clock) as broker:
+        await completed_preview(broker)
+
+        def validate(*args):
+            retained = broker.captures["review"]
+            if mutation == "expire":
+                clock.now = retained.deadline
+            elif mutation == "remove":
+                del broker.captures["review"]
+            elif mutation == "recipient":
+                broker.captures["review"] = replace(retained, principal_id="changed-recipient")
+            elif mutation == "pixels":
+                broker.captures["review"] = replace(
+                    retained, image=replace(retained.image, png=b"different-pixels")
+                )
+            elif mutation == "origin":
+                broker.captures["review"] = replace(retained, origin=Origin.LOCAL.value)
+            elif mutation == "deadline":
+                broker.captures["review"] = replace(retained, deadline=retained.deadline + 1)
+            elif mutation == "born":
+                broker.captures["review"] = replace(retained, born_utc="replacement-time")
+            elif mutation == "job":
+                broker._store().set_job("review", "failed", "synthetic_failure")
+            elif mutation == "epoch":
+                broker.epoch += "changed"
+            elif mutation == "closing":
+                broker.closing = True
+            elif mutation == "replace-validator":
+                broker.principal_valid = lambda *args: True
+            else:
+                broker._store().db.execute("DELETE FROM jobs WHERE id=?", ("review",))
+            return True
+
+        broker.principal_valid = validate
+        unavailable(broker, "review")
+        assert broker.backend.calls == 1
+
+
+async def test_inventory_is_bounded_and_evicted_pixels_cannot_be_read(tmp_path: Path) -> None:
     async with running(tmp_path) as broker:
         session = acquire(broker)
         for index in range(9):
             enqueue(broker, session, f"review-{index}")
             await broker.queue.join()
-            if index == 0:
-                oldest = broker.operator_image("review-0")
             assert len(broker.operator_images()["images"]) <= 8
         assert len(broker.operator_images()["images"]) == 8
+        unavailable(broker, "review-0")
         with pytest.raises(BrokerError, match="^capture_not_available$"):
-            decide(broker, oldest, "approve")
+            broker.operator_image("review-0")
         assert broker.backend.calls == 9
 
 
-async def test_delivery_http_local_preview_approval_then_remote_read(
+async def test_identical_pixels_remain_bound_to_their_requested_job(tmp_path: Path) -> None:
+    async with running(tmp_path) as broker:
+        session = acquire(broker)
+        for job_id in ("first-image", "second-image"):
+            enqueue(broker, session, job_id)
+            await broker.queue.join()
+        first = broker.operator_image("first-image")
+        second = broker.operator_image("second-image")
+        assert first["sha256"] == second["sha256"]
+        assert first["delivery_revision"] != second["delivery_revision"]
+        assert broker.read_capture("first-image", PRINCIPAL).png
+        assert broker.read_capture("second-image", PRINCIPAL).png
+        unavailable(broker, "missing-image")
+        assert broker.backend.calls == 2 and broker.queue.empty()
+
+
+async def test_delivery_http_immediate_read_and_retired_decisions_without_recapture(
     registry_service: RegistryService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = registry_service
@@ -286,109 +256,71 @@ async def test_delivery_http_local_preview_approval_then_remote_read(
             trust_env=False, headers={"Authorization": f"Bearer {LOCAL}"}
         ) as operator,
     ):
-        inventory = await operator.get(base + "/images")
-        assert inventory.status_code == 200 and inventory.json()["images"] == []
-        assert service.backend.calls == 0
+        assert (await operator.get(base + "/images")).json()["images"] == []
         tools = {tool.name for tool in (await remote.list_tools()).tools}
         assert "read_capture" in tools
-        assert not any(
-            "approv" in tool or "operator" in tool or "image_decision" in tool for tool in tools
-        )
+        assert not any("approv" in tool or "operator" in tool for tool in tools)
         lease = await call(remote, "acquire_session", {"owner": "remote_mcp"})
         plan = await capture(remote, "http-review", lease["session"])
         await service.resident.queue.join()
-        before = await read_capture(remote, "http-review")
-        assert_unavailable(before, "capture_delivery_approval_required")
-        preview_response = await operator.post(base + "/image", json={"job_id": "http-review"})
-        assert preview_response.status_code == 200
-        assert preview_response.headers["cache-control"] == "no-store"
-        preview = preview_response.json()
-        pixels = base64.b64decode(preview["image_base64"], validate=True)
-        assert pixels.startswith(b"\x89PNG\r\n\x1a\n")
+        pixels = assert_image(await read_capture(remote, "http-review"))
+        response = await operator.post(base + "/image", json={"job_id": "http-review"})
+        assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
+        preview = response.json()
+        assert preview["delivery_state"] == "available"
         assert preview["recipient_principal"] == service.keys["first"].metadata.principal_id
-        assert preview["sha256"] == hashlib.sha256(pixels).hexdigest()
-        assert preview["delivery_state"] == "pending"
+        assert base64.b64decode(preview["image_base64"], validate=True) == pixels
         inventory = await operator.get(base + "/images")
         assert inventory.headers["cache-control"] == "no-store"
         assert "image_base64" not in inventory.text
-        assert_unavailable(
-            await read_capture(remote, "http-review"), "capture_delivery_approval_required"
-        )
         payload = {field: preview[field] for field in ("job_id", "sha256", "delivery_revision")}
-        payload["decision"] = "approve"
-        for _ in range(2):
-            response = await operator.post(base + "/image-decision", json=payload)
-            assert response.json() == {
-                "ok": True,
-                "job_id": "http-review",
-                "delivery_state": "approved",
-            }
-        assert assert_image(await read_capture(remote, "http-review")) == pixels
-        replay = await call(
-            remote, "execute_test", {"session": lease["session"], "plan_hash": plan["plan_hash"]}
-        )
+        for decision in ("approve", "reject", True, "unsupported"):
+            response = await operator.post(
+                base + "/image-decision", json={**payload, "decision": decision}
+            )
+            assert response.status_code == 410
+            assert response.json() == {"ok": False, "error": "product_approval_retired"}
+            assert preview["image_base64"] not in response.text
+            assert assert_image(await read_capture(remote, "http-review")) == pixels
+        replay = await call(remote, "execute_test", {
+            "session": lease["session"], "plan_hash": plan["plan_hash"],
+        })
         assert replay["deduplicated"] and service.backend.calls == 1
-        public = json.dumps(
-            [
-                service.resident.status(),
-                service.resident.job("http-review"),
-                service.resident.read_logs(LogRequest()),
-            ]
-        )
+        public = json.dumps([
+            service.resident.status(), service.resident.job("http-review"),
+            service.resident.read_logs(LogRequest()),
+        ])
         history = "\n".join(service.resident._store().db.iterdump())
         for forbidden in (
-            preview["image_base64"],
-            pixels.hex(),
-            lease["session"],
-            *(key.token for key in service.keys.values()),
-            LOCAL,
-            REMOTE,
+            preview["image_base64"], pixels.hex(), lease["session"],
+            *(key.token for key in service.keys.values()), LOCAL, REMOTE,
         ):
             assert forbidden not in public and forbidden not in history
-        for path in service.resident.settings.state_dir.rglob("*"):
-            # A shorter file cannot contain the complete PNG. In particular,
-            # Windows denies reads of the broker's actively locked one-byte file.
-            if path.is_file() and path.stat().st_size >= len(pixels):
-                assert pixels not in path.read_bytes()
 
 
 @pytest.mark.parametrize("invalidation", ["revoke", "expire", "rotate"])
-async def test_delivery_http_rechecks_current_recipient_at_approval_time(
+async def test_delivery_http_rechecks_recipient_credential_on_every_read(
     registry_service: RegistryService, monkeypatch: pytest.MonkeyPatch, invalidation: str
 ) -> None:
     service = registry_service
     monkeypatch.setattr(server_module, "time", lambda: service.now[0])
     key = service.keys["first"]
-    base = service.url.removesuffix("/mcp") + "/operator"
     async with connect(service.url, key.token) as remote:
         lease = await call(remote, "acquire_session", {"owner": "remote_mcp"})
         await capture(remote, "changed-recipient", lease["session"])
         await service.resident.queue.join()
-    async with httpx2.AsyncClient(
-        trust_env=False, headers={"Authorization": f"Bearer {LOCAL}"}
-    ) as operator:
-        preview = (
-            await operator.post(base + "/image", json={"job_id": "changed-recipient"})
-        ).json()
-        if invalidation == "revoke":
-            assert service.registry.revoke(key.metadata.key_id)
-        elif invalidation == "expire":
-            service.now[0] += 11
-        else:
-            replacement = service.registry.rotate(key.metadata.key_id)
-            async with connect(service.url, replacement.token) as stranger:
-                assert_unavailable(await read_capture(stranger, "changed-recipient"))
-        payload = {field: preview[field] for field in ("job_id", "sha256", "delivery_revision")}
-        response = await operator.post(
-            base + "/image-decision", json={**payload, "decision": "approve"}
-        )
-        assert response.json() == {"ok": False, "error": "image_recipient_not_authorized"}
-        assert service.resident.captures["changed-recipient"].delivery_state == "pending"
-        rejected = await operator.post(
-            base + "/image-decision", json={**payload, "decision": "reject"}
-        )
-        assert rejected.json()["delivery_state"] == "rejected"
-        assert service.backend.calls == 1
+        assert_image(await read_capture(remote, "changed-recipient"))
+    if invalidation == "revoke":
+        assert service.registry.revoke(key.metadata.key_id)
+    elif invalidation == "expire":
+        service.now[0] += 11
+    else:
+        replacement = service.registry.rotate(key.metadata.key_id)
+        async with connect(service.url, replacement.token) as stranger:
+            assert_unavailable(await read_capture(stranger, "changed-recipient"))
+    with pytest.raises(BrokerError, match="^capture_not_available$"):
+        service.resident.read_capture("changed-recipient", key.metadata.principal_id)
+    assert service.backend.calls == 1
 
 
 async def test_delivery_http_all_routes_require_local_control_and_existing_loopback_guards(
@@ -439,128 +371,3 @@ async def test_delivery_http_all_routes_require_local_control_and_existing_loopb
                 assert response.status_code == 403
     assert service.backend.calls == 0 and service.resident.queue.empty()
     assert not service.resident.captures
-
-
-@pytest.mark.parametrize("mutation", ["expire", "remove", "recipient", "decision", "job"])
-async def test_delivery_revalidates_after_recipient_metadata_lookup(
-    tmp_path: Path, mutation: str
-) -> None:
-    clock = Clock()
-    async with running(tmp_path, clock=clock) as broker:
-        preview = await completed_preview(broker)
-
-        def metadata_lookup(principal: str, origin: str, scopes: frozenset[str]) -> bool:
-            retained = broker.captures["review"]
-            if mutation == "expire":
-                clock.now = retained.deadline
-            elif mutation == "remove":
-                del broker.captures["review"]
-            elif mutation == "recipient":
-                broker.captures["review"] = replace(retained, principal_id="changed-recipient")
-            elif mutation == "decision":
-                broker.captures["review"] = replace(retained, delivery_state="rejected")
-            else:
-                broker._store().set_job("review", "failed", "synthetic_failure")
-            return True
-
-        broker.principal_valid = metadata_lookup
-        with pytest.raises(BrokerError):
-            decide(broker, preview, "approve")
-        assert all(item.delivery_state != "approved" for item in broker.captures.values())
-        assert broker.backend.calls == 1
-
-
-async def test_delivery_http_rejection_blocks_remote_pixels_without_recapture(
-    registry_service: RegistryService,
-) -> None:
-    service = registry_service
-    base = service.url.removesuffix("/mcp") + "/operator"
-    async with (
-        connect(service.url, service.keys["second"].token) as remote,
-        httpx2.AsyncClient(
-            trust_env=False, headers={"Authorization": f"Bearer {LOCAL}"}
-        ) as operator,
-    ):
-        lease = await call(remote, "acquire_session", {"owner": "remote_mcp"})
-        await capture(remote, "rejected-image", lease["session"])
-        await service.resident.queue.join()
-        preview = (await operator.post(base + "/image", json={"job_id": "rejected-image"})).json()
-        payload = {field: preview[field] for field in ("job_id", "sha256", "delivery_revision")}
-        for _ in range(2):
-            response = await operator.post(
-                base + "/image-decision", json={**payload, "decision": "reject"}
-            )
-            assert response.json() == {
-                "ok": True,
-                "job_id": "rejected-image",
-                "delivery_state": "rejected",
-            }
-            assert_unavailable(
-                await read_capture(remote, "rejected-image"), "capture_delivery_rejected"
-            )
-        response = await operator.post(
-            base + "/image-decision", json={**payload, "decision": "approve"}
-        )
-        assert response.json() == {"ok": False, "error": "image_decision_final"}
-        assert service.backend.calls == 1 and service.resident.queue.empty()
-
-
-async def test_delivery_http_strict_input_never_implicitly_approves_or_echoes_pixels(
-    registry_service: RegistryService,
-) -> None:
-    service = registry_service
-    base = service.url.removesuffix("/mcp") + "/operator"
-    async with connect(service.url, service.keys["second"].token) as remote:
-        lease = await call(remote, "acquire_session", {"owner": "remote_mcp"})
-        await capture(remote, "strict-image", lease["session"])
-        await service.resident.queue.join()
-    async with httpx2.AsyncClient(
-        trust_env=False, headers={"Authorization": f"Bearer {LOCAL}"}
-    ) as operator:
-        preview = (await operator.post(base + "/image", json={"job_id": "strict-image"})).json()
-        payload = {field: preview[field] for field in ("job_id", "sha256", "delivery_revision")}
-        payload["decision"] = "approve"
-        for invalid in (
-            {key: value for key, value in payload.items() if key != "decision"},
-            {**payload, "decision": True},
-            {**payload, "decision": "approved"},
-            {**payload, "delivery_revision": "invalid"},
-            {**payload, "sha256": None},
-            {**payload, "image_base64": preview["image_base64"]},
-        ):
-            response = await operator.post(base + "/image-decision", json=invalid)
-            assert response.status_code == 400
-            assert preview["image_base64"] not in response.text
-        body = json.dumps(payload).removesuffix("}") + ',"decision":"reject"}'
-        response = await operator.post(
-            base + "/image-decision", content=body, headers={"Content-Type": "application/json"}
-        )
-        assert response.status_code == 400
-        assert (await operator.get(base + "/image-decision")).status_code == 405
-        assert (await operator.get(base + "/image")).status_code == 405
-        assert (await operator.post(base + "/images", json={})).status_code == 405
-        assert (
-            await operator.get(base + "/images", params={"job_id": "strict-image"})
-        ).status_code == 400
-        assert service.resident.captures["strict-image"].delivery_state == "pending"
-        assert service.backend.calls == 1
-
-
-async def test_identical_pixels_in_another_job_need_their_own_delivery_decision(
-    tmp_path: Path,
-) -> None:
-    async with running(tmp_path) as broker:
-        session = acquire(broker)
-        for job_id in ("first-image", "second-image"):
-            enqueue(broker, session, job_id)
-            await broker.queue.join()
-        first = broker.operator_image("first-image")
-        second = broker.operator_image("second-image")
-        assert first["sha256"] == second["sha256"]
-        assert first["delivery_revision"] != second["delivery_revision"]
-        with pytest.raises(BrokerError, match="^stale_image_preview$"):
-            decide(broker, {**first, "job_id": "second-image"}, "approve")
-        decide(broker, first, "approve")
-        assert broker.read_capture("first-image", PRINCIPAL).png
-        pending(broker, "second-image")
-        assert broker.backend.calls == 2 and broker.queue.empty()

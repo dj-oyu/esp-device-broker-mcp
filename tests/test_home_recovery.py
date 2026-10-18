@@ -1,4 +1,4 @@
-"""Dedicated HOME recovery with fake USB, clock and grants; never real hardware."""
+"""Dedicated HOME recovery with fake USB, clock and authentication; never real hardware."""
 
 import asyncio
 import threading
@@ -12,7 +12,6 @@ import pytest
 from cardputer_mcp.broker import Broker, BrokerError, digest_plan
 from cardputer_mcp.config import SerialSettings, Settings
 from cardputer_mcp.home_recovery import (
-    ATTESTATION,
     CancelHomeRecovery,
     HomeRecovery,
     RequestHomeRecovery,
@@ -86,7 +85,7 @@ async def running(tmp_path):
         expected_firmware_sha256="a" * 64,
     )
     backend = SerialBackend(config, inventory=lambda: inventory, factory=lambda: port, clock=clock)
-    grants = {"client": True, "operator": True}
+    grants = {"client": True}
     broker = Broker(
         Settings(state_dir=tmp_path / "state", backend="serial", serial=config),
         backend=backend,
@@ -156,19 +155,24 @@ def request(e, job="recover-one"):
     )
 
 
-async def approve(e, prepared):
-    digest = prepared["plan_hash"]
-    review = e.m.review(digest)
-    result = e.m.approve(digest, review["review_revision"], ATTESTATION, "operator")
-    await e.m.entries[digest].task
-    return result, e.b.job(prepared["plan"]["job_id"])
+async def finish(e, prepared):
+    await e.m.entries[prepared["plan_hash"]].task
+    return prepared, e.b.job(prepared["plan"]["job_id"])
 
 
 async def test_exact_recovery_records_atomic_resolution_and_cannot_repeat(tmp_path):
     async with running(tmp_path) as e:
         p = request(e)
         assert not e.port.opens and e.b._store().needs_review()
-        _, job = await approve(e, p)
+        assert p["state"] == "running" and p["job_id"] == "recover-one"
+        assert "attestation" not in p and "review_revision" not in p
+        assert e.b._store().home_source(e.source["job_id"])["attempted"] == 1
+        receipt = e.b._store().db.execute("SELECT * FROM home_recovery_executions").fetchone()
+        assert receipt["principal_id"] == "client"
+        assert receipt["source_hash"] == digest_plan(e.source)
+        assert receipt["recovery_hash"] == p["plan_hash"]
+        assert e.b._store().db.execute("SELECT count(*) FROM home_recovery_approvals").fetchone()[0] == 0
+        _, job = await finish(e, p)
         assert job["state"] == "succeeded", job
         assert e.port.writes == [b"q"] and e.port.opens == e.port.closes == 1
         source = e.b.job(e.source["job_id"])
@@ -177,8 +181,7 @@ async def test_exact_recovery_records_atomic_resolution_and_cannot_repeat(tmp_pa
         assert e.b.active_job is None
         with pytest.raises(BrokerError):
             request(e, "again")
-        with pytest.raises(BrokerError):
-            e.m.approve(p["plan_hash"], "b" * 64, ATTESTATION, "operator")
+        assert not hasattr(e.m, "approve") and not hasattr(e.m, "review")
 
 
 @pytest.mark.parametrize(
@@ -198,7 +201,7 @@ async def test_old_incomplete_or_wrong_home_is_not_fresh_success(tmp_path, befor
     async with running(tmp_path) as e:
         e.port.queue.extend(before)
         e.port.reply = reply
-        _, job = await approve(e, request(e))
+        _, job = await finish(e, request(e))
         assert job["state"] == "needs_review"
         assert e.b.job(e.source["job_id"])["reviewed"] == 0
         assert len(e.port.writes) <= 1 and e.port.opens == e.port.closes == 1
@@ -207,7 +210,7 @@ async def test_old_incomplete_or_wrong_home_is_not_fresh_success(tmp_path, befor
 async def test_home_followed_by_close_failure_retains_owner_and_review(tmp_path):
     async with running(tmp_path) as e:
         e.port.close_fails = True
-        _, job = await approve(e, request(e))
+        _, job = await finish(e, request(e))
         assert job["state"] == "needs_review"
         assert e.backend.ownership_uncertain and e.backend.hardware_connected
         assert e.backend.active == 1 and e.b.active_job == job["id"]
@@ -215,18 +218,15 @@ async def test_home_followed_by_close_failure_retains_owner_and_review(tmp_path)
 
 
 @pytest.mark.parametrize(
-    "change", ["expired", "revoked", "operator", "epoch", "target", "firmware", "cancelled"]
+    "change", ["expired", "revoked", "epoch", "target", "firmware", "cancelled"]
 )
-async def test_review_or_execution_cannot_revive_changed_authority(tmp_path, change):
+async def test_explicit_execution_cannot_revive_changed_authority(tmp_path, change):
     async with running(tmp_path) as e:
         p = request(e)
-        r = e.m.review(p["plan_hash"])
         if change == "expired":
             e.clock.now += 30
         elif change == "revoked":
             e.grants["client"] = False
-        elif change == "operator":
-            e.grants["operator"] = False
         elif change == "epoch":
             e.b.epoch = "9" * 32
         elif change == "target":
@@ -239,8 +239,8 @@ async def test_review_or_execution_cannot_revive_changed_authority(tmp_path, cha
             e.m.cancel(
                 CancelHomeRecovery(job_id=p["plan"]["job_id"], plan_hash=p["plan_hash"]), "client"
             )
-        with pytest.raises(BrokerError):
-            e.m.approve(p["plan_hash"], r["review_revision"], ATTESTATION, "operator")
+        _, job = await finish(e, p)
+        assert job["state"] == "needs_review"
         assert not e.port.opens and not e.port.writes
 
 
@@ -270,6 +270,79 @@ async def test_other_reviews_and_unknown_or_busy_ownership_are_refused(tmp_path,
         assert not e.port.opens
 
 
+@pytest.mark.parametrize("change", ["revoked", "expired"])
+async def test_final_audit_callback_cannot_resolve_stale_authority(tmp_path, monkeypatch, change):
+    async with running(tmp_path) as e:
+        store = e.b._store()
+        audit = store.home_audit
+
+        def changed(source, recovery, event):
+            audit(source, recovery, event)
+            if event == "fresh_home_and_close_confirmed":
+                if change == "revoked":
+                    e.grants["client"] = False
+                else:
+                    e.clock.now += 16
+
+        monkeypatch.setattr(store, "home_audit", changed)
+        _, job = await finish(e, request(e))
+        assert job["state"] == "needs_review"
+        assert e.b.job(e.source["job_id"])["reviewed"] == 0
+        assert e.port.writes == [b"q"]
+        assert not store.db.execute(
+            "SELECT 1 FROM home_recovery_audit WHERE event='fresh_home_and_close_confirmed'"
+        ).fetchone()
+
+
+@pytest.mark.parametrize("field", ["source_hash", "recovery_hash", "principal_id", "proof"])
+async def test_final_commit_requires_exact_execution_receipt(tmp_path, monkeypatch, field):
+    async with running(tmp_path) as e:
+        store = e.b._store()
+        audit = store.home_audit
+
+        def changed(source, recovery, event):
+            audit(source, recovery, event)
+            if event == "fresh_home_and_close_confirmed":
+                value = "{}" if field == "proof" else "different"
+                store.db.execute(
+                    f"UPDATE home_recovery_executions SET {field}=? WHERE recovery_job=?",
+                    (value, recovery),
+                )
+
+        monkeypatch.setattr(store, "home_audit", changed)
+        _, job = await finish(e, request(e))
+        assert job["state"] == "needs_review"
+        assert e.b.job(e.source["job_id"])["reviewed"] == 0
+        assert e.port.writes == [b"q"]
+
+
+@pytest.mark.parametrize("principal,origin", [("other-client", "remote_mcp"), ("client", "local_cli")])
+async def test_direct_request_cannot_take_another_clients_source(tmp_path, principal, origin):
+    async with running(tmp_path) as e:
+        with pytest.raises(BrokerError, match="home_recovery_source_not_eligible"):
+            e.m.request(
+                RequestHomeRecovery(job_id="foreign", source_job_id=e.source["job_id"]),
+                principal,
+                origin,
+            )
+        assert not e.port.opens and e.b._store().job("foreign") is None
+
+
+async def test_direct_request_still_requires_live_read_and_control(tmp_path):
+    async with running(tmp_path) as e:
+        scopes_seen = []
+
+        def only_read(principal, origin, scopes):
+            scopes_seen.append(scopes)
+            return scopes <= {"read"}
+
+        e.b.principal_valid = only_read
+        with pytest.raises(BrokerError, match="home_recovery_unavailable"):
+            request(e)
+        assert frozenset({"read", "control"}) in scopes_seen
+        assert not e.port.opens and not e.port.writes
+
+
 @pytest.mark.parametrize("when", ["open", "read", "after_home"])
 async def test_cancellation_or_loss_during_io_never_reinputs_or_commits(tmp_path, when):
     async with running(tmp_path) as e:
@@ -281,7 +354,7 @@ async def test_cancellation_or_loss_during_io_never_reinputs_or_commits(tmp_path
             e.port.on_read = lambda: entry.stop.set() if e.port.writes else None
         else:
             e.port.on_close = entry.stop.set
-        _, job = await approve(e, p)
+        _, job = await finish(e, p)
         assert job["state"] == "needs_review"
         assert e.b.job(e.source["job_id"])["reviewed"] == 0
         assert len(e.port.writes) <= 1 and e.port.opens == e.port.closes == 1
@@ -289,19 +362,19 @@ async def test_cancellation_or_loss_during_io_never_reinputs_or_commits(tmp_path
             request(e, "retry")
 
 
-@pytest.mark.parametrize("change", ["operator", "expired"])
+@pytest.mark.parametrize("change", ["revoked", "expired"])
 async def test_final_close_callback_cannot_commit_stale_authority(tmp_path, change):
     async with running(tmp_path) as e:
         p = request(e)
 
         def changed():
-            if change == "operator":
-                e.grants["operator"] = False
+            if change == "revoked":
+                e.grants["client"] = False
             else:
                 e.clock.now += 30
 
         e.port.on_close = changed
-        _, job = await approve(e, p)
+        _, job = await finish(e, p)
         assert job["state"] == "needs_review"
         assert e.b.job(e.source["job_id"])["reviewed"] == 0
         assert e.port.writes == [b"q"] and e.port.closes == 1
@@ -320,7 +393,7 @@ async def test_resolution_audit_failure_rolls_back_the_source_review(tmp_path, m
             audit(source, recovery, actual)
 
         monkeypatch.setattr(store, "home_audit", failed)
-        _, job = await approve(e, p)
+        _, job = await finish(e, p)
         assert job["state"] == "needs_review"
         assert e.b.job(e.source["job_id"])["reviewed"] == 0
         assert store.home_source(e.source["job_id"])["attempted"] == 1
@@ -336,8 +409,6 @@ async def test_close_in_progress_retains_reservation_even_after_cancel(tmp_path)
             assert release.wait(5)
 
         e.port.on_close = blocked_close
-        r = e.m.review(p["plan_hash"])
-        e.m.approve(p["plan_hash"], r["review_revision"], ATTESTATION, "operator")
         try:
             assert await asyncio.to_thread(entered.wait, 5)
             e.m.cancel(
@@ -357,7 +428,7 @@ async def test_receive_budget_stops_before_input_without_discard_or_retry(tmp_pa
     async with running(tmp_path) as e:
         e.port.queue.extend([b"x\n" * 2000] * 6)
         p = request(e)
-        _, job = await approve(e, p)
+        _, job = await finish(e, p)
         assert job["state"] == "needs_review"
         assert not e.port.writes and e.port.opens == e.port.closes == 1
         assert e.b.job(e.source["job_id"])["reviewed"] == 0
@@ -366,15 +437,14 @@ async def test_receive_budget_stops_before_input_without_discard_or_retry(tmp_pa
 async def test_enumeration_callback_revocation_cannot_reach_open(tmp_path):
     async with running(tmp_path) as e:
         p = request(e)
-        r = e.m.review(p["plan_hash"])
 
         def revoked_inventory():
             e.grants["client"] = False
             return e.inventory
 
         e.backend.inventory = revoked_inventory
-        with pytest.raises(BrokerError):
-            e.m.approve(p["plan_hash"], r["review_revision"], ATTESTATION, "operator")
+        _, job = await finish(e, p)
+        assert job["state"] == "needs_review"
         assert not e.port.opens and not e.port.writes
 
 
@@ -382,8 +452,8 @@ async def test_nonfinite_deadline_never_grants(tmp_path):
     async with running(tmp_path) as e:
         p = request(e)
         e.m.entries[p["plan_hash"]].deadline = float("nan")
-        with pytest.raises(BrokerError):
-            e.m.review(p["plan_hash"])
+        _, job = await finish(e, p)
+        assert job["state"] == "needs_review"
         assert not e.port.opens
 
 
@@ -395,7 +465,7 @@ async def test_consumption_survives_fresh_store_and_manager(tmp_path, change):
             e.port.reply = [b"HOME_READY\n"]
         elif change == "cancel":
             e.port.on_open = e.m.entries[p["plan_hash"]].stop.set
-        await approve(e, p)
+        await finish(e, p)
         reopened = Store(e.b.settings.state_dir / "history.sqlite3")
         try:
             assert reopened.home_source(e.source["job_id"])["attempted"] == 1

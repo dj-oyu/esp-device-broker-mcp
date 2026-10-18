@@ -168,7 +168,7 @@ GUI の Manual restart は Tunnel client だけを再起動するため、この
 これらの値から接続元の身元や権限を判断しません。未知の `X-Forwarded-*` 等は引き続き拒否し、
 Host・Origin・loopback peer・重複ヘッダー・JSON の検証も維持します。
 local_cli 用キーは専用入口と接続前確認で拒否します。
-認証後の scopes、共有 broker の順番待ち・session・lease・実機のローカル承認は変わりません。
+認証後の scopes、共有 broker の順番待ち・session・lease・実機の明示executeは変わりません。
 
 これは承認されたソース変更とローカル試験の範囲です。実際の Windows 起動、対象アプリからの
 Tunnel 接続、アカウント権限と転送ヘッダーの組合せは利用者の環境で別途確認が必要です。
@@ -218,13 +218,13 @@ API key と Cardputer client key は別のものです。前者は OpenAI Tunnel
 mock とクラウド側の読み取り確認後にのみ検討してください。既存の private device.local.toml に
 非秘密の `[tunnel]` を置き、同じファイルを `-Config` に指定し、明示的に `-EnableSerial` を指定します。
 それだけでは USB を開きません。実行には認証・control 権限・session・ローカルの正確な
-plan 承認が必要です。既存 needs_review を消去したり、失敗した HELLO を再実行したりしません。
+正確なplan_hashの明示executeが必要です。既存 needs_review を消去したり、失敗した HELLO を再実行したりしません。
 現在の実機通信の未解決診断は [DIAGNOSTICS-UPDATE.md](DIAGNOSTICS-UPDATE.md) を参照してください。
 
 ## テストの意味
 
 現行 mcp 2.2 の実 HTTP、2026-07-28 と3種類の旧 initialize、認証ヘッダーの優先順位、
-共有 broker の排他、ローカル承認、mock subprocess を検証しています。
+共有 broker の排他、認証、mock subprocess を検証しています。
 これは公式 client の実行、クラウド Tunnel、実機 USB の成功証明ではありません。
 
 [固定バージョンの設定仕様](https://github.com/openai/tunnel-client/blob/v0.0.15/docs/configuration.md)

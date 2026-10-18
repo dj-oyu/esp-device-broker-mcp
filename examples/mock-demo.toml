@@ -3,6 +3,6 @@ backend = "mock"
 host = "127.0.0.1"
 port = 8765
 state_dir = ".state/demo"
-# Explicit local operator opt-in to allowlisted SYNTHETIC actions only.
+# Legacy compatibility setting, ignored; each synthetic job needs explicit execute.
 allow_mock_execution = true
 mock_stage_seconds = 0.5

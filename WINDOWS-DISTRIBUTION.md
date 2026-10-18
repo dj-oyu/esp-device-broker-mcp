@@ -25,7 +25,7 @@ In another console in the same folder, read the mock broker:
 .\cardputer.exe logs
 ```
 
-This example binds to loopback with mock execution disabled. Stop its owned
+This example binds to loopback with the synthetic mock backend. Stop its owned
 broker console with Ctrl+C when finished. It does not open USB or connect Tunnel.
 For authenticated mock use, select `--auth-source environment` and
 `serve --require-auth`, using the existing process-only credential procedure in
@@ -39,7 +39,10 @@ included in the distribution. Relative `state_dir` remains relative to process c
 The package includes neither ESP-IDF nor a toolchain, firmware, USB driver or
 native Tunnel client. ESP-IDF remains external and pinned to **6.0.1**; this
 packaging change does not add build/flash capabilities or migrate to 6.1.
-Serial actions retain their existing explicit opt-in and approval requirements.
+Serial actions retain explicit startup opt-in, authentication, owned leases and
+separate immutable-plan execution requests. Product approval flows are retired.
+On upgrade, legacy pending/unstarted jobs are cancelled without replay; uncertain
+running work remains quarantined. Preserve the existing state directory.
 The existing PowerShell source launchers still target the source checkout's venv;
 use `cardputer.exe` directly for this distribution.
 

@@ -1,4 +1,4 @@
-"""Exact restart approval and private report delivery across fake broker/MCP boundaries.
+"""Explicit restart request and private report delivery across fake broker/MCP boundaries.
 
 Every port, inventory entry, clock and credential is synthetic. These tests never
 enumerate or open actual USB hardware and never send serial command bytes.
@@ -50,7 +50,6 @@ from cardputer_mcp.models import (
     PrepareRequest,
 )
 from cardputer_mcp.models import TestName as Action
-from cardputer_mcp.operator import approve_plan
 from cardputer_mcp.operator_timeline import OperatorTimeline
 from cardputer_mcp.plan_approval import PlanApprovals
 from cardputer_mcp.server import create_app
@@ -105,10 +104,9 @@ def prepare(env, job_id=JOB):
     )
 
 
-def approve(env, plan):
-    detail = env.approvals.detail(plan["plan_hash"])
-    assert detail["attestation"] == "none"
-    return env.approvals.approve(plan["plan_hash"], detail["review_revision"], "")
+def validate_prepared(env, plan):
+    """Read-only preflight; grants no execution authority."""
+    return env.approvals.validate_current(plan["plan_hash"], env.broker.session)
 
 
 async def execute(env, plan):
@@ -129,12 +127,12 @@ def reset_count(env):
 
 
 @pytest.mark.parametrize("reconnect", [False, True])
-async def test_one_exact_approval_resets_once_and_delivers_only_after_close(
+async def test_one_explicit_request_resets_once_and_delivers_only_after_close(
     tmp_path, caplog, reconnect
 ):
     async with running(tmp_path, reconnect=reconnect) as env:
         plan = prepare(env)
-        assert plan["approval_required"] is True
+        assert plan["approval_required"] is False
         assert plan["plan"]["log_delivery"] == {
             "principal_id": PRINCIPAL,
             "origin": "local_cli",
@@ -145,12 +143,9 @@ async def test_one_exact_approval_resets_once_and_delivers_only_after_close(
             "max_rendered_bytes": 32768,
         }
         request = ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
-        with pytest.raises(BrokerError, match="^operator_approval_required$"):
-            env.broker.execute(request)
         unavailable(env)
         assert not env.created and env.broker.queue.empty() and reset_count(env) == 0
-        assert approve(env, plan)["approved"]
-        assert approve(env, plan)["already_approved"]
+        validate_prepared(env, plan)
         unavailable(env)
         env.broker.execute(request)
         assert env.broker.execute(request)["deduplicated"]
@@ -209,20 +204,8 @@ async def test_anonymous_lease_and_capture_policy_cannot_authorize_restart(tmp_p
             target=lambda: "synthetic-target",
         )
         plan = prepare(env)
-        assert plan["approval_required"] and "policy_permit_available" not in plan
-        with pytest.raises(BrokerError, match="^operator_approval_required$"):
-            env.broker.execute(
-                ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
-            )
-        detail = env.approvals.detail(plan["plan_hash"])
-        with pytest.raises(BrokerError, match="^stale_plan_review$"):
-            env.approvals.approve(plan["plan_hash"], "0" * 64, "")
-        with pytest.raises(BrokerError, match="^device_attestation_required$"):
-            env.approvals.approve(
-                plan["plan_hash"], detail["review_revision"], "DEVICE HOME AND FIRMWARE VERIFIED"
-            )
+        assert not plan["approval_required"] and "policy_permit_available" not in plan
         assert calls == [] and not env.created
-        approve(env, plan)
         await execute(env, plan)
         assert calls == [] and reset_count(env) == 1
 
@@ -246,12 +229,12 @@ async def test_anonymous_lease_and_capture_policy_cannot_authorize_restart(tmp_p
         (None, "observe_seconds", 31),
     ],
 )
-async def test_changed_reset_identity_recipient_or_bounds_cannot_reuse_approval(
+async def test_changed_reset_identity_recipient_or_bounds_cannot_execute(
     tmp_path, rehash, section, field, value
 ):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         changed = json.loads(json.dumps(plan["plan"]))
         (changed if section is None else changed[section])[field] = value
         digest = digest_plan(changed) if rehash else plan["plan_hash"]
@@ -262,8 +245,7 @@ async def test_changed_reset_identity_recipient_or_bounds_cannot_reuse_approval(
                 "UPDATE plans SET payload=? WHERE hash=?", (json.dumps(changed), digest)
             )
         with pytest.raises(BrokerError):
-            detail = env.approvals.detail(digest)
-            env.approvals.approve(digest, detail["review_revision"], "")
+            env.approvals.validate_current(digest, env.broker.session)
         with pytest.raises(BrokerError):
             env.broker.execute(
                 ExecuteRequest(session=env.broker.session.capability, plan_hash=digest)
@@ -272,23 +254,12 @@ async def test_changed_reset_identity_recipient_or_bounds_cannot_reuse_approval(
         unavailable(env)
 
 
-@pytest.mark.parametrize("change", ["before_approval", "after_approval"])
-async def test_changed_port_identity_fails_preflight_without_reset(tmp_path, change):
+async def test_changed_port_identity_fails_preflight_without_reset(tmp_path):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        detail = env.approvals.detail(plan["plan_hash"])
-        if change == "after_approval":
-            approve(env, plan)
         env.inventory[:] = [identity(port="SYNTHETIC_COM99")]
-        if change == "before_approval":
-            with pytest.raises(BrokerError, match="^plan_backend_mismatch$"):
-                env.approvals.approve(plan["plan_hash"], detail["review_revision"], "")
-            with pytest.raises(BrokerError, match="^operator_approval_required$"):
-                await execute(env, plan)
-        else:
+        with pytest.raises(BrokerError, match="^plan_backend_mismatch$"):
             await execute(env, plan)
-            assert env.broker.job(JOB)["state"] == "needs_review"
-            assert env.broker.job(JOB)["result"] == "device_or_plan_changed"
         assert not env.created and reset_count(env) == 0
         unavailable(env)
 
@@ -297,7 +268,7 @@ async def test_changed_port_identity_fails_preflight_without_reset(tmp_path, cha
 async def test_queued_restart_rechecks_authority_before_opening_usb(tmp_path, invalidate):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         env.broker.execute(
             ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
         )
@@ -320,7 +291,7 @@ async def test_no_second_owner_during_reset_reopen_or_close_even_after_cancellat
         local, remote = create_work(env), create_work(env, origin=Origin.REMOTE)
         lease = request_device(env, local)["lease"]
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         request_device(env, remote, origin=Origin.REMOTE)
         entered, release = threading.Event(), threading.Event()
 
@@ -406,7 +377,7 @@ async def test_uncertain_close_withholds_restart_report_and_retains_owner_lock(
         local, remote = create_work(env), create_work(env, origin=Origin.REMOTE)
         lease = request_device(env, local)["lease"]
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         request_device(env, remote, origin=Origin.REMOTE)
         setattr(env.ports[int(phase == "final_close")], failure, True)
         try:
@@ -450,7 +421,7 @@ async def test_uncertain_close_withholds_restart_report_and_retains_owner_lock(
 async def test_malformed_restart_result_cannot_publish_logs(tmp_path, change):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
 
         async def result_without_hardware(plan, stage):
             return BackendResult(RESULT, observation=replace(observed(WIRE), **change))
@@ -466,7 +437,7 @@ async def test_malformed_restart_result_cannot_publish_logs(tmp_path, change):
 async def test_report_reads_never_reset_or_extend_ttl_and_broker_restart_drops_cache(tmp_path):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         request = await execute(env, plan)
         epoch = env.broker.epoch
         env.broker.release(LeaseRequest(session=request.session))
@@ -487,7 +458,7 @@ async def test_report_reads_never_reset_or_extend_ttl_and_broker_restart_drops_c
 async def test_broker_restart_erases_unexpired_report_without_replaying_reset(tmp_path):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         await execute(env, plan)
         assert env.broker.read_device_logs(JOB, PRINCIPAL)["remaining_seconds"] == 300
     async with running(tmp_path) as fresh:
@@ -511,10 +482,10 @@ async def test_private_exception_messages_are_never_returned_or_persisted(
 
             env.backend.prepare = fail_preflight
             with pytest.raises(BrokerError, match="^backend_preflight_failed$"):
-                approve(env, plan)
+                validate_prepared(env, plan)
             assert not env.created
         else:
-            approve(env, plan)
+            validate_prepared(env, plan)
             if failure == "discard":
 
                 def fail_discard():
@@ -534,39 +505,16 @@ async def test_private_exception_messages_are_never_returned_or_persisted(
         assert_no_public_or_durable_logs(env.broker, LOCAL, "/private/fake-port")
 
 
-async def test_cli_single_exact_approval_discloses_reset_method_recipient_and_limits(tmp_path):
+async def test_retired_cli_approval_cannot_reset_or_prompt(tmp_path):
+    from cardputer_mcp import operator
+
     async with running(tmp_path) as env:
-        plan = prepare(env)
+        prepare(env)
         prompts = []
-
-        def confirm(prompt):
-            prompts.append(prompt)
-            return "APPROVE " + plan["plan_hash"]
-
-        assert approve_plan(env.broker.settings.state_dir, plan["plan_hash"], confirm) == {
-            "approved": True,
-            "plan_hash": plan["plan_hash"],
-        }
-        assert len(prompts) == 1 and not env.created
-        for phrase in (
-            "ONE hardware reset",
-            "ESP32-S3 native USB Serial/JTAG",
-            "unsaved work can be lost",
-            "Discard buffered input",
-            "within 8 seconds",
-            "No reset retry",
-            "30 seconds / 64 KiB",
-            "private data",
-            "redaction is not guaranteed complete",
-            "five minutes",
-            "do not prove the application restarted",
-            "esp32s3_usb_serial_jtag_rts_v1",
-            '"rts_hold_milliseconds": 100',
-            PRINCIPAL,
-            plan["plan"]["restart"]["stable_usb_fingerprint"],
-            plan["plan_hash"],
-        ):
-            assert phrase in prompts[0]
+        with pytest.raises(ValueError, match="^approval_interface_retired$"):
+            operator.approve_plan(env.broker.settings.state_dir, "a" * 64, prompts.append)
+        assert prompts == []
+        assert not env.created and reset_count(env) == 0
 
 
 @pytest.fixture
@@ -656,41 +604,14 @@ async def http_observe(env):
             {"session": lease["session"], "job_id": JOB, "test": "restart_and_observe"},
         )
     )["structuredContent"]
-    assert plan["ok"] and plan["approval_required"]
+    assert plan["ok"] and not plan["approval_required"]
     request = {"session": lease["session"], "plan_hash": plan["plan_hash"]}
-    assert (await rpc(env, "execute_test", request))["structuredContent"] == {
-        "ok": False,
-        "error": "operator_approval_required",
-    }
-    assert not env.created and reset_count(env) == 0
-    detail = (await env.http.post("/operator/plan", json={"plan_hash": plan["plan_hash"]})).json()
-    denied = await env.http.post(
-        "/operator/approve-plan",
-        headers={"Authorization": f"Bearer {env.keys['owner'].token}"},
-        json={
-            "plan_hash": plan["plan_hash"],
-            "review_revision": detail["review_revision"],
-            "attestation": "",
-        },
-    )
-    assert denied.status_code == 403 and env.keys["owner"].token not in denied.text
-    assert env.broker._store().db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
-    assert not env.created
-    approved = await env.http.post(
-        "/operator/approve-plan",
-        json={
-            "plan_hash": plan["plan_hash"],
-            "review_revision": detail["review_revision"],
-            "attestation": "",
-        },
-    )
-    assert approved.status_code == 200 and approved.json()["ok"], approved.text
     assert (await rpc(env, "execute_test", request))["structuredContent"]["ok"]
     await asyncio.wait_for(env.broker.queue.join(), timeout=5)
     return lease["session"], plan
 
 
-async def test_authenticated_mcp_restart_requires_local_approval_and_exact_report_recipient(
+async def test_authenticated_mcp_restart_requires_explicit_request_and_exact_report_recipient(
     http_restart,
 ):
     env = http_restart
@@ -769,7 +690,7 @@ async def test_mcp_revalidates_key_after_restart_completion(http_restart, invali
     assert_no_public_or_durable_logs(env.broker, key.token)
 
 
-async def test_mcp_unapproved_controls_and_read_arguments_are_rejected_without_usb(http_restart):
+async def test_mcp_invalid_controls_and_read_arguments_are_rejected_without_usb(http_restart):
     env = http_restart
     response = await rpc_response(
         env,

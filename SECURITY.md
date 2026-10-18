@@ -1,15 +1,15 @@
 # Security boundary
 
 Mock mode is a trusted-local-machine engineering demo. Opt-in serial mode requires
-per-client bearer authentication, authenticated lease ownership and exact local
-operator approval. Neither mode is a supported public Tunnel deployment. Do not
+per-client bearer authentication, authenticated lease ownership and explicit
+execution of an immutable registered plan. Neither mode is a supported public Tunnel deployment. Do not
 expose this listener to a public proxy/tunnel or assume a client label grants cloud
 access. Host/origin checks and loopback binding are defense in depth.
 
 A local OS user who can inspect process environments or read/write state can obtain
-credentials, grant approvals, modify history or bypass application checks. Do not
+credentials, modify history or bypass application checks. Do not
 grant an untrusted MCP agent shell/database access to those resources and then
-claim the operator approval boundary protects against that agent.
+claim a product confirmation prompt protects against that agent.
 
 Windows uses fresh process-scoped credentials for each broker launch; no registry
 or persistent user environment writes are performed. POSIX runtime credential
@@ -19,10 +19,10 @@ unsupported on Windows. See SERIAL.md. The explicit, user-managed stdio client
 env file described below is a separate mechanism.
 
 Serial observation, HOME/DERBY capture, restart and explicit firmware
-backup/flash/restore have separate local approvals. Automated hardware tests use
+backup/flash/restore require separate explicit client requests. Automated hardware tests use
 synthetic devices; packaging success does not prove physical operation.
-Opening/closing a serial port may cause driver control-line glitches. Approval
-states this risk; HELLO additionally states that it exits the current application.
+Opening/closing a serial port may cause driver control-line glitches. Plans
+state this risk; HELLO additionally states that it exits the current application.
 No arbitrary shell, raw serial command, automatic flash/restore or rollback API is exposed.
 
 Cancellation waits for the actual serial worker to finish. An unconfirmed port
@@ -49,7 +49,7 @@ executes trusted registered project/profile code as the local OS user, including
 selected repository commits; it is not a filesystem/network sandbox. See
 FIRMWARE-BUILD.md before registering code. Normal failures with confirmed cleanup
 end without global review. Uncertain process/lock/persistence remains fail closed.
-Device lease and flash/restore approval contracts are unchanged. Existing legacy
+Device leases, registered operation capabilities and flash/readback checks remain enforced. Existing legacy
 review records must still be explicitly acknowledged; installation clears none.
 
 ## Optional scoped keys and Tunnel preparation
@@ -60,7 +60,8 @@ scrollback is not erased. A failed/interrupted disclosure revokes the new key.
 Only SHA-256 verifiers and metadata are stored. The registry path is opt-in and
 must be in an OS-private directory; Windows ACLs are an operator prerequisite.
 Distinct keys bind distinct principals to leases. Read-only keys cannot prepare
-or execute work, and control keys still need the existing local approval boundary.
+or execute work. Control keys can explicitly execute plans within their registered
+scope; no additional product approval is required.
 Revocation/expiry never force device handover during active or uncertain work.
 
 The Tunnel launcher never installs software or creates external account access.

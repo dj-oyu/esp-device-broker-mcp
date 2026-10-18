@@ -1,4 +1,4 @@
-"""Approved firmware reports cross broker/MCP boundaries using fake USB only."""
+"""Explicit firmware reports cross broker/MCP boundaries using fake USB only."""
 
 import asyncio
 import hashlib
@@ -120,10 +120,9 @@ def prepare(env, job_id="firmware-report", *, origin=Origin.LOCAL):
     )
 
 
-def approve(env, plan):
-    detail = env.approvals.detail(plan["plan_hash"])
-    assert detail["attestation"] == "none"
-    return env.approvals.approve(plan["plan_hash"], detail["review_revision"], "")
+def validate_prepared(env, plan):
+    """Read-only preflight; grants no execution authority."""
+    return env.approvals.validate_current(plan["plan_hash"], env.broker.session)
 
 
 async def execute(env, plan):
@@ -233,12 +232,12 @@ async def test_live_scan_detects_committed_secret_in_past_wal_frame(tmp_path):
         assert env.port.opens == env.port.closes == 0
 
 
-async def test_exact_manual_approval_delivers_redacted_report_without_second_approval(
+async def test_explicit_request_delivers_redacted_report_without_approval(
     tmp_path, caplog
 ):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        assert plan["approval_required"] is True
+        assert plan["approval_required"] is False
         assert plan["plan"]["log_delivery"] == {
             "principal_id": PRINCIPAL,
             "origin": "local_cli",
@@ -249,11 +248,9 @@ async def test_exact_manual_approval_delivers_redacted_report_without_second_app
             "max_rendered_bytes": 32768,
         }
         request = ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
-        with pytest.raises(BrokerError, match="^operator_approval_required$"):
-            env.broker.execute(request)
         unavailable(env)
         assert env.port.opens == 0 and env.broker.queue.empty()
-        approve(env, plan)
+        validate_prepared(env, plan)
         unavailable(env)
         request = await execute(env, plan)
         result = env.broker.read_device_logs("firmware-report", PRINCIPAL)
@@ -298,7 +295,7 @@ async def test_unauthenticated_lease_cannot_prepare_device_log_sharing(tmp_path)
         assert env.port.opens == 0
 
 
-async def test_capture_policy_cannot_substitute_for_exact_firmware_plan_approval(tmp_path):
+async def test_legacy_capture_policy_is_ignored_by_explicit_firmware_execution(tmp_path):
     async with running(tmp_path) as env:
         calls = []
         env.broker.capture_policies = SimpleNamespace(
@@ -308,19 +305,10 @@ async def test_capture_policy_cannot_substitute_for_exact_firmware_plan_approval
             target=lambda: "synthetic-policy-target",
         )
         plan = prepare(env)
-        assert plan["approval_required"] is True
+        assert plan["approval_required"] is False
         request = ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
-        with pytest.raises(BrokerError, match="^operator_approval_required$"):
-            env.broker.execute(request)
-        detail = env.approvals.detail(plan["plan_hash"])
-        with pytest.raises(BrokerError, match="^stale_plan_review$"):
-            env.approvals.approve(plan["plan_hash"], "0" * 64, "")
-        with pytest.raises(BrokerError, match="^device_attestation_required$"):
-            env.approvals.approve(
-                plan["plan_hash"], detail["review_revision"], "DEVICE HOME AND FIRMWARE VERIFIED"
-            )
         assert env.port.opens == 0 and calls == []
-        approve(env, plan)
+        validate_prepared(env, plan)
         await execute(env, plan)
         assert env.broker.read_device_logs("firmware-report", PRINCIPAL)["logs"]
         assert calls == [] and env.port.opens == 1
@@ -328,10 +316,10 @@ async def test_capture_policy_cannot_substitute_for_exact_firmware_plan_approval
 
 @pytest.mark.parametrize("change", [{"principal_id": REMOTE_PRINCIPAL}, {"origin": "remote_mcp"}])
 @pytest.mark.parametrize("rehash", [False, True])
-async def test_tampered_log_recipient_cannot_reuse_plan_or_approval(tmp_path, change, rehash):
+async def test_tampered_log_recipient_cannot_execute(tmp_path, change, rehash):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         changed = json.loads(json.dumps(plan["plan"]))
         changed["log_delivery"].update(change)
         plan_hash = digest_plan(changed) if rehash else plan["plan_hash"]
@@ -342,7 +330,7 @@ async def test_tampered_log_recipient_cannot_reuse_plan_or_approval(tmp_path, ch
                 "UPDATE plans SET payload=? WHERE hash=?", (json.dumps(changed), plan_hash)
             )
         with pytest.raises(BrokerError):
-            env.approvals.detail(plan_hash)
+            env.approvals.validate_current(plan_hash, env.broker.session)
         with pytest.raises(BrokerError):
             env.broker.execute(
                 ExecuteRequest(session=env.broker.session.capability, plan_hash=plan_hash)
@@ -354,7 +342,7 @@ async def test_tampered_log_recipient_cannot_reuse_plan_or_approval(tmp_path, ch
 async def test_wrong_principal_and_missing_read_scope_never_expose_report(tmp_path):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         await execute(env, plan)
         for principal in (REMOTE_PRINCIPAL, "same-origin-different-key", ""):
             unavailable(env, principal=principal)
@@ -375,7 +363,7 @@ async def test_wrong_principal_and_missing_read_scope_never_expose_report(tmp_pa
 async def test_current_recipient_validation_fails_closed_and_erases_cache(tmp_path, outcome):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         await execute(env, plan)
 
         def invalid(*args):
@@ -393,7 +381,7 @@ async def test_current_recipient_validation_fails_closed_and_erases_cache(tmp_pa
 async def test_read_after_release_retains_fixed_deadline_and_restart_never_replays(tmp_path):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         request = await execute(env, plan)
         old_epoch = env.broker.epoch
         env.broker.release(LeaseRequest(session=request.session))
@@ -415,7 +403,7 @@ async def test_read_after_release_retains_fixed_deadline_and_restart_never_repla
 async def test_restart_discards_a_still_unexpired_report(tmp_path):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         await execute(env, plan)
         assert env.broker.read_device_logs("firmware-report", PRINCIPAL)["remaining_seconds"] == 300
     async with running(tmp_path) as fresh:
@@ -447,7 +435,7 @@ async def test_closed_work_session_does_not_change_same_key_report_recipient(tmp
         assert first["work_session_id"] != second["work_session_id"]
         request_device(env, first)
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         await execute(env, plan)
         report = env.broker.read_device_logs("firmware-report", PRINCIPAL)
         env.broker.close_work_session(
@@ -468,7 +456,7 @@ async def test_only_newest_completed_report_is_retained(tmp_path):
             if index:
                 env.port.chunks.append(STARTUP + b"second report\n")
             plan = prepare(env, job_id)
-            approve(env, plan)
+            validate_prepared(env, plan)
             await execute(env, plan)
             assert set(env.broker.device_observations) == {job_id}
         unavailable(env, "firmware-0")
@@ -481,7 +469,7 @@ async def test_two_origins_wait_for_confirmed_close_before_handover(tmp_path):
         local, remote = create_work(env), create_work(env, origin=Origin.REMOTE)
         lease = request_device(env, local)["lease"]
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         request_device(env, remote, origin=Origin.REMOTE)
         env.port.close_release = threading.Event()
         env.broker.execute(ExecuteRequest(session=lease["session"], plan_hash=plan["plan_hash"]))
@@ -503,7 +491,7 @@ async def test_two_origins_wait_for_confirmed_close_before_handover(tmp_path):
         unavailable(env, principal=REMOTE_PRINCIPAL)
         env.port.chunks.append(b"remote session console\n")
         next_plan = prepare(env, "remote-report", origin=Origin.REMOTE)
-        approve(env, next_plan)
+        validate_prepared(env, next_plan)
         await execute(env, next_plan)
         assert env.broker.read_device_logs("remote-report", REMOTE_PRINCIPAL)["logs"] == [
             "remote session console"
@@ -517,7 +505,7 @@ async def test_uncertain_close_withholds_data_and_keeps_device_lock(tmp_path, po
     async with running(tmp_path, **port_options) as env:
         try:
             plan = prepare(env)
-            approve(env, plan)
+            validate_prepared(env, plan)
             request = await execute(env, plan)
             assert env.broker.job("firmware-report")["state"] == "needs_review"
             assert env.broker.job("firmware-report")["result"] == "serial_close_unconfirmed"
@@ -542,7 +530,7 @@ async def test_uncertain_close_withholds_data_and_keeps_device_lock(tmp_path, po
 async def test_no_bytes_means_identity_unavailable_without_guessing_or_retry(tmp_path):
     async with running(tmp_path, wire=b"") as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         await execute(env, plan)
         report = env.broker.read_device_logs("firmware-report", PRINCIPAL)
         assert report["logs"] == [] and report["bytes_received"] == 0
@@ -557,7 +545,7 @@ async def test_read_failure_withholds_partial_logs_and_sanitizes_exception(tmp_p
     async with running(tmp_path) as env:
         env.port.chunks.append(OSError(LOG_LINE + SECRETS[0]))
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         await execute(env, plan)
         job = env.broker.job("firmware-report")
         assert job["state"] == "needs_review" and job["result"] == "serial_read_failed"
@@ -573,7 +561,7 @@ async def test_read_failure_withholds_partial_logs_and_sanitizes_exception(tmp_p
 async def test_retained_report_requires_a_succeeded_job(tmp_path, mutation):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         await execute(env, plan)
         if mutation == "missing":
             env.broker._store().db.execute("DELETE FROM jobs WHERE id=?", ("firmware-report",))
@@ -588,7 +576,7 @@ async def test_retained_report_requires_a_succeeded_job(tmp_path, mutation):
 async def test_read_rechecks_job_after_recipient_callback_and_erases_cache(tmp_path, mutation):
     async with running(tmp_path) as env:
         plan = prepare(env)
-        approve(env, plan)
+        validate_prepared(env, plan)
         await execute(env, plan)
 
         def change_job(principal, origin, scopes):
@@ -719,24 +707,8 @@ async def http_observe(env):
             },
         )
     )["structuredContent"]
-    assert prepared["ok"] and prepared["approval_required"]
+    assert prepared["ok"] and not prepared["approval_required"]
     request = {"session": acquired["session"], "plan_hash": prepared["plan_hash"]}
-    assert (await rpc(env, "execute_test", request))["structuredContent"] == {
-        "ok": False,
-        "error": "operator_approval_required",
-    }
-    detail = (
-        await env.http.post("/operator/plan", json={"plan_hash": prepared["plan_hash"]})
-    ).json()
-    approved = await env.http.post(
-        "/operator/approve-plan",
-        json={
-            "plan_hash": prepared["plan_hash"],
-            "review_revision": detail["review_revision"],
-            "attestation": "",
-        },
-    )
-    assert approved.status_code == 200 and approved.json()["ok"], approved.text
     assert (await rpc(env, "execute_test", request))["structuredContent"]["ok"]
     await asyncio.wait_for(env.broker.queue.join(), timeout=5)
     return acquired["session"], prepared

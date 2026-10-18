@@ -1,6 +1,6 @@
 # SYNTHETIC example only. Copy to device.local.toml, then supply private values.
 # This file is NOT permission to open a device. Real mode additionally requires
-# --enable-serial, explicit authentication and local approval of every job.
+# --enable-serial, explicit authentication, an owned lease and exact-plan execute.
 backend = "serial"
 host = "127.0.0.1"
 port = 8765
@@ -10,8 +10,8 @@ allow_mock_execution = false
 [serial]
 protocol = "pocketjs-hello-v1"
 observe_seconds = 2
-# Replace with the expected firmware image hash before approving HELLO.
-# This is operator attestation, not an on-device measurement of running firmware.
+# Replace with the expected firmware image hash before preparing HELLO.
+# This binds configuration; it is not an on-device measurement of running firmware.
 expected_firmware_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 [serial.selector]
