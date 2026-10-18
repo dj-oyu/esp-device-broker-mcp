@@ -136,15 +136,6 @@ class OperatorClient:
     def diagnostics(self) -> dict[str, Any]:
         return parse_http_diagnostics(self._request("GET", "/operator/http-diagnostics"))
 
-
-
-
-
-
-
-
-
-
     def cancel_job(self, job_id: str, plan_hash: str, broker_epoch: str) -> dict[str, Any]:
         return self._request(
             "POST",
@@ -160,14 +151,11 @@ class OperatorClient:
             {"job_id": job_id, "plan_hash": plan_hash, "diagnostic_id": diagnostic_id},
         )
 
-
-
     def images(self) -> dict[str, Any]:
         return self._request("GET", "/operator/images")
 
     def image(self, job_id: str) -> dict[str, Any]:
         return self._request("POST", "/operator/image", {"job_id": job_id})
-
 
     def catalog(self) -> dict[str, Any]:
         from .mcp_diagnostics import MCPDiagnosticsError, probe

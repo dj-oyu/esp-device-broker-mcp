@@ -23,8 +23,11 @@ def observed_card(*, restart=False):
     return card(
         backend="serial",
         test="restart_and_observe" if restart else "firmware_observe",
-        result=("restart_observation_completed_unverified" if restart
-                else "firmware_observation_completed_no_commands"),
+        result=(
+            "restart_observation_completed_unverified"
+            if restart
+            else "firmware_observation_completed_no_commands"
+        ),
         device_observation={
             "job_id": "job_image_1",
             "sha256": report.sha256,
@@ -127,7 +130,9 @@ def test_same_report_hash_cannot_refresh_changed_metadata_as_current():
 
 
 @pytest.mark.parametrize("kind", ["image", "observation"])
-def test_retention_identity_capacity_fails_closed_without_evicting_prior_deadline(monkeypatch, kind):
+def test_retention_identity_capacity_fails_closed_without_evicting_prior_deadline(
+    monkeypatch, kind
+):
     monkeypatch.setattr("cardputer_mcp.gui_timeline.MAX_RETENTION_IDENTITIES", 1)
     clock, api = Clock(), FakeAPI()
     model = TimelineController(clock)
@@ -151,10 +156,16 @@ def test_retention_identity_capacity_fails_closed_without_evicting_prior_deadlin
     assert getattr(model.card("job_image_1"), attribute).expires_at == first_expiry
 
 
-@pytest.mark.parametrize("field,value", [
-    ("reset_sequence_issued", 1), ("capture_gap", "yes"),
-    ("partial", None), ("bytes_received", 65537), ("retained_lines", 257),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("reset_sequence_issued", 1),
+        ("capture_gap", "yes"),
+        ("partial", None),
+        ("bytes_received", 65537),
+        ("retained_lines", 257),
+    ],
+)
 def test_report_metadata_parser_still_rejects_unbounded_or_nonstrict_fields(field, value):
     row = observed_card()
     row["device_observation"]["metadata"][field] = value

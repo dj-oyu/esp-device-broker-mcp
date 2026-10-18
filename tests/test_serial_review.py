@@ -322,7 +322,9 @@ async def test_review_serial_exception_and_raw_bytes_are_not_persisted(tmp_path:
     )
     await broker.start()
     try:
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")[
+            "session"
+        ]
         plan = broker.prepare(
             PrepareRequest(session=token, job_id="synthetic-serial", test=DeviceTest.OBSERVE)
         )

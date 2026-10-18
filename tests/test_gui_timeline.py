@@ -1,4 +1,5 @@
 """Read-only UI integrity, retention and explicit cancellation; no device access."""
+
 import copy
 from typing import Any
 
@@ -7,8 +8,12 @@ from test_gui_images import detail as image_detail
 from test_gui_images import row as image_row
 
 from cardputer_mcp.gui_timeline import (
-    CANCEL_UNCERTAIN, PREVIEW_FAILED, TimelineController, TimelineOperation,
-    TimelineSnapshot, perform_timeline,
+    CANCEL_UNCERTAIN,
+    PREVIEW_FAILED,
+    TimelineController,
+    TimelineOperation,
+    TimelineSnapshot,
+    perform_timeline,
 )
 
 
@@ -20,17 +25,33 @@ class Clock:
 
 
 def card(**changes: Any):
-    return {"job_id": "job_image_1", "plan_hash": "a" * 64, "test": "capture_home",
-            "backend": "mock", "state": "succeeded", "stage": None, "result": None,
-            "created_utc": "2026-10-03T13:30:00+00:00", "finished_utc": None,
-            "reviewed": False, "review": None, "image": None, "cancel_available": False,
-            **changes}
+    return {
+        "job_id": "job_image_1",
+        "plan_hash": "a" * 64,
+        "test": "capture_home",
+        "backend": "mock",
+        "state": "succeeded",
+        "stage": None,
+        "result": None,
+        "created_utc": "2026-10-03T13:30:00+00:00",
+        "finished_utc": None,
+        "reviewed": False,
+        "review": None,
+        "image": None,
+        "cancel_available": False,
+        **changes,
+    }
 
 
 def snapshot(rows=None, **changes):
-    return {"ok": True, "broker_epoch": "e" * 32,
-            "cards": rows if rows is not None else [card()],
-            "has_more": False, "plans_available": False, **changes}
+    return {
+        "ok": True,
+        "broker_epoch": "e" * 32,
+        "cards": rows if rows is not None else [card()],
+        "has_more": False,
+        "plans_available": False,
+        **changes,
+    }
 
 
 class FakeAPI:
@@ -58,16 +79,29 @@ class FakeAPI:
 
     def cancel_job(self, job_id, plan_hash, broker_epoch):
         self.calls.append(("cancel_job", job_id, plan_hash, broker_epoch))
-        return self.cancel_response or dict(ok=True, job_id=job_id, plan_hash=plan_hash,
-                                            broker_epoch=broker_epoch, state="running",
-                                            stop_requested=False)
+        return self.cancel_response or dict(
+            ok=True,
+            job_id=job_id,
+            plan_hash=plan_hash,
+            broker_epoch=broker_epoch,
+            state="running",
+            stop_requested=False,
+        )
 
 
 def loaded(*, cancellable=False):
     clock, api = Clock(), FakeAPI()
     if cancellable:
-        api.status = snapshot([card(test="firmware_build", backend="registered_project",
-                                    state="running", cancel_available=True)])
+        api.status = snapshot(
+            [
+                card(
+                    test="firmware_build",
+                    backend="registered_project",
+                    state="running",
+                    cancel_available=True,
+                )
+            ]
+        )
     model = TimelineController(clock)
     op = model.refresh()
     assert model.accept(perform_timeline(api, op, clock))
@@ -93,9 +127,14 @@ def test_explicit_preview_exact_identity_without_delivery_approval():
     assert api.calls == [("timeline",), ("image", "job_image_1")]
 
 
-@pytest.mark.parametrize("field,value", [
-    ("job_id", "other"), ("recipient_principal", "other"), ("sha256", "b" * 64),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("job_id", "other"),
+        ("recipient_principal", "other"),
+        ("sha256", "b" * 64),
+    ],
+)
 def test_changed_preview_target_is_rejected_without_retry(field, value):
     model, api, clock = loaded()
     operation = model.load_preview("job_image_1")
@@ -177,12 +216,16 @@ def test_wrong_cancel_ack_is_uncertain_and_never_retried():
     assert len(api.calls) == 2
 
 
-@pytest.mark.parametrize("change", [
-    {"cards": [] * 33, "broker_epoch": "bad"},
-    {"cards": [card()] * 33}, {"cards": [card()] * 2},
-    {"cards": [card(review={"approval": "old"})]},
-    {"cards": [card(cancel_available=True)]},
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"cards": [] * 33, "broker_epoch": "bad"},
+        {"cards": [card()] * 33},
+        {"cards": [card()] * 2},
+        {"cards": [card(review={"approval": "old"})]},
+        {"cards": [card(cancel_available=True)]},
+    ],
+)
 def test_unbounded_wrong_epoch_or_obsolete_action_projection_rejected(change):
     data = snapshot()
     data.update(change)
@@ -215,13 +258,17 @@ def test_selection_change_invalidates_pending_and_displayed_preview():
 def test_timeline_worker_only_reads_on_background_thread_without_tk():
     import queue
     import threading
+
     from cardputer_mcp.gui_timeline import TimelinePanel
+
     api = FakeAPI()
     called = []
     original = api.timeline
+
     def tracked():
         called.append(threading.get_ident())
         return original()
+
     api.timeline = tracked
     panel = object.__new__(TimelinePanel)
     panel.api = api

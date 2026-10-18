@@ -89,7 +89,8 @@ class FlashDriver(Protocol):
 class FlashLifecycle:
     """Called only by a broker holding its original lease/device/state locks.
 
-    The explicit request binds an exact immutable plan digest. The live callback is rechecked between every side effect. An uncertain
+    The explicit request binds an exact immutable plan digest. The live callback
+    is rechecked between every side effect. An uncertain
     close retains busy ownership; cancellation never claims synchronous shutdown.
     """
 

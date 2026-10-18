@@ -46,7 +46,9 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
         job = store.job(plan["build_job_id"])
         build = store.plan(job["plan_hash"]) if job else None
         if (
-            job is None or job["state"] != "succeeded" or build is None
+            job is None
+            or job["state"] != "succeeded"
+            or build is None
             or digest_plan(build) != job["plan_hash"]
             or build.get("test") != TestName.BUILD.value
             or build.get("project_id") != project_id
@@ -69,21 +71,28 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             or build.get("source_provenance") != provenance
             or provenance.get("source_receipt") != receipt
             or provenance.get("submodules") != metadata.get("submodules")
-            or provenance.get("dependency_policy") != (
-                "gitlinks_fixed_commits_no_fetch" if metadata["schema_version"] == 2
+            or provenance.get("dependency_policy")
+            != (
+                "gitlinks_fixed_commits_no_fetch"
+                if metadata["schema_version"] == 2
                 else "vendored_components_no_fetch"
             )
-            or any(provenance.get(key) != metadata[key] for key in (
-                "repository", "commit", "tree_sha1", "source_sha256"
-            ))
+            or any(
+                provenance.get(key) != metadata[key]
+                for key in ("repository", "commit", "tree_sha1", "source_sha256")
+            )
         ):
             raise ValueError
         fetch = store.job(metadata["fetch_job_id"])
         if fetch is None:
             raise ValueError
         binding = FlashBinding(
-            binding.plan_hash, _project_hash(broker, plan), job["plan_hash"],
-            metadata["fetch_job_id"], fetch["plan_hash"], receipt,
+            binding.plan_hash,
+            _project_hash(broker, plan),
+            job["plan_hash"],
+            metadata["fetch_job_id"],
+            fetch["plan_hash"],
+            receipt,
         )
         if not live_binding(broker, binding, plan):
             raise ValueError
@@ -113,14 +122,20 @@ def live_binding(broker: "Broker", binding: FlashBinding, plan: dict[str, Any]) 
             job = store.job(job_id)
             saved = store.plan(digest)
             if (
-                job is None or job["state"] != "succeeded" or job["plan_hash"] != digest
-                or saved is None or digest_plan(saved) != digest
+                job is None
+                or job["state"] != "succeeded"
+                or job["plan_hash"] != digest
+                or saved is None
+                or digest_plan(saved) != digest
             ):
                 return False
             if job_id == binding.fetch_job_id:
                 diagnostic = job.get("diagnostic")
                 source = diagnostic.get("source") if isinstance(diagnostic, dict) else None
-                if not isinstance(source, dict) or source.get("source_receipt") != binding.fetch_receipt:
+                if (
+                    not isinstance(source, dict)
+                    or source.get("source_receipt") != binding.fetch_receipt
+                ):
                     return False
         return True
     except Exception:

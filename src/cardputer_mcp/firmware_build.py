@@ -806,7 +806,8 @@ class FirmwareBuild:
                 self.manifests[plan["job_id"]] = (principal, manifest)
                 self._committed_job = plan["job_id"]
                 logs.append(
-                    "Build complete; artifact hashes recorded; flash requires a separate explicit operation"
+                    "Build complete; artifact hashes recorded; "
+                    "flash requires a separate explicit operation"
                 )
         finally:
             candidate.unlink(missing_ok=True)

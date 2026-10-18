@@ -8,8 +8,12 @@ the existing native operator window and connects to a separately running broker.
 Download the verified distribution artifact from a successful workflow run and
 extract `cardputer-v<version>-windows-x64.zip` into a writable application folder.
 The ZIP contains the executable, this guide, LICENSE, NOTICE, a mock-only example,
-`manifest.json` and `SHA256SUMS.txt`. The outer ZIP checksum is saved alongside it.
-The manifest records the exact source commit/ref and locked build inputs.
+`build-runtime.json`, `manifest.json` and `SHA256SUMS.txt`. The outer ZIP checksum
+is saved alongside it. The manifest records the exact source commit/ref and
+locked build inputs. The bounded build-runtime receipt comes from the actual
+PyInstaller interpreter, binds the EXE/source/lock/build-tool inputs, and records
+its Python and uv versions. Verification also compares Python's major/minor ABI
+to the embedded PyInstaller cookie; it never substitutes the verifier's runtime.
 These artifacts are unsigned. No tag or GitHub Release is created by this workflow.
 
 ```powershell
@@ -49,6 +53,9 @@ use `cardputer.exe` directly for this distribution.
 ## Maintainer build and validation
 
 The workflow runs on `windows-2022` x64 with Python 3.13.16 and uv 0.12.19.
+The spec refuses a dirty tracked source tree and writes `cardputer.exe.build.json`
+after the build. The archiver requires that receipt beside the EXE; it cannot
+create provenance by inspecting its own Python version or re-label another build.
 Application dependencies use the checked-in `uv.lock` with `--frozen --no-dev`.
 The project is then installed without dependency resolution or build isolation,
 using the explicitly pinned `uv-build==0.12.19` backend.

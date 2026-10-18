@@ -171,7 +171,10 @@ async def test_exact_recovery_records_atomic_resolution_and_cannot_repeat(tmp_pa
         assert receipt["principal_id"] == "client"
         assert receipt["source_hash"] == digest_plan(e.source)
         assert receipt["recovery_hash"] == p["plan_hash"]
-        assert e.b._store().db.execute("SELECT count(*) FROM home_recovery_approvals").fetchone()[0] == 0
+        assert (
+            e.b._store().db.execute("SELECT count(*) FROM home_recovery_approvals").fetchone()[0]
+            == 0
+        )
         _, job = await finish(e, p)
         assert job["state"] == "succeeded", job
         assert e.port.writes == [b"q"] and e.port.opens == e.port.closes == 1
@@ -316,7 +319,9 @@ async def test_final_commit_requires_exact_execution_receipt(tmp_path, monkeypat
         assert e.port.writes == [b"q"]
 
 
-@pytest.mark.parametrize("principal,origin", [("other-client", "remote_mcp"), ("client", "local_cli")])
+@pytest.mark.parametrize(
+    "principal,origin", [("other-client", "remote_mcp"), ("client", "local_cli")]
+)
 async def test_direct_request_cannot_take_another_clients_source(tmp_path, principal, origin):
     async with running(tmp_path) as e:
         with pytest.raises(BrokerError, match="home_recovery_source_not_eligible"):

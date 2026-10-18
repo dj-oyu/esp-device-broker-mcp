@@ -169,13 +169,18 @@ async def test_real_mcp_http_disconnect_retry_handover(authenticated_service):
         await call(remote, "release_session", {"session": acquired["session"]})
 
 
-
 async def test_real_http_invalid_origin_and_oversize(authenticated_service):
     service = authenticated_service
     async with httpx2.AsyncClient(trust_env=False) as http:
-        evil = await http.post(service, json={}, headers={"Origin": "https://hostile.invalid", "Authorization": "Bearer " + LOCAL})
+        evil = await http.post(
+            service,
+            json={},
+            headers={"Origin": "https://hostile.invalid", "Authorization": "Bearer " + LOCAL},
+        )
         assert evil.status_code == 403
         oversized = await http.post(
-            service, content=" " * 20000, headers={"content-type": "application/json", "Authorization": "Bearer " + LOCAL}
+            service,
+            content=" " * 20000,
+            headers={"content-type": "application/json", "Authorization": "Bearer " + LOCAL},
         )
         assert oversized.status_code == 413

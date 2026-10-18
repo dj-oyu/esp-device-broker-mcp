@@ -29,6 +29,8 @@ SOURCES = {
     "render_buffer": "Device render buffer / LCD unverified",
 }
 Source = Literal["render_buffer", "synthetic_fixture"]
+
+
 def _text(value: Any, pattern: str) -> str:
     if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
         raise ValueError(INVALID_IMAGE)

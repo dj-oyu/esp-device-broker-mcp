@@ -2,10 +2,10 @@
 
 import httpx2
 import pytest
+from test_derby_http import derby_service as derby_service
 from test_derby_smoke import Wire
 from test_home_recovery import Clock, Port
 from test_registry_http import LOCAL
-from test_derby_http import derby_service as derby_service
 from test_serial_http import serial_service as serial_service
 
 from cardputer_mcp.client import call, connect
@@ -67,7 +67,8 @@ async def test_closed_derby_recovery_requires_same_authenticated_requester(
     env = derby_service
     async with (
         httpx2.AsyncClient(
-            base_url=env.url.removesuffix("/mcp"), trust_env=False,
+            base_url=env.url.removesuffix("/mcp"),
+            trust_env=False,
             headers={"Authorization": "Bearer " + LOCAL},
         ) as http,
         connect(env.url, env.keys["second"].token) as source_remote,
@@ -94,8 +95,12 @@ async def test_closed_derby_recovery_requires_same_authenticated_requester(
             assert status["state"] == "succeeded", status
             assert home.writes == [b"q"] and home.closes == 1
             assert [x["event"] for x in status["recovery_audit"]] == [
-                "source_close_confirmed", "attempt_consumed", "serial_open",
-                "q_written", "fresh_home_observed", "serial_close",
+                "source_close_confirmed",
+                "attempt_consumed",
+                "serial_open",
+                "q_written",
+                "fresh_home_observed",
+                "serial_close",
                 "fresh_home_and_close_confirmed",
             ]
             assert env.resident.job("derby-source")["reviewed"] == 1

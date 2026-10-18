@@ -37,9 +37,7 @@ async def derby_service(serial_service):
 
 
 @pytest.mark.parametrize("interruption", [None, "no_photo", "cancel", "lease_expired"])
-async def test_fixed_smoke_explicit_request_then_principal_bound_image(
-    derby_service, interruption
-):
+async def test_fixed_smoke_explicit_request_then_principal_bound_image(derby_service, interruption):
     service = derby_service
     key = service.keys["second"]
     wire = Wire(phases=interruption != "no_photo")
@@ -78,7 +76,7 @@ async def test_fixed_smoke_explicit_request_then_principal_bound_image(
             base_url=service.url.removesuffix("/mcp"),
             trust_env=False,
             headers={"Authorization": "Bearer " + "a" * 64},
-        ) as http,
+        ) as _http,
         connect(service.url, key.token) as remote,
     ):
         catalog = await remote.list_tools()

@@ -227,9 +227,7 @@ class HomeRecovery:
         ):
             raise BrokerError("home_recovery_source_not_eligible")
         self.maintain()
-        self.entries = {
-            k: v for k, v in self.entries.items() if v.state in ("queued", "running")
-        }
+        self.entries = {k: v for k, v in self.entries.items() if v.state in ("queued", "running")}
         if len(self.entries) >= 16 or s.record_count("jobs") >= 10000:
             raise BrokerError("home_recovery_history_full")
         if any(v.plan["source_job_id"] == request.source_job_id for v in self.entries.values()):
@@ -274,9 +272,7 @@ class HomeRecovery:
         b.active_job = request.job_id
         self.entries[digest] = e
         e.task = loop.create_task(self._run(e), name="bounded-home-recovery")
-        return dict(
-            ok=True, plan_hash=digest, plan=plan, job_id=request.job_id, state="running"
-        )
+        return dict(ok=True, plan_hash=digest, plan=plan, job_id=request.job_id, state="running")
 
     def _entry(self, digest: str) -> Recovery:
         if digest not in self.entries:

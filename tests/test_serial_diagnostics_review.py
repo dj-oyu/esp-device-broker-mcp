@@ -222,7 +222,9 @@ async def test_diagnostics_review_safe_timeout_detail_survives_backend_and_broke
     )
     await broker.start()
     try:
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")[
+            "session"
+        ]
         plan = broker.prepare(
             PrepareRequest(session=token, job_id="diagnostics-review", test=DeviceTest.HELLO)
         )

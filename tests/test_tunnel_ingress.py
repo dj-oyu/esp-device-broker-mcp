@@ -475,7 +475,9 @@ class IngressService:
 
 
 @asynccontextmanager
-async def serve_ingress(tmp_path, monkeypatch, *, enabled=True) -> AsyncIterator[IngressService]:
+async def serve_ingress(
+    tmp_path, monkeypatch, *, enabled=True, expected_backend_calls=0
+) -> AsyncIterator[IngressService]:
     now = [1000.0]
     sequence = itertools.count(1)
     registry_path = tmp_path / "keys.sqlite3"
@@ -540,13 +542,15 @@ async def serve_ingress(tmp_path, monkeypatch, *, enabled=True) -> AsyncIterator
             server.should_exit = True
             await asyncio.wait_for(task, timeout=5)
             registry.close()
-        assert backend.calls == 0
+        assert backend.calls == expected_backend_calls
         assert not (settings.state_dir / "runtime-auth.json").exists()
 
 
 @pytest.fixture
-async def ingress_service(tmp_path, monkeypatch):
-    async with serve_ingress(tmp_path, monkeypatch) as service:
+async def ingress_service(tmp_path, monkeypatch, request):
+    async with serve_ingress(
+        tmp_path, monkeypatch, expected_backend_calls=getattr(request, "param", 0)
+    ) as service:
         yield service
 
 
@@ -658,6 +662,7 @@ async def test_read_only_ingress_key_keeps_control_scope_restriction(ingress_ser
     assert service.broker.session is None
 
 
+@pytest.mark.parametrize("ingress_service", [1], indirect=True)
 async def test_same_broker_lease_job_and_explicit_execution_boundaries(ingress_service):
     service = ingress_service
     first, second = service.keys["first"].token, service.keys["second"].token

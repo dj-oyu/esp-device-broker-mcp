@@ -3,6 +3,7 @@
 Worker reads never prepare, execute, approve or recapture. The broker retains
 all ownership decisions. Closing this view never releases physical ownership.
 """
+
 from __future__ import annotations
 
 import base64
@@ -41,15 +42,18 @@ CANCEL_REQUESTED = "Cancellation requested; worker cleanup and device release ar
 REQUESTS = {test.value: test.value.replace("_", " ") for test in TestName}
 CancelKey = tuple[str, str, str]
 
+
 class TimelineAPI(Protocol):
     def timeline(self) -> dict[str, Any]: ...
     def image(self, job_id: str) -> dict[str, Any]: ...
     def cancel_job(self, job_id: str, plan_hash: str, broker_epoch: str) -> dict[str, Any]: ...
 
+
 def _hex(value: Any, length: int) -> str:
     if type(value) is not str or re.fullmatch(r"[a-f0-9]{" + str(length) + "}", value) is None:
         raise ValueError(INVALID_TIMELINE)
     return value
+
 
 def _utc(value: Any) -> str | None:
     if value is None:
@@ -60,6 +64,7 @@ def _utc(value: Any) -> str | None:
     if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(None):
         raise ValueError(INVALID_TIMELINE)
     return value
+
 
 @dataclass(frozen=True)
 class DeviceObservationRow:
@@ -227,12 +232,16 @@ class TimelineCard:
         reviewed = data.get("reviewed", False)
         if type(cancel) is not bool or type(reviewed) is not bool:
             raise ValueError(INVALID_TIMELINE)
-        if cancel and (state not in ("queued", "running") or backend != "registered_project"
-                       or test not in ("firmware_build", "firmware_fetch_source")):
+        if cancel and (
+            state not in ("queued", "running")
+            or backend != "registered_project"
+            or test not in ("firmware_build", "firmware_fetch_source")
+        ):
             raise ValueError(INVALID_TIMELINE)
         image = ImageRow.parse(data["image"], started_at) if data.get("image") else None
         if image and (
-            image.job_id != job or state != "succeeded"
+            image.job_id != job
+            or state != "succeeded"
             or test not in ("capture_home", "derby_smoke")
             or image.source != ("synthetic_fixture" if backend == "mock" else "render_buffer")
         ):
@@ -240,25 +249,40 @@ class TimelineCard:
         observation = None
         if data.get("device_observation") is not None:
             if (backend, state) != ("serial", "succeeded") or test not in (
-                "firmware_observe", "restart_and_observe"
+                "firmware_observe",
+                "restart_and_observe",
             ):
                 raise ValueError(INVALID_TIMELINE)
             observation = DeviceObservationRow.parse(data["device_observation"], job, started_at)
-            if result != {
-                "firmware_observe": "firmware_observation_completed_no_commands",
-                "restart_and_observe": "restart_observation_completed_unverified",
-            }[test]:
-                raise ValueError(INVALID_TIMELINE)
-            restart = test == "restart_and_observe"
             if (
-                observation.metadata["reset_sequence_issued"] is not restart
-                or (not restart and observation.metadata["capture_gap"])
+                result
+                != {
+                    "firmware_observe": "firmware_observation_completed_no_commands",
+                    "restart_and_observe": "restart_observation_completed_unverified",
+                }[test]
             ):
                 raise ValueError(INVALID_TIMELINE)
-        return cls(job, plan, test, backend, state, stage, result,
-                   _utc(data["created_utc"]), _utc(data["finished_utc"]),
-                   image=image, reviewed=reviewed, device_observation=observation,
-                   cancel_available=cancel)
+            restart = test == "restart_and_observe"
+            if observation.metadata["reset_sequence_issued"] is not restart or (
+                not restart and observation.metadata["capture_gap"]
+            ):
+                raise ValueError(INVALID_TIMELINE)
+        return cls(
+            job,
+            plan,
+            test,
+            backend,
+            state,
+            stage,
+            result,
+            _utc(data["created_utc"]),
+            _utc(data["finished_utc"]),
+            image=image,
+            reviewed=reviewed,
+            device_observation=observation,
+            cancel_available=cancel,
+        )
+
 
 @dataclass(frozen=True)
 class TimelineSnapshot:
@@ -271,7 +295,8 @@ class TimelineSnapshot:
     def parse(cls, data: dict[str, Any], started_at: float) -> TimelineSnapshot:
         try:
             if (
-                data["ok"] is not True or type(data["cards"]) is not list
+                data["ok"] is not True
+                or type(data["cards"]) is not list
                 or len(data["cards"]) > MAX_CARDS
             ):
                 raise ValueError(INVALID_TIMELINE)
@@ -285,6 +310,7 @@ class TimelineSnapshot:
         except (KeyError, TypeError, ValueError, OverflowError):
             raise ValueError(INVALID_TIMELINE) from None
 
+
 @dataclass(frozen=True)
 class TimelineOperation:
     sequence: int
@@ -296,6 +322,7 @@ class TimelineOperation:
     broker_epoch: str = ""
     row: ImageRow | None = None
 
+
 @dataclass(frozen=True)
 class TimelineOutcome:
     operation: TimelineOperation
@@ -304,8 +331,10 @@ class TimelineOutcome:
     message: str = ""
     error: str = ""
 
+
 def perform_timeline(
-    api: TimelineAPI, operation: TimelineOperation,
+    api: TimelineAPI,
+    operation: TimelineOperation,
     clock: Callable[[], float] = time.monotonic,
 ) -> TimelineOutcome:
     try:
@@ -333,19 +362,25 @@ def perform_timeline(
         ):
             raise ValueError(CANCEL_UNCERTAIN)
         result = api.cancel_job(operation.job_id, operation.plan_hash, operation.broker_epoch)
-        if (result.get("ok") is not True or result.get("job_id") != operation.job_id
+        if (
+            result.get("ok") is not True
+            or result.get("job_id") != operation.job_id
             or result.get("plan_hash") != operation.plan_hash
             or result.get("broker_epoch") != operation.broker_epoch
-            or result.get("state") not in (
-                "queued", "running", "succeeded", "failed", "cancelled", "needs_review"
-            )
-            or type(result.get("stop_requested")) is not bool):
+            or result.get("state")
+            not in ("queued", "running", "succeeded", "failed", "cancelled", "needs_review")
+            or type(result.get("stop_requested")) is not bool
+        ):
             raise ValueError(CANCEL_UNCERTAIN)
         return TimelineOutcome(operation, message=CANCEL_REQUESTED)
     except Exception:
-        error = {"refresh": STALE_TIMELINE, "preview": PREVIEW_FAILED,
-                 "cancel_job": CANCEL_UNCERTAIN}[operation.action]
+        error = {
+            "refresh": STALE_TIMELINE,
+            "preview": PREVIEW_FAILED,
+            "cancel_job": CANCEL_UNCERTAIN,
+        }[operation.action]
         return TimelineOutcome(operation, error=error)
+
 
 class TimelineController:
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
@@ -373,8 +408,12 @@ class TimelineController:
             image = card.image
             if image is not None:
                 key = (
-                    "image", image.job_id, image.sha256, image.source,
-                    image.recipient_principal, image.born_utc,
+                    "image",
+                    image.job_id,
+                    image.sha256,
+                    image.source,
+                    image.recipient_principal,
+                    image.born_utc,
                 )
                 prior = retention.get(key)
                 expiry = min(image.expires_at, prior[0]) if prior else image.expires_at
@@ -452,8 +491,9 @@ class TimelineController:
             self.preview = None
             return None
         self.select(job_id)
-        return self._begin("preview", job_id=job_id, broker_epoch=self.snapshot.broker_epoch,
-                           row=card.image)
+        return self._begin(
+            "preview", job_id=job_id, broker_epoch=self.snapshot.broker_epoch, row=card.image
+        )
 
     def accept(self, outcome: TimelineOutcome) -> bool:
         if self.closed or self.pending != outcome.operation:
@@ -481,7 +521,8 @@ class TimelineController:
             if self.preview:
                 card = self.card(self.preview.row.job_id)
                 if (
-                    card is None or card.image is None
+                    card is None
+                    or card.image is None
                     or not card.image.same_image(self.preview.row)
                 ):
                     self.preview = None
@@ -495,10 +536,12 @@ class TimelineController:
                     )
         if outcome.preview:
             self.preview = (
-                outcome.preview if (
+                outcome.preview
+                if (
                     self.clock() < outcome.preview.row.expires_at
                     and self.selected_job == outcome.operation.job_id
-                ) else None
+                )
+                else None
             )
         self.expire()
         return True
@@ -518,10 +561,12 @@ class TimelineController:
         self.preview = None
         return True
 
+
 class TimelinePanel:
     def __init__(self, root: tk.Tk, parent: ttk.Frame, api: TimelineAPI) -> None:
         import tkinter as tk
         from tkinter import ttk
+
         self.root, self.api = root, api
         self.controller = TimelineController()
         self.commands: queue.Queue[TimelineOperation | None] = queue.Queue()
@@ -588,8 +633,13 @@ class TimelinePanel:
     def _controls(self) -> None:
         job = self._selected()
         card = self.controller.card(job)
-        preview = bool(self.controller.fresh and not self.controller.busy and card and card.image
-                       and self.controller.clock() < card.image.expires_at)
+        preview = bool(
+            self.controller.fresh
+            and not self.controller.busy
+            and card
+            and card.image
+            and self.controller.clock() < card.image.expires_at
+        )
         self.preview_button.configure(state="normal" if preview else "disabled")
         self.cancel_button.configure(
             state="normal" if self.controller.can_cancel(job) else "disabled"
@@ -608,7 +658,10 @@ class TimelinePanel:
         if self.controller.snapshot:
             for card in self.controller.snapshot.cards:
                 self.tree.insert(
-                    "", "end", iid=card.job_id, text=card.job_id,
+                    "",
+                    "end",
+                    iid=card.job_id,
+                    text=card.job_id,
                     values=(card.test or "", card.state, card.stage or "", card.result or ""),
                 )
         if self.tree.exists(selected):
@@ -616,6 +669,7 @@ class TimelinePanel:
         preview = self.controller.preview
         if preview:
             import tkinter as tk
+
             try:
                 self.photo = tk.PhotoImage(
                     master=self.root, data=base64.b64encode(preview.png).decode()

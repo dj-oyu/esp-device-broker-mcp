@@ -65,7 +65,7 @@ async def test_running_renewal_crosses_original_expiry_and_both_atomic_guards(en
     env.driver.callback = callback
     env.store.finish_firmware = finish
     env.execute(prepared)
-    token = env.broker.session
+    _token = env.broker.session
     await env.broker.queue.join()
     assert guards == [("running", 31.0, True), ("succeeded", 32.0, True)]
     assert env.broker.job("renewed")["state"] == "succeeded"
@@ -185,7 +185,7 @@ async def test_queued_unattended_authorization_keeps_original_deadline(env):
     prepared = env.prepare("queued-expired", build_job_id="build-one")
     before = env.driver.writes
     env.execute(prepared)
-    token = env.broker.session
+    _token = env.broker.session
     renew(env, clock)
     clock.now = 30.0
     await env.broker.queue.join()
@@ -218,7 +218,7 @@ async def test_renewal_cannot_revive_cancelled_running_flash(env, guard_number):
 
     env.store.finish_firmware = finish
     env.execute(prepared)
-    token = env.broker.session
+    _token = env.broker.session
     await env.broker.queue.join()
     assert calls == guard_number
     assert env.broker.job("cancel-renew")["state"] == "needs_review"

@@ -15,10 +15,17 @@ from .plan_approval import PlanApprovals
 _MAX_BODY = 2048
 RETIRED_ROUTES = frozenset(
     {
-        "/operator/plans", "/operator/plan", "/operator/approve-plan",
-        "/operator/home-recovery-review", "/operator/home-recovery-approve",
-        "/operator/image-decision", "/operator/policy-options", "/operator/policies",
-        "/operator/policy-create", "/operator/policy-update", "/operator/policy-revoke",
+        "/operator/plans",
+        "/operator/plan",
+        "/operator/approve-plan",
+        "/operator/home-recovery-review",
+        "/operator/home-recovery-approve",
+        "/operator/image-decision",
+        "/operator/policy-options",
+        "/operator/policies",
+        "/operator/policy-create",
+        "/operator/policy-update",
+        "/operator/policy-revoke",
         "/operator/capture-arm",
     }
 )

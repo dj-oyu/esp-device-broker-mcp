@@ -5,8 +5,8 @@ import json
 import pytest
 from test_flash_policy import env as env
 
-from cardputer_mcp.flash_binding import live_binding, prepare_binding, validate_binding
 from cardputer_mcp.broker import BrokerError
+from cardputer_mcp.flash_binding import live_binding, prepare_binding, validate_binding
 
 
 async def test_source_binding_uses_real_owned_receipt_without_policy(env):
@@ -29,16 +29,18 @@ async def test_callback_free_binding_rejects_changed_identity(env, mutation):
         digest = env.store.job(job_id)["plan_hash"]
         plan = env.store.plan(digest)
         plan["tampered"] = True
-        env.store.db.execute(
-            "UPDATE plans SET payload=? WHERE hash=?", (json.dumps(plan), digest)
-        )
+        env.store.db.execute("UPDATE plans SET payload=? WHERE hash=?", (json.dumps(plan), digest))
     else:
         project = env.broker.settings.build_projects["fixture"]
-        env.broker.settings = env.broker.settings.model_copy(update={
-            "build_projects": {"fixture": project.model_copy(update={
-                "profile_execution_policy": "RemoteSigned"
-            })}
-        })
+        env.broker.settings = env.broker.settings.model_copy(
+            update={
+                "build_projects": {
+                    "fixture": project.model_copy(
+                        update={"profile_execution_policy": "RemoteSigned"}
+                    )
+                }
+            }
+        )
     assert not live_binding(env.broker, binding, prepared["plan"])
 
 
@@ -62,7 +64,9 @@ async def test_authentication_callback_cannot_change_registered_target(env, phas
 
     env.broker.principal_valid = changed
     if phase == "admission":
-        with pytest.raises(BrokerError, match="execution_intent_not_available|backend_preflight_failed"):
+        with pytest.raises(
+            BrokerError, match="execution_intent_not_available|backend_preflight_failed"
+        ):
             env.execute(prepared)
         assert env.store.job("changed-target") is None
     else:

@@ -21,9 +21,17 @@ async def prepare(env):
         "structuredContent"
     ]
     assert lease["ok"]
-    plan = (await rpc(env, "prepare_test", {
-        "session": lease["session"], "job_id": JOB, "test": "restart_and_observe",
-    }))["structuredContent"]
+    plan = (
+        await rpc(
+            env,
+            "prepare_test",
+            {
+                "session": lease["session"],
+                "job_id": JOB,
+                "test": "restart_and_observe",
+            },
+        )
+    )["structuredContent"]
     assert plan["ok"] and plan["approval_required"] is False
     return {"session": lease["session"], "plan_hash": plan["plan_hash"]}, plan
 
@@ -42,9 +50,9 @@ async def test_explicit_mcp_execute_runs_once_and_private_logs_remain_owner_boun
     request, plan = await prepare(env)
     assert_no_device_work(env)
     assert plan["plan"]["log_delivery"]["principal_id"] == env.keys["owner"].metadata.principal_id
-    result = (
-        await rpc(env, "execute_test", {**request, "wait_for_approval": wait})
-    )["structuredContent"]
+    result = (await rpc(env, "execute_test", {**request, "wait_for_approval": wait}))[
+        "structuredContent"
+    ]
     assert result["ok"] and result["deduplicated"] is False
     assert result["state"] in {"queued", "running", "succeeded"}
     await asyncio.wait_for(env.broker.queue.join(), timeout=5)
@@ -63,9 +71,13 @@ async def test_explicit_mcp_execute_runs_once_and_private_logs_remain_owner_boun
         ] == {"ok": False, "error": "device_logs_not_available"}
 
 
-@pytest.mark.parametrize("credential,error", [
-    ("other", "authenticated_owner_mismatch"), ("reader", "insufficient_scope"),
-])
+@pytest.mark.parametrize(
+    "credential,error",
+    [
+        ("other", "authenticated_owner_mismatch"),
+        ("reader", "insufficient_scope"),
+    ],
+)
 async def test_only_original_control_principal_can_execute(http_restart, credential, error):
     env = http_restart
     request, _ = await prepare(env)
@@ -78,11 +90,16 @@ async def test_only_original_control_principal_can_execute(http_restart, credent
 async def test_retired_operator_approval_route_never_runs_prepared_job(http_restart):
     env = http_restart
     request, _ = await prepare(env)
-    response = await env.http.post("/operator/approve-plan", json={
-        "plan_hash": request["plan_hash"], "review_revision": "a" * 64, "attestation": "",
-    })
+    response = await env.http.post(
+        "/operator/approve-plan",
+        json={
+            "plan_hash": request["plan_hash"],
+            "review_revision": "a" * 64,
+            "attestation": "",
+        },
+    )
     assert response.status_code == 410
-    assert response.json() == {"ok": False, "error": "product_approval_retired"}
+    assert response.json() == {"error": "request_rejected"}
     assert_no_device_work(env)
 
 

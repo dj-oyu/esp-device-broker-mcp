@@ -35,7 +35,9 @@ async def test_failure_code_and_safe_counts_persist_without_replay(tmp_path, fai
     )
     await broker.start()
     try:
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")[
+            "session"
+        ]
         plan = broker.prepare(
             PrepareRequest(session=token, job_id="failure-diagnostics", test=Action.HELLO)
         )

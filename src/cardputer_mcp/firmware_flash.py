@@ -67,7 +67,10 @@ FLASH_EFFECTS = [
         "ROM reads: fixed 60 s + 600 s/MiB hard deadline, min 300 s/max 9660 s; "
         "60 s without advancing progress stops; lease renewal remains explicit"
     ),
-    "Flash leaves the new firmware installed; restore is a separate explicit operation; no rollback",
+    (
+        "Flash leaves the new firmware installed; "
+        "restore is a separate explicit operation; no rollback"
+    ),
     (
         "Shares bounded redacted progress/boot logs only with the requesting "
         "principal; no raw backup delivery"

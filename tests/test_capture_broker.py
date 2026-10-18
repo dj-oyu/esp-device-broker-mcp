@@ -413,9 +413,12 @@ async def test_capture_pixels_never_enter_history_logs_or_files(tmp_path: Path) 
                 assert forbidden not in history
         # The private execution audit records the requesting principal; public
         # history and logs above continue to omit it.
-        assert broker._store().db.execute(
-            "SELECT principal_id FROM execution_requests WHERE job_id='private-image'"
-        ).fetchone()[0] == PRINCIPAL
+        assert (
+            broker._store()
+            .db.execute("SELECT principal_id FROM execution_requests WHERE job_id='private-image'")
+            .fetchone()[0]
+            == PRINCIPAL
+        )
         files = [path for path in broker.settings.state_dir.rglob("*") if path.is_file()]
         assert {path.suffix for path in files} <= {
             ".sqlite3",

@@ -21,7 +21,9 @@ def retained_probe():
 
 
 @pytest.mark.parametrize("policy_authorized", [False, True])
-async def test_old_diagnostic_entry_is_erased_not_inherited_by_execution(tmp_path, policy_authorized):
+async def test_old_diagnostic_entry_is_erased_not_inherited_by_execution(
+    tmp_path, policy_authorized
+):
     async with running(tmp_path) as env:
         prepared = prepare(env)
         probe = retained_probe()

@@ -90,16 +90,6 @@ def card(timeline, job="one"):
     return next(item for item in snapshot["cards"] if item["job_id"] == job)
 
 
-
-
-
-
-
-
-
-
-
-
 @pytest.mark.parametrize("reviewed", [0, 1])
 async def test_reviewed_failure_is_durable_display_metadata_after_reopen_and_restart(
     tmp_path, reviewed
@@ -177,14 +167,6 @@ async def test_malformed_stored_reviewed_flag_is_bounded_and_never_acknowledged(
         assert len(json.dumps(row)) < 1000 and "PRIVATE" not in json.dumps(row)
         assert store.db.execute("SELECT reviewed FROM jobs").fetchone()[0] == value
         assert broker.backend.calls == 0
-
-
-
-
-
-
-
-
 
 
 async def test_corrupt_rows_are_redacted_without_parsing_raw_diagnostics(tmp_path):
@@ -296,8 +278,6 @@ async def test_plan_query_and_output_bounds_with_more_than_one_page(tmp_path):
         assert len(statements) < 3000
 
 
-
-
 async def test_snapshot_never_prepares_or_opens_hardware(tmp_path):
     config = SerialSettings(
         selector=DeviceSelector(vid=0xCAFE, pid=1, serial_number="PRIVATE_USB_SERIAL"),
@@ -390,7 +370,9 @@ async def test_capture_card_only_explicit_execute_and_read_then_cache_expiry(tmp
         assert broker.backend.calls == 0 and broker._store().db.total_changes == changes
         assert broker.session.capability not in json.dumps(first)
         broker.backend.gate = asyncio.Event()
-        broker.execute(ExecuteRequest(session=broker.session.capability, plan_hash=prepared["plan_hash"]))
+        broker.execute(
+            ExecuteRequest(session=broker.session.capability, plan_hash=prepared["plan_hash"])
+        )
         assert card(timeline)["state"] == "queued"
         await asyncio.sleep(0)
         assert card(timeline)["state"] == "running"

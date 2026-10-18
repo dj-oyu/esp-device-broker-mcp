@@ -144,9 +144,9 @@ async def test_review_explicit_retries_do_not_duplicate_work(tmp_path: Path) -> 
     )
     await broker.start()
     try:
-        token = broker.acquire(
-            AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client"
-        )["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")[
+            "session"
+        ]
         request = prepare(broker, token, "approved")
         assert broker.store is not None
         first = broker.execute(request)
@@ -218,9 +218,9 @@ async def test_review_mutated_plan_is_rejected(tmp_path: Path) -> None:
     )
     await broker.start()
     try:
-        token = broker.acquire(
-            AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client"
-        )["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")[
+            "session"
+        ]
         request = prepare(broker, token, "integrity")
         assert broker.store is not None
         payload = broker.store.plan(request.plan_hash)

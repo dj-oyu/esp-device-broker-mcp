@@ -209,15 +209,18 @@ async def test_port_not_created_until_explicit_authenticated_execution(tmp_path)
     with pytest.raises(BrokerError, match="serial_runtime_opt_in_required"):
         Broker(settings, backend=device)
     broker = Broker(
-        settings, backend=device, serial_enabled=True, lock_path=tmp_path / "device.lockfile",
+        settings,
+        backend=device,
+        serial_enabled=True,
+        lock_path=tmp_path / "device.lockfile",
         principal_valid=lambda principal, *_: principal == "serial-client",
     )
     await broker.start()
     try:
         assert not port.opens
-        token = broker.acquire(
-            AcquireRequest(owner=Origin.LOCAL), principal_id="serial-client"
-        )["session"]
+        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="serial-client")[
+            "session"
+        ]
         planned = broker.prepare(
             PrepareRequest(session=token, job_id="serial-test", test=Action.HELLO)
         )

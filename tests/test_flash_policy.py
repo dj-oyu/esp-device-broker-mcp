@@ -212,7 +212,17 @@ async def test_exact_owned_source_receipt_auto_flash_commits_lkg_once(env):
     assert not env.broker._execution_intents and env.driver.closed
 
 
-@pytest.mark.parametrize("field,value", [("principal_id", "bob"), ("device_id", "other"), ("project_id", "other"), ("source_receipt", "b" * 64), ("source_repository", "fixture/other"), ("source_commit", "b" * 40)])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("principal_id", "bob"),
+        ("device_id", "other"),
+        ("project_id", "other"),
+        ("source_receipt", "b" * 64),
+        ("source_repository", "fixture/other"),
+        ("source_commit", "b" * 40),
+    ],
+)
 async def test_obsolete_policy_scope_never_grants_or_blocks_explicit_request(env, field, value):
     env.configure(env.policy.model_copy(update={field: value}))
     before = env.driver.writes
@@ -223,8 +233,17 @@ async def test_obsolete_policy_scope_never_grants_or_blocks_explicit_request(env
     assert env.broker.job("mismatch")["state"] == "succeeded"
 
 
-@pytest.mark.parametrize("action,references", [(Action.BACKUP, {}), (Action.RESTORE, {}), (Action.FLASH, {"build_job_id": "build-one", "backup_job_id": "backup-one"})])
-async def test_backup_restore_and_full_backup_require_separate_explicit_request(env, action, references):
+@pytest.mark.parametrize(
+    "action,references",
+    [
+        (Action.BACKUP, {}),
+        (Action.RESTORE, {}),
+        (Action.FLASH, {"build_job_id": "build-one", "backup_job_id": "backup-one"}),
+    ],
+)
+async def test_backup_restore_and_full_backup_require_separate_explicit_request(
+    env, action, references
+):
     env.configure()
     prepared = env.prepare("separate", action, **references)
     assert prepared["approval_required"] is False

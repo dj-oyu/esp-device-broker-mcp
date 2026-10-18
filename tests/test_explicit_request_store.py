@@ -83,14 +83,22 @@ def test_explicit_enqueue_commits_identity_and_audit_without_approval(tmp_path):
         assert store.job("new-job")["state"] == "queued"
         row = store.db.execute("SELECT * FROM execution_requests").fetchone()
         assert (row["job_id"], row["plan_hash"], row["principal_id"]) == (
-            "new-job", digest, "requesting-client"
+            "new-job",
+            digest,
+            "requesting-client",
         )
-        assert store.db.execute("SELECT event FROM execution_audit").fetchone()[0] == "client_requested"
+        assert (
+            store.db.execute("SELECT event FROM execution_audit").fetchone()[0]
+            == "client_requested"
+        )
         assert store.db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 1
         with pytest.raises(sqlite3.IntegrityError):
             store.enqueue_requested("new-job", digest, "other-client")
         assert store.db.execute("SELECT count(*) FROM execution_audit").fetchone()[0] == 1
-        assert store.db.execute("SELECT principal_id FROM execution_requests").fetchone()[0] == "requesting-client"
+        assert (
+            store.db.execute("SELECT principal_id FROM execution_requests").fetchone()[0]
+            == "requesting-client"
+        )
     finally:
         store.close()
 
@@ -132,7 +140,8 @@ def test_legacy_interfaces_cannot_convert_a_pending_job(tmp_path):
     try:
         digest = plan(store)
         store.db.execute(
-            "INSERT INTO jobs(id,plan_hash,state) VALUES(?,?,'awaiting_approval')", ("new-job", digest)
+            "INSERT INTO jobs(id,plan_hash,state) VALUES(?,?,'awaiting_approval')",
+            ("new-job", digest),
         )
         store.db.commit()
         for action in (

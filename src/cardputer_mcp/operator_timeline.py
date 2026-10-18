@@ -568,10 +568,12 @@ class OperatorTimeline:
         if images:
             marks = ",".join("?" for _ in images)
             groups.append(("job", self._job_rows(f"j.id IN ({marks})", tuple(images))))
-        groups.extend([
-            ("job", self._job_rows(f"NOT {_ACTIVE}")),
-            ("plan", self._plan_rows(f"NOT ({current})", (epoch, lease_id))),
-        ])
+        groups.extend(
+            [
+                ("job", self._job_rows(f"NOT {_ACTIVE}")),
+                ("plan", self._plan_rows(f"NOT ({current})", (epoch, lease_id))),
+            ]
+        )
         cards: dict[str, dict[str, Any]] = {}
         has_more = False
         for kind, rows in groups:
@@ -607,7 +609,8 @@ class OperatorTimeline:
                         plan.get("backend") == "registered_project"
                         and plan.get("broker_epoch") == epoch
                     ) or (
-                        lease is not None and math.isfinite(lease.deadline)
+                        lease is not None
+                        and math.isfinite(lease.deadline)
                         and broker.clock() < lease.deadline
                         and plan.get("broker_epoch") == epoch
                         and plan.get("session_id") == lease.id
@@ -621,12 +624,16 @@ class OperatorTimeline:
             image = card["image"]
             if image is not None:
                 retained = broker.captures.get(card["job_id"])
-                if (retained is None or retained.image.sha256 != image["sha256"]
+                if (
+                    retained is None
+                    or retained.image.sha256 != image["sha256"]
                     or retained.principal_id != image["recipient_principal"]
-                    or retained.born_utc != image["born_utc"]):
+                    or retained.born_utc != image["born_utc"]
+                ):
                     card["image"] = None
             if (card["backend"], card["state"]) == ("serial", "succeeded") and (
-                card["test"], card["result"]
+                card["test"],
+                card["result"],
             ) in (
                 ("firmware_observe", "firmware_observation_completed_no_commands"),
                 ("restart_and_observe", "restart_observation_completed_unverified"),
@@ -636,8 +643,11 @@ class OperatorTimeline:
                         broker.operator_device_observation_metadata(card["job_id"]), card["job_id"]
                     )
                     plan = self._plan(card["plan_hash"])
-                    if (plan is not None and plan["log_delivery"]["principal_id"]
-                        == observation["recipient_principal"]):
+                    if (
+                        plan is not None
+                        and plan["log_delivery"]["principal_id"]
+                        == observation["recipient_principal"]
+                    ):
                         card["device_observation"] = observation
                 except Exception:
                     pass
@@ -645,5 +655,9 @@ class OperatorTimeline:
                 home = broker.operator_home_line_metadata(card["job_id"], card["plan_hash"])
                 if home is not None and home["broker_epoch"] == epoch:
                     card["local_home_line"] = home
-        return {"broker_epoch": epoch, "cards": selected, "has_more": has_more,
-                "plans_available": False}
+        return {
+            "broker_epoch": epoch,
+            "cards": selected,
+            "has_more": has_more,
+            "plans_available": False,
+        }

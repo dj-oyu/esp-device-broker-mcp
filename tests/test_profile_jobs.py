@@ -206,6 +206,7 @@ async def test_queue_cancel_read_scope_config_and_old_review_boundaries(
     with pytest.raises(BrokerError, match="recovery_review_required"):
         prepare(service, "after-old-review")
     assert broker.job("old-review")["state"] == "needs_review"
+    assert broker.job("old-review")["reviewed"] == 0
 
 
 @pytest.mark.parametrize("uncertainty", ["process", "output_lock", "database"])

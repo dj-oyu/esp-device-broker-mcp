@@ -232,9 +232,7 @@ async def test_live_scan_detects_committed_secret_in_past_wal_frame(tmp_path):
         assert env.port.opens == env.port.closes == 0
 
 
-async def test_explicit_request_delivers_redacted_report_without_approval(
-    tmp_path, caplog
-):
+async def test_explicit_request_delivers_redacted_report_without_approval(tmp_path, caplog):
     async with running(tmp_path) as env:
         plan = prepare(env)
         assert plan["approval_required"] is False
@@ -306,7 +304,9 @@ async def test_legacy_capture_policy_is_ignored_by_explicit_firmware_execution(t
         )
         plan = prepare(env)
         assert plan["approval_required"] is False
-        request = ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
+        _request = ExecuteRequest(
+            session=env.broker.session.capability, plan_hash=plan["plan_hash"]
+        )
         assert env.port.opens == 0 and calls == []
         validate_prepared(env, plan)
         await execute(env, plan)

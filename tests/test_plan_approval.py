@@ -138,12 +138,14 @@ async def test_serial_device_firmware_and_deadline_binding_rechecked_before_enqu
 
             def fail():
                 raise RuntimeError("SYNTHETIC_SECRET")
+
             backend.inventory = fail
         else:
 
             def expire():
                 clock.now += 30
                 return inventory
+
             backend.inventory = expire
         with pytest.raises(BrokerError) as caught:
             execute(broker, digest)

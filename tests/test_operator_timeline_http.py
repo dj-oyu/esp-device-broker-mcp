@@ -50,7 +50,9 @@ async def test_timeline_keeps_job_context_from_plan_through_image_delivery(regis
         card = next(row for row in completed["cards"] if row["job_id"] == "timeline-capture")
         assert card["state"] == "succeeded" and card["image"]["delivery_state"] == "available"
         assert "image_base64" not in str(completed)
-        allowed = await remote.call_tool("read_capture", {"request": {"job_id": "timeline-capture"}})
+        allowed = await remote.call_tool(
+            "read_capture", {"request": {"job_id": "timeline-capture"}}
+        )
         assert not allowed.is_error
         preview = (await local.post("/operator/image", json={"job_id": "timeline-capture"})).json()
         preview_row = next(

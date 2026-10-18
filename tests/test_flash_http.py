@@ -20,9 +20,7 @@ from cardputer_mcp.config import BuildProject
 from cardputer_mcp.flash_models import FlashDevice
 
 
-async def test_explicit_mcp_backup_flash_restore_and_cancel(
-    registry_service, tmp_path
-):
+async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tmp_path):
     service = registry_service
     key = service.keys["second"]
     principal = key.metadata.principal_id
@@ -144,7 +142,7 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(
                     "/operator/approve-plan", json={"plan_hash": prepared["plan_hash"]}
                 )
                 assert response.status_code == 410
-                assert response.json()["error"] == "product_approval_retired"
+                assert response.json() == {"error": "request_rejected"}
                 return prepared
 
             backup = await approve("backup-one", "firmware_backup")

@@ -1,6 +1,7 @@
 """Windows x64 onefile build; no user config, ESP-IDF or native Tunnel client."""
 
 from pathlib import Path
+import runpy
 
 from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
@@ -42,4 +43,7 @@ exe = EXE(
     console=True,
     disable_windowed_traceback=False,
     uac_admin=False,
+)
+runpy.run_path(str(root / "packaging" / "release_windows.py"))["record_build_runtime"](
+    Path(exe.name), root
 )

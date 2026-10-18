@@ -1,4 +1,5 @@
 """Retired product approval IPC; never starts a process or opens a pipe."""
+
 from typing import Any
 
 

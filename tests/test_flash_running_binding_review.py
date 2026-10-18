@@ -108,6 +108,9 @@ async def test_final_authentication_callback_cannot_commit_detached_flash_result
     assert env.broker.job("final-identity-review")["state"] == "needs_review"
     assert env.broker.job("final-identity-review")["plan_hash"] == prepared["plan_hash"]
     assert env.store.firmware_current("fixture", "alice") == previous
-    assert env.store.db.execute(
-        "SELECT count(*) FROM firmware_job_summaries WHERE job_id=?", ("final-identity-review",)
-    ).fetchone()[0] == 0
+    assert (
+        env.store.db.execute(
+            "SELECT count(*) FROM firmware_job_summaries WHERE job_id=?", ("final-identity-review",)
+        ).fetchone()[0]
+        == 0
+    )

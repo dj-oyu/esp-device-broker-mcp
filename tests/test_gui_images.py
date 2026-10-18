@@ -1,14 +1,23 @@
 """Retained image integrity without a delivery approval or device access."""
+
 import base64
 import hashlib
 import struct
 import zlib
 from typing import Any
+
 import pytest
+
 from cardputer_mcp.capture import mock_image
 from cardputer_mcp.gui_images import (
-    INVALID_IMAGE, MAX_PNG_BYTES, SOURCES, ImagePreview, ImagesSnapshot, validate_png,
+    INVALID_IMAGE,
+    MAX_PNG_BYTES,
+    SOURCES,
+    ImagePreview,
+    ImagesSnapshot,
+    validate_png,
 )
+
 
 def detail(**changes: Any) -> dict[str, Any]:
     image = mock_image()
@@ -247,7 +256,6 @@ def test_list_rejects_duplicate_ids_excess_entries_and_invalid_epoch() -> None:
     ):
         with pytest.raises(ValueError, match=INVALID_IMAGE):
             ImagesSnapshot.parse(bad, 1000)
-
 
 
 def test_preview_needs_no_delivery_revision_and_cannot_extend_ttl():

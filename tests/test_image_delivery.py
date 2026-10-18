@@ -170,10 +170,23 @@ async def test_current_recipient_authorization_requires_literal_true(
         assert broker.backend.calls == 1
 
 
-@pytest.mark.parametrize("mutation", [
-    "expire", "remove", "recipient", "pixels", "origin", "deadline", "born", "job", "epoch",
-    "closing", "replace-validator", "delete-job",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "expire",
+        "remove",
+        "recipient",
+        "pixels",
+        "origin",
+        "deadline",
+        "born",
+        "job",
+        "epoch",
+        "closing",
+        "replace-validator",
+        "delete-job",
+    ],
+)
 async def test_read_revalidates_after_recipient_callback(tmp_path: Path, mutation: str) -> None:
     clock = Clock()
     async with running(tmp_path, clock=clock) as broker:
@@ -279,21 +292,33 @@ async def test_delivery_http_immediate_read_and_retired_decisions_without_recapt
                 base + "/image-decision", json={**payload, "decision": decision}
             )
             assert response.status_code == 410
-            assert response.json() == {"ok": False, "error": "product_approval_retired"}
+            assert response.json() == {"error": "request_rejected"}
             assert preview["image_base64"] not in response.text
             assert assert_image(await read_capture(remote, "http-review")) == pixels
-        replay = await call(remote, "execute_test", {
-            "session": lease["session"], "plan_hash": plan["plan_hash"],
-        })
+        replay = await call(
+            remote,
+            "execute_test",
+            {
+                "session": lease["session"],
+                "plan_hash": plan["plan_hash"],
+            },
+        )
         assert replay["deduplicated"] and service.backend.calls == 1
-        public = json.dumps([
-            service.resident.status(), service.resident.job("http-review"),
-            service.resident.read_logs(LogRequest()),
-        ])
+        public = json.dumps(
+            [
+                service.resident.status(),
+                service.resident.job("http-review"),
+                service.resident.read_logs(LogRequest()),
+            ]
+        )
         history = "\n".join(service.resident._store().db.iterdump())
         for forbidden in (
-            preview["image_base64"], pixels.hex(), lease["session"],
-            *(key.token for key in service.keys.values()), LOCAL, REMOTE,
+            preview["image_base64"],
+            pixels.hex(),
+            lease["session"],
+            *(key.token for key in service.keys.values()),
+            LOCAL,
+            REMOTE,
         ):
             assert forbidden not in public and forbidden not in history
 

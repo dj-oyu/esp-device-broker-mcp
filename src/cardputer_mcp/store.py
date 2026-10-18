@@ -140,6 +140,47 @@ class Store:
             ).fetchone()
         )
 
+    def profile_needs_review(self) -> bool:
+        """Exclude only intact, known device plans from the profile barrier.
+
+        Unknown/missing/corrupt plans and registered-project failures stay
+        fail-closed, including after restart. Device requests have a separate
+        physical-device table and cannot own a source/build resource.
+        """
+        rows = self.db.execute(
+            """SELECT jobs.id, jobs.plan_hash, plans.payload FROM jobs
+            LEFT JOIN plans ON jobs.plan_hash=plans.hash
+            WHERE jobs.state='needs_review' AND jobs.reviewed=0"""
+        )
+        device_tests = {
+            "diagnostics",
+            "firmware_workflow",
+            "passive_observe",
+            "firmware_observe",
+            "restart_and_observe",
+            "firmware_backup",
+            "firmware_flash",
+            "firmware_restore",
+            "hello",
+            "capture_home",
+            "derby_smoke",
+        }
+        for job_id, digest, payload in rows:
+            try:
+                plan = json.loads(payload)
+                canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+                if (
+                    not isinstance(plan, dict)
+                    or hashlib.sha256(canonical).hexdigest() != digest
+                    or plan.get("job_id") != job_id
+                    or plan.get("test") not in device_tests
+                    or plan.get("execution_context") is not None
+                ):
+                    return True
+            except (TypeError, ValueError):
+                return True
+        return False
+
     def home_source(self, source_job: str) -> dict[str, Any] | None:
         row = self.db.execute(
             "SELECT * FROM home_closed_sources WHERE source_job=?", (source_job,)
@@ -189,7 +230,8 @@ class Store:
                     "SELECT 1 FROM execution_requests WHERE job_id=? AND plan_hash=? "
                     "AND principal_id=?",
                     (recovery, recovery_hash, principal_id),
-                ).fetchone() is None
+                ).fetchone()
+                is None
             ):
                 raise ValueError("home_recovery_source_changed")
             self.db.execute(
@@ -310,11 +352,9 @@ class Store:
                 or plan.get("job_id") != job_id
                 or hashlib.sha256(
                     json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
-                ).hexdigest() != digest
-                or (
-                    plan.get("principal_id") is not None
-                    and plan["principal_id"] != principal_id
-                )
+                ).hexdigest()
+                != digest
+                or (plan.get("principal_id") is not None and plan["principal_id"] != principal_id)
             ):
                 raise ValueError("explicit_request_invalid")
             self.db.execute(

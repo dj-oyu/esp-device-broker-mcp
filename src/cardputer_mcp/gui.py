@@ -746,7 +746,6 @@ class _Window:
 
         messagebox.showinfo("MCP info", summary, parent=self.root)
 
-
     def _auto_refresh(self) -> None:
         if self.stopped.is_set():
             return
@@ -854,10 +853,7 @@ class _Window:
             self._finish_close()
 
     def _finish_close(self) -> None:
-        panels = [
-            getattr(self, name, None)
-            for name in ("timeline_panel",)
-        ]
+        panels = [getattr(self, name, None) for name in ("timeline_panel",)]
         if any(panel is not None and not panel.can_close_window() for panel in panels):
             return
         for panel in panels:

@@ -2,8 +2,8 @@
 
 import httpx2
 import pytest
-from test_registry_http import LOCAL
 from test_derby_http import derby_service as derby_service
+from test_registry_http import LOCAL
 from test_serial_http import serial_service as serial_service
 
 
@@ -17,7 +17,8 @@ async def test_retired_operator_mutations_never_execute(derby_service, route):
         response = await http.post("/operator/" + route, json={})
         assert response.status_code == 401
         response = await http.post(
-            "/operator/" + route, json={},
+            "/operator/" + route,
+            json={},
             headers={"Authorization": "Bearer " + env.keys["second"].token},
         )
         assert response.status_code == 403

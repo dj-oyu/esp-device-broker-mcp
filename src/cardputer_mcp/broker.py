@@ -584,14 +584,9 @@ class Broker:
                 if not self._physical_busy():
                     self._end_ownership("expired", "lease_expired")
         self._prune_execution_intents()
-        for job_id, consent in tuple(self.capture_delivery_consents.items()):
-            try:
-                plan = self._store().plan(consent.intent.plan_hash)
-                live = plan is not None and self._capture_delivery_binding_live(consent, plan)
-            except Exception:
-                live = False
-            if not live:
-                self.capture_delivery_consents.pop(job_id, None)
+        # The approval interface is retired: discard any legacy consent rather
+        # than calling its removed validator or reviving delivery authority.
+        self.capture_delivery_consents.clear()
         if (
             self.closing
             or self.session is not None
@@ -1157,12 +1152,14 @@ class Broker:
     def _runtime_binding(self) -> str:
         """Callback-free configuration snapshot, separate from observed device proof."""
         config = getattr(self.backend, "config", None)
-        return digest_plan({
-            "settings": self.settings.model_dump(mode="json"),
-            "backend": self.backend.name,
-            "device": self.backend.device,
-            "backend_config": config.model_dump(mode="json") if config is not None else None,
-        })
+        return digest_plan(
+            {
+                "settings": self.settings.model_dump(mode="json"),
+                "backend": self.backend.name,
+                "device": self.backend.device,
+                "backend_config": config.model_dump(mode="json") if config is not None else None,
+            }
+        )
 
     def execute(self, request: ExecuteRequest) -> dict[str, Any]:
         store = self._store()
@@ -1755,7 +1752,15 @@ class Broker:
                 store.set_job(job_id, "running")
                 result: str | BackendResult = ""
 
-                def running_authorized() -> bool:
+                def running_authorized(
+                    lease: Session = lease,
+                    current_binding: str = current_binding,
+                    queued_intent: ExecutionIntent = queued_intent,
+                    job_id: str = job_id,
+                    store: Store = store,
+                    job: dict[str, Any] = job,
+                    plan: dict[str, Any] = plan,
+                ) -> bool:
                     valid = self.principal_valid
                     try:
                         authorized = (
@@ -1797,6 +1802,9 @@ class Broker:
                             lease: Session = lease,
                             capture_principal: str | None = capture_principal,
                             committing: bool = False,
+                            current_binding: str = current_binding,
+                            flash_binding: FlashBinding | None = flash_binding,
+                            queued_intent: ExecutionIntent = queued_intent,
                         ) -> bool:
                             current = self.session
                             if (
@@ -1850,14 +1858,9 @@ class Broker:
 
                         result = await self.firmware_flash.execute(plan, on_stage, flash_live)
                     elif plan["test"] == TestName.SOURCE.value:
-
-                        def source_live(
-                            lease: Session = lease,
-                            capture_principal: str | None = capture_principal,
-                        ) -> bool:
-                            return running_authorized()
-
-                        result = await self.firmware_source.execute(plan, on_stage, source_live)
+                        result = await self.firmware_source.execute(
+                            plan, on_stage, running_authorized
+                        )
                     elif plan["test"] == TestName.BUILD.value:
                         if capture_principal != plan.get("build_principal"):
                             raise BrokerError("build_principal_mismatch")
@@ -1868,14 +1871,10 @@ class Broker:
                         if not isinstance(self.backend, SerialBackend):
                             raise BrokerError("backend_not_available")
 
-                        def smoke_live(
-                            lease: Session = lease,
-                            capture_principal: str | None = capture_principal,
-                        ) -> bool:
-                            return running_authorized()
-
-                        result = await self.backend.execute_smoke(plan, on_stage, smoke_live)
-                        if not smoke_live() or self.backend.smoke_stop.is_set():
+                        result = await self.backend.execute_smoke(
+                            plan, on_stage, running_authorized
+                        )
+                        if not running_authorized() or self.backend.smoke_stop.is_set():
                             raise BrokerError("operation_interrupted_review_required")
                     else:
                         result = await self.backend.execute(plan, on_stage)
@@ -2005,7 +2004,7 @@ class Broker:
                                 plan, completed, partial(flash_live, committing=True)
                             )
                         elif plan["test"] == TestName.SOURCE.value:
-                            self.firmware_source.commit_success(plan, completed, source_live)
+                            self.firmware_source.commit_success(plan, completed, running_authorized)
                         else:
                             diagnostic = (
                                 {

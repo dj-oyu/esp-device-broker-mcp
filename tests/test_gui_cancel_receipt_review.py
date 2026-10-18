@@ -13,8 +13,12 @@ def test_cancel_receipt_requires_known_state_and_boolean_stop_flag(field, value)
     model, api, clock = loaded(cancellable=True)
     epoch, job, digest = model.cancel_key("job_image_1")
     api.cancel_response = {
-        "ok": True, "job_id": job, "plan_hash": digest, "broker_epoch": epoch,
-        "state": "running", "stop_requested": True,
+        "ok": True,
+        "job_id": job,
+        "plan_hash": digest,
+        "broker_epoch": epoch,
+        "state": "running",
+        "stop_requested": True,
         field: value,
     }
     result = perform_timeline(api, model.cancel_job(job, (epoch, job, digest)), clock)
@@ -27,8 +31,11 @@ def test_missing_cancel_stop_flag_confers_no_acknowledgement():
     model, api, clock = loaded(cancellable=True)
     epoch, job, digest = model.cancel_key("job_image_1")
     api.cancel_response = {
-        "ok": True, "job_id": job, "plan_hash": digest,
-        "broker_epoch": epoch, "state": "running",
+        "ok": True,
+        "job_id": job,
+        "plan_hash": digest,
+        "broker_epoch": epoch,
+        "state": "running",
     }
     outcome = perform_timeline(api, model.cancel_job(job, (epoch, job, digest)), clock)
     assert outcome.error == CANCEL_UNCERTAIN
@@ -44,9 +51,14 @@ def test_delayed_cancel_operation_never_dispatches_after_its_ten_second_window()
     assert api.calls == [("timeline",)]
 
 
-@pytest.mark.parametrize("field,value", [
-    ("job_id", "bad/job"), ("plan_hash", "not-a-hash"), ("broker_epoch", "bad"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("job_id", "bad/job"),
+        ("plan_hash", "not-a-hash"),
+        ("broker_epoch", "bad"),
+    ],
+)
 def test_malformed_cancel_target_is_rejected_before_network(field, value):
     model, api, clock = loaded(cancellable=True)
     operation = model.cancel_job("job_image_1", model.cancel_key("job_image_1"))

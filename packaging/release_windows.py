@@ -3,8 +3,10 @@
 import argparse
 import hashlib
 import json
+import platform
 import re
 import struct
+import subprocess
 import tomllib
 import zipfile
 from pathlib import Path
@@ -17,7 +19,81 @@ PAYLOAD = (
     "WINDOWS-DISTRIBUTION.md",
     "examples/mock-safe.toml",
 )
-MEMBERS = (*PAYLOAD, "manifest.json", "SHA256SUMS.txt")
+MEMBERS = (*PAYLOAD, "build-runtime.json", "manifest.json", "SHA256SUMS.txt")
+RUNTIME_KEYS = {
+    "schema_version",
+    "python_version",
+    "uv_version",
+    "source_commit",
+    "uv_lock_sha256",
+    "build_requirements_sha256",
+    "exe_sha256",
+}
+
+
+def record_build_runtime(exe: Path, root: Path = ROOT) -> Path:
+    """Called by the actual PyInstaller interpreter after producing the EXE."""
+    if subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=no"], cwd=root, text=True
+    ).strip():
+        raise ValueError("build_source_must_be_clean")
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    uv_version = subprocess.check_output(["uv", "--version"], text=True).split()[1]
+    runtime = {
+        "schema_version": 1,
+        "python_version": platform.python_version(),
+        "uv_version": uv_version,
+        "source_commit": commit,
+        "uv_lock_sha256": digest((root / "uv.lock").read_bytes()),
+        "build_requirements_sha256": digest(
+            (root / "packaging/requirements-windows-build.txt").read_bytes()
+        ),
+        "exe_sha256": digest(exe.read_bytes()),
+    }
+    target = Path(str(exe) + ".build.json")
+    target.write_text(json.dumps(runtime, sort_keys=True) + "\n", encoding="utf-8")
+    return target
+
+
+def verify_build_runtime(data: bytes, executable: bytes, commit: str, root: Path) -> dict:
+    """Verify producer metadata and the EXE's ABI, never the verifier's runtime."""
+    if len(data) > 4096:
+        raise ValueError("build_runtime_invalid")
+    runtime = json.loads(data)
+    if not isinstance(runtime, dict) or runtime.keys() != RUNTIME_KEYS:
+        raise ValueError("build_runtime_invalid")
+    if (
+        type(runtime["schema_version"]) is not int
+        or runtime["schema_version"] != 1
+        or any(type(runtime[key]) is not str for key in RUNTIME_KEYS - {"schema_version"})
+        or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", runtime["python_version"]) is None
+        or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", runtime["uv_version"]) is None
+        or runtime["source_commit"] != commit
+        or runtime["exe_sha256"] != digest(executable)
+        or runtime["uv_lock_sha256"] != digest((root / "uv.lock").read_bytes())
+        or runtime["build_requirements_sha256"]
+        != digest((root / "packaging/requirements-windows-build.txt").read_bytes())
+    ):
+        raise ValueError("build_runtime_binding_mismatch")
+    # PyInstaller 6's CArchive cookie records the embedded Python ABI/library.
+    # This prevents a 3.14 EXE from being described as a 3.13 build even if the
+    # sidecar version was edited. Full patch version comes from the producer.
+    magic, cookie_format = b"MEI\014\013\012\013\016", "!8sIIII64s"
+    at = executable.rfind(magic)
+    length = struct.calcsize(cookie_format)
+    if at < 0 or at + length > len(executable):
+        raise ValueError("build_runtime_cookie_missing")
+    _, package, toc, toc_length, abi, library = struct.unpack_from(cookie_format, executable, at)
+    major, minor, _ = map(int, runtime["python_version"].split("."))
+    if (
+        abi != major * 100 + minor
+        or library.rstrip(b"\0") != f"python{major}{minor}.dll".encode()
+        or package < length
+        or package > at + length
+        or toc + toc_length > package - length
+    ):
+        raise ValueError("build_runtime_abi_mismatch")
+    return runtime
 
 
 def digest(data: bytes) -> str:
@@ -61,22 +137,27 @@ def create_archive(exe: Path, output: Path, ref: str, commit: str, root: Path = 
     version = release_version(ref, root)
     if re.fullmatch(r"[a-f0-9]{40}", commit) is None:
         raise ValueError("expected_full_source_commit_sha")
-    payload = {name: (exe if name == "cardputer.exe" else root / name).read_bytes()
-               for name in PAYLOAD}
+    payload = {
+        name: (exe if name == "cardputer.exe" else root / name).read_bytes() for name in PAYLOAD
+    }
     check_pe(payload["cardputer.exe"])
+    runtime_bytes = Path(str(exe) + ".build.json").read_bytes()
+    runtime = verify_build_runtime(runtime_bytes, payload["cardputer.exe"], commit, root)
+    payload["build-runtime.json"] = runtime_bytes
     manifest = {
         "schema_version": 1,
         "version": version,
         "source_commit": commit,
         "source_ref": ref,
         "platform": "windows-x64",
-        "python_version": "3.13.16",
-        "uv_version": "0.12.19",
+        "python_version": runtime["python_version"],
+        "uv_version": runtime["uv_version"],
+        "build_runtime_sha256": digest(runtime_bytes),
         "uv_lock_sha256": digest((root / "uv.lock").read_bytes()),
         "build_requirements_sha256": digest(
             (root / "packaging/requirements-windows-build.txt").read_bytes()
         ),
-        "files": {name: digest(data) for name, data in payload.items()},
+        "files": {name: digest(payload[name]) for name in PAYLOAD},
     }
     payload["manifest.json"] = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     payload["SHA256SUMS.txt"] = "".join(
@@ -109,6 +190,7 @@ def verify_archive(archive: Path, ref: str, commit: str, root: Path = ROOT) -> d
         or manifest["source_commit"] != commit
         or manifest["source_ref"] != ref
         or manifest["platform"] != "windows-x64"
+        or manifest["build_runtime_sha256"] != digest(payload["build-runtime.json"])
         or manifest["uv_lock_sha256"] != digest((root / "uv.lock").read_bytes())
         or manifest["build_requirements_sha256"]
         != digest((root / "packaging/requirements-windows-build.txt").read_bytes())
@@ -117,9 +199,18 @@ def verify_archive(archive: Path, ref: str, commit: str, root: Path = ROOT) -> d
         raise ValueError("archive_manifest_mismatch")
     if any(digest(payload[name]) != manifest["files"][name] for name in PAYLOAD):
         raise ValueError("archive_payload_hash_mismatch")
+    runtime = verify_build_runtime(
+        payload["build-runtime.json"], payload["cardputer.exe"], commit, root
+    )
+    if (
+        manifest["python_version"] != runtime["python_version"]
+        or manifest["uv_version"] != runtime["uv_version"]
+    ):
+        raise ValueError("archive_manifest_mismatch")
     expected = "".join(
         f"{digest(data)}  {name}\n"
-        for name, data in sorted(payload.items()) if name != "SHA256SUMS.txt"
+        for name, data in sorted(payload.items())
+        if name != "SHA256SUMS.txt"
     ).encode()
     if payload["SHA256SUMS.txt"] != expected:
         raise ValueError("archive_checksums_mismatch")

@@ -47,9 +47,9 @@ async def running(tmp_path, *, max_queue=8):
 
 
 def prepare(broker, job="submitted"):
-    return broker.prepare(
-        PrepareRequest(session=broker.session.capability, job_id=job)
-    )["plan_hash"]
+    return broker.prepare(PrepareRequest(session=broker.session.capability, job_id=job))[
+        "plan_hash"
+    ]
 
 
 def submit(broker, digest, *, waiting=True):
@@ -94,6 +94,7 @@ async def test_explicit_request_requires_live_read_and_control_authority(tmp_pat
 
             def fail(*args):
                 raise RuntimeError("SYNTHETIC_PRIVATE_EXCEPTION")
+
             broker.principal_valid = fail
         with pytest.raises(BrokerError, match="^(principal_not_authorized|invalid_session)$"):
             submit(broker, digest)
@@ -118,6 +119,7 @@ async def test_queued_request_rechecks_authority_before_worker_dispatch(tmp_path
 
             def fail(*args):
                 raise RuntimeError("SYNTHETIC_PRIVATE_EXCEPTION")
+
             broker.principal_valid = fail
         await broker.queue.join()
         assert broker.job("submitted")["state"] == "cancelled"

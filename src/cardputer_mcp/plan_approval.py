@@ -30,6 +30,7 @@ _SERIAL_KEYS = {
     "effects",
 }
 
+
 def _hex(value: object, length: int) -> bool:
     return type(value) is str and re.fullmatch(rf"[a-f0-9]{{{length}}}", value) is not None
 
@@ -413,8 +414,10 @@ class PlanApprovals:
                     from .models import PrepareRequest
 
                     request = PrepareRequest(
-                        session=lease.capability, project_id=plan["project_id"],
-                        job_id=plan["job_id"], test=TestName.SOURCE,
+                        session=lease.capability,
+                        project_id=plan["project_id"],
+                        job_id=plan["job_id"],
+                        test=TestName.SOURCE,
                         source_commit=plan["source_commit"],
                     )
                     details = self.broker.firmware_source.prepare(request, lease.principal_id or "")

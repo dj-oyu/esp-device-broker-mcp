@@ -22,12 +22,20 @@ from .operator_client import OperatorClient, OperatorClientError
 from .ports import inventory_json
 from .server import create_app
 
-
-RETIRED_COMMANDS = frozenset({
-    "approve", "plan-review", "approve-live", "approve-and-start",
-    "image-decision", "home-recovery-review", "home-recovery-approve",
-    "operator-launch-request", "derby-operator-request", "home-recovery-operator-request",
-})
+RETIRED_COMMANDS = frozenset(
+    {
+        "approve",
+        "plan-review",
+        "approve-live",
+        "approve-and-start",
+        "image-decision",
+        "home-recovery-review",
+        "home-recovery-approve",
+        "operator-launch-request",
+        "derby-operator-request",
+        "home-recovery-operator-request",
+    }
+)
 
 
 def output(value: Any) -> None:
@@ -139,7 +147,10 @@ def parser() -> argparse.ArgumentParser:
 
 
 async def demo(
-    url: str, recording: bool = False, *, local_token: str | None = None,
+    url: str,
+    recording: bool = False,
+    *,
+    local_token: str | None = None,
     remote_token: str | None = None,
 ) -> None:
     async def beat(text: str) -> None:
@@ -214,7 +225,8 @@ async def run_client(args: argparse.Namespace) -> None:
         if args.auth_source != "environment":
             raise AuthError("demo_requires_environment_credentials")
         await demo(
-            url, args.recording,
+            url,
+            args.recording,
             local_token=load_environment_token(Origin.LOCAL),
             remote_token=load_environment_token(Origin.REMOTE),
         )
