@@ -162,8 +162,17 @@ class Reader:
             raise self.failure("serial_deadline")
         try:
             incoming = self.port.read(4096)
+        except SerialFailure:
+            # Owned-port guards already carry a fixed category and diagnostics.
+            raise
+        except OSError:
+            failure = self.failure("serial_read_failed")
+            failure.diagnostic["failure_origin"] = "port_read_os_error"
+            raise failure from None
         except Exception:
-            raise self.failure("serial_read_failed") from None
+            failure = self.failure("serial_operation_uncertain")
+            failure.diagnostic["failure_origin"] = "port_read_error"
+            raise failure from None
         if incoming:
             self.bytes_read += len(incoming)
             self.receive_diagnostics.observe_bytes(incoming)
@@ -780,6 +789,11 @@ class SerialBackend:
         except SerialFailure as failure:
             # Close itself may block. Release raw read-frame references before
             # entering that ownership-preserving wait, not only at async return.
+            if reader is not None and reader.derby_observation is not None:
+                failure.diagnostic.setdefault(
+                    "derby_observation",
+                    reader.derby_observation().model_dump(mode="json", exclude_none=True),
+                )
             failure.__traceback__ = None
             failure.__context__ = None
             failure.__cause__ = None

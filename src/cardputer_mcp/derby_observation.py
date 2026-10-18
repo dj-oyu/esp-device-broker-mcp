@@ -62,7 +62,8 @@ class DerbyObservation(StrictModel):
     capture_reason: str = Field(
         pattern=(
             r"^(photo_observed|photo_not_observed_before_deadline|demo_ended_without_photo|"
-            r"photo_not_current_before_s|insufficient_capture_exit_budget|capture_incomplete)$"
+            r"photo_not_current_before_s|insufficient_capture_exit_budget|capture_incomplete|"
+            r"observation_incomplete)$"
         )
     )
 
@@ -71,5 +72,6 @@ class DerbyObservation(StrictModel):
             self.exit_home_observed
             and not self.image_acquired
             and not any(e.kind == "capture_s_requested" for e in self.events)
-            and self.capture_reason not in ("photo_observed", "capture_incomplete")
+            and self.capture_reason
+            not in ("photo_observed", "capture_incomplete", "observation_incomplete")
         )
