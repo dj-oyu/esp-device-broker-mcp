@@ -8,7 +8,7 @@ from test_authenticated_mock import LOCAL, REMOTE
 from test_authenticated_mock import authenticated_mock as authenticated_mock
 from test_derby_http import derby_service as derby_service
 from test_derby_smoke import Wire
-from test_derby_telemetry import later
+from test_derby_telemetry import later, measure_wire
 from test_derby_telemetry import wire as telemetry_wire
 from test_http_integration import _service
 from test_serial_http import serial_service as serial_service
@@ -206,7 +206,15 @@ async def test_single_reader_to_owned_http_report_on_success_and_failure(derby_s
     def write(data):
         count = original(data)
         if data == b"e":
-            records = b"I (123) js: DERBY CAM WIDE 2\n" + telemetry_wire() + b"\n" + later() + b"\n"
+            records = (
+                b"I (123) js: DERBY CAM WIDE 2\n"
+                + telemetry_wire()
+                + b"\n"
+                + measure_wire()
+                + b"\n"
+                + later()
+                + b"\n"
+            )
             if fault:
                 records += (
                     b"I (124) js: DERBY FRAMEFAIL race SYNTHETIC_PRIVATE_EXCEPTION token=SECRET\n"
@@ -258,6 +266,10 @@ async def test_single_reader_to_owned_http_report_on_success_and_failure(derby_s
     )
     details = result["derby_diagnostics"]
     assert details["available"] and len(details["observation"]["samples"]) == 2
+    assert details["observation"]["measurement_wire_contract_commit"] == (
+        "650c5e2b387b9b0b2e46559626c85a4e24a3e55d"
+    )
+    assert details["observation"]["measurements"][0]["stages"][0] == [10, 8, 2, 6, 5]
     assert details["observation"]["events"][0]["kind"] == "camera"
     assert details["observation"]["events"][0]["camera"] == 8
     if fault:
