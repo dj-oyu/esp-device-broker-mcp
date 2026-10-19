@@ -1,6 +1,7 @@
 """Actual guarded HTTP previews from retained synthetic broker captures; no Tk/USB."""
 
 import asyncio
+import os
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -162,6 +163,8 @@ async def test_real_retained_preview_wire_accepts_current_epoch_without_renewal(
 async def test_preview_read_rechecks_current_operator_authentication(
     authenticated_mock, monkeypatch
 ):
+    if os.name == "nt":
+        assert isinstance(asyncio.get_running_loop(), asyncio.SelectorEventLoop)
     url, broker = authenticated_mock
     job_id, retained, _ = retain_capture(broker)
     permitted = [True]

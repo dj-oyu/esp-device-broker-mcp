@@ -2,6 +2,7 @@
 
 import ctypes
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -191,7 +192,7 @@ def test_close_empty_owner_after_popen_failure():
 
 
 @pytest.mark.parametrize("exit_before_close", [False, True])
-def test_real_leader_without_application_descendants(tmp_path, exit_before_close):
+def test_real_leader_without_application_descendants(tmp_path, exit_before_close, record_property):
     tree = ProcessTree()
     pidfile = tmp_path / "interpreter"
     # A true single-OS-process control uses the base executable on Windows;
@@ -220,7 +221,16 @@ def test_real_leader_without_application_descendants(tmp_path, exit_before_close
             process.stdin.close()
             assert process.wait(timeout=4) == 0
         probe = native_cleanup_probe(tree, process)
-        assert tree.close(process) is False, probe
+        if os.name == "nt":
+            # Both retained diagnostics carry complete bounded numeric JSON;
+            # pytest's assertion repr shortens nested dictionaries.
+            encoded_probe = json.dumps(probe, sort_keys=True, separators=(",", ":"))
+            assert len(encoded_probe) <= 65536, "ci_cleanup_probe_oversize"
+            record_property("ci_cleanup_probe", encoded_probe)
+            print("ci_cleanup_probe=" + encoded_probe, file=sys.stderr, flush=True)
+        result = tree.close(process)
+        if result is not False:
+            pytest.fail("ci_cleanup_probe=" + json.dumps(probe, sort_keys=True), pytrace=False)
         assert process.poll() is not None
     finally:
         tree.close(process)

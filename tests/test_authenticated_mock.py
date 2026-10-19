@@ -37,8 +37,6 @@ def event_loop_policy():
 async def authenticated_mock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> AsyncIterator[tuple[str, Broker]]:
-    if os.name == "nt":
-        assert isinstance(asyncio.get_running_loop(), asyncio.SelectorEventLoop)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -90,6 +88,8 @@ async def authenticated_mock(
 async def test_authenticated_mock_rejects_missing_invalid_and_external_requests(
     authenticated_mock: tuple[str, Broker],
 ) -> None:
+    if os.name == "nt":
+        assert isinstance(asyncio.get_running_loop(), asyncio.SelectorEventLoop)
     url, _ = authenticated_mock
     async with httpx2.AsyncClient(trust_env=False) as http:
         for headers in ({}, {"Authorization": "Bearer " + "c" * 64}):
