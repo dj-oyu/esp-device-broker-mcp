@@ -11,11 +11,60 @@ from .flash_manifest import FlashBundle
 
 Operation = Literal["backup", "flash", "restore"]
 
+_SAFE_ROM_EXCEPTION_TYPES = frozenset(
+    {
+        "EOFError",
+        "FatalError",
+        "FileNotFoundError",
+        "OSError",
+        "OtherError",
+        "PermissionError",
+        "RuntimeError",
+        "SerialException",
+        "SerialTimeoutException",
+        "TimeoutError",
+        "TypeError",
+        "UnsupportedCommandError",
+        "ValueError",
+    }
+)
+_SAFE_ROM_FAILURE_CLASSES = frozenset({"timeout", "io", "validation", "native_other"})
+
+
+def _bounded_read_diagnostic(code: str, value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    fields = {"code", "operation", "read_bytes", "read_total", "elapsed_seconds", "failure_origin"}
+    native_fields = fields | {"exception_type", "failure_class"}
+    origin = value.get("failure_origin")
+    if (
+        type(origin) is not str
+        or set(value) != (native_fields if origin == "native_worker" else fields)
+        or value.get("code") != code
+        or value.get("operation") != "rom_read"
+        or origin not in {"native_worker", "driver_guard", "driver_or_process"}
+        or type(value.get("read_bytes")) is not int
+        or type(value.get("read_total")) is not int
+        or not 0 <= value["read_bytes"] <= value["read_total"] <= 16777216
+        or type(value.get("elapsed_seconds")) is not int
+        or not 0 <= value["elapsed_seconds"] <= 100000
+    ):
+        return None
+    if origin == "native_worker" and (
+        type(value["exception_type"]) is not str
+        or type(value["failure_class"]) is not str
+        or value["exception_type"] not in _SAFE_ROM_EXCEPTION_TYPES
+        or value["failure_class"] not in _SAFE_ROM_FAILURE_CLASSES
+    ):
+        return None
+    return dict(value)
+
 
 class FlashFailure(ValueError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, diagnostic: dict[str, Any] | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.diagnostic = _bounded_read_diagnostic(code, diagnostic)
 
 
 @dataclass(frozen=True)

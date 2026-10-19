@@ -59,6 +59,11 @@ class ReadProgress:
             elapsed = max(0, int(self.clock() - self.started))
             return f"{self.done}/{self.size} bytes; elapsed {elapsed} s"
 
+    def snapshot(self) -> dict[str, int]:
+        with self._lock:
+            elapsed = min(100000, max(0, int(self.clock() - self.started)))
+            return dict(read_bytes=self.done, read_total=self.size, elapsed_seconds=elapsed)
+
     def check(self) -> None:
         with self._lock:
             now = self.clock()

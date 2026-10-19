@@ -1,14 +1,19 @@
 """Worker API contract with a fake esptool module, never a serial port."""
 
+import contextlib
 import hashlib
+import io
+import json
+import platform
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from cardputer_mcp.flash_worker import run_job
+from cardputer_mcp.flash_worker import main, run_job
 
 
 class FakePort:
@@ -184,6 +189,60 @@ class WorkerTests(unittest.TestCase):
             )
         self.assertFalse((self.root / "read.bin").exists())
         self.assertFalse(self.chip._port.is_open)
+
+    def test_native_read_failure_emits_only_fixed_type_and_class(self):
+        secret = "password=private COM7 C:/private/device.toml"
+        serial_error = type("SerialException", (Exception,), {"__module__": "serial.serialutil"})
+        tools = self.root / "tools"
+        tools.mkdir()
+        job = dict(
+            self.job,
+            action="read",
+            offset=0,
+            size=1024,
+            expected_python_version="Python " + platform.python_version(),
+            esptool_directory=str(tools),
+        )
+        path = self.root / "job.json"
+        path.write_text(json.dumps(job), encoding="utf-8")
+        esptool = ModuleType("esptool")
+        esptool.__path__ = []
+        esptool.__file__ = str(tools / "__init__.py")
+        esptool.cmds = ModuleType("esptool.cmds")
+        output = io.StringIO()
+        with (
+            patch.dict(sys.modules, {"esptool": esptool, "esptool.cmds": esptool.cmds}),
+            patch.object(sys, "argv", ["flash_worker.py", str(path)]),
+            patch("cardputer_mcp.flash_worker.run_job", side_effect=serial_error(secret)),
+            contextlib.redirect_stdout(output),
+            self.assertRaises(SystemExit) as stopped,
+        ):
+            main()
+        self.assertEqual(stopped.exception.code, 1)
+        self.assertEqual(
+            json.loads(output.getvalue().removeprefix("FLASH_RESULT=")),
+            {
+                "ok": False,
+                "error": "flash_native_failed_needs_review",
+                "operation": "rom_read",
+                "exception_type": "SerialException",
+                "failure_class": "io",
+            },
+        )
+        self.assertNotIn(secret, output.getvalue())
+        self.assertNotIn("COM7", output.getvalue())
+
+    def test_native_read_exception_closes_port_without_write_or_output(self):
+        def fail_read(chip, offset, size, **kwargs):
+            raise OSError("password=private COM7 C:/private/device.toml")
+
+        self.tool.cmds.read_flash = fail_read
+        with self.assertRaises(OSError):
+            run_job(dict(self.job, action="read", offset=0, size=1024), self.root, self.tool)
+        self.assertFalse(self.chip._port.is_open)
+        self.assertEqual(self.writes, [])
+        self.assertFalse((self.root / "read.bin").exists())
+        self.assertEqual(len(self.calls), 1)
 
     def test_write_uses_attested_bytes_and_never_dangerous_options(self):
         data = b"synthetic-image" * 8
