@@ -89,14 +89,11 @@ def _tuple(value: str, width: int) -> tuple[int, ...]:
     return tuple(_number(part) for part in parts)
 
 
-def _row(line: bytes, prefix: bytes, keys: frozenset[str]) -> dict[str, str]:
-    if len(line) + 1 > MAX_LINE or not line.startswith(prefix + b" "):
+def _row(line: str, prefix: str, keys: frozenset[str]) -> dict[str, str]:
+    parts = line.split()
+    if not parts or parts[0] != prefix:
         raise ValueError("invalid_fixed_line")
-    try:
-        parts = line.decode("ascii").split(" ")
-        pairs = [part.split("=", 1) for part in parts[1:]]
-    except UnicodeError:
-        raise ValueError("invalid_fixed_line") from None
+    pairs = [part.split("=", 1) for part in parts[1:]]
     if any(len(pair) != 2 or not pair[0] or not pair[1] for pair in pairs):
         raise ValueError("invalid_fixed_fields")
     result = dict(pairs)
@@ -110,22 +107,22 @@ def _parse_trial(raw: bytes, *, verify_work: bool) -> dict[str, Any]:
     if not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_BYTES or not raw.endswith(b"\n"):
         raise ValueError("fixed_transport_incomplete")
     try:
-        raw.decode("ascii")
+        text = raw.decode("ascii")
     except UnicodeError:
         raise ValueError("fixed_transport_non_ascii") from None
     rows: list[dict[str, str]] = []
     end: dict[str, str] | None = None
-    for line in raw.split(b"\n")[:-1]:
-        if len(line) + 1 > MAX_LINE:
-            raise ValueError("fixed_line_limit")
-        if line.startswith(b"DERBY_FIXED_END"):
+    if any(len(line) > MAX_LINE for line in text.splitlines(keepends=True)):
+        raise ValueError("fixed_line_limit")
+    for line in text.splitlines():
+        if line.startswith("DERBY_FIXED_END"):
             if end is not None:
                 raise ValueError("fixed_duplicate_end")
-            end = _row(line, b"DERBY_FIXED_END", END_KEYS)
-        elif line.startswith(b"DERBY_FIXED"):
+            end = _row(line, "DERBY_FIXED_END", END_KEYS)
+        elif line.startswith("DERBY_FIXED"):
             if end is not None:
                 raise ValueError("fixed_record_after_end")
-            rows.append(_row(line, b"DERBY_FIXED", ROW_KEYS))
+            rows.append(_row(line, "DERBY_FIXED", ROW_KEYS))
     if len(rows) != 3 or end is None:
         raise ValueError("fixed_whole_trial_required")
     variant, session = rows[0]["variant"], rows[0]["session"]
@@ -241,6 +238,7 @@ class FixedCollector:
         self.started = started
         self.raw = bytearray()
         self.pending = b""
+        self.phase = "await_launch"
         self.end_seen = self.stopped = self.home = False
         self.overflow = self.reset = self.refused = False
 
@@ -260,16 +258,38 @@ class FixedCollector:
             raise ValueError("fixed_line_limit")
 
     def observe_line(self, line: bytes) -> None:
-        if line.startswith(b"DERBY_FIXED_END"):
-            self.end_seen = True
-        elif line == b"APP_STOPPED":
-            self.stopped = self.end_seen
-        elif line == b"HOME_READY":
-            self.home = True
-            if not self.stopped:
+        if line == b"APP_ID local.derby":
+            if self.phase == "await_launch":
+                self.phase = "await_ready"
+            else:
                 self.reset = True
-        elif line.startswith(b"APP_ID") and line != b"APP_ID local.derby":
+        elif line.startswith(b"APP_ID"):
             self.reset = True
+        elif line.startswith(b"DERBY READY"):
+            if self.phase == "await_ready" and re.fullmatch(
+                rb"DERBY READY tones=(?:true|false)", line
+            ):
+                self.phase = "running"
+            else:
+                self.reset = True
+        elif line.startswith(b"DERBY_FIXED_END"):
+            if self.phase == "running":
+                self.phase = "ended"
+                self.end_seen = True
+            else:
+                self.reset = True
+        elif line == b"APP_STOPPED":
+            if self.phase == "ended":
+                self.phase = "stopped"
+                self.stopped = True
+            else:
+                self.reset = True
+        elif line == b"HOME_READY":
+            if self.phase == "stopped":
+                self.phase = "home"
+                self.home = True
+            else:
+                self.reset = True
         elif re.search(rb"(?:rst:0x|ESP-ROM:)", line):
             self.reset = True
 
@@ -283,6 +303,7 @@ class FixedCollector:
         raw = bytes(self.raw)
         ready = (
             complete
+            and self.phase == "home"
             and self.end_seen
             and self.stopped
             and self.home

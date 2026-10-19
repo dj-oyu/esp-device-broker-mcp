@@ -48,6 +48,27 @@ def test_public_fixture_and_known_work_are_bound_to_complete_trial():
     assert [row["rep"] for row in result["repetitions"]] == ["1", "2", "3"]
 
 
+@pytest.mark.parametrize("ending", [b"\n", b"\r\n", b"\r\r\n"])
+def test_public_trial_accepts_firmware_line_splitting_without_rewriting_raw(ending):
+    raw = FIXTURE.replace(b"\n", ending)
+    parsed = parse_trial(raw)
+    assert parsed["transport_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert parsed["work_verified"] is True
+
+
+def test_firmware_token_whitespace_and_malformed_whitespace():
+    spaced = FIXTURE.replace(b"DERBY_FIXED v=", b"DERBY_FIXED  v=", 1)
+    spaced = spaced.replace(b"v=1 fixture=", b"v=1\tfixture=", 1)
+    assert parse_trial(spaced)["work_verified"] is True
+    for damaged in (
+        FIXTURE.replace(b"DERBY_FIXED v=", b" DERBY_FIXED v=", 1),
+        FIXTURE.replace(b"DERBY_FIXED v=", b"DERBY_FIXED\x00v=", 1),
+        FIXTURE.replace(b"variant=baseline session=", b"variant=baseline\rsession=", 1),
+    ):
+        with pytest.raises(ValueError):
+            parse_trial(damaged)
+
+
 def test_new_public_parser_semantics_allow_variable_host_calls():
     raw = replace_row(FIXTURE, 2, b"s4=71266:14925", b"s4=71266:14926")
     assert parse_trial(raw)["work_verified"] is True
@@ -141,7 +162,11 @@ def test_any_bad_or_partial_repetition_invalidates_the_whole_trial(damage):
 
 def test_host_collector_builds_receipt_from_wire_bytes_not_device_claims():
     collector = FixedCollector(1.0)
-    raw = FIXTURE + b"I (0) app: APP_STOPPED\nI (0) shell: HOME_READY\n"
+    raw = (
+        b"APP_ID local.derby\nDERBY READY tones=true\n"
+        + FIXTURE
+        + b"I (0) app: APP_STOPPED\nI (0) shell: HOME_READY\n"
+    )
     for at in range(0, len(raw), 17):
         part = raw[at : at + 17]
         collector.feed(part)
@@ -149,7 +174,9 @@ def test_host_collector_builds_receipt_from_wire_bytes_not_device_claims():
             if line == b"APP_STOPPED":
                 collector.observe_line(line)
     for line in raw.splitlines():
-        if line.startswith(b"DERBY_FIXED_END"):
+        if line in (b"APP_ID local.derby", b"DERBY READY tones=true"):
+            collector.observe_line(line)
+        elif line.startswith(b"DERBY_FIXED_END"):
             collector.observe_line(line)
         elif line.endswith(b"APP_STOPPED"):
             collector.observe_line(b"APP_STOPPED")
@@ -198,16 +225,27 @@ def test_reset_and_disconnect_are_collector_owned_failure_facts():
 
 
 class FixedWire(Wire):
-    def __init__(self, raw: bytes = FIXTURE, *, partial: bool = False):
+    def __init__(
+        self,
+        raw: bytes = FIXTURE,
+        *,
+        partial: bool = False,
+        post_home: bytes = b"",
+        payload_chunk: int = 27,
+    ):
         super().__init__(phases=False)
         self.raw, self.partial, self.sent = raw, partial, False
+        self.post_home, self.payload_chunk = post_home, payload_chunk
 
     def read(self, size=1):
         if self.running and not self.queue and not self.sent:
             self.sent = True
             ending = b"I (0) app: APP_STOPPED\nI (0) shell: HOME_READY\n"
-            payload = self.raw if self.partial else self.raw + ending
-            self.queue.extend(payload[at : at + 27] for at in range(0, len(payload), 27))
+            payload = self.raw if self.partial else self.raw + ending + self.post_home
+            self.queue.extend(
+                payload[at : at + self.payload_chunk]
+                for at in range(0, len(payload), self.payload_chunk)
+            )
         if self.partial and self.sent and not self.queue:
             self.now += 201
             return b""
@@ -309,6 +347,61 @@ async def test_fixed_workload_uses_explicit_owned_http_path_and_private_raw(seri
     )
     assert wire.closed and wire.writes == [b"\x1b", b"a", *([b"u"] * 16), *([b"d"] * 12), b"e"]
     assert resident.backend.calls == 1 and resident.backend.active == 0
+
+
+@pytest.mark.parametrize("ending", [b"\r\n", b"\r\r\n"])
+async def test_crlf_serial_trial_preserves_exact_raw_bytes(serial_service, ending):
+    url, resident, _ = serial_service
+    expected_raw = FIXTURE.replace(b"\n", ending)
+    wire = FixedWire(expected_raw)
+    resident.backend = backend_for(wire, resident.settings.serial)
+    async with connect(url, "a" * 64) as owner:
+        lease = await call(owner, "acquire_session", {"owner": "local_cli", "lease_seconds": 300})
+        prepared = await call(
+            owner,
+            "prepare_test",
+            {"session": lease["session"], "job_id": "fixed-crlf", "test": "derby_fixed_workload"},
+        )
+        await call(
+            owner, "execute_test", {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
+        )
+        await resident.queue.join()
+        owned = await call(owner, "job_status", {"job_id": "fixed-crlf"})
+    assert owned["state"] == "succeeded"
+    raw = base64.b64decode(owned["fixed_trial"]["raw_base64"])
+    assert expected_raw in raw
+    assert owned["fixed_trial"]["receipt"]["sha256"] == hashlib.sha256(raw).hexdigest()
+
+
+@pytest.mark.parametrize("chunk_size", [27, 4096], ids=["quiet_drain", "coalesced"])
+async def test_same_app_relaunch_after_home_invalidates_trial(serial_service, chunk_size):
+    url, resident, _ = serial_service
+    relaunch = b"APP_ID local.derby\nDERBY READY tones=true\n"
+    wire = FixedWire(post_home=relaunch, payload_chunk=chunk_size)
+    resident.backend = backend_for(wire, resident.settings.serial)
+    async with connect(url, "a" * 64) as owner, connect(url, "b" * 64) as other:
+        lease = await call(owner, "acquire_session", {"owner": "local_cli", "lease_seconds": 300})
+        prepared = await call(
+            owner,
+            "prepare_test",
+            {
+                "session": lease["session"],
+                "job_id": "fixed-relaunch",
+                "test": "derby_fixed_workload",
+            },
+        )
+        await call(
+            owner, "execute_test", {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
+        )
+        await resident.queue.join()
+        owned = await call(owner, "job_status", {"job_id": "fixed-relaunch"})
+        shared = await call(other, "job_status", {"job_id": "fixed-relaunch"})
+    assert owned["state"] == shared["state"] == "needs_review"
+    assert owned["fixed_trial"]["valid"] is False
+    assert owned["fixed_trial"]["receipt"]["reset"] is True
+    assert relaunch in base64.b64decode(owned["fixed_trial"]["raw_base64"])
+    assert "fixed_trial" not in shared
+    assert wire.writes == [b"\x1b", b"a", *([b"u"] * 16), *([b"d"] * 12), b"e"]
 
 
 @pytest.mark.parametrize("partial", [False, True])
