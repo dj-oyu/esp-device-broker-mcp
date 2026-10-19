@@ -140,7 +140,8 @@ omitting any check; it does not make path checks and directory enumeration atomi
 against a hostile external process swapping paths between syscalls.
 
 `read_build_logs` retains its compatible default capacity request. Frequent log
-pollers should set `include_source_cache=false`; use `read_source_resources` when
+pollers should set `include_source_cache=false` (the GUI does this for selected
+job logs); use `read_source_resources` when
 fresh capacity/reference information is needed. A capacity-scan failure is
 reported as unavailable alongside the source job/log result and does not turn a
 successful source job into a failed log request. Prepare/fetch capacity gates
