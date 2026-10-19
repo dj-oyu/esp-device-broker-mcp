@@ -150,3 +150,23 @@ still require a successful fresh scan. Cached/partial capacity is never substitu
 The new tool/input schema needs the normal connection Refresh and client metadata
 verification after a separately authorized deployment; this development change
 does not refresh or deploy the running connection.
+
+
+### Execute-time fresh metadata cost
+
+Execute performs its own single fresh capacity traversal under the cache guard;
+it does not reuse prepare's counts. This check remains mandatory even when a
+previous prepare succeeded and no receipt was published by a failed execution.
+On Windows, ancestor link/reparse checks query GetFileAttributesW instead of
+requesting full stat structures. This API reports the link's own attributes;
+every ancestor is still queried on every check and every reparse point is rejected.
+Only the native function binding is cached, never file metadata. Unsupported or
+failed attribute queries fall back to the original no-follow lstat, preserving
+missing/denied/UNC root semantics. Per-entry no-follow metadata, complete traversal,
+current byte/entry counts, cancellation, deadline and final budget checks remain.
+
+[Microsoft's attribute-query contract](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getfileattributesw)
+documents link and mount-point behavior. This optimization needs native Windows
+measurement against the retained cache; CI/synthetic tests do not prove that any
+particular cache always completes within five seconds under OS load. A timeout
+still fails closed and publishes no new receipt. No automatic retry is introduced.

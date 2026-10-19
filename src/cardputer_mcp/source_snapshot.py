@@ -15,8 +15,9 @@ import urllib.request
 import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
@@ -29,11 +30,11 @@ def _not_link(path: Path) -> None:
     candidate = os.fspath(path)
     while True:
         try:
-            info = os.lstat(candidate)
+            linked = _path_is_link(candidate)
         except FileNotFoundError:
             pass
         else:
-            if _linked(info):
+            if linked:
                 raise SourceError("source_linked_path_rejected")
         parent = os.path.dirname(candidate) or "."
         if parent == candidate:
@@ -43,6 +44,34 @@ def _not_link(path: Path) -> None:
 
 def _linked(info: os.stat_result) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
+@lru_cache(maxsize=1)
+def _windows_attributes_query() -> Callable[[str], int]:
+    # Cache only the function binding, never path attributes or scan results.
+    import ctypes
+
+    kernel = vars(ctypes)["WinDLL"]("kernel32", use_last_error=True)
+    query = kernel.GetFileAttributesW
+    query.argtypes = [ctypes.c_wchar_p]
+    query.restype = ctypes.c_uint32
+    return cast(Callable[[str], int], query)
+
+
+def _path_is_link(path: str) -> bool:
+    if os.name == "nt":
+        try:
+            attributes = _windows_attributes_query()(path)
+        except (AttributeError, KeyError, OSError):
+            attributes = 0xFFFFFFFF
+        # GetFileAttributesW returns attributes of the link itself. Every
+        # reparse point remains rejected, including junctions/mount points.
+        # https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getfileattributesw
+        if attributes != 0xFFFFFFFF:
+            return bool(attributes & 0x400)
+    # Preserve normal lstat error semantics (including missing/denied paths),
+    # UNC-share-root behavior, and the POSIX no-follow implementation.
+    return _linked(os.lstat(path))
 
 
 LIMITS = {

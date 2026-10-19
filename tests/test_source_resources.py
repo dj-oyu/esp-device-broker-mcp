@@ -86,6 +86,40 @@ class ResourceTests(unittest.TestCase):
         self.assertNotIn("bytes", diagnostic["scan"])
         self.assertNotIn(str(self.root), json.dumps(diagnostic))
 
+    def test_execute_rechecks_capacity_once_and_timeout_publishes_no_receipt(self):
+        for i in range(13):
+            self.root.joinpath(f"snapshot-{i}").mkdir()
+        self.assertEqual(self.snapshots.usage("fixture")["remaining_snapshots"], 3)
+        expected = {
+            "project_id": "fixture",
+            "source_commit": "a" * 40,
+            "source_principal": "owner",
+        }
+        clock = SimpleNamespace(now=0.0)
+        original = os.scandir
+        scans = []
+
+        def delayed(path):
+            scans.append(path)
+            if path != self.root:
+                clock.now = 6.0
+            return original(path)
+
+        with (
+            patch.object(module, "time", SimpleNamespace(monotonic=lambda: clock.now)),
+            patch.object(os, "scandir", delayed),
+            patch.object(self.snapshots, "prepare", return_value=expected),
+            patch.object(self.snapshots, "transport") as transport,
+        ):
+            with self.assertRaises(CacheScanLimit) as caught:
+                self.snapshots.fetch(expected, lambda: True, lambda stage: None)
+            transport.assert_not_called()
+        self.assertEqual(caught.exception.scan["reason"], "deadline")
+        self.assertEqual(scans.count(self.root), 1)
+        self.assertEqual(len(list(self.root.iterdir())), 13)
+        self.assertFalse(list(self.root.rglob("receipt.json")))
+        self.assertFalse(self.snapshots.uncertain)
+
     def test_million_entry_cap_and_empty_directory_deadline_still_apply(self):
         snapshot = self.root / "snapshot"
         snapshot.mkdir()
@@ -116,15 +150,50 @@ class ResourceTests(unittest.TestCase):
     def test_ancestor_checks_preserve_order_and_include_missing_and_root(self):
         path = self.base / "missing" / "file"
         visited = []
-        original = os.lstat
+        original = module._path_is_link
 
-        def counted(candidate, *args, **kwargs):
+        def counted(candidate):
             visited.append(os.fspath(candidate))
-            return original(candidate, *args, **kwargs)
+            return original(candidate)
 
-        with patch.object(os, "lstat", counted):
+        with patch.object(module, "_path_is_link", counted):
             module._not_link(path)
         self.assertEqual(visited, [os.fspath(p) for p in (path, *path.parents)])
+
+    def test_windows_attribute_checks_are_fresh_and_reject_reparse_points(self):
+        queried = []
+        attributes = [0x10, 0x410]
+
+        def query(path):
+            queried.append(path)
+            return attributes.pop(0)
+
+        with (
+            patch.object(os, "name", "nt"),
+            patch.object(module, "_windows_attributes_query", return_value=query),
+            patch.object(os, "lstat") as full_stat,
+        ):
+            self.assertFalse(module._path_is_link("same-path"))
+            self.assertTrue(module._path_is_link("same-path"))
+            full_stat.assert_not_called()
+        self.assertEqual(queried, ["same-path", "same-path"])
+
+    def test_windows_attribute_failure_falls_back_to_full_nofollow_stat(self):
+        reparse = SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+        with (
+            patch.object(os, "name", "nt"),
+            patch.object(module, "_windows_attributes_query", return_value=lambda p: 0xFFFFFFFF),
+            patch.object(os, "lstat", return_value=reparse) as full_stat,
+        ):
+            self.assertTrue(module._path_is_link("synthetic"))
+            full_stat.assert_called_once_with("synthetic")
+        with (
+            patch.object(os, "name", "nt"),
+            patch.object(module, "_windows_attributes_query", side_effect=OSError("unavailable")),
+            patch.object(os, "lstat", side_effect=PermissionError("denied")),
+        ):
+            with self.assertRaises(PermissionError):
+                module._path_is_link("synthetic")
 
     def test_link_and_pending_directory_swap_are_rejected(self):
         snapshot = self.root / "snapshot"
