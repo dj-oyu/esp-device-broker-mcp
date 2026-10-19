@@ -157,6 +157,35 @@ def test_cache_inventory_checks_deadline_between_pending_empty_directories(tmp_p
     assert len(visited) == 1
 
 
+@pytest.mark.parametrize(
+    ("expire", "expected"),
+    [(False, "source_fetch_interrupted"), (True, "source_cache_scan_limit")],
+)
+def test_cache_inventory_checks_budget_after_last_empty_directory(
+    tmp_path, monkeypatch, expire, expected
+):
+    first, _, root = caches(tmp_path)
+    root.mkdir(mode=0o700)
+    last = root / "synthetic-snapshot" / "only-empty"
+    last.mkdir(parents=True)
+    stopped = threading.Event()
+    clock = {"now": 0.0}
+    monkeypatch.setattr(source_snapshot, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+    original = source_snapshot._not_link
+
+    def change_budget_during_last_directory(path):
+        original(path)
+        if path == last:
+            if expire:
+                clock["now"] = 6.0
+            else:
+                stopped.set()
+
+    monkeypatch.setattr(source_snapshot, "_not_link", change_budget_during_last_directory)
+    with pytest.raises(SourceError, match=expected):
+        first.usage("fixture", stop=stopped)
+
+
 def test_cache_inventory_verifies_ancestors_per_directory_not_per_file(tmp_path, monkeypatch):
     first, _, root = caches(tmp_path)
     root.mkdir(mode=0o700)

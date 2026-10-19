@@ -753,6 +753,7 @@ class SourceSnapshots:
                                     size += info.st_size
                                 if size > LIMITS["cache_bytes"]:
                                     raise SourceError("source_cache_limit")
+        check_budget()
         return dict(snapshots=count, bytes=size, max_snapshots=8, max_bytes=LIMITS["cache_bytes"])
 
     def prepare(self, project_id: str, commit: str, principal: str) -> dict[str, Any]:
