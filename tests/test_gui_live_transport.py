@@ -447,21 +447,25 @@ def test_real_localhost_auth_ignores_proxies_and_does_not_follow_redirect(monkey
         monkeypatch.setenv(key, "http://127.0.0.1:1")
     monkeypatch.setenv("NO_PROXY", "")
     monkeypatch.setenv("no_proxy", "")
-    runner = LiveRunner(OperatorClient(f"http://127.0.0.1:{server.server_port}", TOKEN))
+    runner = None
     try:
+        runner = LiveRunner(OperatorClient(f"http://127.0.0.1:{server.server_port}", TOKEN))
         runner.start(1)
         events = wait_until(runner.drain)
         assert events[0].payload == {"error": REJECTED}
         assert requests == [("/operator/live", f"Bearer {TOKEN}", {"cursor": None})]
         assert sink_requests == []
     finally:
-        runner.close()
-        for listener in (server, sink):
-            listener.shutdown()
-            listener.server_close()
-        for worker in workers:
-            worker.join(timeout=1)
-            assert not worker.is_alive()
+        try:
+            if runner is not None:
+                runner.close()
+        finally:
+            for listener in (server, sink):
+                listener.shutdown()
+                listener.server_close()
+            for worker in workers:
+                worker.join(timeout=1)
+                assert not worker.is_alive()
 
 
 def test_pause_cancels_both_reads_and_requires_explicit_new_generation(runner_factory):
@@ -732,6 +736,7 @@ def test_image_read_is_cancelled_and_late_result_fenced_by_view_lifecycle(runner
         (200, b"invalid JSON with private body", INVALID_RESPONSE),
         (200, b"x" * (MAX_RESPONSE_BYTES + 1), INVALID_RESPONSE),
     ],
+    ids=["redirect", "unauthorized", "forbidden", "invalid-json", "oversized-body"],
 )
 def test_image_failures_are_safe_bounded_and_never_retry_or_disconnect_live(
     runner_factory, status, body, expected
@@ -842,8 +847,9 @@ def test_real_three_connection_budget_allows_held_live_log_and_image_without_can
     server = ThreadingHTTPServer(("127.0.0.1", 0), Server)
     worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
     worker.start()
-    runner = LiveRunner(OperatorClient(f"http://127.0.0.1:{server.server_port}", TOKEN))
+    runner = None
     try:
+        runner = LiveRunner(OperatorClient(f"http://127.0.0.1:{server.server_port}", TOKEN))
         runner.start(1)
         assert held["live"].wait(1)
         runner.drain()
@@ -870,13 +876,16 @@ def test_real_three_connection_budget_allows_held_live_log_and_image_without_can
         assert [path for path, _, _ in requests].count("image") == 1
         assert not runner._live_task.done()
     finally:
-        runner.close()
-        for release in releases.values():
-            release.set()
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=1)
-        assert not worker.is_alive()
+        try:
+            if runner is not None:
+                runner.close()
+        finally:
+            for release in releases.values():
+                release.set()
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=1)
+            assert not worker.is_alive()
 
 
 @pytest.mark.parametrize(

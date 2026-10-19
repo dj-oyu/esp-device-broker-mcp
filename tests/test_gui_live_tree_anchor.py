@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import pytest
+from test_gui_live_presentation import Tree
 
 from cardputer_mcp.gui_live_presentation import sync_rows
 
@@ -31,14 +32,28 @@ def native_tree():
 
 
 def first_visible(tree):
-    return next(
-        (tree.identify_row(y) for y in range(tree.winfo_height()) if tree.identify_row(y)),
-        "",
-    )
+    # Independent of identify_row: Tk 8.6 can report an offscreen item over
+    # headings. bbox excludes rows above the viewport on both Tk 8.6 and 9.
+    for identifier in tree.get_children():
+        bounds = tree.bbox(identifier)
+        if bounds and bounds[3] > 0 and 0 <= bounds[1] < tree.winfo_height():
+            return identifier
+    return ""
 
 
 def rows(identifiers):
     return [(identifier, identifier, ("running",)) for identifier in identifiers]
+
+
+def test_legacy_heading_identification_cannot_replace_visible_anchor():
+    tree = Tree()
+    tree.vertical = (0.5, 1.0)
+    tree.winfo_height = lambda: 30
+    tree.identify_row = lambda y: "a" if y < 10 else "b"
+    tree.bbox = lambda identifier: () if identifier == "a" else (0, 10, 100, 20)
+    sync_rows(tree, [("a", "A", ("running",)), ("b", "B", ("queued",))])
+    assert tree.vertical == (0.5, 1.0)
+    assert tree.changed == []
 
 
 @pytest.mark.parametrize("change", ["prepend", "reorder", "remove-above"])

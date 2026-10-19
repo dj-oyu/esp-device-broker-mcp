@@ -125,3 +125,79 @@ def test_timeout_marker_remains_failure_when_pytest_returns_zero(tmp_path):
     completed, result, log, _ = run_suite(tmp_path, source)
     assert "test_timeout_race PASSED" in log
     assert completed.returncode != 0 and result["reason"] == "phase_timeout"
+
+
+@pytest.mark.parametrize("outcome", ["pass", "fail", "deadline"])
+def test_blocked_console_cannot_stop_result_cleanup_or_parent_exit(tmp_path, outcome):
+    config = tmp_path / "pytest.ini"
+    config.write_text("[pytest]\n", encoding="utf-8")
+    (tmp_path / "conftest.py").write_text(
+        "import sys\n"
+        "def pytest_sessionstart(session):\n"
+        "    sys.stdout.write(('synthetic progress ' + 'x' * 200 + '\\n') * 8192)\n",
+        encoding="utf-8",
+    )
+    case = tmp_path / "test_case.py"
+    source = {
+        "pass": "def test_pass(): pass\n",
+        "fail": "def test_fail(): assert False\n",
+        "deadline": "import time\ntime.sleep(30)\n",
+    }[outcome]
+    case.write_text(source, encoding="utf-8")
+    output = tmp_path / "diagnostics"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--output",
+            str(output),
+            "--phase-timeout",
+            "20",
+            "--test-timeout",
+            "20",
+            "--deadline",
+            "2" if outcome == "deadline" else "12",
+            "--",
+            "-c",
+            str(config),
+            str(case),
+        ],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(ROOT / "src"),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        # Deliberately do not read stdout until the supervisor has exited.
+        code = process.wait(timeout=20)
+        process.communicate(timeout=3)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=3)
+    result = json.loads((output / "result.json").read_text())
+    assert result["cleanup"] == "confirmed" and result["elapsed_seconds"] < 18
+    log = (output / "pytest.log").read_text()
+    assert len(log) > 1_000_000
+    if outcome == "pass":
+        assert code == result["exit_code"] == 0 and "test_pass PASSED" in log
+    else:
+        assert code != 0 and result["exit_code"] != 0
+        assert result["reason"] == ("outer_deadline" if outcome == "deadline" else "pytest_exit")
+
+
+def test_oversized_node_id_remains_in_artifact_and_is_bounded_in_console(tmp_path):
+    source = (
+        "import pytest\n"
+        "@pytest.mark.parametrize('value', ['x' * 524289])\n"
+        "def test_large_identifier(value): pass\n"
+    )
+    completed, result, log, _ = run_suite(tmp_path, source)
+    assert completed.returncode == result["exit_code"] == 0
+    assert len(log) > 524289 and max(map(len, completed.stdout.splitlines())) < 2200
+    assert "console line truncated; full text in artifact" in completed.stdout
+    assert "1 passed" in completed.stdout

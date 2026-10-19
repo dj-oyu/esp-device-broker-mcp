@@ -23,11 +23,14 @@ def sync_rows(tree: Any, rows: list[tuple[str, str, tuple[str, ...]]]) -> None:
     previous_order = tuple(tree.get_children())
     anchor = ""
     if previous_order and callable(getattr(tree, "identify_row", None)):
-        # The heading is not a row. Find the first visible item, including when
-        # the selected/focused item is elsewhere in the list.
+        # Tk 8.6 can identify offscreen rows at heading coordinates. Require
+        # an actual visible bounding box containing this pixel, independently
+        # of the selected/focused item.
         for y in range(tree.winfo_height()):
-            anchor = tree.identify_row(y)
-            if anchor:
+            identifier = tree.identify_row(y)
+            bounds = tree.bbox(identifier) if identifier else ()
+            if bounds and bounds[1] <= y < bounds[1] + bounds[3]:
+                anchor = identifier
                 break
     wanted = {identifier for identifier, _, _ in rows}
     removed = [identifier for identifier in previous_order if identifier not in wanted]

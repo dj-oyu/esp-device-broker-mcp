@@ -18,6 +18,74 @@ from ci_process_tree import ProcessTree
 
 TIMEOUT = 124
 RUNNER_ERROR = 125
+CONSOLE_LINE_BYTES = 2048
+
+
+class ConsoleProgress:
+    """Console backpressure must never stop deadlines, cleanup, or disk evidence."""
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._forward, daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def close(self) -> None:
+        self.stop.set()
+        if self.thread.ident is not None:
+            self.thread.join(timeout=0.5)
+
+    @staticmethod
+    def _write(data: bytes) -> None:
+        # Avoid TextIO locks: a blocked daemon writer must not hold a lock that
+        # interpreter shutdown later tries to acquire. This thread is best effort.
+        while data:
+            count = os.write(sys.stdout.fileno(), data)
+            if count <= 0:
+                raise OSError
+            data = data[count:]
+
+    def _forward(self) -> None:
+        line = bytearray()
+        truncated = False
+
+        def finish_line() -> None:
+            suffix = b" [console line truncated; full text in artifact]" if truncated else b""
+            self._write(bytes(line) + suffix + b"\n")
+
+        try:
+            with (self.folder / "pytest.log").open("rb") as progress:
+                while True:
+                    content = progress.read(65536)
+                    if not content:
+                        if self.stop.is_set():
+                            break
+                        self.stop.wait(0.1)
+                        continue
+                    pieces = content.split(b"\n")
+                    for index, piece in enumerate(pieces):
+                        remaining = CONSOLE_LINE_BYTES - len(line)
+                        line.extend(piece[:remaining])
+                        truncated = truncated or len(piece) > remaining
+                        if index < len(pieces) - 1:
+                            finish_line()
+                            line.clear()
+                            truncated = False
+                if line or truncated:
+                    finish_line()
+            stacks = self.folder / "stacks.log"
+            if stacks.exists():
+                with stacks.open("rb") as stream:
+                    data = stream.read(16384)
+                if data:
+                    self._write(b"\n[full-suite] lifecycle timeout stacks:\n" + data)
+            with (self.folder / "result.json").open("rb") as stream:
+                self._write(b"\n[full-suite] " + stream.read(4096) + b"\n")
+        except (OSError, ValueError):
+            # Console availability is independent from the authoritative files.
+            return
 
 
 def positive_seconds(raw: str) -> float:
@@ -124,11 +192,13 @@ def supervise(args: argparse.Namespace) -> int:
     result = {"exit_code": RUNNER_ERROR, "reason": "runner_error", "cleanup": "not_started"}
     process = None
     tree = None
-    offset = 0
+    console = None
     started = time.monotonic()
     try:
         tree = ProcessTree()
-        with log_path.open("wb", buffering=0) as output, log_path.open("rb") as progress:
+        with log_path.open("wb", buffering=0) as output:
+            console = ConsoleProgress(args.output)
+            console.start()
             process = subprocess.Popen(
                 [
                     sys.executable,
@@ -154,11 +224,6 @@ def supervise(args: argparse.Namespace) -> int:
             process.stdin.write(b"1")
             process.stdin.close()
             while True:
-                content = progress.read(65536)
-                if content:
-                    sys.stdout.write(content.decode("utf-8", errors="replace"))
-                    sys.stdout.flush()
-                offset = progress.tell()
                 code = process.poll()
                 if code is not None:
                     result.update(exit_code=code, reason="pytest_exit")
@@ -168,7 +233,7 @@ def supervise(args: argparse.Namespace) -> int:
                     break
                 time.sleep(0.1)
     except Exception as error:
-        print(f"[full-suite] supervisor error: {type(error).__name__}", flush=True)
+        result["error_type"] = type(error).__name__
     finally:
         try:
             if tree is not None:
@@ -178,20 +243,13 @@ def supervise(args: argparse.Namespace) -> int:
                     result.update(exit_code=RUNNER_ERROR, reason="descendants_remaining")
         except Exception as error:
             result.update(exit_code=RUNNER_ERROR, reason="cleanup_failed", cleanup="unconfirmed")
-            print(f"[full-suite] cleanup error: {type(error).__name__}", flush=True)
+            result["cleanup_error_type"] = type(error).__name__
         if (args.output / "timeout.json").exists():
             result.update(exit_code=TIMEOUT, reason="phase_timeout")
         result["elapsed_seconds"] = round(time.monotonic() - started, 3)
         (args.output / "result.json").write_text(json.dumps(result), encoding="utf-8")
-        if log_path.exists():
-            with log_path.open("rb") as progress:
-                progress.seek(offset)
-                sys.stdout.write(progress.read().decode("utf-8", errors="replace"))
-        stacks = args.output / "stacks.log"
-        if stacks.exists() and stacks.stat().st_size:
-            print("\n[full-suite] lifecycle timeout stacks:", flush=True)
-            sys.stdout.write(stacks.read_text(encoding="utf-8", errors="replace"))
-        print(f"\n[full-suite] {json.dumps(result)}", flush=True)
+        if console is not None:
+            console.close()
     # Preserve the native status in JSON and normalize shell failure. Large
     # Windows crash statuses or negative POSIX statuses must not truncate to 0.
     return 0 if result["exit_code"] == 0 else 1
