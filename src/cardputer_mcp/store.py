@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -10,6 +11,7 @@ from types import TracebackType
 from typing import Any, Literal
 
 from .console_logs import console_line
+from .derby_fixed import FIXED_PLAN, MAX_BYTES, FixedTrial, parse_collected
 
 
 class _ObservedConnection(sqlite3.Connection):
@@ -102,6 +104,11 @@ class Store:
             stage TEXT, result TEXT, diagnostic TEXT, reviewed INTEGER NOT NULL DEFAULT 0,
             created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             finished TEXT
+        );
+        CREATE TABLE IF NOT EXISTS derby_fixed_trials (
+            job_id TEXT PRIMARY KEY, plan_hash TEXT NOT NULL, principal_id TEXT NOT NULL,
+            raw BLOB NOT NULL, sha256 TEXT NOT NULL, receipt TEXT NOT NULL,
+            parsed TEXT, valid INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS work_sessions (
             id TEXT PRIMARY KEY, epoch TEXT NOT NULL, owner TEXT NOT NULL,
@@ -411,6 +418,114 @@ class Store:
         )
         self.db.commit()
         self._console_state(job_id, state)
+
+    def finish_fixed_trial(
+        self,
+        job_id: str,
+        plan_hash: str,
+        principal_id: str,
+        state: str,
+        code: str,
+        trial: FixedTrial,
+    ) -> None:
+        """Commit private raw bytes and terminal job state in one transaction."""
+        receipt = trial.receipt
+        flags = {"gaps", "overflow", "truncated", "partial_tail", "disconnect", "reset", "refused"}
+        if (
+            type(trial.raw) is not bytes
+            or len(trial.raw) > MAX_BYTES
+            or type(receipt) is not dict
+            or set(receipt) != {"complete", "bytes", "duration_ms", "sha256", *flags}
+            or type(receipt["complete"]) is not bool
+            or any(type(receipt[key]) is not bool for key in flags)
+            or type(receipt["bytes"]) is not int
+            or receipt["bytes"] != len(trial.raw)
+            or type(receipt["duration_ms"]) is not int
+            or not 0 <= receipt["duration_ms"] <= 200000
+            or receipt["sha256"] != hashlib.sha256(trial.raw).hexdigest()
+            or type(trial.valid) is not bool
+            or (trial.valid and (not receipt["complete"] or any(receipt[key] for key in flags)))
+            or (trial.valid and trial.parsed != parse_collected(trial.raw, receipt))
+            or (not trial.valid and trial.parsed is not None)
+            or state not in ("succeeded", "needs_review")
+            or (state == "succeeded" and (not trial.valid or code != "derby_fixed_trial_verified"))
+        ):
+            raise ValueError("invalid_fixed_trial_commit")
+        if not trial.valid and receipt["complete"]:
+            try:
+                parse_collected(trial.raw, receipt)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("invalid_fixed_trial_commit")
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute(
+                """SELECT jobs.state,plans.payload FROM jobs JOIN plans ON plans.hash=jobs.plan_hash
+                JOIN execution_requests AS requests ON requests.job_id=jobs.id
+                AND requests.plan_hash=jobs.plan_hash
+                WHERE jobs.id=? AND jobs.plan_hash=? AND requests.principal_id=?""",
+                (job_id, plan_hash, principal_id),
+            ).fetchone()
+            if row is None or row["state"] != "running":
+                raise ValueError("fixed_trial_job_binding_changed")
+            plan = json.loads(row["payload"])
+            if (
+                plan.get("test") != "derby_fixed_workload"
+                or plan.get("backend") != "serial"
+                or plan.get("job_id") != job_id
+                or plan.get("fixed_workload") != FIXED_PLAN
+                or plan.get("protocol") != "pocketjs-derby-fixed-v1"
+                or hashlib.sha256(
+                    json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                != plan_hash
+                or not re.fullmatch(r"[a-f0-9]{32}", plan.get("broker_epoch", ""))
+                or not re.fullmatch(r"[a-f0-9]{64}", plan.get("device_fingerprint", ""))
+                or not re.fullmatch(r"[a-f0-9]{64}", plan.get("expected_firmware_sha256", ""))
+            ):
+                raise ValueError("fixed_trial_job_binding_changed")
+            self.db.execute(
+                """INSERT INTO derby_fixed_trials
+                (job_id,plan_hash,principal_id,raw,sha256,receipt,parsed,valid)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    plan_hash,
+                    principal_id,
+                    trial.raw,
+                    receipt["sha256"],
+                    json.dumps(receipt, sort_keys=True),
+                    json.dumps(trial.parsed, sort_keys=True) if trial.parsed is not None else None,
+                    int(trial.valid),
+                ),
+            )
+            self.db.execute(
+                """UPDATE jobs SET state=?,result=?,diagnostic=?,finished=CURRENT_TIMESTAMP
+                WHERE id=? AND state='running'""",
+                (state, code, json.dumps({"code": code}), job_id),
+            )
+        self._console_state(job_id, state)
+
+    def fixed_trial(self, job_id: str, plan_hash: str, principal_id: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            """SELECT trial.* FROM derby_fixed_trials AS trial
+            JOIN execution_requests AS requests ON requests.job_id=trial.job_id
+            AND requests.plan_hash=trial.plan_hash AND requests.principal_id=trial.principal_id
+            JOIN jobs ON jobs.id=trial.job_id AND jobs.plan_hash=trial.plan_hash
+            AND jobs.state IN ('succeeded','needs_review')
+            WHERE trial.job_id=? AND trial.plan_hash=? AND trial.principal_id=?""",
+            (job_id, plan_hash, principal_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "raw": bytes(row["raw"]),
+            "sha256": row["sha256"],
+            "receipt": json.loads(row["receipt"]),
+            "parsed": json.loads(row["parsed"]) if row["parsed"] else None,
+            "valid": bool(row["valid"]),
+        }
 
     def _console_state(self, job_id: str, state: str) -> None:
         # Observability must never affect a committed job or its authorization.

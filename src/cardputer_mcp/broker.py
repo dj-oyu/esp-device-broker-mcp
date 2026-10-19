@@ -1104,6 +1104,7 @@ class Broker:
                 {
                     TestName.CAPTURE,
                     TestName.DERBY,
+                    TestName.DERBY_FIXED,
                     TestName.FIRMWARE,
                     TestName.RESTART,
                     TestName.BUILD,
@@ -1305,7 +1306,10 @@ class Broker:
         if job["state"] == "running" and plan["test"] == TestName.SOURCE.value:
             accepted = self.firmware_source.request_stop(request.job_id)
             return {**job, "stop_requested": accepted, "requires_review": accepted}
-        if job["state"] == "running" and plan["test"] == TestName.DERBY.value:
+        if job["state"] == "running" and plan["test"] in (
+            TestName.DERBY.value,
+            TestName.DERBY_FIXED.value,
+        ):
             from .serial_backend import SerialBackend
 
             if not isinstance(self.backend, SerialBackend):
@@ -1931,7 +1935,7 @@ class Broker:
                         if capture_principal != plan.get("build_principal"):
                             raise BrokerError("build_principal_mismatch")
                         result = await self.firmware_build.execute(plan, on_stage)
-                    elif plan["test"] == TestName.DERBY.value:
+                    elif plan["test"] in (TestName.DERBY.value, TestName.DERBY_FIXED.value):
                         from .serial_backend import SerialBackend
 
                         if not isinstance(self.backend, SerialBackend):
@@ -1940,7 +1944,9 @@ class Broker:
                         result = await self.backend.execute_smoke(
                             plan, on_stage, running_authorized
                         )
-                        if not running_authorized() or self.backend.smoke_stop.is_set():
+                        if plan["test"] == TestName.DERBY.value and (
+                            not running_authorized() or self.backend.smoke_stop.is_set()
+                        ):
                             raise BrokerError("operation_interrupted_review_required")
                     else:
                         result = await self.backend.execute(plan, on_stage)
@@ -1962,6 +1968,13 @@ class Broker:
                             )
                         ):
                             raise BrokerError("capture_result_invalid")
+                    if plan["test"] == TestName.DERBY_FIXED.value and (
+                        not isinstance(result, BackendResult)
+                        or result.fixed_trial is None
+                        or not result.fixed_trial.valid
+                        or result.image is not None
+                    ):
+                        raise BrokerError("fixed_trial_result_invalid")
                     if plan["test"] == TestName.CAPTURE.value and (
                         not isinstance(result, BackendResult) or result.image is None
                     ):
@@ -2052,9 +2065,33 @@ class Broker:
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except DeviceOperationFailure as failure:
-                    store.set_job(
-                        job_id, "needs_review", failure.code, derby_diagnostic(failure.diagnostic)
-                    )
+                    from .serial_backend import SerialFailure
+
+                    if (
+                        plan["test"] == TestName.DERBY_FIXED.value
+                        and isinstance(failure, SerialFailure)
+                        and failure.fixed_trial is not None
+                        and capture_principal is not None
+                    ):
+                        try:
+                            store.finish_fixed_trial(
+                                job_id,
+                                job["plan_hash"],
+                                capture_principal,
+                                "needs_review",
+                                failure.code,
+                                failure.fixed_trial,
+                            )
+                        except Exception:
+                            self.execution_uncertain = True
+                            store.set_job(job_id, "needs_review", "fixed_trial_persist_failed")
+                    else:
+                        store.set_job(
+                            job_id,
+                            "needs_review",
+                            failure.code,
+                            derby_diagnostic(failure.diagnostic),
+                        )
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except DeviceDisconnected:
@@ -2076,6 +2113,7 @@ class Broker:
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 else:
+                    fixed_review = False
                     try:
                         completed = result.code if isinstance(result, BackendResult) else result
                         if plan["test"] in {item.value for item in FLASH_TESTS}:
@@ -2084,6 +2122,29 @@ class Broker:
                             )
                         elif plan["test"] == TestName.SOURCE.value:
                             self.firmware_source.commit_success(plan, completed, running_authorized)
+                        elif plan["test"] == TestName.DERBY_FIXED.value:
+                            from .serial_backend import SerialBackend
+
+                            if (
+                                not isinstance(result, BackendResult)
+                                or result.fixed_trial is None
+                                or capture_principal is None
+                                or not isinstance(self.backend, SerialBackend)
+                            ):
+                                raise ValueError("fixed_trial_result_invalid")
+                            fixed_review = (
+                                not running_authorized() or self.backend.smoke_stop.is_set()
+                            )
+                            store.finish_fixed_trial(
+                                job_id,
+                                job["plan_hash"],
+                                capture_principal,
+                                "needs_review" if fixed_review else "succeeded",
+                                "operation_interrupted_review_required"
+                                if fixed_review
+                                else completed,
+                                result.fixed_trial,
+                            )
                         else:
                             diagnostic = (
                                 {
@@ -2110,11 +2171,19 @@ class Broker:
                             self.firmware_source.record_failure(plan, code)
                             store.set_job(job_id, "needs_review", code, {"code": code})
                         else:
-                            store.set_job(job_id, "needs_review", "firmware_final_commit_failed")
+                            store.set_job(
+                                job_id,
+                                "needs_review",
+                                "fixed_trial_persist_failed"
+                                if plan["test"] == TestName.DERBY_FIXED.value
+                                else "firmware_final_commit_failed",
+                            )
                         self.logs.append(Event.REVIEW)
                         self._cancel_queued("recovery_review_required")
                     else:
-                        self.logs.append(Event.PASSED)
+                        self.logs.append(Event.REVIEW if fixed_review else Event.PASSED)
+                        if fixed_review:
+                            self._cancel_queued("recovery_review_required")
                 finally:
                     if local_home_probe is not None:
                         local_home_probe.finish()

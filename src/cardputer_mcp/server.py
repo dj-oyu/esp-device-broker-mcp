@@ -816,7 +816,10 @@ def create_server(
             job = resident.job(request.job_id)
             store = resident._store()
             plan = store.plan(job["plan_hash"])
-            if plan is not None and plan.get("test") == TestName.DERBY.value:
+            if plan is not None and plan.get("test") in (
+                TestName.DERBY.value,
+                TestName.DERBY_FIXED.value,
+            ):
                 try:
                     owner = principal(ctx, "read")
                 except BrokerError:
@@ -825,7 +828,7 @@ def create_server(
                     return shared_job(job)
                 epoch = resident.epoch
                 result = private_job(store, job, plan, owner.principal_id)
-                if "derby_diagnostics" in result:
+                if "derby_diagnostics" in result or "fixed_trial" in result:
                     try:
                         current = principal(ctx, "read")
                     except BrokerError:
