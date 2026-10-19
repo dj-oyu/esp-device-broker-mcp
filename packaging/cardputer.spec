@@ -41,8 +41,10 @@ exe = EXE(
     strip=False,
     upx=False,
     console=True,
+    hide_console="hide-early",
     disable_windowed_traceback=False,
     uac_admin=False,
+    manifest=str(root / "packaging" / "cardputer.manifest"),
 )
 runpy.run_path(str(root / "packaging" / "release_windows.py"))["record_build_runtime"](
     Path(exe.name), root

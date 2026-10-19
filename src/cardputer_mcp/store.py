@@ -6,15 +6,46 @@ import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from types import TracebackType
+from typing import Any, Literal
 
 from .console_logs import console_line
 
 
+class _ObservedConnection(sqlite3.Connection):
+    """Notify only after SQLite has committed, including context transactions."""
+
+    on_commit: Callable[[], None] | None = None
+
+    def _notify(self) -> None:
+        if self.on_commit is not None:
+            try:
+                self.on_commit()
+            except Exception:
+                pass
+
+    def commit(self) -> None:
+        super().commit()
+        self._notify()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+        /,
+    ) -> Literal[False]:
+        result = super().__exit__(exc_type, exc_value, traceback)
+        if exc_type is None:
+            self._notify()
+        return result
+
+
 class Store:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, on_commit: Callable[[], None] | None = None) -> None:
         self._console_jobs: dict[str, float] = {}
-        self.db = sqlite3.connect(path)
+        self.db = sqlite3.connect(path, factory=_ObservedConnection)
+        self.db.on_commit = on_commit
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
