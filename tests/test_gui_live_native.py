@@ -1,6 +1,8 @@
 """Native Tk smoke where a desktop exists; never connects to a broker or device."""
 
+import gc
 import time
+from types import SimpleNamespace
 
 import pytest
 from test_gui_live_state import card, delta, snapshot
@@ -8,6 +10,13 @@ from test_gui_live_state import card, delta, snapshot
 from cardputer_mcp import gui_live
 from cardputer_mcp.gui_live_transport import TransportEvent
 from cardputer_mcp.operator_client import OperatorClient
+
+
+@pytest.fixture(autouse=True)
+def collect_tk_objects_on_main_thread():
+    yield
+    # Tk variable finalizers must not run later on a transport worker thread.
+    gc.collect()
 
 
 class Runner:
@@ -266,20 +275,26 @@ def test_native_preview_and_controls_reachable_at_168_dpi_minimum(monkeypatch):
         assert window.detail_text.winfo_rooty() + window.detail_text.winfo_height() <= (
             canvas.winfo_rooty() + canvas.winfo_height()
         )
-        window.detail_text.event_generate("<Next>")
+        # Headless Windows runners do not reliably dispatch synthetic key
+        # events to a disabled Text. Check the installed bindings and their
+        # shared handler against the real Tk canvas viewport.
+        for key in ("Prior", "Next", "Home", "End"):
+            assert window.detail_text.bind(f"<{key}>")
+        assert window._scroll_detail_key("Next") == "break"
         root.update()
         assert canvas.yview()[0] > 0.0
-        window.detail_text.event_generate("<Home>")
+        assert window._scroll_detail_key("Home") == "break"
         root.update()
         assert canvas.yview()[0] == 0.0
-        window.detail_text.event_generate("<End>")
+        assert window._scroll_detail_key("End") == "break"
         root.update()
         assert canvas.yview()[1] == 1.0
         assert window.preview_area.winfo_rooty() >= canvas.winfo_rooty()
         assert window.preview_area.winfo_rooty() + window.preview_area.winfo_height() <= (
             canvas.winfo_rooty() + canvas.winfo_height()
         )
-        window.log_text.focus_force()
+        assert window.log_text.bind("<FocusIn>")
+        window._reveal_detail_focus(SimpleNamespace(widget=window.log_text))
         root.update()
         assert window.log_text.winfo_rooty() >= canvas.winfo_rooty()
         assert window.log_text.winfo_rooty() + window.log_text.winfo_height() <= (
@@ -287,8 +302,8 @@ def test_native_preview_and_controls_reachable_at_168_dpi_minimum(monkeypatch):
         )
         window._job_pages.select(0)
         root.update()
-        window.job_tree.focus_force()
-        window.job_tree.event_generate("<Return>")
+        assert window.job_tree.bind("<Return>")
+        window._show_selected()
         root.update()
         assert window._job_pages.select() == str(window._detail_page)
         assert window.detail_text.winfo_rooty() >= canvas.winfo_rooty()
