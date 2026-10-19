@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -107,3 +108,38 @@ def test_cache_inventory_has_cooperative_time_and_stop_budgets(tmp_path, monkeyp
     stopped.set()
     with pytest.raises(SourceError, match="source_fetch_interrupted"):
         first.usage("fixture", stop=stopped)
+
+
+def test_cache_inventory_verifies_ancestors_per_directory_not_per_file(tmp_path, monkeypatch):
+    first, _, root = caches(tmp_path)
+    leaf = root / "synthetic-snapshot" / "nested" / "leaf"
+    leaf.mkdir(parents=True)
+    for index in range(250):
+        (leaf / f"file-{index}").write_bytes(b"data")
+    original = Path.lstat
+    calls = 0
+
+    def counted(path, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", counted)
+    assert first.usage("fixture")["bytes"] == 1000
+    assert calls < 100  # Files are checked once, without replaying every ancestor.
+
+
+def test_cache_inventory_rejects_nested_link_before_traversing_it(tmp_path):
+    first, _, root = caches(tmp_path)
+    leaf = root / "synthetic-snapshot" / "nested"
+    leaf.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private").write_bytes(b"SECRET")
+    try:
+        (leaf / "escape").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Creating a directory link requires platform support")
+    with pytest.raises(SourceError, match="source_linked_path_rejected"):
+        first.usage("fixture")
+    assert (outside / "private").read_bytes() == b"SECRET"

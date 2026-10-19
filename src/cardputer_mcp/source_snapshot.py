@@ -29,8 +29,12 @@ def _not_link(path: Path) -> None:
             info = candidate.lstat()
         except FileNotFoundError:
             continue
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        if _linked(info):
             raise SourceError("source_linked_path_rejected")
+
+
+def _linked(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
 
 
 LIMITS = {
@@ -713,19 +717,33 @@ class SourceSnapshots:
 
         check()
         if root.exists():
-            for path in root.iterdir():
-                check()
-                _not_link(path)
-                if not path.is_dir():
-                    raise SourceError("source_cache_unknown_entry")
-                count += 1
-                for item in path.rglob("*"):
+            with os.scandir(root) as snapshots:
+                for snapshot in snapshots:
                     check()
-                    _not_link(item)
-                    if item.is_file():
-                        size += item.stat().st_size
-                    if size > LIMITS["cache_bytes"]:
-                        raise SourceError("source_cache_limit")
+                    snapshot_path = Path(snapshot.path)
+                    _not_link(snapshot_path)
+                    if not stat.S_ISDIR(snapshot.stat(follow_symlinks=False).st_mode):
+                        raise SourceError("source_cache_unknown_entry")
+                    count += 1
+                    pending = [snapshot_path]
+                    while pending:
+                        directory = pending.pop()
+                        # Recheck every traversed directory and its ancestors;
+                        # file entries need only one no-follow stat because the
+                        # containing directory has just been verified.
+                        _not_link(directory)
+                        with os.scandir(directory) as children:
+                            for item in children:
+                                check()
+                                info = item.stat(follow_symlinks=False)
+                                if _linked(info):
+                                    raise SourceError("source_linked_path_rejected")
+                                if stat.S_ISDIR(info.st_mode):
+                                    pending.append(Path(item.path))
+                                elif stat.S_ISREG(info.st_mode):
+                                    size += info.st_size
+                                if size > LIMITS["cache_bytes"]:
+                                    raise SourceError("source_cache_limit")
         return dict(snapshots=count, bytes=size, max_snapshots=8, max_bytes=LIMITS["cache_bytes"])
 
     def prepare(self, project_id: str, commit: str, principal: str) -> dict[str, Any]:
