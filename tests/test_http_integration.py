@@ -98,6 +98,7 @@ async def test_real_mcp_http_disconnect_retry_handover(authenticated_service):
             "read_capture",
             "read_device_logs",
             "read_build_logs",
+            "read_source_resources",
             "cancel_job",
             "request_home_recovery",
             "cancel_home_recovery",
@@ -114,12 +115,19 @@ async def test_real_mcp_http_disconnect_retry_handover(authenticated_service):
         build_request = schema["$defs"]["BuildLogRequest"]
         assert set(build_request["properties"]) == {
             "job_id",
+            "include_source_cache",
             "cursor",
             "levels",
             "context",
             "limit",
         }
         assert build_request["additionalProperties"] is False
+        resources = next(tool for tool in advertised.tools if tool.name == "read_source_resources")
+        assert resources.annotations.read_only_hint is True
+        assert resources.annotations.destructive_hint is False
+        resource_schema = resources.input_schema["$defs"]["SourceResourcesRequest"]
+        assert set(resource_schema["properties"]) == {"project_id"}
+        assert resource_schema["additionalProperties"] is False
         for name, model, fields in (
             ("request_home_recovery", "RequestHomeRecovery", {"job_id", "source_job_id"}),
             ("cancel_home_recovery", "CancelHomeRecovery", {"job_id", "plan_hash"}),
