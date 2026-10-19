@@ -687,6 +687,8 @@ def create_server(
         DERBY smoke is an explicitly requested fixed row-12 launch, bounded automatic
         demo observation, one render-buffer capture and explicit q exit. It exposes
         no arbitrary keys; missing phase markers never prove a complete demo cycle.
+        DERBY fixed workload is a separate once-only row-12 launch with bounded
+        raw collection and a private host-owned transport receipt.
         Their plans disclose ROM download-mode resets, writes and observation.
         Flash leaves verified new firmware installed; restore requires a separate
         explicit request. No automatic rollback, repeat write or HELLO is added.
@@ -701,6 +703,7 @@ def create_server(
             if request.test in (
                 TestName.CAPTURE,
                 TestName.DERBY,
+                TestName.DERBY_FIXED,
                 TestName.FIRMWARE,
                 TestName.RESTART,
                 TestName.BUILD,
@@ -816,7 +819,10 @@ def create_server(
             job = resident.job(request.job_id)
             store = resident._store()
             plan = store.plan(job["plan_hash"])
-            if plan is not None and plan.get("test") == TestName.DERBY.value:
+            if plan is not None and plan.get("test") in (
+                TestName.DERBY.value,
+                TestName.DERBY_FIXED.value,
+            ):
                 try:
                     owner = principal(ctx, "read")
                 except BrokerError:
@@ -825,7 +831,7 @@ def create_server(
                     return shared_job(job)
                 epoch = resident.epoch
                 result = private_job(store, job, plan, owner.principal_id)
-                if "derby_diagnostics" in result:
+                if "derby_diagnostics" in result or "fixed_trial" in result:
                     try:
                         current = principal(ctx, "read")
                     except BrokerError:

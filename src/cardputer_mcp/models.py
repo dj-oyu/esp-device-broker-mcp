@@ -31,6 +31,7 @@ class TestName(StrEnum):
     HELLO = "hello"
     CAPTURE = "capture_home"
     DERBY = "derby_smoke"
+    DERBY_FIXED = "derby_fixed_workload"
 
 
 FLASH_TESTS = frozenset({TestName.BACKUP, TestName.FLASH, TestName.RESTORE})

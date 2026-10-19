@@ -228,6 +228,12 @@ class PlanApprovals:
                 expected_keys = expected_keys | {"smoke"}
                 if plan.get("smoke") != SMOKE:
                     raise ValueError
+            if test == TestName.DERBY_FIXED.value:
+                from .derby_fixed import FIXED_PLAN
+
+                expected_keys = expected_keys | {"fixed_workload"}
+                if plan.get("fixed_workload") != FIXED_PLAN:
+                    raise ValueError
             if test == "restart_and_observe":
                 expected_keys = expected_keys | {"restart"}
                 restart = plan.get("restart")
@@ -294,6 +300,7 @@ class PlanApprovals:
                     "hello",
                     "capture_home",
                     "derby_smoke",
+                    "derby_fixed_workload",
                     "firmware_observe",
                     "restart_and_observe",
                 )
@@ -313,6 +320,8 @@ class PlanApprovals:
                 != (
                     "pocketjs-derby-smoke-v1"
                     if test == "derby_smoke"
+                    else "pocketjs-derby-fixed-v1"
+                    if test == "derby_fixed_workload"
                     else "pocketjs-legacy-capture-v1"
                     if test == "capture_home"
                     else "esp-idf-startup-log-v1"
