@@ -165,10 +165,7 @@ def test_any_bad_or_partial_repetition_invalidates_the_whole_trial(damage):
 
 def test_host_collector_builds_receipt_from_wire_bytes_not_device_claims():
     collector = FixedCollector(1.0)
-    raw = (
-        b"APP_ID local.derby\nDERBY READY tones=true\n"
-        + FIXTURE
-    )
+    raw = b"APP_ID local.derby\nDERBY READY tones=true\n" + FIXTURE
     for at in range(0, len(raw), 17):
         part = raw[at : at + 17]
         collector.feed(part)

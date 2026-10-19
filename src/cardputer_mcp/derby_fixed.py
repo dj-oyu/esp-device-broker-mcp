@@ -247,20 +247,27 @@ def _verify_terminal(text: str, session: str) -> None:
     ends = [i for i, line in enumerate(lines) if line.startswith("DERBY_FIXED_END")]
     exits = [i for i, line in enumerate(lines) if line.startswith("DERBY_DETAIL_EXIT")]
     stops = [
-        i for i, line in enumerate(lines)
+        i
+        for i, line in enumerate(lines)
         if re.fullmatch(r"(?:I \([0-9]+\) app: )?APP_STOPPED", line)
     ]
     homes = [
-        i for i, line in enumerate(lines)
+        i
+        for i, line in enumerate(lines)
         if re.fullmatch(r"(?:I \([0-9]+\) shell: )?HOME_READY", line)
     ]
     if (
-        len(ends) != 1 or len(exits) != 1 or len(stops) != 1 or len(homes) != 1
+        len(ends) != 1
+        or len(exits) != 1
+        or len(stops) != 1
+        or len(homes) != 1
         or not ends[0] < exits[0] < stops[0] < homes[0]
     ):
         raise ValueError("fixed_terminal_sequence_invalid")
     if _row(lines[exits[0]], "DERBY_DETAIL_EXIT", frozenset(("v", "session", "clean"))) != {
-        "v": "1", "session": session, "clean": "1",
+        "v": "1",
+        "session": session,
+        "clean": "1",
     }:
         raise ValueError("fixed_owner_exit_invalid")
 

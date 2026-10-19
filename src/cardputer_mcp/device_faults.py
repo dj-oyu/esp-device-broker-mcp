@@ -25,8 +25,6 @@ def fault_category(raw: bytes) -> str | None:
         return None
     if re.search(rb"watchdog|FRAME RUNAWAY|JOB QUEUE RUNAWAY", cleaned, re.IGNORECASE):
         return "watchdog_or_runaway"
-    if re.search(
-        rb"(?:Internal|Type|Range|Reference|Syntax|Eval|URI)Error\s*:", cleaned
-    ):
+    if re.search(rb"(?:Internal|Type|Range|Reference|Syntax|Eval|URI)Error\s*:", cleaned):
         return "vm_exception"
     return "device_fault"

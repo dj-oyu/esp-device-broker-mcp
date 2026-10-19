@@ -1,9 +1,15 @@
 """Synthetic bytes only: no SDK, device, or serial commands."""
 
+import base64
+import hashlib
+import json
+import sqlite3
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
-from cardputer_mcp.derby_fixed import FixedCollector, parse_trial
+from cardputer_mcp.derby_fixed import LEGACY_PLAN, FixedCollector, parse_trial
+from cardputer_mcp.derby_reports import private_job
 from cardputer_mcp.device_faults import fault_category
 from cardputer_mcp.job_outcome import review_summary
 
@@ -24,6 +30,53 @@ HOME = b"I (11) shell: HOME_READY\n"
 
 
 class DeviceFaultTests(unittest.TestCase):
+    def test_legacy_evidence_is_readable_without_upgrading_old_success(self):
+        for raw in (FIXTURE, FIXTURE + b"InternalError: interrupted\n"):
+            plan = {
+                "test": "derby_fixed_workload",
+                "job_id": "legacy",
+                "backend": "serial",
+                "protocol": "pocketjs-derby-fixed-v1",
+                "fixed_workload": LEGACY_PLAN,
+                "broker_epoch": "a" * 32,
+                "device_fingerprint": "b" * 64,
+                "expected_firmware_sha256": "c" * 64,
+            }
+            digest = hashlib.sha256(
+                json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            job = {"id": "legacy", "plan_hash": digest, "state": "succeeded"}
+            receipt = {
+                "complete": True,
+                "bytes": len(raw),
+                "duration_ms": 1000,
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                **dict.fromkeys(
+                    ("gaps", "overflow", "truncated", "partial_tail", "disconnect", "reset", "refused"),
+                    False,
+                ),
+            }
+            record = {
+                "raw": raw,
+                "receipt": receipt,
+                "sha256": receipt["sha256"],
+                "valid": True,
+                "parsed": parse_trial(FIXTURE, require_owner_exit=False),
+            }
+            with sqlite3.connect(":memory:") as db:
+                db.execute("CREATE TABLE execution_requests(job_id,plan_hash,principal_id)")
+                db.execute(
+                    "INSERT INTO execution_requests VALUES(?,?,?)", ("legacy", digest, "owner")
+                )
+                store = SimpleNamespace(db=db, fixed_trial=lambda *_: record)
+                result = private_job(store, job, plan, "owner")
+                self.assertEqual(result["state"], "succeeded")
+                self.assertTrue(result["fixed_trial"]["historical_valid"])
+                self.assertFalse(result["fixed_trial"]["valid"])
+                self.assertFalse(result["fixed_trial"]["terminal_success_verified"])
+                self.assertEqual(base64.b64decode(result["fixed_trial"]["raw_base64"]), raw)
+                self.assertNotIn("fixed_trial", private_job(store, job, plan, "other"))
+
     def test_owner_exit_contract_and_explicit_legacy_read(self):
         self.assertTrue(parse_trial(FIXTURE + EXIT + STOP + HOME)["work_verified"])
         self.assertTrue(parse_trial(FIXTURE, require_owner_exit=False)["work_verified"])
@@ -47,8 +100,7 @@ class DeviceFaultTests(unittest.TestCase):
         for exit_line in (EXIT, b"", EXIT + EXIT, EXIT.replace(b"session=1", b"session=2")):
             collector = FixedCollector(0.0)
             raw = (
-                b"APP_ID local.derby\nDERBY READY tones=true\n"
-                + FIXTURE + exit_line + STOP + HOME
+                b"APP_ID local.derby\nDERBY READY tones=true\n" + FIXTURE + exit_line + STOP + HOME
             )
             collector.feed(raw)
             for line in raw.splitlines():
