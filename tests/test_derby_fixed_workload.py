@@ -23,8 +23,11 @@ from cardputer_mcp.derby_fixed import (
 from cardputer_mcp.ports import PortInfo
 from cardputer_mcp.serial_backend import SerialBackend
 
-FIXTURE = (Path(__file__).parent / "fixtures" / "derby_fixed_v1.log").read_bytes()
-SHA = "ab1d7d3c63fa0c765b3c9f341c1648adee1b37624f81ea054adb47fabb694dc1"
+ROWS = (Path(__file__).parent / "fixtures" / "derby_fixed_v1.log").read_bytes()
+EXIT = b"DERBY_DETAIL_EXIT v=1 session=1 clean=1\n"
+TEARDOWN = b"I (0) app: APP_STOPPED\nI (0) shell: HOME_READY\n"
+FIXTURE = ROWS + EXIT + TEARDOWN
+SHA = hashlib.sha256(FIXTURE).hexdigest()
 
 
 def replace_row(raw: bytes, row: int, old: bytes, new: bytes) -> bytes:
@@ -165,7 +168,6 @@ def test_host_collector_builds_receipt_from_wire_bytes_not_device_claims():
     raw = (
         b"APP_ID local.derby\nDERBY READY tones=true\n"
         + FIXTURE
-        + b"I (0) app: APP_STOPPED\nI (0) shell: HOME_READY\n"
     )
     for at in range(0, len(raw), 17):
         part = raw[at : at + 17]
@@ -176,7 +178,7 @@ def test_host_collector_builds_receipt_from_wire_bytes_not_device_claims():
     for line in raw.splitlines():
         if line in (b"APP_ID local.derby", b"DERBY READY tones=true"):
             collector.observe_line(line)
-        elif line.startswith(b"DERBY_FIXED_END"):
+        elif line.startswith((b"DERBY_FIXED_END", b"DERBY_DETAIL_EXIT")):
             collector.observe_line(line)
         elif line.endswith(b"APP_STOPPED"):
             collector.observe_line(b"APP_STOPPED")
@@ -241,7 +243,9 @@ class FixedWire(Wire):
         if self.running and not self.queue and not self.sent:
             self.sent = True
             ending = b"I (0) app: APP_STOPPED\nI (0) shell: HOME_READY\n"
-            payload = self.raw if self.partial else self.raw + ending + self.post_home
+            payload = self.raw if self.partial else self.raw + self.post_home
+            if not self.partial and not self.raw.rstrip(b"\r\n").endswith(b"HOME_READY"):
+                payload = self.raw + ending + self.post_home
             self.queue.extend(
                 payload[at : at + self.payload_chunk]
                 for at in range(0, len(payload), self.payload_chunk)
@@ -457,3 +461,49 @@ async def test_stop_during_transport_retains_bounded_private_partial_raw(serial_
     assert owned["fixed_trial"]["receipt"]["bytes"] > 0
     assert "fixed_trial" not in shared
     assert backend.calls == 1 and backend.active == 0 and wire.closed
+
+
+@pytest.mark.parametrize("chunk_size", [17, 4096], ids=["fragmented", "coalesced"])
+@pytest.mark.parametrize("where", ["after_end", "after_stop", "after_home"])
+@pytest.mark.parametrize(
+    "fault",
+    [b"InternalError: interrupted\n", b"APP ERROR\n", b"stop hook did not finish\n"],
+)
+async def test_fault_after_workload_end_never_reports_terminal_success(
+    serial_service, chunk_size, where, fault
+):
+    url, resident, _ = serial_service
+    if where == "after_end":
+        raw, post_home = ROWS + fault + EXIT, b""
+    elif where == "after_stop":
+        raw, post_home = ROWS + EXIT + b"APP_STOPPED\n" + fault, b""
+    else:
+        raw, post_home = FIXTURE, fault
+    wire = FixedWire(raw, post_home=post_home, payload_chunk=chunk_size)
+    resident.backend = backend_for(wire, resident.settings.serial)
+    async with connect(url, "a" * 64) as owner, connect(url, "b" * 64) as other:
+        lease = await call(owner, "acquire_session", {"owner": "local_cli", "lease_seconds": 300})
+        prepared = await call(
+            owner,
+            "prepare_test",
+            {"session": lease["session"], "job_id": "fixed-fault", "test": "derby_fixed_workload"},
+        )
+        await call(
+            owner,
+            "execute_test",
+            {"session": lease["session"], "plan_hash": prepared["plan_hash"]},
+        )
+        await resident.queue.join()
+        owned = await call(owner, "job_status", {"job_id": "fixed-fault"})
+        shared = await call(other, "job_status", {"job_id": "fixed-fault"})
+    assert owned["state"] == shared["state"] == "needs_review"
+    assert owned["result"] == "serial_fault_marker"
+    assert owned["diagnostic"]["device_fault_category"] in ("vm_exception", "device_fault")
+    assert owned["diagnostic"]["serial_close_confirmed"] is True
+    assert owned["diagnostic"]["workload_end_observed"] is True
+    assert owned["diagnostic"]["partial_workload_is_terminal_success"] is False
+    assert owned["fixed_trial"]["valid"] is False
+    assert owned["fixed_trial"]["receipt"]["complete"] is False
+    assert "fixed_trial" not in shared
+    assert "InternalError" not in json.dumps(shared)
+    assert wire.closed and resident.backend.active == 0

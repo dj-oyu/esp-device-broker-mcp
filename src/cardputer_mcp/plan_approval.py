@@ -320,7 +320,7 @@ class PlanApprovals:
                 != (
                     "pocketjs-derby-smoke-v1"
                     if test == "derby_smoke"
-                    else "pocketjs-derby-fixed-v1"
+                    else "pocketjs-derby-fixed-v2"
                     if test == "derby_fixed_workload"
                     else "pocketjs-legacy-capture-v1"
                     if test == "capture_home"

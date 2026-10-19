@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from .derby_fixed import MAX_BYTES, PARSER_COMMIT, parse_collected
+from .derby_fixed import FIXED_PLAN, LEGACY_PLAN, MAX_BYTES, PARSER_COMMIT, parse_collected
 
 MAX_REPORT_BYTES = 128 * 1024
 PROVENANCE_KEY = "derby_diagnostics_provenance"
@@ -66,6 +66,10 @@ def private_job(store: Any, job: dict[str, Any], plan: Any, principal: str) -> d
             if record is None:
                 return result
             raw, receipt = record["raw"], record["receipt"]
+            legacy = (
+                plan.get("protocol") == "pocketjs-derby-fixed-v1"
+                and plan.get("fixed_workload") == LEGACY_PLAN
+            )
             flags = {
                 "gaps",
                 "overflow",
@@ -92,26 +96,47 @@ def private_job(store: Any, job: dict[str, Any], plan: Any, principal: str) -> d
                 or plan.get("backend") != "serial"
                 or type(plan.get("fixed_workload")) is not dict
                 or plan["fixed_workload"].get("parser_commit") != PARSER_COMMIT
+                or not (
+                    legacy
+                    or (
+                        plan.get("protocol") == "pocketjs-derby-fixed-v2"
+                        and plan.get("fixed_workload") == FIXED_PLAN
+                    )
+                )
                 or not re.fullmatch(r"[a-f0-9]{32}", plan.get("broker_epoch", ""))
                 or not re.fullmatch(r"[a-f0-9]{64}", plan.get("device_fingerprint", ""))
                 or not re.fullmatch(r"[a-f0-9]{64}", plan.get("expected_firmware_sha256", ""))
             ):
                 raise ValueError("fixed_record_invalid")
+            validation_error = None
             if record["valid"]:
-                if record["parsed"] != parse_collected(raw, receipt):
-                    raise ValueError("fixed_record_invalid")
+                try:
+                    parsed = parse_collected(raw, receipt, require_owner_exit=not legacy)
+                except ValueError:
+                    if not legacy:
+                        raise
+                    validation_error = "legacy_transport_fails_current_validation"
+                else:
+                    if record["parsed"] != parsed:
+                        raise ValueError("fixed_record_invalid")
             elif receipt["complete"]:
                 try:
-                    parse_collected(raw, receipt)
+                    parse_collected(raw, receipt, require_owner_exit=not legacy)
                 except ValueError:
                     pass
                 else:
                     raise ValueError("fixed_record_invalid")
             report = {
                 "available": True,
-                "valid": record["valid"],
+                "valid": record["valid"] and not legacy,
+                "historical_valid": record["valid"],
+                "terminal_contract": "legacy_v1_no_owner_exit_proof" if legacy else "owner_exit_v2",
+                "terminal_success_verified": (
+                    record["valid"] and not legacy and job.get("state") == "succeeded"
+                ),
+                "validation_error": validation_error,
                 "receipt": receipt,
-                "parsed": record["parsed"],
+                "parsed": record["parsed"] if validation_error is None else None,
                 "raw_base64": base64.b64encode(raw).decode("ascii"),
                 "binding": {
                     "job_id": job["id"],

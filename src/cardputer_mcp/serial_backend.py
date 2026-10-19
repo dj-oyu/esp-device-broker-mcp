@@ -21,6 +21,7 @@ from .config import SerialSettings
 from .derby_fixed import FIXED_PLAN, FixedCollector, FixedTrial
 from .derby_observation import DerbyObservation
 from .derby_telemetry import DerbyDiagnosticsCollector
+from .device_faults import fault_category
 from .device_observation import MAX_RECEIVE_BYTES, DeviceLogCollector, DeviceObservation
 from .home_line import HomeLineProbe
 from .models import TestName
@@ -29,13 +30,6 @@ from .serial_diagnostics import ReceiveDiagnostics
 
 ANSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 PREFIX = re.compile(rb"^[IWEVD] \([^\r\n)]*\) [A-Za-z0-9_.-]+: ")
-FAULT = re.compile(
-    rb"Guru Meditation|panic(?:'ed)?|START_FAILED|PRESENTER_STEP_FAILED|APP_ERROR|"
-    rb"APP_REFUSED|EXECUTION FAILED|abort\(|assert(?:ion)? failed|Stack canary|"
-    rb"stack overflow|watchdog|Brownout detector|ESP_ERROR_CHECK failed|"
-    rb"FRAME RUNAWAY|JOB QUEUE RUNAWAY",
-    re.IGNORECASE,
-)
 FINAL_MEMORY = re.compile(rb"MEM free=(\d+) largest=(\d+) js=(\d+) frames=(\d+)")
 KNOWN = {
     b"HOME_READY": "serial_home_ready",
@@ -158,6 +152,12 @@ class Reader:
             recognized_markers=self.recognized_markers,
             receive_summary=self.receive_diagnostics.snapshot(self.diagnostic_pending_bytes),
         )
+        if self.fixed_collector is not None:
+            failure.diagnostic["workload_end_observed"] = self.fixed_collector.end_seen
+            failure.diagnostic["owner_exit_observed"] = self.fixed_collector.exit_seen
+            failure.diagnostic["app_stopped_observed"] = self.fixed_collector.stopped
+            failure.diagnostic["home_ready_observed"] = self.fixed_collector.home
+            failure.diagnostic["partial_workload_is_terminal_success"] = False
         if self.derby_observation is not None:
             failure.diagnostic["derby_observation"] = self.derby_observation().model_dump(
                 mode="json", exclude_none=True
@@ -214,12 +214,15 @@ class Reader:
         if self.bytes_read > 256 * 1024:
             raise self.failure("serial_capture_limit")
         cleaned = ANSI.sub(b"", self.fault_tail + incoming)
-        if FAULT.search(cleaned) or (
+        category = fault_category(cleaned)
+        if category is not None or (
             self.derby_mode and re.search(rb"DEMOFAIL|FRAMEFAIL|LOADFAIL|DEGRADE|app: OOM", cleaned)
         ):
             if self.derby_diagnostics is not None and self.diagnostic_pending_bytes:
                 self.derby_diagnostics.mark_partial_line_or_fault()
-            raise self.failure("serial_fault_marker")
+            failure = self.failure("serial_fault_marker")
+            failure.diagnostic["device_fault_category"] = category or "derby_runtime_fault"
+            raise failure
         self.fault_tail = cleaned[-256:]
         capture_finished = self.capture_decoder is not None and self.capture_decoder.complete
         if self.capture_decoder is not None and not capture_finished:
@@ -578,7 +581,8 @@ class SerialBackend:
                 "Opens/closes the owned serial port; control lines may reset the device",
                 "Fixed Esc/a/u x16/d x12/e navigation launches local.derby once",
                 "Collects at most 64 KiB for 200 seconds with 1024-byte lines and no retry",
-                "Requires three ordered repetitions, final END, APP_STOPPED and HOME_READY",
+                "Requires three ordered repetitions, END, matching owner EXIT, "
+                "APP_STOPPED and HOME_READY",
                 "Stores raw transport privately for the requesting principal with its SHA-256",
                 "Host checks transport and known work; device quality fields are not a receipt",
                 "Cancellation or lease loss stops I/O; no automatic reopen or flash operation",
@@ -623,7 +627,7 @@ class SerialBackend:
         if test == TestName.DERBY:
             protocol = "pocketjs-derby-smoke-v1"
         elif test == TestName.DERBY_FIXED:
-            protocol = "pocketjs-derby-fixed-v1"
+            protocol = "pocketjs-derby-fixed-v2"
         elif test == TestName.CAPTURE:
             protocol = "pocketjs-legacy-capture-v1"
         elif test in (TestName.FIRMWARE, TestName.RESTART):
@@ -778,6 +782,7 @@ class SerialBackend:
 
             port = SmokePort(port, live, self.smoke_stop)
         reader: Reader | None = None
+        operation_failure: SerialFailure | None = None
         try:
             port.dtr = False
             port.rts = False
@@ -845,6 +850,7 @@ class SerialBackend:
         except SerialFailure as failure:
             # Close itself may block. Release raw read-frame references before
             # entering that ownership-preserving wait, not only at async return.
+            operation_failure = failure
             if reader is not None and reader.derby_observation is not None:
                 failure.diagnostic.setdefault(
                     "derby_observation",
@@ -891,12 +897,20 @@ class SerialBackend:
                 self.hardware_connected = True
                 emit("serial_close_unconfirmed")
                 close_failure = SerialFailure("serial_close_unconfirmed", step="close_serial")
+                if operation_failure is not None:
+                    close_failure.diagnostic["prior_failure_code"] = operation_failure.code
+                    if "device_fault_category" in operation_failure.diagnostic:
+                        close_failure.diagnostic["device_fault_category"] = (
+                            operation_failure.diagnostic["device_fault_category"]
+                        )
                 if derby_summary is not None:
                     close_failure.diagnostic["derby_observation"] = derby_summary
                 close_failure.fixed_trial = fixed_summary
                 raise close_failure from None
             else:
                 self.hardware_connected = False
+                if operation_failure is not None and test == TestName.DERBY_FIXED:
+                    operation_failure.diagnostic["serial_close_confirmed"] = True
                 if port.is_open is False:
                     self.last_closed_plan = json.loads(json.dumps(plan))
                 emit("serial_close")

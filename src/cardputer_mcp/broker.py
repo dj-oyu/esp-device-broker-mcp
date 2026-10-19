@@ -684,6 +684,9 @@ class Broker:
         self._expire()
         store = self._store()
         session = self.session
+        uncertain = self._execution_uncertain()
+        busy = self._physical_busy()
+        pending_review = store.needs_review()
         return {
             "backend": self.backend.name,
             "hardware_connected": self.backend.hardware_connected,
@@ -703,8 +706,24 @@ class Broker:
             "wait_queue_depth": len(self.waiters),
             "work_session_count": sum(w.state == "open" for w in self.work_sessions.values()),
             "history": store.counts(),
-            "needs_review": store.needs_review(),
-            "execution_uncertain": self._execution_uncertain(),
+            "needs_review": pending_review,
+            "execution_uncertain": uncertain,
+            "safety": {
+                "current_resource_uncertain": uncertain,
+                "owned_work_active": busy,
+                "historical_review_pending": pending_review,
+                "physical_device_state": "not_inferred_from_job_history",
+                "required_action": (
+                    "inspect_owned_resources_before_new_work"
+                    if uncertain
+                    else "wait_for_owned_work"
+                    if busy
+                    else "inspect_job_and_use_explicit_recovery_if_eligible"
+                    if pending_review
+                    else "none_reported_by_broker"
+                ),
+                "authorizes_new_work": False,
+            },
             "execution_policy": "authenticated_explicit_request",
             "hardware_backend": "serial_operations_opt_in"
             if self.backend.name == "serial"
@@ -2081,6 +2100,7 @@ class Broker:
                                 "needs_review",
                                 failure.code,
                                 failure.fixed_trial,
+                                failure.diagnostic,
                             )
                         except Exception:
                             self.execution_uncertain = True

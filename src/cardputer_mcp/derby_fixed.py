@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .device_faults import fault_category
+
 MAX_BYTES = 65536
 MAX_LINE = 1024
 MAX_SECONDS = 200
@@ -29,7 +31,7 @@ FIXTURE_DETAILS = {
     "independent": False,
     "finish": "5DC86E18",
 }
-FIXED_PLAN = {
+LEGACY_PLAN = {
     "fixture": FIXTURE,
     "parser_commit": PARSER_COMMIT,
     "max_seconds": MAX_SECONDS,
@@ -37,6 +39,13 @@ FIXED_PLAN = {
     "max_line_bytes": MAX_LINE,
     "repetitions": 3,
     "retry": 0,
+}
+TERMINAL_CONTRACT = "end_owner_exit_stop_home_v2"
+PROTOCOL = "pocketjs-derby-fixed-v2"
+FIXED_PLAN = {
+    **LEGACY_PLAN,
+    "terminal_contract": TERMINAL_CONTRACT,
+    "owner_exit_wire_commit": "9b9e9ae46c08a6597f871419b280874d5e09033c",
 }
 END_KEYS = frozenset("v session reps valid quality independent".split())
 ROW_KEYS = frozenset(
@@ -102,10 +111,15 @@ def _row(line: str, prefix: str, keys: frozenset[str]) -> dict[str, str]:
     return result
 
 
-def _parse_trial(raw: bytes, *, verify_work: bool) -> dict[str, Any]:
+def _parse_trial(
+    raw: bytes, *, verify_work: bool, require_owner_exit: bool = True
+) -> dict[str, Any]:
     """Parse a whole trial; format-only results never qualify measured work."""
     if not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_BYTES or not raw.endswith(b"\n"):
         raise ValueError("fixed_transport_incomplete")
+    # END qualifies measured rows, never errors during teardown or after HOME.
+    if fault_category(raw) is not None:
+        raise ValueError("fixed_device_fault")
     try:
         text = raw.decode("ascii")
     except UnicodeError:
@@ -179,6 +193,8 @@ def _parse_trial(raw: bytes, *, verify_work: bool) -> dict[str, Any]:
         "independent": "0",
     }:
         raise ValueError("fixed_end_invalid")
+    if require_owner_exit:
+        _verify_terminal(text, session)
     return {
         "fixture": dict(FIXTURE_DETAILS),
         "manifest_sha256": MANIFEST,
@@ -193,17 +209,19 @@ def _parse_trial(raw: bytes, *, verify_work: bool) -> dict[str, Any]:
     }
 
 
-def parse_trial_format(raw: bytes) -> dict[str, Any]:
+def parse_trial_format(raw: bytes, *, require_owner_exit: bool = True) -> dict[str, Any]:
     """For synthetic controller data only; never a work-verification result."""
-    return _parse_trial(raw, verify_work=False)
+    return _parse_trial(raw, verify_work=False, require_owner_exit=require_owner_exit)
 
 
-def parse_trial(raw: bytes) -> dict[str, Any]:
+def parse_trial(raw: bytes, *, require_owner_exit: bool = True) -> dict[str, Any]:
     """Verify format, identity, time, known work and variant-specific calls."""
-    return _parse_trial(raw, verify_work=True)
+    return _parse_trial(raw, verify_work=True, require_owner_exit=require_owner_exit)
 
 
-def parse_collected(raw: bytes, receipt: dict[str, Any]) -> dict[str, Any]:
+def parse_collected(
+    raw: bytes, receipt: dict[str, Any], *, require_owner_exit: bool = True
+) -> dict[str, Any]:
     """Bind a successful collector-owned receipt to the exact raw bytes."""
     flags = {"gaps", "overflow", "truncated", "partial_tail", "disconnect", "reset", "refused"}
     if (
@@ -220,7 +238,31 @@ def parse_collected(raw: bytes, receipt: dict[str, Any]) -> dict[str, Any]:
         or receipt["sha256"] != hashlib.sha256(raw).hexdigest()
     ):
         raise ValueError("fixed_transport_receipt_invalid")
-    return parse_trial(raw)
+    return parse_trial(raw, require_owner_exit=require_owner_exit)
+
+
+def _verify_terminal(text: str, session: str) -> None:
+    """Exact owner EXIT is necessary but does not replace STOP/HOME/close."""
+    lines = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text).splitlines()
+    ends = [i for i, line in enumerate(lines) if line.startswith("DERBY_FIXED_END")]
+    exits = [i for i, line in enumerate(lines) if line.startswith("DERBY_DETAIL_EXIT")]
+    stops = [
+        i for i, line in enumerate(lines)
+        if re.fullmatch(r"(?:I \([0-9]+\) app: )?APP_STOPPED", line)
+    ]
+    homes = [
+        i for i, line in enumerate(lines)
+        if re.fullmatch(r"(?:I \([0-9]+\) shell: )?HOME_READY", line)
+    ]
+    if (
+        len(ends) != 1 or len(exits) != 1 or len(stops) != 1 or len(homes) != 1
+        or not ends[0] < exits[0] < stops[0] < homes[0]
+    ):
+        raise ValueError("fixed_terminal_sequence_invalid")
+    if _row(lines[exits[0]], "DERBY_DETAIL_EXIT", frozenset(("v", "session", "clean"))) != {
+        "v": "1", "session": session, "clean": "1",
+    }:
+        raise ValueError("fixed_owner_exit_invalid")
 
 
 @dataclass(frozen=True)
@@ -239,8 +281,10 @@ class FixedCollector:
         self.raw = bytearray()
         self.pending = b""
         self.phase = "await_launch"
-        self.end_seen = self.stopped = self.home = False
+        self.end_seen = self.exit_seen = self.stopped = self.home = False
+        self.session: str | None = None
         self.overflow = self.reset = self.refused = False
+        self.device_fault: str | None = None
 
     def feed(self, incoming: bytes) -> None:
         if type(incoming) is not bytes:
@@ -250,7 +294,11 @@ class FixedCollector:
             self.raw.extend(incoming[: MAX_BYTES - len(self.raw)])
             self.overflow = True
             raise ValueError("fixed_transport_overflow")
+        fault_window = bytes(self.raw[-256:]) + incoming
         self.raw.extend(incoming)
+        # Latch across chunk boundaries, independently of Reader's fatal check.
+        # The existing bounded raw buffer is the only retained wire copy.
+        self.device_fault = self.device_fault or fault_category(fault_window)
         lines = (self.pending + incoming).split(b"\n")
         self.pending = lines[-1]
         if any(len(line) + 1 > MAX_LINE for line in lines[:-1]) or len(self.pending) >= MAX_LINE:
@@ -274,12 +322,24 @@ class FixedCollector:
                 self.reset = True
         elif line.startswith(b"DERBY_FIXED_END"):
             if self.phase == "running":
+                try:
+                    end = _row(line.decode("ascii"), "DERBY_FIXED_END", END_KEYS)
+                    self.session = end["session"]
+                except (UnicodeError, ValueError):
+                    self.reset = True
                 self.phase = "ended"
                 self.end_seen = True
             else:
                 self.reset = True
+        elif line.startswith(b"DERBY_DETAIL_EXIT"):
+            expected = f"DERBY_DETAIL_EXIT v=1 session={self.session} clean=1".encode()
+            if self.phase == "ended" and line == expected:
+                self.phase = "exited"
+                self.exit_seen = True
+            else:
+                self.reset = True
         elif line == b"APP_STOPPED":
-            if self.phase == "ended":
+            if self.phase == "exited":
                 self.phase = "stopped"
                 self.stopped = True
             else:
@@ -305,11 +365,12 @@ class FixedCollector:
             complete
             and self.phase == "home"
             and self.end_seen
+            and self.exit_seen
             and self.stopped
             and self.home
             and not self.pending
             and raw.endswith(b"\n")
-            and not (self.overflow or self.reset or self.refused or disconnect)
+            and not (self.overflow or self.reset or self.refused or disconnect or self.device_fault)
             and elapsed <= MAX_SECONDS
         )
         receipt: dict[str, Any] = {
