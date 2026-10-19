@@ -101,16 +101,41 @@ def native_cleanup_probe(tree, process):
         else:
             result["job_pids"] = tuple(snapshot.pids[: snapshot.listed])
             result["candidates"] = []
+            result["image_roles"] = []
             kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32]
             kernel.OpenProcess.restype = ctypes.c_void_p
             kernel.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
             kernel.IsProcessInJob.restype = ctypes.c_int32
+            kernel.QueryFullProcessImageNameW.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_wchar_p,
+                ctypes.POINTER(ctypes.c_uint32),
+            ]
+            kernel.QueryFullProcessImageNameW.restype = ctypes.c_int32
             for pid in result["job_pids"]:
                 handle = kernel.OpenProcess(0x101000, False, pid)
                 if not handle:
                     result["candidates"].append((int(pid), -1, -ctypes.get_last_error()))
+                    if len(result["image_roles"]) < 64:
+                        result["image_roles"].append((int(pid), "unavailable"))
                     continue
                 try:
+                    # Classify this owned PID in memory. Never retain or log
+                    # the executable path, arguments, or environment.
+                    if len(result["image_roles"]) < 64:
+                        name = ctypes.create_unicode_buffer(4096)
+                        length = ctypes.c_uint32(len(name))
+                        if kernel.QueryFullProcessImageNameW(handle, 0, name, ctypes.byref(length)):
+                            basename = name.value.rpartition("\\")[2].casefold()
+                            role = {
+                                "python.exe": "python",
+                                "pythonw.exe": "pythonw",
+                                "conhost.exe": "console_host",
+                            }.get(basename, "other")
+                        else:
+                            role = "unavailable"
+                        result["image_roles"].append((int(pid), role))
                     member = ctypes.c_int32()
                     query = kernel.IsProcessInJob(handle, tree._job, ctypes.byref(member))
                     state = kernel.WaitForSingleObject(handle, 0)
@@ -192,11 +217,13 @@ def test_close_empty_owner_after_popen_failure():
 
 
 @pytest.mark.parametrize("exit_before_close", [False, True])
-def test_real_leader_without_application_descendants(tmp_path, exit_before_close, record_property):
+def test_real_leader_without_spawned_application_child(
+    tmp_path, exit_before_close, record_property
+):
     tree = ProcessTree()
     pidfile = tmp_path / "interpreter"
-    # A true single-OS-process control uses the base executable on Windows;
-    # all three grandchild regressions above deliberately retain the venv path.
+    # Use the base executable on Windows to avoid the venv redirector. The OS
+    # may still create another owned job member; the native probe checks it.
     executable = (
         getattr(sys, "_base_executable", sys.executable) if os.name == "nt" else sys.executable
     )
@@ -221,6 +248,7 @@ def test_real_leader_without_application_descendants(tmp_path, exit_before_close
             process.stdin.close()
             assert process.wait(timeout=4) == 0
         probe = native_cleanup_probe(tree, process)
+        expected_descendants = False
         if os.name == "nt":
             # Both retained diagnostics carry complete bounded numeric JSON;
             # pytest's assertion repr shortens nested dictionaries.
@@ -228,8 +256,21 @@ def test_real_leader_without_application_descendants(tmp_path, exit_before_close
             assert len(encoded_probe) <= 65536, "ci_cleanup_probe_oversize"
             record_property("ci_cleanup_probe", encoded_probe)
             print("ci_cleanup_probe=" + encoded_probe, file=sys.stderr, flush=True)
+            assert probe.get("query_ok") == 1 and "probe_error" not in probe
+            assert probe["assigned"] == probe["listed"] == len(probe["job_pids"])
+            assert len(probe["candidates"]) == probe["listed"]
+            assert all(
+                member in (0, 1) and state in (0, 0x102) for _, member, state in probe["candidates"]
+            )
+            # A Windows launch can have another live job member even though
+            # this Python script does not create a child. The independent OS
+            # probe defines the expected ownership result, not that script.
+            expected_descendants = any(
+                pid != process.pid and member == 1 and state == 0x102
+                for pid, member, state in probe["candidates"]
+            )
         result = tree.close(process)
-        if result is not False:
+        if result is not expected_descendants:
             pytest.fail("ci_cleanup_probe=" + json.dumps(probe, sort_keys=True), pytrace=False)
         assert process.poll() is not None
     finally:
