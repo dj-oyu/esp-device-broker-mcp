@@ -42,7 +42,7 @@ LIMITS = {
     "expanded_bytes": 256 * 1048576,
     "files": 100000,
     "operation_seconds": 180,
-    "cache_snapshots": 8,
+    "cache_snapshots": 16,
     "cache_bytes": 2 * 1024 * 1048576,
     "submodule_depth": 3,
     "submodule_count": 16,
@@ -754,7 +754,12 @@ class SourceSnapshots:
                                 if size > LIMITS["cache_bytes"]:
                                     raise SourceError("source_cache_limit")
         check_budget()
-        return dict(snapshots=count, bytes=size, max_snapshots=8, max_bytes=LIMITS["cache_bytes"])
+        return dict(
+            snapshots=count,
+            bytes=size,
+            max_snapshots=LIMITS["cache_snapshots"],
+            max_bytes=LIMITS["cache_bytes"],
+        )
 
     def prepare(self, project_id: str, commit: str, principal: str) -> dict[str, Any]:
         _, registration = self.registration(project_id)
@@ -792,7 +797,7 @@ class SourceSnapshots:
         _, registration = self.registration(project_id)
         usage = self.usage(project_id)
         if (
-            usage["snapshots"] >= 8
+            usage["snapshots"] >= LIMITS["cache_snapshots"]
             or usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 > LIMITS["cache_bytes"]
         ):
             raise SourceError("source_cache_full")
