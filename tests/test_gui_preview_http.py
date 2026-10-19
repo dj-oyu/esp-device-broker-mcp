@@ -9,6 +9,7 @@ import httpx2
 import pytest
 from test_authenticated_mock import LOCAL, REMOTE
 from test_authenticated_mock import authenticated_mock as authenticated_mock
+from test_authenticated_mock import event_loop_policy as event_loop_policy
 
 from cardputer_mcp.auth import AuthState
 from cardputer_mcp.backend import MockBackend

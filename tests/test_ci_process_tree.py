@@ -67,6 +67,63 @@ def assert_native_member(tree, pid):
         tree._api.close_handle(int(handle))
 
 
+def native_cleanup_probe(tree, process):
+    """Diagnostic-only snapshot, independent of the helper's classification.
+
+    Only numeric metadata from this owned job is retained. Never enumerate host
+    processes, read paths/arguments/environment, or keep temporary handles alive
+    across the actual close call, which would perturb accounting.
+    """
+    if os.name != "nt":
+        return {}
+
+    class JobPids(ctypes.Structure):
+        _fields_ = [
+            ("assigned", ctypes.c_uint32),
+            ("listed", ctypes.c_uint32),
+            ("pids", ctypes.c_size_t * 1024),
+        ]
+
+    result = {"leader_pid": process.pid, "leader_before": process.poll()}
+    try:
+        kernel = tree._api._kernel
+        result["active_count"] = tree._api.active_count(tree._job)
+        snapshot = JobPids()
+        queried = kernel.QueryInformationJobObject(
+            tree._job, 3, ctypes.byref(snapshot), ctypes.sizeof(snapshot), None
+        )
+        result.update(
+            query_ok=int(bool(queried)), assigned=snapshot.assigned, listed=snapshot.listed
+        )
+        if not queried or snapshot.assigned != snapshot.listed or snapshot.listed > 1024:
+            result["probe_error"] = 1
+        else:
+            result["job_pids"] = tuple(snapshot.pids[: snapshot.listed])
+            result["candidates"] = []
+            kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32]
+            kernel.OpenProcess.restype = ctypes.c_void_p
+            kernel.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            kernel.IsProcessInJob.restype = ctypes.c_int32
+            for pid in result["job_pids"]:
+                handle = kernel.OpenProcess(0x101000, False, pid)
+                if not handle:
+                    result["candidates"].append((int(pid), -1, -ctypes.get_last_error()))
+                    continue
+                try:
+                    member = ctypes.c_int32()
+                    query = kernel.IsProcessInJob(handle, tree._job, ctypes.byref(member))
+                    state = kernel.WaitForSingleObject(handle, 0)
+                    result["candidates"].append(
+                        (int(pid), member.value if query else -1, int(state))
+                    )
+                finally:
+                    tree._api.close_handle(int(handle))
+    except Exception:
+        result["probe_error"] = 1
+    result["leader_after"] = process.poll()
+    return result
+
+
 @pytest.mark.parametrize("mode", ["live", "0", "7"])
 def test_real_owned_tree_stops_grandchild_even_after_leader_exit(tmp_path, mode):
     tree = ProcessTree()
@@ -162,7 +219,9 @@ def test_real_leader_without_application_descendants(tmp_path, exit_before_close
             process.stdin.write(b"1")
             process.stdin.close()
             assert process.wait(timeout=4) == 0
-        assert tree.close(process) is False and process.poll() is not None
+        probe = native_cleanup_probe(tree, process)
+        assert tree.close(process) is False, probe
+        assert process.poll() is not None
     finally:
         tree.close(process)
         process.stdin.close()

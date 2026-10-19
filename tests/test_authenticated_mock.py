@@ -1,6 +1,7 @@
 """Optional mock authentication over localhost HTTP, using synthetic token values only."""
 
 import asyncio
+import os
 import socket
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -22,10 +23,22 @@ LOCAL = "a" * 64
 REMOTE = "b" * 64
 
 
+@pytest.fixture(scope="module")
+def event_loop_policy():
+    # CPython's Windows Proactor transport can raise from socket.shutdown
+    # before detaching a reset connection. A test server then cannot finish
+    # wait_closed(), even after Uvicorn's graceful-drain deadline.
+    if os.name == "nt":
+        return asyncio.WindowsSelectorEventLoopPolicy()
+    return asyncio.DefaultEventLoopPolicy()
+
+
 @pytest.fixture(params=["environment", "injected"])
 async def authenticated_mock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> AsyncIterator[tuple[str, Broker]]:
+    if os.name == "nt":
+        assert isinstance(asyncio.get_running_loop(), asyncio.SelectorEventLoop)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -53,6 +66,9 @@ async def authenticated_mock(
             log_level="critical",
             access_log=False,
             proxy_headers=False,
+            # A rejected HTTP stream can keep a connection task open after the
+            # client closes. Bound its drain so lifespan still shuts down.
+            timeout_graceful_shutdown=2,
         )
     )
     task = asyncio.create_task(server.serve())
@@ -67,6 +83,7 @@ async def authenticated_mock(
     finally:
         server.should_exit = True
         await asyncio.wait_for(task, timeout=5)
+        assert task.done() and not server.server_state.connections
     assert not (settings.state_dir / "runtime-auth.json").exists()
 
 
