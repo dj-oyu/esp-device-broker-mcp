@@ -256,6 +256,45 @@ def test_native_preview_and_controls_reachable_at_168_dpi_minimum(monkeypatch):
         assert window.job_tree.winfo_rootx() + window.job_tree.winfo_width() <= (
             root.winfo_rootx() + 860
         )
+        # The preview leaves the *outer* detail canvas at the bottom. Reopen
+        # through the list affordance and check the actual canvas viewport.
+        window.open_selected_button.invoke()
+        root.update()
+        canvas = window._detail_canvas
+        assert canvas.yview()[0] == 0.0
+        assert window.detail_text.winfo_rooty() >= canvas.winfo_rooty()
+        assert window.detail_text.winfo_rooty() + window.detail_text.winfo_height() <= (
+            canvas.winfo_rooty() + canvas.winfo_height()
+        )
+        window.detail_text.event_generate("<Next>")
+        root.update()
+        assert canvas.yview()[0] > 0.0
+        window.detail_text.event_generate("<Home>")
+        root.update()
+        assert canvas.yview()[0] == 0.0
+        window.detail_text.event_generate("<End>")
+        root.update()
+        assert canvas.yview()[1] == 1.0
+        assert window.preview_area.winfo_rooty() >= canvas.winfo_rooty()
+        assert window.preview_area.winfo_rooty() + window.preview_area.winfo_height() <= (
+            canvas.winfo_rooty() + canvas.winfo_height()
+        )
+        window.log_text.focus_force()
+        root.update()
+        assert window.log_text.winfo_rooty() >= canvas.winfo_rooty()
+        assert window.log_text.winfo_rooty() + window.log_text.winfo_height() <= (
+            canvas.winfo_rooty() + canvas.winfo_height()
+        )
+        window._job_pages.select(0)
+        root.update()
+        window.job_tree.focus_force()
+        window.job_tree.event_generate("<Return>")
+        root.update()
+        assert window._job_pages.select() == str(window._detail_page)
+        assert window.detail_text.winfo_rooty() >= canvas.winfo_rooty()
+        assert window.detail_text.winfo_rooty() + window.detail_text.winfo_height() <= (
+            canvas.winfo_rooty() + canvas.winfo_height()
+        )
     finally:
         root.tk.call("tk", "scaling", original_scaling)
         if window is not None and window.state.connection != "closed":

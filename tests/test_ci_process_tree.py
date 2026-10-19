@@ -325,11 +325,43 @@ class JobAPI:
         self.fail_query = self.fail_terminate = False
         self.fail_stage = None
         self._kernel = self
+        self.members = {123: 0x102}
+        self.transient_counts = []
         self.InitializeProcThreadAttributeList = Function(self.initialize)
         self.UpdateProcThreadAttribute = Function(self.update)
         self.DeleteProcThreadAttributeList = Function(lambda value: self.calls.append("delete"))
         self.CreateProcessW = Function(self.create)
+        self.QueryInformationJobObject = Function(self.query_members)
+        self.OpenProcess = Function(self.open_process)
+        self.IsProcessInJob = Function(self.is_process_in_job)
+        self.WaitForSingleObject = Function(self.wait_process)
         self.attributes = {}
+
+    def query_members(self, job, category, snapshot, size, returned):
+        assert job == 10 and category == 3 and returned is None
+        assert size == ctypes.sizeof(tree_module._JobPids)
+        if self.fail_query:
+            return False
+        rows = list(self.members)
+        out = ctypes.cast(snapshot, ctypes.POINTER(tree_module._JobPids)).contents
+        out.assigned = out.listed = len(rows)
+        for index, pid in enumerate(rows):
+            out.pids[index] = pid
+        self.calls.append(("members", tuple(rows)))
+        return True
+
+    def open_process(self, access, inherit, pid):
+        assert access == 0x101000 and inherit is False
+        return pid + 1000 if pid in self.members else 0
+
+    def is_process_in_job(self, handle, job, member):
+        assert job == 10 and handle - 1000 in self.members
+        ctypes.cast(member, ctypes.POINTER(ctypes.c_int32))[0] = 1
+        return True
+
+    def wait_process(self, handle, timeout):
+        assert timeout == 0 and handle - 1000 in self.members
+        return self.members[handle - 1000]
 
     def create_job(self):
         self.calls.append("create")
@@ -385,6 +417,10 @@ class JobAPI:
         assert job == 10
         if self.fail_query:
             raise OSError("SYNTHETIC_PRIVATE_QUERY")
+        if self.transient_counts:
+            self.count = self.transient_counts.pop(0)
+            if self.count == 0:
+                self.members = {}
         self.calls.append(("count", self.count))
         return self.count
 
@@ -395,6 +431,7 @@ class JobAPI:
             raise OSError("SYNTHETIC_PRIVATE_TERMINATE")
         self.count = 0
         self.exitcode = 1
+        self.members = {}
 
 
 def windows_tree(monkeypatch):
@@ -419,8 +456,35 @@ def test_windows_job_list_precedes_resume_and_accounting_outlives_leader(monkeyp
         "delete",
     ]
     process.returncode = 7  # Leader has exited; one job member is still live.
+    api.members = {123: 0, 456: 0x102}
     assert tree.close(process) is True
     assert api.calls[-4:] == ["terminate", ("count", 0), ("close", 100), ("close", 10)]
+
+
+def test_windows_success_waits_for_natural_member_exit_before_classifying(monkeypatch):
+    tree, api = windows_tree(monkeypatch)
+    process = tree.start(["synthetic-python"])
+    process.returncode = 0
+    api.members = {123: 0, 456: 0x102}
+    api.count = 1
+    api.transient_counts = [1, 1, 0]
+    assert tree.close(process) is False
+    assert "terminate" not in api.calls
+    assert ("close", 10) in api.calls
+    assert tree._cleanup_probe["accounted"] == 0
+
+
+def test_windows_success_still_fails_persistent_owned_member(monkeypatch):
+    monkeypatch.setattr(tree_module, "_NATURAL_EXIT_SECONDS", 0.02)
+    tree, api = windows_tree(monkeypatch)
+    process = tree.start(["synthetic-python"])
+    process.returncode = 0
+    api.members = {123: 0, 456: 0x102}
+    api.count = 1
+    assert tree.close(process) is True
+    assert "terminate" in api.calls
+    assert tree._cleanup_probe["candidates"] == ((456, 1, 0x102),)
+    assert tree._cleanup_probe["accounted"] == 1
 
 
 @pytest.mark.parametrize("failure", ["query", "terminate", "active_timeout"])

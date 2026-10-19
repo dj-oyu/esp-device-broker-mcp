@@ -30,7 +30,17 @@ from cardputer_mcp.windows_process import (
 
 _WINDOWS = os.name == "nt"
 _CLEANUP_SECONDS = 8.0
+_NATURAL_EXIT_SECONDS = 1.0
 _MAX_PROC_ENTRIES = 100000
+_MAX_JOB_PIDS = 1024
+
+
+class _JobPids(ctypes.Structure):
+    _fields_ = [
+        ("assigned", ctypes.c_uint32),
+        ("listed", ctypes.c_uint32),
+        ("pids", _SIZE_T * _MAX_JOB_PIDS),
+    ]
 
 
 class ProcessTreeError(RuntimeError):
@@ -43,6 +53,12 @@ def _native_handle(fd: int) -> int:
     import msvcrt
 
     return msvcrt.get_osfhandle(fd)
+
+
+def _last_windows_error() -> int:
+    if sys.platform != "win32":
+        return 0
+    return ctypes.get_last_error()
 
 
 class WindowsChild:
@@ -92,6 +108,9 @@ class ProcessTree:
         self._group: int | None = None
         self._closed = False
         self._descendants = False
+        self._live_descendant_pids: tuple[int, ...] = ()
+        self._cleanup_probe: dict[str, Any] = {}
+        self._query_handles: list[int] = []
         if _WINDOWS:
             try:
                 self._api = NativeWindowsAPI()
@@ -258,6 +277,64 @@ class ProcessTree:
                     continue
         return members
 
+    def _windows_descendants(self, leader_pid: int, deadline: float) -> bool:
+        """Classify live owned PIDs, never subtract two non-atomic counts.
+
+        Job accounting may retain terminated processes. Query the bounded job
+        membership list, exclude the actual leader PID even after exit, and
+        confirm each other process is still in our job and unsignaled. Shutdown
+        separately requires authoritative zero active job members.
+        """
+        kernel = self._api._kernel
+        snapshot = _JobPids()
+        if (
+            not kernel.QueryInformationJobObject(
+                self._job, 3, ctypes.byref(snapshot), ctypes.sizeof(snapshot), None
+            )
+            or snapshot.assigned != snapshot.listed
+            or snapshot.listed > _MAX_JOB_PIDS
+        ):
+            raise ProcessTreeError("ci_process_tree_cleanup_failed")
+        self._cleanup_probe["job_pids"] = tuple(snapshot.pids[: snapshot.listed])
+        self._cleanup_probe["candidates"] = ()
+        live = False
+        kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int32, ctypes.c_uint32]
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        kernel.IsProcessInJob.restype = ctypes.c_int32
+        for pid in snapshot.pids[: snapshot.listed]:
+            if time.monotonic() >= deadline or pid == 0:
+                raise ProcessTreeError("ci_process_tree_cleanup_failed")
+            if pid == leader_pid:
+                continue
+            # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, not terminate.
+            handle = kernel.OpenProcess(0x101000, False, pid)
+            if not handle:
+                error = _last_windows_error()
+                self._cleanup_probe["candidates"] += ((int(pid), -1, -error),)
+                if error == 87:  # PID exited since the snapshot.
+                    continue
+                raise ProcessTreeError("ci_process_tree_cleanup_failed")
+            self._query_handles.append(int(handle))
+            try:
+                member = ctypes.c_int32()
+                if not kernel.IsProcessInJob(handle, self._job, ctypes.byref(member)):
+                    raise ProcessTreeError("ci_process_tree_cleanup_failed")
+                if not member.value:  # PID was reused outside this owned job.
+                    self._cleanup_probe["candidates"] += ((int(pid), 0, -1),)
+                    continue
+                state = kernel.WaitForSingleObject(handle, 0)
+                self._cleanup_probe["candidates"] += ((int(pid), 1, int(state)),)
+                if state == 0x102:  # WAIT_TIMEOUT: still live.
+                    self._live_descendant_pids += (int(pid),)
+                    live = True
+                elif state != 0:  # Only WAIT_OBJECT_0 confirms termination.
+                    raise ProcessTreeError("ci_process_tree_cleanup_failed")
+            finally:
+                self._api.close_handle(int(handle))
+                self._query_handles.remove(int(handle))
+        return live
+
     def close(self, process: Child | None) -> bool:
         """Kill this owned tree and reap its leader within one bounded budget.
 
@@ -286,8 +363,29 @@ class ProcessTree:
         deadline = time.monotonic() + _CLEANUP_SECONDS
         try:
             if self._job is not None:
+                while self._query_handles:
+                    self._api.close_handle(self._query_handles[-1])
+                    self._query_handles.pop()
+                self._cleanup_probe = {"leader_pid": process.pid, "leader_exit": process.poll()}
+                self._live_descendant_pids = ()
+                if self._cleanup_probe["leader_exit"] == 0:
+                    # A successful Windows launcher may signal before other
+                    # members of its owned job finish normal shutdown. Give
+                    # those members a bounded chance to exit before classifying
+                    # a leak; persistent members still fail and are terminated.
+                    natural_deadline = min(deadline, time.monotonic() + _NATURAL_EXIT_SECONDS)
+                    while self._api.active_count(self._job):
+                        if time.monotonic() >= natural_deadline:
+                            break
+                        time.sleep(min(0.01, natural_deadline - time.monotonic()))
+                self._descendants = self._windows_descendants(process.pid, deadline)
                 count = self._api.active_count(self._job)
-                self._descendants = count > int(process.poll() is None)
+                self._cleanup_probe["accounted"] = count
+                if count and not self._descendants and self._cleanup_probe["leader_exit"] == 0:
+                    # A member appeared between the PID list and accounting
+                    # query, or accounting has not settled. Do not mark a
+                    # successful test clean while owned work remains.
+                    self._descendants = True
                 if count:
                     self._api.terminate_job(self._job)
             elif self._group is not None:

@@ -239,6 +239,10 @@ def supervise(args: argparse.Namespace) -> int:
                 result["cleanup"] = "confirmed"
                 if leaked and result["exit_code"] == 0:
                     result.update(exit_code=RUNNER_ERROR, reason="descendants_remaining")
+                    if sys.platform == "win32":
+                        # Bounded numeric metadata from this owned job only.
+                        # Retain no process names, paths, arguments or output.
+                        result["ci_cleanup_probe"] = tree._cleanup_probe
         except Exception as error:
             result.update(exit_code=RUNNER_ERROR, reason="cleanup_failed", cleanup="unconfirmed")
             result["cleanup_error_type"] = type(error).__name__

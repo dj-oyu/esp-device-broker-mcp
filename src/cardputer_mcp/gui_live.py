@@ -4,6 +4,7 @@ import base64
 import queue
 import threading
 import time
+from collections.abc import Callable
 from typing import Any, Literal
 
 from .gui import Outcome, QueueController, http_diagnostics_summary, mcp_catalog_summary, perform
@@ -75,6 +76,7 @@ class LiveWindow:
         self._detail_canvas: Any = None
         self._detail_page: Any = None
         self.open_selected_button: Any = None
+        self._suppress_next_detail_focus = False
         if float(root.tk.call("tk", "scaling")) >= 1.5:
             jobs.columnconfigure(0, weight=1)
             jobs.rowconfigure(0, weight=1)
@@ -180,6 +182,21 @@ class LiveWindow:
         )
         self.preview_status_label.grid(row=6, sticky="ew", pady=(6, 0))
         detail.bind("<Configure>", self._resize_details, add="+")
+        if self._detail_canvas is not None:
+            for widget in (
+                self.detail_text,
+                self.log_text,
+                self.log_button,
+                self.preview_button,
+                self.job_cancel,
+            ):
+                widget.bind("<FocusIn>", self._reveal_detail_focus, add="+")
+                for key in ("Prior", "Next", "Home", "End"):
+                    widget.bind(
+                        f"<{key}>",
+                        self._detail_key_callback(key),
+                        add="+",
+                    )
         events.columnconfigure(0, weight=1)
         events.rowconfigure(1, weight=1)
         ttk.Label(events, text="Observed job changes", style="Section.TLabel").grid(
@@ -219,6 +236,47 @@ class LiveWindow:
                 canvas.yview_moveto(1.0)
         except tk.TclError:
             pass  # The window may have closed before the idle callback.
+
+    def _scroll_detail_key(self, key: str) -> str:
+        canvas = self._detail_canvas
+        if key == "Home":
+            canvas.yview_moveto(0.0)
+        elif key == "End":
+            canvas.yview_moveto(1.0)
+        else:
+            canvas.yview_scroll(-1 if key == "Prior" else 1, "pages")
+        return "break"
+
+    def _detail_key_callback(self, key: str) -> Callable[[Any], str]:
+        def callback(_event: Any) -> str:
+            return self._scroll_detail_key(key)
+
+        return callback
+
+    def _reveal_detail_focus(self, event: Any) -> None:
+        # The tab switch already reveals this target. Its delayed FocusIn must
+        # not pull the canvas back up after an image preview scrolls to the end.
+        if event.widget is self.detail_text and self._suppress_next_detail_focus:
+            self._suppress_next_detail_focus = False
+            return
+        self._suppress_next_detail_focus = False
+        canvas = self._detail_canvas
+        if canvas is None or not canvas.winfo_ismapped():
+            return
+        self.root.update_idletasks()
+        top = canvas.winfo_rooty()
+        bottom = top + canvas.winfo_height()
+        widget_top = event.widget.winfo_rooty()
+        widget_bottom = widget_top + event.widget.winfo_height()
+        if widget_top < top:
+            offset = widget_top - top
+        elif widget_bottom > bottom:
+            offset = widget_bottom - bottom
+        else:
+            return
+        region = canvas.bbox("all")
+        if region is not None and region[3] > region[1]:
+            canvas.yview_moveto(canvas.yview()[0] + offset / (region[3] - region[1]))
 
     @staticmethod
     def _table(parent: Any, columns: tuple[str, ...], widths: tuple[int, ...]) -> Any:
@@ -341,6 +399,10 @@ class LiveWindow:
         detail_page = getattr(self, "_detail_page", None)
         if pages is not None and detail_page is not None and self.state.selected_job_id:
             pages.select(detail_page)
+            self.root.update_idletasks()
+            self._detail_canvas.configure(scrollregion=self._detail_canvas.bbox("all"))
+            self._detail_canvas.yview_moveto(0.0)
+            self._suppress_next_detail_focus = True
             self.detail_text.focus_set()
 
     def _select_wait(self, _event: Any = None) -> None:
