@@ -197,6 +197,7 @@ class Store:
             "hello",
             "capture_home",
             "derby_smoke",
+            "derby_fixed_workload",
         }
         for job_id, digest, payload in rows:
             try:

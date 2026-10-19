@@ -687,6 +687,8 @@ def create_server(
         DERBY smoke is an explicitly requested fixed row-12 launch, bounded automatic
         demo observation, one render-buffer capture and explicit q exit. It exposes
         no arbitrary keys; missing phase markers never prove a complete demo cycle.
+        DERBY fixed workload is a separate once-only row-12 launch with bounded
+        raw collection and a private host-owned transport receipt.
         Their plans disclose ROM download-mode resets, writes and observation.
         Flash leaves verified new firmware installed; restore requires a separate
         explicit request. No automatic rollback, repeat write or HELLO is added.
@@ -701,6 +703,7 @@ def create_server(
             if request.test in (
                 TestName.CAPTURE,
                 TestName.DERBY,
+                TestName.DERBY_FIXED,
                 TestName.FIRMWARE,
                 TestName.RESTART,
                 TestName.BUILD,
