@@ -466,3 +466,47 @@ async def test_resource_tool_inventory_is_fresh_read_only_and_rechecks_authority
         assert not second["ok"] and "source_cache" not in second
     assert broker._store().record_count("plans") == 0
     assert broker.backend.calls == 0
+
+
+@pytest.mark.parametrize("change", ["principal", "settings", "epoch"])
+async def test_prepare_scan_failure_rechecks_authority_before_returning_counters(
+    resident, monkeypatch, change
+):
+    from cardputer_mcp.source_snapshot import CacheScanLimit
+
+    broker, _ = resident
+    entered, release = threading.Event(), threading.Event()
+    owner = [("owner", "remote_mcp")]
+    original_settings, original_epoch = broker.settings, broker.epoch
+
+    def limited(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=3)
+        raise CacheScanLimit("deadline", 12345, 5001)
+
+    monkeypatch.setattr(SourceSnapshots, "usage", limited)
+    task = asyncio.create_task(
+        broker.profile_jobs.prepare_source(
+            source_request(), "owner", "remote_mcp", reauthorize=lambda: owner[0]
+        )
+    )
+    try:
+        await entered_worker(entered)
+        if change == "principal":
+            owner[0] = ("other", "remote_mcp")
+        elif change == "settings":
+            broker.settings = broker.settings.model_copy(deep=True)
+        else:
+            broker.epoch = "changed"
+        release.set()
+        with pytest.raises(BrokerError) as caught:
+            await task
+        assert not hasattr(caught.value, "scan")
+        assert str(caught.value) in (
+            "principal_not_authorized",
+            "profile_or_principal_no_longer_valid",
+        )
+    finally:
+        release.set()
+        broker.settings, broker.epoch = original_settings, original_epoch
+    assert broker._store().record_count("plans") == 0
