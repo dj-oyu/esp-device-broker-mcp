@@ -1,8 +1,10 @@
 """Bounded redacted RAM fan-out. Readers never consume each other's entries."""
 
 import re
+import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -23,7 +25,10 @@ class BuildLogs:
         max_lines: int = 2048,
         retention: float = 300,
         job_id: str | None = None,
+        on_change: Callable[[], None] | None = None,
     ) -> None:
+        self._lock = threading.RLock()
+        self.on_change = on_change
         self.principal = principal
         self.epoch = uuid4().hex
         self.sequence = 0
@@ -38,11 +43,15 @@ class BuildLogs:
         self._console_progress_at = float("-inf")
 
     def append(self, line: str, stream: str = "stdout") -> None:
+        with self._lock:
+            self._append(line, stream)
+
+    def _append(self, line: str, stream: str) -> None:
         # Bound the original line too; never retain raw output or stream buffers.
         text = line[:4096]
         for secret in self.redactions:
             text = text.replace(secret, "[REDACTED]")
-        text = _SECRETS.sub("[REDACTED]", text)
+        text = _SECRETS.sub("[REDACTED]", text)[:4096]
         level = "unknown"
         for candidate in ("error", "warning", "debug", "info"):
             if re.search(r"\b" + candidate + r"\b", text, re.I):
@@ -76,7 +85,17 @@ class BuildLogs:
             except Exception:
                 pass
 
+        if self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception:
+                pass
+
     def read(self, principal: str, request: Any) -> dict[str, Any]:
+        with self._lock:
+            return self._read(principal, request)
+
+    def _read(self, principal: str, request: Any) -> dict[str, Any]:
         if principal != self.principal:
             raise ValueError("build_log_not_available")
         if time.monotonic() >= self.deadline:

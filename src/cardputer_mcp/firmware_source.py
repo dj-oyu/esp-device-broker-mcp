@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from .build_logs import BuildLogs
@@ -15,6 +16,7 @@ class FirmwareSource:
         self.stop = threading.Event()
         self.active = False
         self.logs: dict[str, BuildLogs] = {}
+        self.on_logs_change: Callable[[], None] | None = None
         self.results: dict[str, dict[str, Any]] = {}
         self.committed: str | None = None
 
@@ -56,7 +58,7 @@ class FirmwareSource:
         while len(self.logs) >= 8:
             del self.logs[next(iter(self.logs))]
         logs = self.logs[plan["job_id"]] = BuildLogs(
-            plan["source_principal"], job_id=plan["job_id"]
+            plan["source_principal"], job_id=plan["job_id"], on_change=self.on_logs_change
         )
         loop = asyncio.get_running_loop()
 
@@ -102,7 +104,7 @@ class FirmwareSource:
             while len(self.logs) >= 8:
                 del self.logs[next(iter(self.logs))]
             logs = self.logs[plan["job_id"]] = BuildLogs(
-                plan["source_principal"], job_id=plan["job_id"]
+                plan["source_principal"], job_id=plan["job_id"], on_change=self.on_logs_change
             )
         message = "error: source fetch failed: " + code
         if not logs.entries or logs.entries[-1]["text"] != message:

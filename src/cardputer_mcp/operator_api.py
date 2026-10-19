@@ -8,7 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .broker import Broker, BrokerError
-from .models import Digest, Identifier, Origin
+from .models import FLASH_TESTS, BuildLogRequest, Digest, Identifier, Origin, TestName
+from .operator_live import LiveRequest, OperatorLive
 from .operator_timeline import OperatorTimeline
 from .plan_approval import PlanApprovals
 
@@ -100,15 +101,70 @@ class OperatorAPI:
         self.diagnostics = diagnostics
         self.plans = PlanApprovals(broker)
         self.timeline = OperatorTimeline(broker, self.plans)
+        self.live = OperatorLive(broker, self._timeline)
 
     def _operator_profile(self, plan: dict[str, Any] | None, principal: OperatorPrincipal) -> bool:
         return self.broker.profile_jobs.operator_cancellable(
             plan, principal.principal_id, principal.origin.value
         )
 
+    def _timeline(self, principal: OperatorPrincipal) -> dict[str, Any]:
+        result = self.timeline.snapshot()
+        for card in result["cards"]:
+            job = self.broker._store().job(card["job_id"])
+            plan = self.broker._store().plan(job["plan_hash"]) if job else None
+            card["cancel_available"] = bool(
+                card["state"] in ("queued", "running") and self._operator_profile(plan, principal)
+            )
+        return result
+
+    def _job_logs(self, request: BuildLogRequest, principal: OperatorPrincipal) -> dict[str, Any]:
+        try:
+            return self._retained_job_logs(request, principal)
+        except BrokerError as error:
+            if str(error) == "not_authorized":
+                raise
+            raise BrokerError("unavailable") from None
+        except Exception:
+            raise BrokerError("unavailable") from None
+
+    def _retained_job_logs(
+        self, request: BuildLogRequest, principal: OperatorPrincipal
+    ) -> dict[str, Any]:
+        if "read" not in principal.scopes:
+            raise BrokerError("not_authorized")
+        store = self.broker._store()
+        job = store.job(request.job_id)
+        plan = store.plan(job["plan_hash"]) if job else None
+        if plan is None:
+            raise BrokerError("unavailable")
+        service: Any
+        if plan.get("test") == TestName.SOURCE.value:
+            owner, service = plan.get("source_principal"), self.broker.firmware_source
+        elif plan.get("test") == TestName.BUILD.value:
+            owner, service = plan.get("build_principal"), self.broker.firmware_build
+        elif plan.get("test") in {test.value for test in FLASH_TESTS}:
+            owner, service = plan.get("flash_principal"), self.broker.firmware_flash
+        else:
+            raise BrokerError("unavailable")
+        if owner != principal.principal_id:
+            raise BrokerError("not_authorized")
+        # RAM only: do not invoke receipt/manifest readers or hash retained artifacts.
+        logs = service.logs.get(request.job_id)
+        if logs is None:
+            raise BrokerError("unavailable")
+        # 16 * 4096 characters, even JSON control escapes, fits the 512 KiB
+        # client transport bound. BuildLogs preserves cursor/has_more on this cap.
+        bounded = request.model_copy(update={"limit": min(request.limit, 16)})
+        try:
+            result = logs.read(principal.principal_id, bounded)
+        except ValueError:
+            raise BrokerError("unavailable") from None
+        return {"status": "expired" if result["expired"] else "available", **result}
+
     @staticmethod
     async def _respond(send: Send, status: int, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         await send(
             {
                 "type": "http.response.start",
@@ -146,6 +202,8 @@ class OperatorAPI:
         routes = {
             "/operator/state": "GET",
             "/operator/timeline": "GET",
+            "/operator/live": "POST",
+            "/operator/job-logs": "POST",
             "/operator/cancel": "POST",
             "/operator/job-cancel": "POST",
             "/operator/reorder": "POST",
@@ -215,14 +273,27 @@ class OperatorAPI:
             if path == "/operator/http-diagnostics" and self.diagnostics is not None:
                 result = self.diagnostics()
             elif path == "/operator/timeline":
-                result = self.timeline.snapshot()
-                for card in result["cards"]:
-                    job = self.broker._store().job(card["job_id"])
-                    plan = self.broker._store().plan(job["plan_hash"]) if job else None
-                    card["cancel_available"] = bool(
-                        card["state"] in ("queued", "running")
-                        and self._operator_profile(plan, principal)
+                result = self._timeline(principal)
+            elif path == "/operator/live":
+                live = LiveRequest.model_validate(payload)
+                if not await self.live.wait(live.cursor, principal, receive):
+                    return
+                principal = self.authenticate(header)
+                if principal is None:
+                    await self._respond(
+                        send, 401, {"ok": False, "error": "authentication_required"}
                     )
+                    return
+                if principal.origin != Origin.LOCAL or "control" not in principal.scopes:
+                    await self._respond(
+                        send, 403, {"ok": False, "error": "local_operator_required"}
+                    )
+                    return
+                result = self.live.response(live.cursor, principal)
+            elif path == "/operator/job-logs":
+                result = self._job_logs(
+                    BuildLogRequest.model_validate(payload, strict=True), principal
+                )
             elif path == "/operator/job-cancel":
                 cancel_job = CancelJob.model_validate(payload)
                 cancelled = self.broker.profile_jobs.operator_cancel(

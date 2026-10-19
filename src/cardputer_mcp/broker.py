@@ -48,6 +48,7 @@ from .models import (
     ResumeWorkSessionRequest,
     TestName,
 )
+from .operator_notifications import OperatorNotifications
 from .source_snapshot import SourceError
 from .store import Store
 
@@ -214,7 +215,8 @@ class Broker:
         self._queue_sequence = 0
         self.maintenance: asyncio.Task[None] | None = None
         self.active_job: str | None = None
-        self.logs = LogBook(settings.log_capacity)
+        self.operator_changes = OperatorNotifications()
+        self.logs = LogBook(settings.log_capacity, on_change=self.operator_changes.notify)
         from .firmware_build import FirmwareBuild
 
         self.firmware_build = FirmwareBuild(settings, settings.state_dir / "history.sqlite3")
@@ -229,6 +231,9 @@ class Broker:
         self.firmware_flash = FirmwareFlash(
             settings, self.backend, self.firmware_build, self._store
         )
+        self.firmware_build.on_logs_change = self.operator_changes.notify_logs
+        self.firmware_source.on_logs_change = self.operator_changes.notify_logs
+        self.firmware_flash.on_logs_change = self.operator_changes.notify_logs
         self.queue: asyncio.Queue[str | None] = asyncio.Queue(settings.max_queue)
         self.worker: asyncio.Task[None] | None = None
         self.store: Store | None = None
@@ -263,7 +268,10 @@ class Broker:
             self._device_lock.release()
             raise BrokerError("broker_already_running") from exc
         try:
-            self.store = Store(self.settings.state_dir / "history.sqlite3")
+            self.store = Store(
+                self.settings.state_dir / "history.sqlite3",
+                on_commit=self.operator_changes.notify,
+            )
             if os.name != "nt":
                 os.chmod(self.settings.state_dir / "history.sqlite3", 0o600)
             self.store.recover()
@@ -285,14 +293,16 @@ class Broker:
         if self.store is None:
             return
         self.closing = True
+        # Release completed private output before any service shutdown can yield.
+        # Denying new reads alone must not leave these bytes retained in RAM.
+        self.captures.clear()
+        self.capture_delivery_consents.clear()
+        self.device_observations.clear()
         await self.home_recovery.close()
         await self.profile_jobs.close()
         self.firmware_build.request_stop()
         self.firmware_flash.request_stop()
         self._clear_local_home_diagnostic()
-        self.captures.clear()
-        self.capture_delivery_consents.clear()
-        self.device_observations.clear()
         self._flash_bindings.clear()
         self._execution_bindings.clear()
         if self.maintenance:
@@ -540,6 +550,7 @@ class Broker:
         if request.id in self.waiters:
             self.waiters.remove(request.id)
             self._queue_sequence += 1
+            self.operator_changes.notify()
 
     def _end_ownership(self, state: str, reason: str) -> None:
         session = self.session
@@ -557,6 +568,7 @@ class Broker:
         self.session = None
         self.capture_delivery_consents.clear()
         self._queue_sequence += 1
+        self.operator_changes.notify()
         self.logs.append(Event.EXPIRED if state == "expired" else Event.RELEASED)
 
     def maintenance_tick(self) -> None:
@@ -643,6 +655,7 @@ class Broker:
         self.waiters.pop(0)
         self.session = lease
         self._queue_sequence += 1
+        self.operator_changes.notify()
         self.logs.append(Event.ACQUIRED)
 
     async def _maintain(self) -> None:
@@ -728,6 +741,7 @@ class Broker:
         lease.request_id = request_id
         self.session = lease
         self._queue_sequence += 1
+        self.operator_changes.notify()
         self.logs.append(Event.ACQUIRED)
         return {
             "session": self.session.capability,
@@ -751,6 +765,7 @@ class Broker:
         if work is not None:
             session.deadline = min(session.deadline, work.deadline)
         self._queue_sequence += 1
+        self.operator_changes.notify()
         return {"renewed": True, "lease_seconds": request.lease_seconds}
 
     def release(self, request: LeaseRequest) -> dict[str, Any]:
@@ -930,6 +945,7 @@ class Broker:
         work.request_id = waiting.id
         self.waiters.append(waiting.id)
         self._queue_sequence += 1
+        self.operator_changes.notify()
         self.maintenance_tick()
         return self._work_result(work, scopes)
 
@@ -1065,6 +1081,7 @@ class Broker:
         self.waiters.remove(request_id)
         self.waiters.insert(position - 1, request_id)
         self._queue_sequence += 1
+        self.operator_changes.notify()
         return {"reordered": True, "request_id": request_id, "position": position}
 
     def operator_release_idle(self, lease_id: str) -> dict[str, Any]:
@@ -1316,12 +1333,14 @@ class Broker:
         for job_id, retained in tuple(self.captures.items()):
             if now >= retained.deadline:
                 del self.captures[job_id]
+                self.operator_changes.notify()
 
     def _prune_device_observations(self) -> None:
         now = self.clock()
         for job_id, retained in tuple(self.device_observations.items()):
             if not math.isfinite(now) or now >= retained.deadline:
                 self.device_observations.pop(job_id, None)
+                self.operator_changes.notify()
 
     def _device_observation(self, job_id: str) -> RetainedDeviceObservation:
         self._store()
@@ -1353,6 +1372,7 @@ class Broker:
         ):
             if self.device_observations.get(job_id) is retained:
                 self.device_observations.pop(job_id, None)
+                self.operator_changes.notify()
             raise BrokerError("device_logs_not_available")
         return retained
 
@@ -1506,6 +1526,7 @@ class Broker:
                 }
             }
         result = {
+            "broker_epoch": self.epoch,
             **provenance,
             **self._image_summary(job_id, retained),
             "metadata": retained.image.metadata(),
@@ -1967,14 +1988,17 @@ class Broker:
                             )
                         ):
                             raise BrokerError("device_log_result_invalid")
-                        # Only the newest report is retained. No text is written to SQLite.
-                        self.device_observations.clear()
-                        self.device_observations[job_id] = RetainedDeviceObservation(
-                            capture_principal,
-                            lease.owner,
-                            result.observation,
-                            self.clock() + 300,
-                        )
+                        # Shutdown may be waiting on another service while this
+                        # worker finishes. Do not republish private output then.
+                        if not self.closing:
+                            # Only the newest report is retained. No text is written to SQLite.
+                            self.device_observations.clear()
+                            self.device_observations[job_id] = RetainedDeviceObservation(
+                                capture_principal,
+                                lease.owner,
+                                result.observation,
+                                self.clock() + 300,
+                            )
                     if isinstance(result, BackendResult) and result.image is not None:
                         if (
                             plan["test"] not in (TestName.CAPTURE.value, TestName.DERBY.value)
@@ -1991,18 +2015,19 @@ class Broker:
                             )
                         ):
                             raise BrokerError("capture_result_invalid")
-                        self._prune_captures()
-                        while len(self.captures) >= 8:
-                            del self.captures[next(iter(self.captures))]
-                        self.captures[job_id] = RetainedCapture(
-                            capture_principal,
-                            result.image,
-                            self.clock() + 300,
-                            self.session.owner if self.session is not None else "",
-                            datetime.now(UTC).isoformat(),
-                            delivery_state="available",
-                            policy_target=capture_target,
-                        )
+                        if not self.closing:
+                            self._prune_captures()
+                            while len(self.captures) >= 8:
+                                del self.captures[next(iter(self.captures))]
+                            self.captures[job_id] = RetainedCapture(
+                                capture_principal,
+                                result.image,
+                                self.clock() + 300,
+                                self.session.owner if self.session is not None else "",
+                                datetime.now(UTC).isoformat(),
+                                delivery_state="available",
+                                policy_target=capture_target,
+                            )
                 except (FlashFailure, FlashAdmissionError) as failure:
                     store.set_job(job_id, "needs_review", str(failure))
                     self.logs.append(Event.REVIEW)
