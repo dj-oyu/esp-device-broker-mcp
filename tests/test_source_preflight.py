@@ -449,9 +449,7 @@ async def test_resource_tool_inventory_is_fresh_read_only_and_rechecks_authority
 
     monkeypatch.setattr(RequestAuth, "authenticate", current)
     async with connect(url, REMOTE) as client, connect(url, LOCAL) as status_client:
-        task = asyncio.create_task(
-            call(client, "read_source_resources", {"project_id": "fixture"})
-        )
+        task = asyncio.create_task(call(client, "read_source_resources", {"project_id": "fixture"}))
         await entered_worker(entered)
         assert (await asyncio.wait_for(call(status_client, "device_status"), 0.5))["ok"]
         release.set()
@@ -460,9 +458,7 @@ async def test_resource_tool_inventory_is_fresh_read_only_and_rechecks_authority
         assert first["cleanup_authorized"] is False
         entered.clear()
         release.clear()
-        task = asyncio.create_task(
-            call(client, "read_source_resources", {"project_id": "fixture"})
-        )
+        task = asyncio.create_task(call(client, "read_source_resources", {"project_id": "fixture"}))
         await entered_worker(entered)
         changed[0] = True
         release.set()

@@ -729,9 +729,7 @@ class SourceSnapshots:
         with self.cache_guard(project_id):
             return self._usage(project_id, stop)
 
-    def inventory(
-        self, project_id: str, *, stop: threading.Event | None = None
-    ) -> dict[str, Any]:
+    def inventory(self, project_id: str, *, stop: threading.Event | None = None) -> dict[str, Any]:
         # One current traversal for both total capacity and individual entries.
         with self.cache_guard(project_id):
             records: list[dict[str, Any]] = []

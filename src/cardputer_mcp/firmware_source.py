@@ -154,10 +154,11 @@ class FirmwareSource:
         try:
             result["source_cache"] = self.snapshots.usage(plan["project_id"])
         except Exception as failure:
-            result["source_cache"] = {
+            unavailable: dict[str, Any] = {
                 "available": False,
                 "code": failure.code if isinstance(failure, SourceError) else "source_fetch_failed",
             }
             if isinstance(failure, SourceError) and "scan" in failure.public():
-                result["source_cache"]["scan"] = failure.public()["scan"]
+                unavailable["scan"] = failure.public()["scan"]
+            result["source_cache"] = unavailable
         return result
