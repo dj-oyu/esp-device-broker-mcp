@@ -112,6 +112,7 @@ def test_cache_inventory_has_cooperative_time_and_stop_budgets(tmp_path, monkeyp
 
 def test_cache_inventory_verifies_ancestors_per_directory_not_per_file(tmp_path, monkeypatch):
     first, _, root = caches(tmp_path)
+    root.mkdir(mode=0o700)
     leaf = root / "synthetic-snapshot" / "nested" / "leaf"
     leaf.mkdir(parents=True)
     for index in range(250):
@@ -131,6 +132,7 @@ def test_cache_inventory_verifies_ancestors_per_directory_not_per_file(tmp_path,
 
 def test_cache_inventory_rejects_nested_link_before_traversing_it(tmp_path):
     first, _, root = caches(tmp_path)
+    root.mkdir(mode=0o700)
     leaf = root / "synthetic-snapshot" / "nested"
     leaf.mkdir(parents=True)
     outside = tmp_path / "outside"
