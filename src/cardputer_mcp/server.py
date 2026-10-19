@@ -57,10 +57,12 @@ from .models import (
     RenewRequest,
     RequestDeviceRequest,
     ResumeWorkSessionRequest,
+    SourceResourcesRequest,
     TestName,
 )
 from .operator_api import OperatorAPI
-from .source_preflight import settings_identity, source_usage
+from .source_preflight import settings_identity, source_inventory, source_usage
+from .source_resources import resource_report
 from .source_snapshot import SourceError
 
 
@@ -443,7 +445,7 @@ def _result(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     except BrokerError as exc:
         return {"ok": False, "error": str(exc)}
     except SourceError as exc:
-        return {"ok": False, "error": exc.code}
+        return {"ok": False, **exc.public()}
     except ValueError:
         return {"ok": False, "error": "invalid_request"}
 
@@ -637,6 +639,52 @@ def create_server(
         return _result(targets)
 
     @server.tool(annotations=read_only)
+    async def read_source_resources(
+        request: SourceResourcesRequest, ctx: Context[Any, Any]
+    ) -> dict[str, Any]:
+        """Read one fresh bounded cache inventory and your retained-source references.
+
+        No deletion, expiry, build, hardware access or cleanup grant. Unknown and
+        referenced snapshots require offline operator review. Scan-limit responses
+        distinguish deadline/entries and contain no incomplete or cached totals.
+        For ordinary source log polling use include_source_cache=false.
+        """
+        try:
+            project_id = request.project_id
+            owner = principal(ctx, "read")
+            store, settings, epoch = resident._store(), resident.settings, resident.epoch
+            captured = settings.model_copy(deep=True)
+            identity = settings_identity(captured)
+            failure: SourceError | None = None
+            inventory: dict[str, Any] = {}
+            try:
+                inventory = await resident.profile_jobs.source_reads.run(
+                    partial(source_inventory, captured, project_id)
+                )
+            except SourceError as exc:
+                failure = exc
+            current = principal(ctx, "read")
+            if (
+                resident.closing
+                or resident.store is not store
+                or resident.epoch != epoch
+                or resident.settings is not settings
+                or settings_identity(resident.settings) != identity
+                or current.principal_id != owner.principal_id
+                or current.origin != owner.origin
+            ):
+                raise BrokerError("source_log_not_available")
+            if failure is not None:
+                raise failure
+            return {"ok": True, **resource_report(store, project_id, owner.principal_id, inventory)}
+        except SourceError as exc:
+            return {"ok": False, **exc.public()}
+        except BrokerError as exc:
+            return {"ok": False, "error": str(exc)}
+        except ValueError:
+            return {"ok": False, "error": "invalid_request"}
+
+    @server.tool(annotations=read_only)
     async def device_status(ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read broker state without opening hardware. Never returns session capabilities."""
         return _result(lambda: read(ctx, resident.status))
@@ -733,7 +781,7 @@ def create_server(
             except BrokerError as exc:
                 return {"ok": False, "error": str(exc)}
             except SourceError as exc:
-                return {"ok": False, "error": exc.code}
+                return {"ok": False, **exc.public()}
             except ValueError:
                 return {"ok": False, "error": "invalid_request"}
         return _result(prepare)
@@ -873,6 +921,8 @@ def create_server(
         """Read bounded shared build output by job and current authenticated principal.
 
         Default warning/error plus progress, with diagnostic context; no path input.
+        Source log polling can set include_source_cache=false to avoid a separate
+        full filesystem inventory. Inventory failure never hides source job output.
         Cursor reads do not consume output. Expiry, restart and eviction report gaps.
         A successful build includes a revalidated durable manifest even after RAM log
         expiry/restart. expired/gap still report lost logs. artifact_status is
@@ -895,14 +945,18 @@ def create_server(
                 captured = settings.model_copy(deep=True)
                 identity = settings_identity(captured)
                 result = source.read_logs(request, owner.principal_id, include_cache=False)
-                try:
-                    usage: dict[str, Any] = await resident.profile_jobs.source_reads.run(
-                        partial(source_usage, captured, plan["project_id"])
-                    )
-                except SourceError as exc:
-                    if "diagnostic" not in result:
-                        raise
-                    usage = {"available": False, "code": exc.code}
+                usage: dict[str, Any] = {"available": False, "reason": "not_requested"}
+                if request.include_source_cache:
+                    try:
+                        usage = await resident.profile_jobs.source_reads.run(
+                            partial(source_usage, captured, plan["project_id"])
+                        )
+                    except SourceError as exc:
+                        # Ancillary inventory failure must not hide durable job
+                        # results. No partial/previous totals become current usage.
+                        usage = {"available": False, "code": exc.code}
+                        if "scan" in exc.public():
+                            usage["scan"] = exc.public()["scan"]
                 current_owner = principal(ctx, "read")
                 if (
                     resident.closing
@@ -986,7 +1040,7 @@ def create_server(
         except BrokerError as exc:
             return {"ok": False, "error": str(exc)}
         except SourceError as exc:
-            return {"ok": False, "error": exc.code}
+            return {"ok": False, **exc.public()}
         except ValueError:
             return {"ok": False, "error": "invalid_request"}
 

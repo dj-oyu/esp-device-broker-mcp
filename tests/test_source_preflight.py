@@ -383,3 +383,90 @@ async def test_source_prepare_cannot_publish_into_a_replaced_store(resident, gat
     finally:
         broker.store = original
         replacement.close()
+
+
+async def test_source_logs_can_skip_inventory_and_survive_scan_deadline(
+    authenticated_mock, tmp_path, monkeypatch
+):
+    from cardputer_mcp.source_snapshot import CacheScanLimit
+
+    url, broker = authenticated_mock
+    broker.settings = registered(broker.settings, tmp_path)
+    plan = {
+        "test": "firmware_fetch_source",
+        "source_principal": "ephemeral:remote_mcp",
+        "project_id": "fixture",
+    }
+    digest = digest_plan(plan)
+    broker._store().put_plan(digest, plan)
+    broker._store().add_job("resource-logs", digest)
+    logs = BuildLogs("ephemeral:remote_mcp")
+    logs.append("error: retained diagnostic")
+    broker.firmware_source.logs["resource-logs"] = logs
+    calls = []
+
+    def limited(*args, **kwargs):
+        calls.append(True)
+        raise CacheScanLimit("deadline", 44000, 5001)
+
+    monkeypatch.setattr(SourceSnapshots, "usage", limited)
+    async with connect(url, REMOTE) as client:
+        skipped = await call(
+            client, "read_build_logs", {"job_id": "resource-logs", "include_source_cache": False}
+        )
+        assert skipped["ok"] and not calls
+        assert skipped["source_cache"]["reason"] == "not_requested"
+        response = await call(client, "read_build_logs", {"job_id": "resource-logs"})
+        assert response["ok"] and len(calls) == 1
+        assert response["source_cache"]["available"] is False
+        assert response["source_cache"]["scan"]["reason"] == "deadline"
+        assert any("retained diagnostic" in item["text"] for item in response["entries"])
+    assert broker.backend.calls == 0
+
+
+async def test_resource_tool_inventory_is_fresh_read_only_and_rechecks_authority(
+    authenticated_mock, tmp_path, monkeypatch
+):
+    url, broker = authenticated_mock
+    broker.settings = registered(broker.settings, tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    original = SourceSnapshots.inventory
+
+    def gated(self, project_id, *, stop=None):
+        entered.set()
+        assert release.wait(timeout=3)
+        return original(self, project_id, stop=stop)
+
+    monkeypatch.setattr(SourceSnapshots, "inventory", gated)
+    changed = [False]
+    authenticate = RequestAuth.authenticate
+
+    def current(self, header):
+        owner = authenticate(self, header)
+        if changed[0] and owner is not None:
+            return replace(owner, principal_id="other")
+        return owner
+
+    monkeypatch.setattr(RequestAuth, "authenticate", current)
+    async with connect(url, REMOTE) as client, connect(url, LOCAL) as status_client:
+        task = asyncio.create_task(
+            call(client, "read_source_resources", {"project_id": "fixture"})
+        )
+        await entered_worker(entered)
+        assert (await asyncio.wait_for(call(status_client, "device_status"), 0.5))["ok"]
+        release.set()
+        first = await task
+        assert first["ok"] and first["source_cache"]["snapshots"] == 0
+        assert first["cleanup_authorized"] is False
+        entered.clear()
+        release.clear()
+        task = asyncio.create_task(
+            call(client, "read_source_resources", {"project_id": "fixture"})
+        )
+        await entered_worker(entered)
+        changed[0] = True
+        release.set()
+        second = await task
+        assert not second["ok"] and "source_cache" not in second
+    assert broker._store().record_count("plans") == 0
+    assert broker.backend.calls == 0

@@ -19,6 +19,7 @@ from .models import (
     RenewRequest,
     RequestDeviceRequest,
     ResumeWorkSessionRequest,
+    SourceResourcesRequest,
 )
 
 REQUEST_MODELS: dict[str, type[BaseModel]] = {
@@ -30,6 +31,7 @@ REQUEST_MODELS: dict[str, type[BaseModel]] = {
     "job_status": JobRequest,
     "read_logs": LogRequest,
     "read_build_logs": BuildLogRequest,
+    "read_source_resources": SourceResourcesRequest,
     "read_device_logs": JobRequest,
     "read_capture": JobRequest,
     "cancel_job": CancelRequest,

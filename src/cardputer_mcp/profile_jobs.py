@@ -489,7 +489,11 @@ class ProfileJobs:
                         code = "registered_project_state_inconsistent"
                     state = "needs_review" if uncertain else "cancelled" if reason else "failed"
                     outcome = code if uncertain else reason or code
-                    store.set_job(job_id, state, outcome, {"code": outcome})
+                    diagnostic: dict[str, Any] = {"code": outcome}
+                    if isinstance(failure, SourceError) and outcome == failure.code:
+                        if "scan" in failure.public():
+                            diagnostic["scan"] = failure.public()["scan"]
+                    store.set_job(job_id, state, outcome, diagnostic)
                     if uncertain:
                         self.state_uncertain = True
                         broker.logs.append(Event.REVIEW)

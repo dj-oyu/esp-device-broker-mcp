@@ -24,13 +24,21 @@ from .flash_backup import BackupStore
 
 
 def _not_link(path: Path) -> None:
-    for candidate in (path, *path.parents):
+    # Keep every no-follow ancestor check, but avoid constructing a full tuple
+    # of Path objects for each visited directory (and for every resolved file).
+    candidate = os.fspath(path)
+    while True:
         try:
-            info = candidate.lstat()
+            info = os.lstat(candidate)
         except FileNotFoundError:
-            continue
-        if _linked(info):
-            raise SourceError("source_linked_path_rejected")
+            pass
+        else:
+            if _linked(info):
+                raise SourceError("source_linked_path_rejected")
+        parent = os.path.dirname(candidate) or "."
+        if parent == candidate:
+            break
+        candidate = parent
 
 
 def _linked(info: os.stat_result) -> bool:
@@ -130,6 +138,27 @@ class SourceError(ValueError):
     @property
     def code(self) -> str:
         return safe_source_code(self.args[0] if len(self.args) == 1 else None)
+
+    def public(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"error": self.code}
+        if isinstance(self, CacheScanLimit):
+            result["scan"] = dict(self.scan)
+        return result
+
+
+class CacheScanLimit(SourceError):
+    """Only bounded counters, never paths or incomplete capacity totals."""
+
+    def __init__(self, reason: str, entries: int, elapsed_ms: int) -> None:
+        super().__init__("source_cache_scan_limit")
+        self.scan = dict(
+            reason="entries" if reason == "entries" else "deadline",
+            entries=entries,
+            elapsed_ms=elapsed_ms,
+            max_entries=CACHE_SCAN_ENTRIES,
+            max_elapsed_ms=int(CACHE_SCAN_SECONDS * 1000),
+            complete=False,
+        )
 
 
 def digest(data: bytes) -> str:
@@ -700,25 +729,46 @@ class SourceSnapshots:
         with self.cache_guard(project_id):
             return self._usage(project_id, stop)
 
-    def _usage(self, project_id: str, stop: threading.Event | None) -> dict[str, int]:
+    def inventory(
+        self, project_id: str, *, stop: threading.Event | None = None
+    ) -> dict[str, Any]:
+        # One current traversal for both total capacity and individual entries.
+        with self.cache_guard(project_id):
+            records: list[dict[str, Any]] = []
+            usage = self._usage(project_id, stop, records)
+            return {"usage": usage, "records": records}
+
+    def _usage(
+        self,
+        project_id: str,
+        stop: threading.Event | None,
+        records: list[dict[str, Any]] | None = None,
+    ) -> dict[str, int]:
         _, registration = self.registration(project_id)
         root = registration.cache_root
-        size = count = 0
+        size = count = pending_count = 0
         entries = 0
-        deadline = time.monotonic() + CACHE_SCAN_SECONDS
+        started = time.monotonic()
+        observed = started
+        deadline = started + CACHE_SCAN_SECONDS
+
+        def exceeded(reason: str) -> CacheScanLimit:
+            return CacheScanLimit(reason, entries, max(0, int((observed - started) * 1000)))
 
         def check_budget() -> None:
+            nonlocal observed
             if stop is not None and stop.is_set():
                 raise SourceError("source_fetch_interrupted")
-            if time.monotonic() >= deadline:
-                raise SourceError("source_cache_scan_limit")
+            observed = time.monotonic()
+            if observed >= deadline:
+                raise exceeded("deadline")
 
         def check() -> None:
             nonlocal entries
             check_budget()
             entries += 1
             if entries > CACHE_SCAN_ENTRIES:
-                raise SourceError("source_cache_scan_limit")
+                raise exceeded("entries")
 
         check()
         if root.exists():
@@ -730,6 +780,8 @@ class SourceSnapshots:
                     if not stat.S_ISDIR(snapshot.stat(follow_symlinks=False).st_mode):
                         raise SourceError("source_cache_unknown_entry")
                     count += 1
+                    pending_count += bool(re.fullmatch(r"pending-[a-f0-9]{32}", snapshot.name))
+                    before_size, before_entries = size, entries
                     pending = [snapshot_path]
                     while pending:
                         # Empty directories still consume traversal time. Check
@@ -753,12 +805,25 @@ class SourceSnapshots:
                                     size += info.st_size
                                 if size > LIMITS["cache_bytes"]:
                                     raise SourceError("source_cache_limit")
+                    if records is not None and len(records) < 256:
+                        records.append(
+                            dict(
+                                name=snapshot.name,
+                                bytes=size - before_size,
+                                entries=entries - before_entries + 1,
+                            )
+                        )
         check_budget()
         return dict(
             snapshots=count,
             bytes=size,
             max_snapshots=LIMITS["cache_snapshots"],
             max_bytes=LIMITS["cache_bytes"],
+            pending_snapshots=pending_count,
+            remaining_snapshots=max(0, LIMITS["cache_snapshots"] - count),
+            remaining_bytes=max(0, LIMITS["cache_bytes"] - size),
+            scan_entries=entries,
+            scan_elapsed_ms=max(0, int((observed - started) * 1000)),
         )
 
     def prepare(self, project_id: str, commit: str, principal: str) -> dict[str, Any]:

@@ -60,7 +60,7 @@ that commit's GitHub tree metadata; SHA-256 receipts additionally protect retain
 bytes. This uses trusted HTTPS GitHub commit metadata, not a GPG signature claim.
 
 Bounds: 64 MiB total downloads, 1 MiB per commit metadata, 256 MiB expanded files, 100,000
-files/200,000 entries, 180 seconds, 10-second network-read timeout, 8 snapshots
+files/200,000 entries, 180 seconds, 10-second network-read timeout, 16 snapshots
 and 2 GiB cache. Traversal, links/reparse paths, encrypted ZIP entries, Windows
 reserved names/ADS/case aliases, collisions, and long Windows paths are rejected.
 Cancellation, principal expiry/revocation and registration changes are checked
@@ -107,3 +107,45 @@ has not been established. No permissions/authentication/re-registration workarou
 Formal fixed Git submodules are supported with a registered repository allowlist.
 See [SOURCE-SUBMODULES.md](SOURCE-SUBMODULES.md) for the Gitlink contract,
 shared bounds, receipt compatibility and remaining firmware dependencies.
+
+
+## Current resource inventory and explicit cleanup review
+
+`read_source_resources` accepts only a registered `project_id` and requires the
+current read principal. It performs one fresh bounded traversal for totals and
+per-snapshot byte/entry counts. Totals expose remaining slots/bytes; timestamps
+come from that principal's durable source jobs, not guessed filesystem creation
+or expiry times. Retained snapshots have no automatic lifetime or deletion.
+Receipts belonging to other principals and unknown filesystem names stay private;
+only their aggregate count is returned. Unknown entries still consume capacity.
+
+The read-only report marks build-plan/artifact evidence, current LKG evidence,
+and recovery history separately. Restoring a retained bundle preserves its
+original source/build association. The bounded DB reference inventory explicitly
+reports truncation; missing/unknown references are never proof of disposability.
+No returned snapshot is cleanup-authorized. Initial full backups, LKG/recovery
+objects, referenced build outputs and source evidence must be retained. An
+operator considering cleanup must stop relevant writers, reconcile all owned and
+unknown references offline, preserve recovery evidence, and obtain a separate
+explicit cleanup request. This tool implements no delete command or automatic GC.
+
+The same unchanged scan limits apply: 5 seconds and 1,000,000 entries, including
+empty directories. `source_cache_scan_limit` now reports whether elapsed time or
+entry count exhausted the scan, with bounded counters and `complete=false`.
+Incomplete/previous totals are not returned as current capacity. Having 13 of 16
+slots occupied does not imply that the filesystem can be scanned within 5 seconds.
+Every file's current no-follow metadata and each directory's ancestors are still
+checked. String-based ancestor traversal avoids rebuilding Path tuples without
+omitting any check; it does not make path checks and directory enumeration atomic
+against a hostile external process swapping paths between syscalls.
+
+`read_build_logs` retains its compatible default capacity request. Frequent log
+pollers should set `include_source_cache=false`; use `read_source_resources` when
+fresh capacity/reference information is needed. A capacity-scan failure is
+reported as unavailable alongside the source job/log result and does not turn a
+successful source job into a failed log request. Prepare/fetch capacity gates
+still require a successful fresh scan. Cached/partial capacity is never substituted.
+
+The new tool/input schema needs the normal connection Refresh and client metadata
+verification after a separately authorized deployment; this development change
+does not refresh or deploy the running connection.
