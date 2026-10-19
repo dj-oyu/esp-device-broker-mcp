@@ -118,7 +118,7 @@ def _parse_trial(
     if not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_BYTES or not raw.endswith(b"\n"):
         raise ValueError("fixed_transport_incomplete")
     # END qualifies measured rows, never errors during teardown or after HOME.
-    if fault_category(raw) is not None:
+    if fault_category(raw, fixed_workload=True) is not None:
         raise ValueError("fixed_device_fault")
     try:
         text = raw.decode("ascii")
@@ -305,7 +305,7 @@ class FixedCollector:
         self.raw.extend(incoming)
         # Latch across chunk boundaries, independently of Reader's fatal check.
         # The existing bounded raw buffer is the only retained wire copy.
-        self.device_fault = self.device_fault or fault_category(fault_window)
+        self.device_fault = self.device_fault or fault_category(fault_window, fixed_workload=True)
         lines = (self.pending + incoming).split(b"\n")
         self.pending = lines[-1]
         if any(len(line) + 1 > MAX_LINE for line in lines[:-1]) or len(self.pending) >= MAX_LINE:

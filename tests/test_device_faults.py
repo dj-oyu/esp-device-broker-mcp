@@ -159,6 +159,10 @@ class DeviceFaultTests(unittest.TestCase):
 
     def test_normal_stop_is_not_an_exception_exemption(self):
         self.assertIsNone(fault_category(b"APP_STOPPED\nHOME_READY\n"))
+        self.assertIsNone(fault_category(b"DERBY GO LOADSTALL"))
+        self.assertEqual(
+            fault_category(b"DERBY GO LOADSTALL", fixed_workload=True), "fixed_workload_stall"
+        )
         self.assertEqual(fault_category(b"InternalError: interrupted"), "vm_exception")
         self.assertEqual(fault_category(b"watchdog timeout"), "watchdog_or_runaway")
         self.assertEqual(fault_category(b"\x1b[31mAPP ERROR\x1b[0m"), "device_fault")

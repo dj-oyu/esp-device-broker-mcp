@@ -214,7 +214,7 @@ class Reader:
         if self.bytes_read > 256 * 1024:
             raise self.failure("serial_capture_limit")
         cleaned = ANSI.sub(b"", self.fault_tail + incoming)
-        category = fault_category(cleaned)
+        category = fault_category(cleaned, fixed_workload=self.fixed_collector is not None)
         if category is not None or (
             self.derby_mode and re.search(rb"DEMOFAIL|FRAMEFAIL|LOADFAIL|DEGRADE|app: OOM", cleaned)
         ):
