@@ -162,6 +162,8 @@ async def finish(e, prepared):
 
 async def test_exact_recovery_records_atomic_resolution_and_cannot_repeat(tmp_path):
     async with running(tmp_path) as e:
+        assert e.b.job(e.source["job_id"])["review"]["uncertainty_resolved"] is False
+        assert e.b.status()["safety"]["historical_review_pending"] is True
         p = request(e)
         assert not e.port.opens and e.b._store().needs_review()
         assert p["state"] == "running" and p["job_id"] == "recover-one"
@@ -181,6 +183,11 @@ async def test_exact_recovery_records_atomic_resolution_and_cannot_repeat(tmp_pa
         source = e.b.job(e.source["job_id"])
         assert source["state"] == "needs_review" and source["result"] == "serial_capture_invalid"
         assert source["reviewed"] == 1 and not e.b._store().needs_review()
+        assert source["review"]["historical_failure"] is True
+        assert source["review"]["uncertainty_resolved"] is True
+        assert source["review"]["failure_result_preserved"] is True
+        assert e.b.status()["safety"]["historical_review_pending"] is False
+        assert e.b.status()["safety"]["authorizes_new_work"] is False
         assert e.b.active_job is None
         with pytest.raises(BrokerError):
             request(e, "again")
