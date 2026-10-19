@@ -1,6 +1,7 @@
 """Explicit firmware reports cross broker/MCP boundaries using fake USB only."""
 
 import asyncio
+import gc
 import hashlib
 import json
 import os
@@ -9,7 +10,7 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from weakref import WeakKeyDictionary
+from weakref import WeakKeyDictionary, ref
 
 import httpx2
 import pytest
@@ -498,6 +499,63 @@ async def test_two_origins_wait_for_confirmed_close_before_handover(tmp_path):
         ]
         assert env.backend.max_active == 1 and env.port.opens == env.port.closes == 2
         assert env.port.writes == []
+
+
+@pytest.mark.parametrize("service_name", ["home_recovery", "profile_jobs"])
+async def test_shutdown_completion_does_not_retain_report_during_service_close(
+    tmp_path, monkeypatch, service_name
+):
+    async with running(tmp_path) as env:
+        env.port.close_release = threading.Event()
+        results = []
+        execute_backend = env.backend.execute
+
+        async def tracked_execute(plan, stage):
+            result = await execute_backend(plan, stage)
+            results.append(ref(result))
+            return result
+
+        monkeypatch.setattr(env.backend, "execute", tracked_execute)
+        plan = prepare(env)
+        validate_prepared(env, plan)
+        env.broker.execute(
+            ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
+        )
+        assert await asyncio.to_thread(env.port.close_started.wait, 5)
+        entered, allowed = asyncio.Event(), asyncio.Event()
+        service = getattr(env.broker, service_name)
+        original_close = service.close
+
+        async def gated_close():
+            entered.set()
+            await allowed.wait()
+            await original_close()
+
+        monkeypatch.setattr(service, "close", gated_close)
+        closing = asyncio.create_task(env.broker.close())
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            assert env.backend.active == 1 and env.port.is_open
+            assert not env.broker.device_observations
+            env.port.close_release.set()
+            await asyncio.wait_for(env.broker.queue.join(), timeout=5)
+            assert env.broker.job("firmware-report")["state"] == "succeeded"
+            assert (
+                env.broker.job("firmware-report")["result"]
+                == "firmware_observation_completed_no_commands"
+            )
+            assert not closing.done() and env.backend.active == 0
+            assert env.broker._device_lock.is_locked and env.broker._state_lock.is_locked
+            assert not env.broker.device_observations and not env.broker.captures
+            gc.collect()
+            assert len(results) == 1 and results[0]() is None
+            unavailable(env)
+            assert env.port.opens == env.port.closes == 1 and env.port.writes == []
+        finally:
+            allowed.set()
+            env.port.close_release.set()
+            await asyncio.wait_for(closing, timeout=5)
+        assert not env.broker._device_lock.is_locked
 
 
 @pytest.mark.parametrize("port_options", [{"close_error": True}, {"still_open": True}])

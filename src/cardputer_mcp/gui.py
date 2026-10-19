@@ -869,6 +869,9 @@ def run(
 ) -> None:
     """Open the native GUI; the caller obtains the token from process environment."""
     api = OperatorClient(url, token)
+    from .gui_theme import prepare_display
+
+    prepare_display()
     try:
         import tkinter as tk
     except ImportError:
@@ -884,5 +887,11 @@ def run(
     panel = TunnelPanel(
         root, operator_base_url(url) + "/mcp", broker_config=broker_config, project=project
     )
-    _Window(root, api, panel)
+    from .gui_live import LiveWindow
+
+    try:
+        LiveWindow(root, api, panel)
+    except Exception:
+        root.destroy()
+        raise
     root.mainloop()

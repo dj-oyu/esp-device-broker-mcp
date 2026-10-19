@@ -306,6 +306,7 @@ class FirmwareBuild:
         self.artifacts = BuildArtifacts(history)
         self.process = BuildProcess()
         self.logs: dict[str, BuildLogs] = {}
+        self.on_logs_change: Callable[[], None] | None = None
         self.manifests: dict[str, tuple[str, dict[str, Any]]] = {}
         self._lock = threading.RLock()
         self._receipt_read_lock = threading.Lock()
@@ -538,7 +539,7 @@ class FirmwareBuild:
         project, provenance = self._project(
             plan["project_id"], principal, plan.get("source_receipt")
         )
-        logs = BuildLogs(principal, job_id=plan["job_id"])
+        logs = BuildLogs(principal, job_id=plan["job_id"], on_change=self.on_logs_change)
         logs.redactions = tuple(
             value
             for key, value in os.environ.items()
