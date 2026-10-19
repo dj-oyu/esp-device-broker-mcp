@@ -110,6 +110,53 @@ def test_cache_inventory_has_cooperative_time_and_stop_budgets(tmp_path, monkeyp
         first.usage("fixture", stop=stopped)
 
 
+def test_cache_inventory_checks_stop_between_pending_empty_directories(tmp_path, monkeypatch):
+    first, _, root = caches(tmp_path)
+    root.mkdir(mode=0o700)
+    snapshot = root / "synthetic-snapshot"
+    snapshot.mkdir()
+    for index in range(5):
+        (snapshot / f"empty-{index}").mkdir()
+    stopped = threading.Event()
+    visited = []
+    original = source_snapshot._not_link
+
+    def stop_after_first_empty(path):
+        original(path)
+        if path.parent == snapshot:
+            visited.append(path)
+            stopped.set()
+
+    monkeypatch.setattr(source_snapshot, "_not_link", stop_after_first_empty)
+    with pytest.raises(SourceError, match="source_fetch_interrupted"):
+        first.usage("fixture", stop=stopped)
+    assert len(visited) == 1
+
+
+def test_cache_inventory_checks_deadline_between_pending_empty_directories(tmp_path, monkeypatch):
+    first, _, root = caches(tmp_path)
+    root.mkdir(mode=0o700)
+    snapshot = root / "synthetic-snapshot"
+    snapshot.mkdir()
+    for index in range(5):
+        (snapshot / f"empty-{index}").mkdir()
+    clock = {"now": 0.0}
+    monkeypatch.setattr(source_snapshot, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+    visited = []
+    original = source_snapshot._not_link
+
+    def expire_after_first_empty(path):
+        original(path)
+        if path.parent == snapshot:
+            visited.append(path)
+            clock["now"] = 6.0
+
+    monkeypatch.setattr(source_snapshot, "_not_link", expire_after_first_empty)
+    with pytest.raises(SourceError, match="source_cache_scan_limit"):
+        first.usage("fixture")
+    assert len(visited) == 1
+
+
 def test_cache_inventory_verifies_ancestors_per_directory_not_per_file(tmp_path, monkeypatch):
     first, _, root = caches(tmp_path)
     root.mkdir(mode=0o700)

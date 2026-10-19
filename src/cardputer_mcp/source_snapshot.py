@@ -707,12 +707,17 @@ class SourceSnapshots:
         entries = 0
         deadline = time.monotonic() + CACHE_SCAN_SECONDS
 
-        def check() -> None:
-            nonlocal entries
+        def check_budget() -> None:
             if stop is not None and stop.is_set():
                 raise SourceError("source_fetch_interrupted")
+            if time.monotonic() >= deadline:
+                raise SourceError("source_cache_scan_limit")
+
+        def check() -> None:
+            nonlocal entries
+            check_budget()
             entries += 1
-            if entries > CACHE_SCAN_ENTRIES or time.monotonic() >= deadline:
+            if entries > CACHE_SCAN_ENTRIES:
                 raise SourceError("source_cache_scan_limit")
 
         check()
@@ -727,6 +732,10 @@ class SourceSnapshots:
                     count += 1
                     pending = [snapshot_path]
                     while pending:
+                        # Empty directories still consume traversal time. Check
+                        # the deadline and cancellation without counting them
+                        # twice against the entry budget.
+                        check_budget()
                         directory = pending.pop()
                         # Recheck every traversed directory and its ancestors;
                         # file entries need only one no-follow stat because the
