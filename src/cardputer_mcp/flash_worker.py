@@ -23,6 +23,50 @@ class Discard(io.TextIOBase):
         return len(text)
 
 
+_BUILTIN_FAILURE_TYPES = frozenset(
+    {
+        "EOFError",
+        "FileNotFoundError",
+        "OSError",
+        "PermissionError",
+        "RuntimeError",
+        "TimeoutError",
+        "TypeError",
+        "ValueError",
+    }
+)
+_SERIAL_FAILURE_TYPES = frozenset({"SerialException", "SerialTimeoutException"})
+_ESPTOOL_FAILURE_TYPES = frozenset({"FatalError", "UnsupportedCommandError"})
+
+
+def _safe_exception_type(failure: Exception) -> str:
+    kind = type(failure)
+    name, module = kind.__name__, kind.__module__
+    if (
+        (module == "builtins" and name in _BUILTIN_FAILURE_TYPES)
+        or (module.startswith("serial.") and name in _SERIAL_FAILURE_TYPES)
+        or (module.startswith("esptool.") and name in _ESPTOOL_FAILURE_TYPES)
+    ):
+        return name
+    return "OtherError"
+
+
+def _failure_result(job: Any, failure: Exception) -> dict[str, Any]:
+    result: dict[str, Any] = {"ok": False, "error": "flash_native_failed_needs_review"}
+    if isinstance(job, dict) and job.get("action") == "read":
+        kind = _safe_exception_type(failure)
+        if kind in {"TimeoutError", "SerialTimeoutException"}:
+            category = "timeout"
+        elif kind in {"OSError", "PermissionError", "FileNotFoundError", "SerialException"}:
+            category = "io"
+        elif kind in {"ValueError", "TypeError"}:
+            category = "validation"
+        else:
+            category = "native_other"
+        result.update(operation="rom_read", exception_type=kind, failure_class=category)
+    return result
+
+
 def _inside(root: Path, name: str) -> Path:
     if re.fullmatch(r"(?:segment-[0-9]+|read)\.bin", name) is None:
         raise ValueError("invalid_internal_flash_file")
@@ -227,6 +271,7 @@ def run_job(
 
 
 def main() -> None:
+    job: Any = None
     try:
         path = Path(sys.argv[1])
         if not path.is_absolute() or path.is_symlink() or path.stat().st_size > 32768:
@@ -250,8 +295,8 @@ def main() -> None:
 
         result = run_job(job, path.parent, esptool, emit_progress)
         print("FLASH_RESULT=" + json.dumps({"ok": True, **result}, sort_keys=True), flush=True)
-    except Exception:
-        print('FLASH_RESULT={"ok":false,"error":"flash_native_failed_needs_review"}', flush=True)
+    except Exception as failure:
+        print("FLASH_RESULT=" + json.dumps(_failure_result(job, failure)), flush=True)
         raise SystemExit(1) from None
 
 

@@ -28,7 +28,7 @@ from .derby_reports import PROVENANCE_KEY
 from .device_observation import DeviceObservation
 from .firmware_build import BuildPreflightFailure
 from .flash_binding import FlashBinding, live_binding, prepare_binding, validate_binding
-from .flash_lifecycle import FlashFailure
+from .flash_lifecycle import FlashFailure, _bounded_read_diagnostic
 from .flash_manifest import FlashAdmissionError
 from .home_line import HomeLineProbe
 from .logs import Event, LogBook
@@ -2029,7 +2029,14 @@ class Broker:
                                 policy_target=capture_target,
                             )
                 except (FlashFailure, FlashAdmissionError) as failure:
-                    store.set_job(job_id, "needs_review", str(failure))
+                    store.set_job(
+                        job_id,
+                        "needs_review",
+                        str(failure),
+                        _bounded_read_diagnostic(failure.code, failure.diagnostic)
+                        if isinstance(failure, FlashFailure)
+                        else None,
+                    )
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except (BuildPreflightFailure, BuildLocationError) as failure:

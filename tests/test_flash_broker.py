@@ -106,9 +106,19 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
         from cardputer_mcp.operator_timeline import OperatorTimeline
 
         code = "flash_native_failed_needs_review"
+        diagnostic = {
+            "code": code,
+            "operation": "rom_read",
+            "read_bytes": 978944,
+            "read_total": 2287648,
+            "elapsed_seconds": 43,
+            "failure_origin": "native_worker",
+            "exception_type": "SerialException",
+            "failure_class": "io",
+        }
 
         def fail_read(offset, size):
-            raise FlashFailure(code)
+            raise FlashFailure(code, diagnostic)
 
         self.driver.read = fail_read
         result = self.broker.prepare(
@@ -125,6 +135,7 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
         job = self.broker.job("native-failed")
         self.assertEqual(job["state"], "needs_review")
         self.assertEqual(job["result"], code)
+        self.assertEqual(job["diagnostic"], diagnostic)
         listing = OperatorTimeline(self.broker, approvals).snapshot()
         row = next(x for x in listing["cards"] if x["job_id"] == "native-failed")
         self.assertEqual(row["result"], code)

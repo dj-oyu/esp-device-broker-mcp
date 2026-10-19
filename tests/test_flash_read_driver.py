@@ -51,6 +51,28 @@ class ReadDriverTests(unittest.TestCase):
             if self.mode == "process_deadline":
                 raise ProcessDeadlineExpired("build_interrupted_needs_review")
             monitor()
+            if self.mode in {"native_failure", "unsafe_worker_failure"}:
+                self.now = 43
+                emit(
+                    "FLASH_PROGRESS=" + json.dumps({"bytes": 978944, "total": payload["size"]}),
+                    "stdout",
+                )
+                emit(
+                    "FLASH_RESULT="
+                    + json.dumps(
+                        {
+                            "ok": False,
+                            "error": "flash_native_failed_needs_review",
+                            "operation": "rom_read",
+                            "exception_type": "SerialException"
+                            if self.mode == "native_failure"
+                            else "COM7-password=private",
+                            "failure_class": "io",
+                        }
+                    ),
+                    "stdout",
+                )
+                return 1
             if self.mode == "stalled":
                 self.now = 60
                 monitor()
@@ -113,6 +135,36 @@ class ReadDriverTests(unittest.TestCase):
         text = "\n".join(self.logs)
         self.assertNotIn("COM1", text)
         self.assertNotIn(str(self.driver.work_root), text)
+
+    def test_native_read_failure_retains_only_bounded_safe_diagnostic(self):
+        self.mode = "native_failure"
+        with self.assertRaisesRegex(FlashFailure, "flash_native_failed_needs_review") as caught:
+            self.driver.read(0, 2287648)
+        self.assertEqual(
+            caught.exception.diagnostic,
+            {
+                "code": "flash_native_failed_needs_review",
+                "operation": "rom_read",
+                "read_bytes": 978944,
+                "read_total": 2287648,
+                "elapsed_seconds": 43,
+                "failure_origin": "native_worker",
+                "exception_type": "SerialException",
+                "failure_class": "io",
+            },
+        )
+        self.assertEqual(list(self.driver.work_root.glob("flash-op-*")), [])
+        self.assertNotIn("COM7", "\n".join(self.logs))
+
+    def test_untrusted_worker_failure_fields_are_not_retained(self):
+        self.mode = "unsafe_worker_failure"
+        with self.assertRaisesRegex(FlashFailure, "flash_native_failed_needs_review") as caught:
+            self.driver.read(0, 2287648)
+        diagnostic = caught.exception.diagnostic
+        self.assertIsNotNone(diagnostic)
+        self.assertEqual(diagnostic["failure_origin"], "driver_or_process")
+        self.assertNotIn("exception_type", diagnostic)
+        self.assertNotIn("COM7", json.dumps(diagnostic) + "\n".join(self.logs))
 
 
 if __name__ == "__main__":
