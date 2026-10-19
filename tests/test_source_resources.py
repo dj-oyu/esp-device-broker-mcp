@@ -163,8 +163,8 @@ class ReferenceTests(unittest.TestCase):
         db.executescript(
             "CREATE TABLE jobs(id,created,finished,state,diagnostic,plan_hash);"
             "CREATE TABLE plans(hash,payload);"
-            "CREATE TABLE firmware_lkg(completed_job,principal,receipt);"
-            "CREATE TABLE firmware_lkg_history(completed_job,principal,receipt);"
+            "CREATE TABLE firmware_lkg(completed_job,principal,receipt,kind);"
+            "CREATE TABLE firmware_lkg_history(completed_job,principal,receipt,kind);"
         )
         self.store = SimpleNamespace(db=db)
 
@@ -188,8 +188,12 @@ class ReferenceTests(unittest.TestCase):
             {"project_id": "fixture", "build_principal": "owner", "source_receipt": receipt},
         )
         self.job("flash", {"flash_principal": "owner", "build_job_id": "build"})
-        self.store.db.execute("INSERT INTO firmware_lkg VALUES('restore','owner','bundle')")
-        self.store.db.execute("INSERT INTO firmware_lkg_history VALUES('flash','owner','bundle')")
+        self.store.db.execute(
+            "INSERT INTO firmware_lkg VALUES('restore','owner','bundle','artifact_bundle')"
+        )
+        self.store.db.execute(
+            "INSERT INTO firmware_lkg_history VALUES('flash','owner','bundle','artifact_bundle')"
+        )
         inventory = {
             "usage": {"snapshots": 2, "bytes": 100},
             "records": [
@@ -209,6 +213,26 @@ class ReferenceTests(unittest.TestCase):
         other = resource_report(self.store, "fixture", "different-owner", inventory)
         self.assertEqual(other["owned_snapshots"], [])
         self.assertNotIn(receipt, json.dumps(other))
+
+    def test_unresolved_lkg_is_incomplete_but_other_project_and_backup_are_not(self):
+        db = self.store.db
+        db.execute("INSERT INTO firmware_lkg VALUES('missing','owner','bundle','artifact_bundle')")
+        inventory = {"usage": {"snapshots": 0}, "records": []}
+        result = resource_report(self.store, "fixture", "owner", inventory)
+        self.assertFalse(result["reference_inventory_complete"])
+        self.assertEqual(result["unresolved_reference_count"], 1)
+        self.assertNotIn("missing", json.dumps(result))
+        self.job("missing", {"flash_principal": "owner", "build_job_id": "other-build"})
+        self.job(
+            "other-build",
+            {"project_id": "other", "build_principal": "owner", "source_receipt": "b" * 64},
+        )
+        result = resource_report(self.store, "fixture", "owner", inventory)
+        self.assertTrue(result["reference_inventory_complete"])
+        self.assertEqual(result["unresolved_reference_count"], 0)
+        db.execute("INSERT INTO firmware_lkg VALUES('backup','owner','original','full_backup')")
+        result = resource_report(self.store, "fixture", "owner", inventory)
+        self.assertTrue(result["reference_inventory_complete"])
 
     def test_truncated_reference_inventory_never_authorizes_cleanup(self):
         self.job("source", {"source_principal": "owner"})

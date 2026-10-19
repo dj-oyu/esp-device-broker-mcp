@@ -24,6 +24,7 @@ def resource_report(
     complete = len(rows) <= REFERENCE_LIMIT
     sources: dict[str, dict[str, Any]] = {}
     builds: dict[str, str] = {}
+    owned_builds: dict[str, tuple[Any, Any]] = {}
     flash_builds: dict[str, str] = {}
     for row in rows[:REFERENCE_LIMIT]:
         try:
@@ -35,6 +36,8 @@ def resource_report(
                 build = plan.get("build_job_id")
                 if isinstance(build, str):
                     flash_builds[row["id"]] = build
+            if plan.get("build_principal") == principal:
+                owned_builds[row["id"]] = (plan.get("project_id"), plan.get("source_receipt"))
             if plan.get("project_id") != project_id:
                 continue
             if plan.get("source_principal") == principal:
@@ -62,25 +65,38 @@ def resource_report(
     # History preserves the original bundle's build association even when a
     # later restore becomes the current completed job for that same receipt.
     history = store.db.execute(
-        "SELECT receipt,completed_job FROM firmware_lkg_history WHERE principal=? LIMIT ?",
+        "SELECT receipt,completed_job,kind FROM firmware_lkg_history WHERE principal=? LIMIT ?",
         (principal, REFERENCE_LIMIT + 1),
     ).fetchall()
     complete = complete and len(history) <= REFERENCE_LIMIT
     original_jobs = {row[0]: row[1] for row in history[:REFERENCE_LIMIT]}
     current = store.db.execute(
-        "SELECT receipt,completed_job FROM firmware_lkg WHERE principal=? LIMIT ?",
+        "SELECT receipt,completed_job,kind FROM firmware_lkg WHERE principal=? LIMIT ?",
         (principal, REFERENCE_LIMIT + 1),
     ).fetchall()
     complete = complete and len(current) <= REFERENCE_LIMIT
+    unresolved = 0
     for targets, reason in (
         (current, "current_lkg_evidence"),
         (history, "recovery_history_evidence"),
     ):
         for target in targets[:REFERENCE_LIMIT]:
+            if target[2] == "full_backup":
+                continue  # A full backup has no build/source association.
             completed = original_jobs.get(target[0], target[1])
-            receipt = builds.get(flash_builds.get(completed, ""))
-            if receipt is not None:
-                reasons.setdefault(receipt, set()).add(reason)
+            build = owned_builds.get(flash_builds.get(completed, ""))
+            if target[2] != "artifact_bundle" or build is None:
+                complete = False
+                unresolved += 1
+                continue
+            if build[0] != project_id or build[1] is None:
+                continue  # Known other project, or a worktree build without a source receipt.
+            receipt = build[1]
+            if not isinstance(receipt, str) or receipt not in sources:
+                complete = False
+                unresolved += 1
+                continue
+            reasons.setdefault(receipt, set()).add(reason)
 
     records = inventory["records"]
     visible = []
@@ -106,6 +122,7 @@ def resource_report(
         owned_snapshots=visible,
         other_or_unclassified_snapshots=usage["snapshots"] - len(visible),
         reference_inventory_complete=complete and len(records) == usage["snapshots"],
+        unresolved_reference_count=unresolved,
         scan_complete=True,
         retention_policy="no_automatic_deletion",
         cleanup_action="offline_operator_review_required_preserve_unknown_and_referenced_entries",
