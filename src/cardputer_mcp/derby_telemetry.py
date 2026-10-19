@@ -1,4 +1,4 @@
-"""Bounded numeric DERBY diagnostics for firmware 9db14c8825b389fba98b541b4b7b712574f9346e.
+"""Bounded numeric DERBY diagnostics for source-pinned telemetry and phase records.
 
 One complete bare line enters at a time. No raw console content is retained.
 Sampling and USB output perturb this diagnostic firmware's measured throughput.
@@ -14,6 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SOURCE_COMMIT: Literal["9db14c8825b389fba98b541b4b7b712574f9346e"] = (
     "9db14c8825b389fba98b541b4b7b712574f9346e"
+)
+MEASURE_SOURCE_COMMIT: Literal["650c5e2b387b9b0b2e46559626c85a4e24a3e55d"] = (
+    "650c5e2b387b9b0b2e46559626c85a4e24a3e55d"
 )
 MAX_SAMPLES = 180
 MAX_EVENTS = 64
@@ -66,6 +69,69 @@ class DerbyTelemetrySample(_Frozen):
     intervals: tuple[DerbyInterval, ...] = Field(min_length=10, max_length=10)
 
 
+DerbyMeasureStage = tuple[U64, U64, U64, U64, U64]
+MEASURE_STAGES: tuple[
+    Literal["guest"],
+    Literal["bridge"],
+    Literal["native"],
+    Literal["proc_build"],
+    Literal["vm"],
+    Literal["points"],
+    Literal["raster"],
+    Literal["transfer"],
+    Literal["output"],
+    Literal["observer"],
+] = (
+    "guest",
+    "bridge",
+    "native",
+    "proc_build",
+    "vm",
+    "points",
+    "raster",
+    "transfer",
+    "output",
+    "observer",
+)
+
+
+class DerbyMeasureSample(_Frozen):
+    """One complete, instrumented cumulative snapshot; stage order is MEASURE_STAGES."""
+
+    at_ms: HostTime
+    v: Literal[1]
+    seq: int = Field(ge=1, le=300)
+    us: U64
+    heap_sample_max: U64
+    cap: U64
+    scalar: U64
+    pie: U64
+    ctx: U64
+    cont: U64
+    done: U64
+    dispatch_fail: U64
+    bytes: U64
+    tx_ok: U64
+    tx_fail: U64
+    capture: U64
+    refused: U64
+    faults: U64
+    clock_min: U64
+    clock_max: U64
+    pairs: U64
+    stages: tuple[DerbyMeasureStage, ...] = Field(min_length=10, max_length=10)
+
+
+class DerbyMeasureOverflow(_Frozen):
+    """The source-defined invalid snapshot marker has no phase counters."""
+
+    at_ms: HostTime
+    v: Literal[1]
+    seq: int = Field(ge=1, le=300)
+    us: U64
+    overflow: Literal[1]
+
+
 class DerbyDiagnosticEvent(_Frozen):
     at_ms: HostTime
     kind: Literal[
@@ -95,6 +161,10 @@ class DerbyQuality(_Frozen):
     invalid_clock: bool
     partial_line_or_fault_possible: bool
     final_write_outcome_unknown: Literal[True] = True
+    measurement_missing: bool = True
+    measurement_parse_errors: U32 = 0
+    measurement_overflow_observed: bool = False
+    measurement_samples_truncated: bool = False
 
 
 class DerbyCameraSummary(_Frozen):
@@ -125,6 +195,28 @@ class DerbyDiagnostics(_Frozen):
     finished_at_ms: HostTime
     samples: tuple[DerbyTelemetrySample, ...] = Field(max_length=MAX_SAMPLES)
     events: tuple[DerbyDiagnosticEvent, ...] = Field(max_length=MAX_EVENTS)
+    measurement_wire_contract_commit: Literal["650c5e2b387b9b0b2e46559626c85a4e24a3e55d"] | None = (
+        None
+    )
+    measurement_stage_order: (
+        tuple[
+            Literal["guest"],
+            Literal["bridge"],
+            Literal["native"],
+            Literal["proc_build"],
+            Literal["vm"],
+            Literal["points"],
+            Literal["raster"],
+            Literal["transfer"],
+            Literal["output"],
+            Literal["observer"],
+        ]
+        | None
+    ) = None
+    measurement_scope: Literal["instrumented_cumulative_phase_accounting_only"] | None = None
+    measurements: tuple[DerbyMeasureSample | DerbyMeasureOverflow, ...] = Field(
+        default=(), max_length=MAX_SAMPLES
+    )
     quality: DerbyQuality
     cameras: tuple[DerbyCameraSummary, ...] = Field(max_length=30)
     sampled_heap_lower_bound_bytes: U32 | None = None
@@ -144,6 +236,11 @@ _FIELDS = (
     "v run us begin frame ctx seed race phase cam tier step u gu_sample_max cap "
     "eval_used eval_cap refused seq limit io_us_max intervals"
 ).split()
+_MEASURE_FIELDS = (
+    "v seq us heap_sample_max cap scalar pie ctx cont done dispatch_fail bytes tx_ok "
+    "tx_fail capture refused faults clock_min clock_max pairs"
+).split() + [f"s{i}" for i in range(10)]
+_MEASURE_OVERFLOW_FIELDS = ("v", "seq", "us", "overflow")
 _UNSIGNED = re.compile(rb"(?:0|[1-9][0-9]{0,19})\Z")
 _SEED = re.compile(rb"[0-9A-F]{8}\Z")
 # main/ui/jsconsole.c at wire_contract_commit emits console.log via ESP_LOGI
@@ -225,6 +322,36 @@ def parse_telemetry_line(
         return sample
     except (ValueError, TypeError, OverflowError):
         raise ValueError("invalid_derby_telemetry") from None
+
+
+def parse_measure_line(line: bytes, *, at_ms: int = 0) -> DerbyMeasureSample | DerbyMeasureOverflow:
+    """Parse only the exact bare, LF-stripped, 1024-byte firmware record."""
+    try:
+        if len(line) + 1 >= 1024 or not line.startswith(b"DERBY_MEASURE "):
+            raise ValueError
+        parts = line[len(b"DERBY_MEASURE ") :].split(b" ")
+        fields = _MEASURE_OVERFLOW_FIELDS if len(parts) == 4 else _MEASURE_FIELDS
+        if len(parts) != len(fields):
+            raise ValueError
+        values: dict[str, Any] = {"at_ms": at_ms}
+        stages = []
+        for name, part in zip(fields, parts, strict=True):
+            key, separator, value = part.partition(b"=")
+            if separator != b"=" or key != name.encode("ascii"):
+                raise ValueError
+            if name.startswith("s") and name[1:].isdigit():
+                counters = value.split(b":")
+                if len(counters) != 5:
+                    raise ValueError
+                stages.append(tuple(_number(counter) for counter in counters))
+            else:
+                values[name] = _number(value)
+        if fields is _MEASURE_OVERFLOW_FIELDS:
+            return DerbyMeasureOverflow.model_validate(values)
+        values["stages"] = tuple(stages)
+        return DerbyMeasureSample.model_validate(values)
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError("invalid_derby_measure") from None
 
 
 def _event_body(line: bytes) -> bytes | None:
@@ -390,6 +517,7 @@ class DerbyDiagnosticsCollector:
         """Drop parsed references; never retain or expose raw received content."""
         self._samples: list[DerbyTelemetrySample] = []
         self._events: list[DerbyDiagnosticEvent] = []
+        self._measurements: list[DerbyMeasureSample | DerbyMeasureOverflow] = []
         self._counts = dict.fromkeys(
             (
                 "parse_errors",
@@ -400,12 +528,14 @@ class DerbyDiagnosticsCollector:
                 "context_gaps",
                 "counter_regressions",
                 "run_changes",
+                "measurement_parse_errors",
             ),
             0,
         )
         self._epoch = 0
         self._last_ms = 0
         self._refused = self._limit = self._sample_full = self._event_full = False
+        self._measure_full = self._measure_overflow = False
         self._byte_full = self._partial = False
 
     def _increment(self, name: str, amount: int = 1) -> None:
@@ -494,6 +624,22 @@ class DerbyDiagnosticsCollector:
             if not self._fits_report():
                 self._samples.pop()
                 self._byte_full = True
+        elif line.startswith(b"DERBY_MEASURE"):
+            if self._measure_full:
+                return
+            if len(self._measurements) >= MAX_SAMPLES:
+                self._measure_full = True
+                return
+            try:
+                sample_measure = parse_measure_line(line, at_ms=at_ms)
+            except ValueError:
+                self._increment("measurement_parse_errors")
+                return
+            self._measure_overflow |= isinstance(sample_measure, DerbyMeasureOverflow)
+            self._measurements.append(sample_measure)
+            if not self._fits_report():
+                self._measurements.pop()
+                self._byte_full = True
         else:
             event = _event(line, at_ms)
             if event is None:
@@ -528,6 +674,12 @@ class DerbyDiagnosticsCollector:
             finished_at_ms=self._at_ms(),
             samples=tuple(self._samples),
             events=tuple(self._events),
+            measurement_wire_contract_commit=MEASURE_SOURCE_COMMIT if self._measurements else None,
+            measurement_stage_order=MEASURE_STAGES if self._measurements else None,
+            measurement_scope="instrumented_cumulative_phase_accounting_only"
+            if self._measurements
+            else None,
+            measurements=tuple(self._measurements),
             quality=DerbyQuality.model_validate(
                 dict(
                     missing=not self._samples,
@@ -536,8 +688,18 @@ class DerbyDiagnosticsCollector:
                     limit_reached_observed=self._limit,
                     samples_truncated=self._sample_full,
                     events_truncated=self._event_full,
+                    measurement_missing=not any(
+                        isinstance(item, DerbyMeasureSample) for item in self._measurements
+                    ),
+                    measurement_overflow_observed=self._measure_overflow,
+                    measurement_samples_truncated=self._measure_full,
                     report_byte_limit=self._byte_full,
-                    truncated=self._sample_full or self._event_full or self._byte_full,
+                    truncated=(
+                        self._sample_full
+                        or self._event_full
+                        or self._measure_full
+                        or self._byte_full
+                    ),
                     invalid_clock=self._invalid_clock,
                     partial_line_or_fault_possible=self._partial,
                 )

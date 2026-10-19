@@ -11,11 +11,15 @@ from cardputer_mcp.derby_telemetry import (
     MAX_EVENTS,
     MAX_REPORT_BYTES,
     MAX_SAMPLES,
+    MEASURE_SOURCE_COMMIT,
     SOURCE_COMMIT,
     U32_MAX,
     U64_MAX,
     DerbyDiagnostics,
     DerbyDiagnosticsCollector,
+    DerbyMeasureOverflow,
+    DerbyMeasureSample,
+    parse_measure_line,
     parse_telemetry_line,
 )
 
@@ -62,8 +66,142 @@ def later(**changes):
     )
 
 
+def measure_wire(**changes):
+    values = dict(
+        v=1,
+        seq=1,
+        us=1000000,
+        heap_sample_max=130000,
+        cap=163840,
+        scalar=4,
+        pie=3,
+        ctx=30,
+        cont=2,
+        done=29,
+        dispatch_fail=0,
+        bytes=8192,
+        tx_ok=2,
+        tx_fail=0,
+        capture=1,
+        refused=0,
+        faults=0,
+        clock_min=1,
+        clock_max=2,
+        pairs=20,
+    )
+    values.update({f"s{i}": "10:8:2:6:5" for i in range(10)})
+    values.update(changes)
+    return ("DERBY_MEASURE " + " ".join(f"{key}={value}" for key, value in values.items())).encode()
+
+
 def collector():
     return DerbyDiagnosticsCollector(clock=lambda: 10.0, origin=10.0)
+
+
+def test_measure_exact_wire_and_backward_compatible_report():
+    row = parse_measure_line(measure_wire(s9=f"{U64_MAX}:8:2:6:5"), at_ms=123)
+    assert isinstance(row, DerbyMeasureSample)
+    assert row.stages[9][0] == U64_MAX and row.at_ms == 123
+    c = collector()
+    c.feed(measure_wire())
+    c.feed(b"DERBY_MEASURE v=1 seq=2 us=2000000 overflow=1")
+    report = c.snapshot()
+    assert report.measurement_wire_contract_commit == MEASURE_SOURCE_COMMIT
+    assert report.measurement_stage_order == (
+        "guest",
+        "bridge",
+        "native",
+        "proc_build",
+        "vm",
+        "points",
+        "raster",
+        "transfer",
+        "output",
+        "observer",
+    )
+    assert report.measurement_scope == "instrumented_cumulative_phase_accounting_only"
+    assert len(report.measurements) == 2
+    assert isinstance(report.measurements[1], DerbyMeasureOverflow)
+    assert report.quality.measurement_overflow_observed
+    assert not report.quality.measurement_missing
+    assert DerbyDiagnostics.model_validate_json(report.model_dump_json()) == report
+    old = report.model_dump()
+    for name in (
+        "measurement_wire_contract_commit",
+        "measurement_stage_order",
+        "measurement_scope",
+        "measurements",
+    ):
+        old.pop(name)
+    for name in (
+        "measurement_missing",
+        "measurement_parse_errors",
+        "measurement_overflow_observed",
+        "measurement_samples_truncated",
+    ):
+        old["quality"].pop(name)
+    assert DerbyDiagnostics.model_validate(old).measurements == ()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        b"I (10) js: " + measure_wire(),
+        b" " + measure_wire(),
+        measure_wire() + b"\r",
+        measure_wire() + b"\n",
+        measure_wire() + b" private=SECRET",
+        measure_wire().replace(b"v=1 ", b"v=2 "),
+        measure_wire().replace(b"seq=1 ", b"seq=01 "),
+        measure_wire().replace(b"seq=1 ", b"seq=0 "),
+        measure_wire().replace(b"seq=1 ", b"seq=301 "),
+        measure_wire().replace(b"us=1000000 ", b"us=-1 "),
+        measure_wire().replace(b"us=1000000 ", b"us=18446744073709551616 "),
+        measure_wire().replace(b"scalar=4 pie=3 ", b"pie=3 scalar=4 "),
+        measure_wire().replace(b"s0=10:8:2:6:5", b"s0=10:8:2:6"),
+        measure_wire().replace(b"s0=10:8:2:6:5", b"s0=10:8:02:6:5"),
+        measure_wire().replace(b"s0=10:8:2:6:5", b"s0=10:8:2:6:5:0"),
+        measure_wire().replace(b"s9=10:8:2:6:5", b"s8=10:8:2:6:5"),
+        b"DERBY_MEASURE v=1 seq=1 us=1000000 overflow=0",
+        b"DERBY_MEASURE v=1 seq=1 us=1000000 overflow=1 secret=SECRET",
+        b"DERBY_MEASURE v=1 seq=1 us=1000000 overflow=1\r",
+        b"DERBY_MEASURE " + b"9" * 1024,
+    ],
+)
+def test_measure_invalid_line_has_fixed_error_and_no_raw_retention(line):
+    with pytest.raises(ValueError, match="^invalid_derby_measure$"):
+        parse_measure_line(line)
+    c = collector()
+    c.feed(line)
+    result = c.snapshot()
+    assert result.measurements == ()
+    assert result.quality.measurement_parse_errors == int(line.startswith(b"DERBY_MEASURE"))
+    assert "SECRET" not in result.model_dump_json()
+
+
+def test_measure_overflow_only_has_no_phase_data_and_collection_is_bounded(monkeypatch):
+    c = collector()
+    c.feed(b"DERBY_MEASURE v=1 seq=1 us=1000000 overflow=1")
+    report = c.snapshot()
+    assert report.quality.measurement_missing and report.quality.measurement_overflow_observed
+    assert isinstance(report.measurements[0], DerbyMeasureOverflow)
+    monkeypatch.setattr(telemetry, "MAX_REPORT_BYTES", len(report.model_dump_json()) + 100)
+    c.feed(measure_wire(seq=2))
+    report = c.snapshot()
+    assert len(report.measurements) == 1
+    assert report.quality.report_byte_limit and report.quality.truncated
+    assert len(report.model_dump_json().encode()) <= telemetry.MAX_REPORT_BYTES
+
+
+def test_measure_count_cap_stops_at_180_and_keeps_byte_cap():
+    c = collector()
+    for seq in range(1, MAX_SAMPLES + 2):
+        c.feed(measure_wire(seq=seq))
+    report = c.snapshot()
+    assert len(report.measurements) == MAX_SAMPLES
+    assert report.quality.measurement_samples_truncated and report.quality.truncated
+    assert not report.quality.report_byte_limit
+    assert len(report.model_dump_json().encode()) <= MAX_REPORT_BYTES
 
 
 def test_exact_wire_model_and_immutable_json_roundtrip():
