@@ -52,7 +52,15 @@ class DeviceFaultTests(unittest.TestCase):
                 "duration_ms": 1000,
                 "sha256": hashlib.sha256(raw).hexdigest(),
                 **dict.fromkeys(
-                    ("gaps", "overflow", "truncated", "partial_tail", "disconnect", "reset", "refused"),
+                    (
+                        "gaps",
+                        "overflow",
+                        "truncated",
+                        "partial_tail",
+                        "disconnect",
+                        "reset",
+                        "refused",
+                    ),
                     False,
                 ),
             }
@@ -68,7 +76,7 @@ class DeviceFaultTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO execution_requests VALUES(?,?,?)", ("legacy", digest, "owner")
                 )
-                store = SimpleNamespace(db=db, fixed_trial=lambda *_: record)
+                store = SimpleNamespace(db=db, fixed_trial=lambda *_, value=record: value)
                 result = private_job(store, job, plan, "owner")
                 self.assertEqual(result["state"], "succeeded")
                 self.assertTrue(result["fixed_trial"]["historical_valid"])
