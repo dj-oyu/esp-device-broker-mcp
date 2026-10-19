@@ -7,7 +7,6 @@ import faulthandler
 import json
 import math
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -53,7 +52,10 @@ class ConsoleProgress:
 
         def finish_line() -> None:
             suffix = b" [console line truncated; full text in artifact]" if truncated else b""
-            self._write(bytes(line) + suffix + b"\n")
+            # A byte budget may end inside a UTF-8 character. Keep only the
+            # complete prefix; the artifact retains the original bytes.
+            prefix = bytes(line).decode("utf-8", errors="ignore").encode("utf-8")
+            self._write(prefix + suffix + b"\n")
 
         try:
             with (self.folder / "pytest.log").open("rb") as progress:
@@ -78,7 +80,7 @@ class ConsoleProgress:
             stacks = self.folder / "stacks.log"
             if stacks.exists():
                 with stacks.open("rb") as stream:
-                    data = stream.read(16384)
+                    data = stream.read(16384).decode("utf-8", errors="ignore").encode("utf-8")
                 if data:
                     self._write(b"\n[full-suite] lifecycle timeout stacks:\n" + data)
             with (self.folder / "result.json").open("rb") as stream:
@@ -199,7 +201,7 @@ def supervise(args: argparse.Namespace) -> int:
         with log_path.open("wb", buffering=0) as output:
             console = ConsoleProgress(args.output)
             console.start()
-            process = subprocess.Popen(
+            process = tree.start(
                 [
                     sys.executable,
                     "-u",
@@ -214,12 +216,8 @@ def supervise(args: argparse.Namespace) -> int:
                     "--",
                     *args.pytest_args,
                 ],
-                stdin=subprocess.PIPE,
                 stdout=output,
-                stderr=subprocess.STDOUT,
-                start_new_session=os.name != "nt",
             )
-            tree.attach(process)
             assert process.stdin is not None
             process.stdin.write(b"1")
             process.stdin.close()

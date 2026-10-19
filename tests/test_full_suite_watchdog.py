@@ -41,6 +41,7 @@ def run_suite(tmp_path, source, *, phase=5, test=2, deadline=12, conftest=""):
             **os.environ,
             "PYTHONPATH": str(ROOT / "src"),
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "PYTHONUTF8": "1",
         },
         capture_output=True,
         text=True,
@@ -190,14 +191,64 @@ def test_blocked_console_cannot_stop_result_cleanup_or_parent_exit(tmp_path, out
         assert result["reason"] == ("outer_deadline" if outcome == "deadline" else "pytest_exit")
 
 
-def test_oversized_node_id_remains_in_artifact_and_is_bounded_in_console(tmp_path):
+def test_long_node_id_remains_in_artifact_and_is_bounded_in_console(tmp_path):
     source = (
         "import pytest\n"
-        "@pytest.mark.parametrize('value', ['x' * 524289])\n"
+        # pytest exports the node ID via PYTEST_CURRENT_TEST. Keep this case
+        # below Windows' 32767-character environment-variable value limit.
+        "@pytest.mark.parametrize('value', ['x' * 4097])\n"
         "def test_large_identifier(value): pass\n"
     )
     completed, result, log, _ = run_suite(tmp_path, source)
-    assert completed.returncode == result["exit_code"] == 0
-    assert len(log) > 524289 and max(map(len, completed.stdout.splitlines())) < 2200
+    assert completed.returncode == result["exit_code"] == 0, (result, log[-4096:])
+    assert len(log) > 4097 and max(map(len, completed.stdout.splitlines())) < 2200
     assert "console line truncated; full text in artifact" in completed.stdout
     assert "1 passed" in completed.stdout
+
+
+def test_oversized_progress_line_retains_original_artifact_bytes(tmp_path):
+    source = "def test_short_identifier(): pass\n"
+    conftest = (
+        "import sys\n"
+        "def pytest_sessionstart(session):\n"
+        "    sys.stdout.write('synthetic progress ' + 'x' * 524289 + '\\n')\n"
+    )
+    completed, result, log, _ = run_suite(tmp_path, source, conftest=conftest)
+    assert completed.returncode == result["exit_code"] == 0, (result, log[-4096:])
+    assert len(log) > 524289 and max(map(len, completed.stdout.splitlines())) < 2200
+    assert "x" * 524289 in log
+    assert "console line truncated; full text in artifact" in completed.stdout
+    assert "1 passed" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    "character", ["é", "あ", "🧪"], ids=["two-byte", "three-byte", "four-byte"]
+)
+def test_console_truncation_keeps_complete_utf8_characters(tmp_path, character):
+    visible = "日本語 "
+    prefix = visible + "a" * (2047 - len(visible.encode("utf-8")))
+    conftest = (
+        "import sys\n"
+        "def pytest_sessionstart(session):\n"
+        f"    sys.stdout.write({prefix!r} + {character!r} * 70000 + '\\n')\n"
+    )
+    completed, result, log, _ = run_suite(
+        tmp_path, "def test_unicode_progress(): pass\n", conftest=conftest
+    )
+    assert completed.returncode == result["exit_code"] == 0, (result, log[-4096:])
+    assert prefix + character * 70000 in log
+    assert visible in completed.stdout and "\ufffd" not in completed.stdout
+    assert max(len(line.encode("utf-8")) for line in completed.stdout.splitlines()) < 2200
+    assert "console line truncated; full text in artifact" in completed.stdout
+
+
+def test_utf8_progress_remains_valid_across_file_read_boundaries(tmp_path):
+    conftest = (
+        "import sys\ndef pytest_sessionstart(session):\n    sys.stdout.write('日本語\\n' * 7000)\n"
+    )
+    completed, result, log, _ = run_suite(
+        tmp_path, "def test_unicode_chunks(): pass\n", conftest=conftest
+    )
+    assert completed.returncode == result["exit_code"] == 0
+    assert log.count("日本語") == completed.stdout.count("日本語") == 7000
+    assert "\ufffd" not in completed.stdout
