@@ -191,6 +191,82 @@ def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(m
                 pass
 
 
+def test_native_preview_and_controls_reachable_at_168_dpi_minimum(monkeypatch):
+    import tkinter as tk
+
+    from test_gui_images import detail, row
+    from test_gui_timeline import card as image_card
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Native Tk requires a desktop display")
+    original_scaling = root.tk.call("tk", "scaling")
+    root.tk.call("tk", "scaling", 168 / 72)
+    monkeypatch.setattr(gui_live, "LiveRunner", Runner)
+    window = None
+    try:
+        window = gui_live.LiveWindow(root, OperatorClient("http://127.0.0.1:8765", "synthetic"))
+        root.geometry("860x600")
+        job_id = "capture_" + "long_context_" * 4
+        data = detail(remaining_seconds=5, job_id=job_id)
+        generation = window.state.generation
+        window.runner.events.append(
+            TransportEvent(
+                "message",
+                generation,
+                snapshot([image_card(job_id=job_id, image=row(data))]),
+                time.monotonic(),
+            )
+        )
+        window._drain()
+        window.job_tree.selection_set(job_id)
+        window._select()
+        assert window.open_selected_button is not None
+        window.open_selected_button.invoke()
+        window.preview_button.invoke()
+        window.runner.events.append(
+            TransportEvent(
+                "image",
+                generation,
+                {
+                    "job_id": job_id,
+                    "request_id": 1,
+                    "response": {**data, "broker_epoch": "e" * 32},
+                },
+                time.monotonic(),
+            )
+        )
+        window._drain()
+        root.update()
+        assert (root.winfo_width(), root.winfo_height()) == (860, 600)
+        assert window._job_pages is not None and window._detail_canvas is not None
+        assert window.job_cancel.winfo_width() >= window.job_cancel.winfo_reqwidth()
+        assert window.job_cancel.winfo_rootx() + window.job_cancel.winfo_width() <= (
+            root.winfo_rootx() + 860
+        )
+        assert window.preview_photo is not None
+        assert window._detail_canvas.yview()[1] == 1.0
+        for widget in (window.preview_area, window.preview_status_label):
+            assert widget.winfo_rooty() >= root.winfo_rooty()
+            assert widget.winfo_rooty() + widget.winfo_height() <= root.winfo_rooty() + 600
+        window._job_pages.select(0)
+        root.update()
+        assert window.job_tree.winfo_width() > 1
+        assert window.job_tree.winfo_rootx() + window.job_tree.winfo_width() <= (
+            root.winfo_rootx() + 860
+        )
+    finally:
+        root.tk.call("tk", "scaling", original_scaling)
+        if window is not None and window.state.connection != "closed":
+            window._finish_close()
+        else:
+            try:
+                root.destroy()
+            except tk.TclError:
+                pass
+
+
 def test_native_job_heading_ascii_controls_and_nonlog_empty_loading_states(monkeypatch):
     import tkinter as tk
 

@@ -121,27 +121,31 @@ def native_cleanup_probe(tree, process):
                         result["image_roles"].append((int(pid), "unavailable"))
                     continue
                 try:
-                    # Classify this owned PID in memory. Never retain or log
-                    # the executable path, arguments, or environment.
-                    if len(result["image_roles"]) < 64:
-                        name = ctypes.create_unicode_buffer(4096)
-                        length = ctypes.c_uint32(len(name))
-                        if kernel.QueryFullProcessImageNameW(handle, 0, name, ctypes.byref(length)):
-                            basename = name.value.rpartition("\\")[2].casefold()
-                            role = {
-                                "python.exe": "python",
-                                "pythonw.exe": "pythonw",
-                                "conhost.exe": "console_host",
-                            }.get(basename, "other")
-                        else:
-                            role = "unavailable"
-                        result["image_roles"].append((int(pid), role))
                     member = ctypes.c_int32()
                     query = kernel.IsProcessInJob(handle, tree._job, ctypes.byref(member))
                     state = kernel.WaitForSingleObject(handle, 0)
                     result["candidates"].append(
                         (int(pid), member.value if query else -1, int(state))
                     )
+                    # Classify only a confirmed member of this owned job.
+                    # Never retain or log its path, arguments, or environment.
+                    if len(result["image_roles"]) < 64:
+                        role = "unavailable"
+                        if query and not member.value:
+                            role = "outside_job"
+                        elif query and member.value:
+                            name = ctypes.create_unicode_buffer(4096)
+                            length = ctypes.c_uint32(len(name))
+                            if kernel.QueryFullProcessImageNameW(
+                                handle, 0, name, ctypes.byref(length)
+                            ):
+                                basename = name.value.rpartition("\\")[2].casefold()
+                                role = {
+                                    "python.exe": "python",
+                                    "pythonw.exe": "pythonw",
+                                    "conhost.exe": "console_host",
+                                }.get(basename, "other")
+                        result["image_roles"].append((int(pid), role))
                 finally:
                     tree._api.close_handle(int(handle))
     except Exception:

@@ -71,21 +71,81 @@ class LiveWindow:
         jobs, events, connection = (ttk.Frame(notebook, padding=12) for _ in range(3))
         for frame, name in ((jobs, "Jobs"), (events, "Events"), (connection, "Connection")):
             notebook.add(frame, text=name)
-        jobs.columnconfigure(0, weight=3)
-        jobs.columnconfigure(1, weight=2, minsize=260)
-        jobs.rowconfigure(1, weight=1)
-        ttk.Label(jobs, text="Recent jobs", style="Section.TLabel").grid(
+        self._job_pages: Any = None
+        self._detail_canvas: Any = None
+        self._detail_page: Any = None
+        self.open_selected_button: Any = None
+        if float(root.tk.call("tk", "scaling")) >= 1.5:
+            jobs.columnconfigure(0, weight=1)
+            jobs.rowconfigure(0, weight=1)
+            self._job_pages = ttk.Notebook(jobs)
+            self._job_pages.grid(row=0, column=0, sticky="nsew")
+            list_parent = ttk.Frame(self._job_pages, padding=8)
+            self._detail_page = ttk.Frame(self._job_pages, padding=8)
+            self._job_pages.add(list_parent, text="Recent jobs")
+            self._job_pages.add(self._detail_page, text="Selected job")
+            list_parent.columnconfigure(0, weight=1)
+            list_parent.rowconfigure(1, weight=1)
+            self.open_selected_button = ttk.Button(
+                list_parent, text="Open selected", command=self._show_selected
+            )
+            self.open_selected_button.grid(row=0, column=1, sticky="e", pady=(0, 8))
+            self._detail_page.columnconfigure(0, weight=1)
+            self._detail_page.rowconfigure(0, weight=1)
+            canvas = tk.Canvas(
+                self._detail_page,
+                borderwidth=0,
+                highlightthickness=0,
+                background=root.cget("background"),
+            )
+            self._detail_canvas = canvas
+            canvas.grid(row=0, column=0, sticky="nsew")
+            detail_scroll = ttk.Scrollbar(
+                self._detail_page, orient="vertical", command=canvas.yview
+            )
+            detail_scroll.grid(row=0, column=1, sticky="ns")
+            canvas.configure(yscrollcommand=detail_scroll.set)
+            detail = ttk.Frame(canvas)
+            detail_window = canvas.create_window((0, 0), window=detail, anchor="nw")
+            detail.bind(
+                "<Configure>",
+                lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+            )
+            self._detail_canvas.bind(
+                "<Configure>",
+                lambda event: canvas.itemconfigure(detail_window, width=event.width),
+            )
+        else:
+            jobs.columnconfigure(0, weight=3)
+            jobs.columnconfigure(1, weight=2, minsize=260)
+            jobs.rowconfigure(1, weight=1)
+            list_parent = jobs
+            detail = ttk.Frame(jobs)
+            detail.grid(row=0, column=1, rowspan=3, sticky="nsew")
+        ttk.Label(list_parent, text="Recent jobs", style="Section.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, 8)
         )
         self.history_status = tk.StringVar(value="Waiting for a consistent snapshot")
-        ttk.Label(jobs, textvariable=self.history_status).grid(row=2, column=0, sticky="w", pady=8)
-        job_box, self.job_tree = self._table(jobs, ("request", "state", "stage"), (160, 110, 200))
-        job_box.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
+        ttk.Label(list_parent, textvariable=self.history_status).grid(
+            row=2, column=0, columnspan=2 if self._job_pages is not None else 1, sticky="w", pady=8
+        )
+        job_box, self.job_tree = self._table(
+            list_parent, ("request", "state", "stage"), (160, 110, 200)
+        )
+        job_box.grid(
+            row=1,
+            column=0,
+            columnspan=2 if self._job_pages is not None else 1,
+            sticky="nsew",
+            padx=(0, 16),
+        )
         self.job_tree.bind("<<TreeviewSelect>>", self._select)
-        detail = ttk.Frame(jobs)
-        detail.grid(row=0, column=1, rowspan=3, sticky="nsew")
+        if self._job_pages is not None:
+            self.job_tree.bind("<Return>", lambda _event: self._show_selected())
+            self.job_tree.bind("<Double-1>", lambda _event: self._show_selected())
         detail.columnconfigure(0, weight=1)
-        detail.rowconfigure(3, weight=1)
+        if self._detail_canvas is None:
+            detail.rowconfigure(3, weight=1)
         self.detail_heading = tk.StringVar(value="Selected job")
         self.detail_heading_label = ttk.Label(
             detail, textvariable=self.detail_heading, style="Section.TLabel", wraplength=420
@@ -119,7 +179,7 @@ class LiveWindow:
             detail, textvariable=self.preview_status, wraplength=420
         )
         self.preview_status_label.grid(row=6, sticky="ew", pady=(6, 0))
-        detail.bind("<Configure>", self._resize_details)
+        detail.bind("<Configure>", self._resize_details, add="+")
         events.columnconfigure(0, weight=1)
         events.rowconfigure(1, weight=1)
         ttk.Label(events, text="Observed job changes", style="Section.TLabel").grid(
@@ -145,6 +205,20 @@ class LiveWindow:
             self.preview_status_label,
         ):
             label.configure(wraplength=max(1, event.width))
+
+    def _reveal_preview(self) -> None:
+        canvas = getattr(self, "_detail_canvas", None)
+        if canvas is None:
+            return
+        import tkinter as tk
+
+        try:
+            if self.preview_state.preview is not None:
+                self.root.update_idletasks()
+                canvas.configure(scrollregion=canvas.bbox("all"))
+                canvas.yview_moveto(1.0)
+        except tk.TclError:
+            pass  # The window may have closed before the idle callback.
 
     @staticmethod
     def _table(parent: Any, columns: tuple[str, ...], widths: tuple[int, ...]) -> Any:
@@ -261,6 +335,13 @@ class LiveWindow:
         self._render()
         if selected:
             self._read_logs()
+
+    def _show_selected(self) -> None:
+        pages = getattr(self, "_job_pages", None)
+        detail_page = getattr(self, "_detail_page", None)
+        if pages is not None and detail_page is not None and self.state.selected_job_id:
+            pages.select(detail_page)
+            self.detail_text.focus_set()
 
     def _select_wait(self, _event: Any = None) -> None:
         selected = self.wait_tree.selection()
@@ -505,6 +586,9 @@ class LiveWindow:
     def _controls(self) -> None:
         ready = self._actions_ready()
         card = self.state.selected_card
+        open_selected = getattr(self, "open_selected_button", None)
+        if open_selected is not None:
+            open_selected.configure(state="normal" if self.state.selected_job_id else "disabled")
         self.log_button.configure(
             state="normal"
             if ready and card and logs_applicable(card.test) and not self.log_requests.pending
@@ -576,6 +660,8 @@ class LiveWindow:
                     self.displayed_preview = preview
                     self.preview_image.configure(image=photo)
                     self.preview_area.grid(row=5, sticky="w", pady=(8, 0))
+                    if getattr(self, "_detail_canvas", None) is not None:
+                        self.root.after_idle(self._reveal_preview)
             except Exception:
                 self.preview_state = PreviewState(
                     self.preview_state.generation,
