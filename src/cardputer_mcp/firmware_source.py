@@ -7,6 +7,7 @@ from typing import Any
 
 from .build_logs import BuildLogs
 from .source_snapshot import SOURCE_ERROR_CODES, SourceError, SourceSnapshots
+from .source_retention import retention_evidence
 
 
 class FirmwareSource:
@@ -75,6 +76,17 @@ class FirmwareSource:
         def emit(name: str) -> None:
             loop.call_soon_threadsafe(append, name)
 
+        async def evidence() -> dict[str, Any]:
+            if not await check():
+                raise SourceError("source_fetch_interrupted")
+            return retention_evidence(self.store(), plan["project_id"],
+                                      plan["source_principal"], plan["broker_epoch"])
+
+        # The worker owns the cache lock; the resident loop owns SQLite.
+        self.snapshots.retention = lambda: asyncio.run_coroutine_threadsafe(
+            evidence(), loop
+        ).result(timeout=5)
+
         worker = asyncio.create_task(asyncio.to_thread(self.snapshots.fetch, plan, valid, emit))
         interrupted = False
         try:
@@ -96,6 +108,7 @@ class FirmwareSource:
                 raise
             raise SourceError(code) from None
         finally:
+            self.snapshots.retention = None
             self.active = False
 
     def record_failure(self, plan: dict[str, Any], code: str) -> None:

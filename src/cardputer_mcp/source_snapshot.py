@@ -22,6 +22,7 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from .flash_backup import BackupStore
+from .source_cache_lock import LOCK_NAME, CacheLock
 
 
 def _not_link(path: Path) -> None:
@@ -87,6 +88,8 @@ LIMITS = {
 
 CACHE_SCAN_SECONDS = 5.0
 CACHE_SCAN_ENTRIES = 1_000_000
+EVIDENCE_SNAPSHOTS = 4096
+EVIDENCE_BYTES = 128 * 1048576
 _CACHE_LOCKS: WeakValueDictionary[str, Any] = WeakValueDictionary()
 _CACHE_LOCKS_GUARD = threading.Lock()
 
@@ -106,6 +109,10 @@ SOURCE_ERROR_CODES = frozenset(
         "source_cache_root_conflict",
         "source_cache_scan_limit",
         "source_cache_unknown_entry",
+        "source_cache_owner_conflict",
+        "source_cache_protected",
+        "source_cache_references_incomplete",
+        "source_cache_evidence_full",
         "source_commit_metadata_mismatch",
         "source_cleanup_unconfirmed",
         "source_disk_reserve_required",
@@ -142,6 +149,7 @@ SOURCE_ERROR_CODES = frozenset(
         "source_snapshot_changed",
         "source_snapshot_conflict",
         "source_snapshot_unavailable",
+        "source_snapshot_evicted_fetch_required",
         "source_submodule_count_limit",
         "source_submodule_depth_or_cycle",
         "source_submodule_or_lfs_not_supported",
@@ -170,6 +178,17 @@ class SourceError(ValueError):
 
     def public(self) -> dict[str, Any]:
         result: dict[str, Any] = {"error": self.code}
+        explanations = {
+            "source_cache_protected": "No safely reclaimable payload: executable plans, "
+            "unfinished jobs, recovery references, or unknown/unowned entries occupy capacity",
+            "source_cache_references_incomplete": "Reference evidence is incomplete; no payload reclaimed",
+            "source_cache_evidence_full": "Finite receipt evidence capacity exhausted; receipts preserved",
+            "source_snapshot_evicted_fetch_required": "Receipt retained; explicitly fetch the same "
+            "registered commit to restore verified source bytes before preparing a build",
+            "source_cache_owner_conflict": "Cache is bound to another state store; no shared-store reclamation",
+        }
+        if self.code in explanations:
+            result["explanation"] = explanations[self.code]
         if isinstance(self, CacheScanLimit):
             result["scan"] = dict(self.scan)
         return result
@@ -703,9 +722,11 @@ class SourceSnapshots:
     def __init__(self, settings: Any, transport: Callable[..., bytes] = download) -> None:
         self.settings, self.transport = settings, transport
         self.uncertain = False
+        self.retention: Callable[[], dict[str, Any]] | None = None
+        self.restore_source: dict[str, Any] | None = None
 
     @contextmanager
-    def cache_guard(self, project_id: str) -> Iterator[None]:
+    def cache_guard(self, project_id: str, *, write: bool = False) -> Iterator[None]:
         """Serialize this process's cache users without waiting on another owner.
 
         Keep the guard through fetch publication and cleanup. Reentrant calls
@@ -716,17 +737,19 @@ class SourceSnapshots:
         if registration is None:
             raise SourceError("registered_source_repository_required")
         key = os.path.normcase(str(registration.cache_root.resolve()))
+        self.registration(project_id)
         with _CACHE_LOCKS_GUARD:
             lock = _CACHE_LOCKS.get(key)
             if lock is None:
-                lock = threading.RLock()
+                lock = CacheLock()
                 _CACHE_LOCKS[key] = lock
-        if not lock.acquire(blocking=False):
-            raise SourceError("source_fetch_busy")
         try:
-            yield
-        finally:
-            lock.release()
+            with lock.hold(registration.cache_root, self.settings.state_dir, write=write):
+                yield
+        except SourceError:
+            raise
+        except ValueError as exc:
+            raise SourceError(str(exc)) from None
 
     def registration(self, project_id: str) -> tuple[Any, Any]:
         project = self.settings.build_projects.get(project_id)
@@ -773,7 +796,7 @@ class SourceSnapshots:
     ) -> dict[str, int]:
         _, registration = self.registration(project_id)
         root = registration.cache_root
-        size = count = pending_count = 0
+        size = count = pending_count = evidence_count = evidence_bytes = retired_count = 0
         entries = 0
         started = time.monotonic()
         observed = started
@@ -804,9 +827,17 @@ class SourceSnapshots:
                     check()
                     snapshot_path = Path(snapshot.path)
                     _not_link(snapshot_path)
+                    if snapshot.name == LOCK_NAME:
+                        info = snapshot.stat(follow_symlinks=False)
+                        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 64:
+                            raise SourceError("source_cache_unknown_entry")
+                        size += info.st_size
+                        continue
                     if not stat.S_ISDIR(snapshot.stat(follow_symlinks=False).st_mode):
                         raise SourceError("source_cache_unknown_entry")
+                    child_names: set[str] = set()
                     count += 1
+                    evidence_count += bool(re.fullmatch(r"[a-f0-9]{64}", snapshot.name))
                     pending_count += bool(re.fullmatch(r"pending-[a-f0-9]{32}", snapshot.name))
                     before_size, before_entries = size, entries
                     pending = [snapshot_path]
@@ -823,30 +854,48 @@ class SourceSnapshots:
                         with os.scandir(directory) as children:
                             for item in children:
                                 check()
+                                if directory == snapshot_path:
+                                    child_names.add(item.name)
                                 info = item.stat(follow_symlinks=False)
                                 if _linked(info):
                                     raise SourceError("source_linked_path_rejected")
                                 if stat.S_ISDIR(info.st_mode):
                                     pending.append(Path(item.path))
                                 elif stat.S_ISREG(info.st_mode):
+                                    if info.st_nlink != 1:
+                                        raise SourceError("source_linked_path_rejected")
                                     size += info.st_size
+                                    if item.name == "receipt.json" and directory == snapshot_path:
+                                        evidence_bytes += info.st_size
+                                else:
+                                    raise SourceError("source_cache_unknown_entry")
                                 if size > LIMITS["cache_bytes"]:
                                     raise SourceError("source_cache_limit")
+                    evidence_only = self._evidence_only(snapshot_path, child_names)
+                    retired_count += evidence_only
+                    count -= evidence_only
                     if records is not None and len(records) < 256:
                         records.append(
                             dict(
                                 name=snapshot.name,
                                 bytes=size - before_size,
                                 entries=entries - before_entries + 1,
+                                payload_present=not evidence_only,
                             )
                         )
         check_budget()
         return dict(
+            snapshot_entries=count + retired_count,
+            evicted_snapshots=retired_count,
             snapshots=count,
             bytes=size,
             max_snapshots=LIMITS["cache_snapshots"],
             max_bytes=LIMITS["cache_bytes"],
             pending_snapshots=pending_count,
+            evidence_snapshots=evidence_count,
+            evidence_bytes=evidence_bytes,
+            max_evidence_snapshots=EVIDENCE_SNAPSHOTS,
+            max_evidence_bytes=EVIDENCE_BYTES,
             remaining_snapshots=max(0, LIMITS["cache_snapshots"] - count),
             remaining_bytes=max(0, LIMITS["cache_bytes"] - size),
             scan_entries=entries,
@@ -869,14 +918,19 @@ class SourceSnapshots:
                 "Fetches a registered public GitHub commit and fixed allowlisted Gitlinks "
                 "into a private snapshot",
                 "No user worktree overwrite, build, USB, flash, credential or SDK installation",
-                "Bounded cache; no automatic deletion of retained snapshots",
+                "Reuse verified owned sources; automatically reclaim unreferenced payloads "
+                "within fixed bounds while retaining receipts and protecting executable plans, "
+                "unfinished jobs and recovery evidence",
             ],
         )
 
     def fetch(
         self, plan: dict[str, Any], live: Callable[[], bool], stage: Callable[[str], None]
     ) -> dict[str, Any]:
-        with self.cache_guard(plan["project_id"]):
+        _, registration = self.registration(plan["project_id"])
+        BackupStore(registration.cache_root,
+                    windows_private_acl_confirmed=registration.private_acl_confirmed)
+        with self.cache_guard(plan["project_id"], write=True):
             return self._fetch(plan, live, stage)
 
     def _fetch(
@@ -887,26 +941,42 @@ class SourceSnapshots:
         if any(plan.get(key) != value for key, value in expected.items()):
             raise SourceError("source_plan_changed")
         _, registration = self.registration(project_id)
+        self.restore_source = None
+        deadline = time.monotonic() + LIMITS["operation_seconds"]
+
+        def valid() -> bool:
+            return time.monotonic() < deadline and live() is True
+
+        if self.retention is not None:
+            from .source_payloads import admit_source
+
+            reused = admit_source(self, plan, valid, stage)
+            if reused is not None:
+                return reused
         usage = self.usage(project_id)
         if (
             usage["snapshots"] >= LIMITS["cache_snapshots"]
             or usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 > LIMITS["cache_bytes"]
         ):
             raise SourceError("source_cache_full")
+        if self.restore_source is None and (usage["evidence_snapshots"] >= EVIDENCE_SNAPSHOTS
+                or usage["evidence_bytes"] + 32 * 1048576 > EVIDENCE_BYTES):
+            raise SourceError("source_cache_evidence_full")
         root = BackupStore(
             registration.cache_root,
             windows_private_acl_confirmed=registration.private_acl_confirmed,
         ).directory
         if shutil.disk_usage(root).free < LIMITS["expanded_bytes"] + 512 * 1048576:
             raise SourceError("source_disk_reserve_required")
-        deadline = time.monotonic() + LIMITS["operation_seconds"]
-
-        def valid() -> bool:
-            return time.monotonic() < deadline and live() is True
-
         pending = root / ("pending-" + uuid4().hex)
         pending.mkdir(mode=0o700)
         try:
+            with (pending / "reservation.json").open("xb") as handle:
+                handle.write(canonical({"job_id": plan["job_id"], "project_id": project_id,
+                                        "principal": principal,
+                                        "registration_sha256": plan["source_registration_sha256"]}))
+                handle.flush()
+                os.fsync(handle.fileno())
             repository, commit = plan["source_repository"], plan["source_commit"]
             stage("source_download")
             source = pending / "source"
@@ -932,6 +1002,13 @@ class SourceSnapshots:
                 validate_submodule_provenance(archives.submodules)
                 value["submodules"] = archives.submodules
                 value["root_source_sha256"] = evidence["source_sha256"]
+            restoring = self.restore_source
+            if restoring is not None:
+                for key in ("schema_version", "principal", "project_id", "repository", "commit",
+                            "tree_sha1", "source_sha256", "files", "submodules", "root_source_sha256"):
+                    if value.get(key) != restoring.get(key):
+                        raise SourceError("source_snapshot_changed")
+                value = restoring
             encoded = canonical(value)
             if len(encoded) > 32 * 1048576:
                 raise SourceError("source_receipt_limit")
@@ -944,9 +1021,18 @@ class SourceSnapshots:
                 raise SourceError("source_fetch_interrupted")
             stage("source_publish")
             target = root / receipt
-            if target.exists():
+            if restoring is not None:
+                if not self._evidence_only(target) or (target / "receipt.json").read_bytes() != encoded:
+                    raise SourceError("source_receipt_changed")
+                source.rename(target / "source")
+                (pending / "receipt.json").unlink()
+                (pending / "reservation.json").unlink()
+                pending.rmdir()
+            elif target.exists():
                 raise SourceError("source_snapshot_conflict")
-            pending.rename(target)
+            else:
+                (pending / "reservation.json").unlink()
+                pending.rename(target)
             return dict(
                 **({"submodules": value["submodules"]} if archives.submodules else {}),
                 source_receipt=receipt,
@@ -1005,6 +1091,8 @@ class SourceSnapshots:
             ):
                 raise SourceError("source_receipt_not_owned")
             source = root / "source"
+            if (root / "reclaim.json").exists() or not source.exists():
+                raise SourceError("source_snapshot_evicted_fetch_required")
             if value["schema_version"] == 2:
                 validate_submodule_provenance(value.get("submodules"))
             _not_link(source)
@@ -1013,6 +1101,8 @@ class SourceSnapshots:
                 _not_link(item)
                 if not item.is_file():
                     continue
+                if item.stat().st_nlink != 1:
+                    raise SourceError("source_linked_path_rejected")
                 name = item.relative_to(source).as_posix()
                 entry = value["files"].get(name)
                 if (
@@ -1029,3 +1119,15 @@ class SourceSnapshots:
             raise
         except Exception:
             raise SourceError("source_snapshot_unavailable") from None
+
+    @staticmethod
+    def _evidence_only(path: Path, names: set[str] | None = None) -> bool:
+        if re.fullmatch(r"[a-f0-9]{64}", path.name) is None:
+            return False
+        if (names if names is not None else {item.name for item in path.iterdir()}) != {"receipt.json"}:
+            return False
+        receipt = path / "receipt.json"
+        _not_link(receipt)
+        info = receipt.stat()
+        return (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                and info.st_size <= 32 * 1048576 and digest(receipt.read_bytes()) == path.name)

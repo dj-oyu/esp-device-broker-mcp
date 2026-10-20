@@ -67,9 +67,11 @@ Cancellation, principal expiry/revocation and registration changes are checked
 around network/extraction/publication. The whole-job 180-second deadline is
 independent of a transport connection or device lease; failed fetches grant no
 build permission. Confirmed normal failure/cancellation ends the job without a
-recovery-review latch. A corrected new job can run; the old job never replays. Retained sources are not automatically
-removed. Capacity exhaustion rejects another fetch and reports current usage;
-there is no hidden unbounded cache or forced deletion of referenced sources.
+recovery-review latch. A corrected new job can run; the old job never replays.
+Explicit fetches first reuse a fully verified, durably successful owned receipt.
+When capacity is needed they reclaim only proven unreferenced source payloads;
+immutable receipts and protected source/recovery data remain retained. No limit
+is raised, and there is no unbounded archive or forced removal of referenced data.
 
 Historical pre-submodule target checked: cardputer-adv-pocketjs commit
 6a139780b7eeececfaa17cf2ddee576a10a027f5 (1,524 files, about 28 MB). No gitlinks,
@@ -109,25 +111,70 @@ See [SOURCE-SUBMODULES.md](SOURCE-SUBMODULES.md) for the Gitlink contract,
 shared bounds, receipt compatibility and remaining firmware dependencies.
 
 
-## Current resource inventory and explicit cleanup review
+## Bounded source lifecycle and resource inventory
 
-`read_source_resources` accepts only a registered `project_id` and requires the
-current read principal. It performs one fresh bounded traversal for totals and
-per-snapshot byte/entry counts. Totals expose remaining slots/bytes; timestamps
-come from that principal's durable source jobs, not guessed filesystem creation
-or expiry times. Retained snapshots have no automatic lifetime or deletion.
-Receipts belonging to other principals and unknown filesystem names stay private;
-only their aggregate count is returned. Unknown entries still consume capacity.
+The cache keeps at most 16 resident source payloads within the existing 2 GiB
+budget. `firmware_fetch_source` first verifies and reuses a successful owned
+receipt for the exact project, principal, registration and full commit, even
+when all slots are occupied. A new fetch job records that original receipt; its
+original successful job remains the authorization evidence. Failed or uncertain
+publication is never reusable. Duplicate fetch jobs do not duplicate payloads.
 
-The read-only report marks build-plan/artifact evidence, current LKG evidence,
-and recovery history separately. Restoring a retained bundle preserves its
-original source/build association. The bounded DB reference inventory explicitly
-reports truncation; missing/unknown references are never proof of disposability.
-No returned snapshot is cleanup-authorized. Initial full backups, LKG/recovery
-objects, referenced build outputs and source evidence must be retained. An
-operator considering cleanup must stop relevant writers, reconcile all owned and
-unknown references offline, preserve recovery evidence, and obtain a separate
-explicit cleanup request. This tool implements no delete command or automatic GC.
+If new bytes need space, the explicit fetch reclaims the oldest eligible payloads
+under an OS cache lock. Current executable source-build plans, unfinished jobs,
+executable/unfinished firmware operations and every current/history LKG source
+association protect their payloads. New source-build plans have a visible
+30-minute lease; expired unexecuted plans cannot execute and must be prepared
+again. Preparing unchanged inputs during a live lease does not renew it. Once a
+job is queued its protection lasts through completion, regardless of lease expiry.
+Legacy unexecuted plans remain protected for their current broker epoch. Old
+broker epochs cannot execute. Completed build history alone is provenance, not
+a permanent source reservation. Recovery objects and build artifacts are never
+removed by this mechanism.
+
+Reclamation removes only the `source` payload, retaining the exact original
+`receipt.json`, full file manifest, hashes and durable job evidence. Receipt-only
+entries consume bytes but no resident payload slot. Evidence is independently
+bounded at 4096 receipts / 128 MiB, still within the same total 2 GiB budget;
+admission reserves the existing maximum 32 MiB receipt headroom. Evidence capacity
+exhaustion fails with `source_cache_evidence_full`, never unlimited archival.
+An explicit fetch of a retired commit restores its original receipt only after
+all downloaded source bytes/provenance match that immutable receipt. Build prepare
+reports `source_snapshot_evicted_fetch_required`; it never implicitly downloads,
+builds, flashes or replays work.
+
+A private durable reclamation marker makes interrupted removals resumable. The
+remaining files must still match the original manifest and current references
+must permit reclamation. Failed removal marks the current broker uncertain.
+Restart can resume validated unreferenced remnants; unknown files, symlinks,
+reparse points and hardlinks are rejected. Recognized reservations left by
+terminal owned fetch jobs are reconciled under the same lock; legacy/unknown
+pending directories and unfinished/review jobs are retained. Failed/cancelled
+publications can be reclaimed only with matching durable origin evidence and
+full payload verification; they never grant build authority.
+
+The root OS lock is released by process death and rejects concurrent threads or
+processes without waiting. Its owner digest binds the cache to one state-store
+location; another state store gets `source_cache_owner_conflict`. Read-only
+inventory never creates a cache or lock. First explicit fetch claims a legacy
+root. SQLite reference reads run on the resident event loop, not the file worker.
+Disk reserve, finite evidence headroom and complete reference inventory are
+checked before reclamation. Source download failure can leave an old payload
+retired, but never removes its receipt or recovery evidence.
+
+`read_source_resources` performs one fresh bounded traversal and returns owned
+resident/receipt-only entries, counts/bytes, executable/unfinished/recovery
+protection reasons and eligibility. Other principals and unknown names stay
+private and consume capacity. This read never reclaims or grants cleanup.
+Truncated, corrupt or unresolved reference evidence disables reclamation with
+`source_cache_references_incomplete`. If no eligible payload can free enough space,
+`source_cache_protected` explains the protected/unknown/unowned capacity blocker;
+there is no forced cleanup or automatic retry. The read tool preserves its name
+and input schema; its retention description/output now reflects this policy.
+
+This implementation and synthetic tests do not clean existing installations.
+Deployment/restart and any real-data validation are separate operations. GUI
+placement, private configuration, ESP-IDF 6.0.1 and device operations are unchanged.
 
 The same unchanged scan limits apply: 5 seconds and 1,000,000 entries, including
 empty directories. `source_cache_scan_limit` now reports whether elapsed time or
@@ -154,7 +201,7 @@ does not refresh or deploy the running connection.
 
 ### Execute-time fresh metadata cost
 
-Execute performs its own single fresh capacity traversal under the cache guard;
+Execute performs fresh capacity traversals before admission and after reclamation under the cache guard;
 it does not reuse prepare's counts. This check remains mandatory even when a
 previous prepare succeeded and no receipt was published by a failed execution.
 On Windows, ancestor link/reparse checks query GetFileAttributesW instead of

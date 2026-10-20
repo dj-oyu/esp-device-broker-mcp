@@ -644,8 +644,9 @@ def create_server(
     ) -> dict[str, Any]:
         """Read one fresh bounded cache inventory and your retained-source references.
 
-        No deletion, expiry, build, hardware access or cleanup grant. Unknown and
-        referenced snapshots require offline operator review. Scan-limit responses
+        This read never deletes or grants cleanup. Explicit source fetches can
+        reclaim unreferenced payloads while retaining receipts. Unknown and
+        referenced data remain protected. Scan-limit responses
         distinguish deadline/entries and contain no incomplete or cached totals.
         For ordinary source log polling use include_source_cache=false.
         """
@@ -676,7 +677,7 @@ def create_server(
                 raise BrokerError("source_log_not_available")
             if failure is not None:
                 raise failure
-            return {"ok": True, **resource_report(store, project_id, owner.principal_id, inventory)}
+            return {"ok": True, **resource_report(store, project_id, owner.principal_id, inventory, epoch=epoch)}
         except SourceError as exc:
             return {"ok": False, **exc.public()}
         except BrokerError as exc:

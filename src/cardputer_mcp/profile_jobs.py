@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import sqlite3
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
@@ -17,6 +18,7 @@ from .logs import Event
 from .models import CancelRequest, ExecuteRequest, Origin, PrepareRequest, TestName
 from .source_preflight import SourceReadWorker, settings_identity, source_inputs
 from .source_snapshot import SourceError
+from .source_retention import PLAN_LEASE_SECONDS
 
 if TYPE_CHECKING:
     from .broker import Broker
@@ -214,6 +216,22 @@ class ProfileJobs:
                 else {}
             ),
         )
+        if request.test == TestName.BUILD and request.source_receipt is not None:
+            expiry = time.time() + PLAN_LEASE_SECONDS
+            # Repeated preparation of the same inputs must not consume history
+            # or silently extend a still executable reservation.
+            for row in store.db.execute(
+                "SELECT payload FROM plans WHERE json_extract(payload,'$.job_id')=? LIMIT 10001",
+                (request.job_id,),
+            ):
+                import json
+
+                prior = json.loads(row[0])
+                prior_expiry = prior.pop("source_plan_expires_at", 0)
+                if prior == plan and isinstance(prior_expiry, (int, float)) and prior_expiry > time.time():
+                    expiry = prior_expiry
+                    break
+            plan["source_plan_expires_at"] = expiry
         digest = digest_plan(plan)
         existing = store.job(request.job_id)
         if existing and existing["plan_hash"] != digest:
@@ -263,6 +281,11 @@ class ProfileJobs:
                 and broker._state_lock.is_locked
                 and plan["broker_epoch"] == broker.epoch
                 and registration == plan["registration_sha256"]
+                and (
+                    "source_plan_expires_at" not in plan
+                    or self.broker._store().job(plan["job_id"]) is not None
+                    or time.time() < plan["source_plan_expires_at"]
+                )
                 and self._registration(plan["project_id"]) == registration
                 and (
                     plan["test"] != TestName.BUILD.value
