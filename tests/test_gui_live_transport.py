@@ -1027,3 +1027,51 @@ def test_old_generation_image_request_cannot_invalidate_current_pending_preview(
     assert len(events) == 1
     assert events[0].generation == 2 and events[0].payload["request_id"] == current_id
     assert events[0].payload["response"]["body"] == "current preview"
+
+
+@pytest.mark.parametrize("status,retryable", [(302, False), (400, False), (401, False), (403, False), (404, False), (408, True), (429, True), (500, True), (502, True), (503, True), (504, True)])
+def test_live_failure_diagnostics_classify_status_without_response_text(runner_factory, status, retryable):
+    make, _ = runner_factory
+
+    async def handler(request):
+        return httpx2.Response(status, text=f"PRIVATE {TOKEN} http://private.example")
+
+    runner = make(handler)
+    runner.start(1)
+    event = wait_until(runner.drain)[0]
+    details = event.diagnostic
+    assert details["http_status"] == status
+    assert details["retryable"] is retryable
+    assert details["generation"] == 1 and details["elapsed_ms"] >= 0
+    assert details["code"] is None and details["utc"].endswith("+00:00")
+    assert TOKEN not in repr(event) and "PRIVATE" not in repr(event)
+
+
+@pytest.mark.parametrize("code,retryable", [("unavailable", True), ("operator_timeline_unavailable", True), ("operator_request_failed", False), ("PRIVATE", False)])
+def test_live_ok_false_classification_is_allowlisted(runner_factory, code, retryable):
+    make, _ = runner_factory
+
+    async def handler(request):
+        return httpx2.Response(200, json={"ok": False, "error": code, "secret": TOKEN})
+
+    runner = make(handler)
+    runner.start(1)
+    event = wait_until(runner.drain)[0]
+    assert event.diagnostic["http_status"] == 200
+    assert event.diagnostic["retryable"] is retryable
+    assert event.diagnostic["code"] == (None if code == "PRIVATE" else code)
+    assert "PRIVATE" not in repr(event) and TOKEN not in repr(event)
+
+
+def test_live_timeout_diagnostic_drops_exception_text(runner_factory):
+    make, _ = runner_factory
+
+    async def handler(request):
+        raise httpx2.ReadTimeout(f"PRIVATE {TOKEN}", request=request)
+
+    runner = make(handler)
+    runner.start(1)
+    event = wait_until(runner.drain)[0]
+    assert event.diagnostic["reason"] == "read_timeout"
+    assert event.diagnostic["retryable"] is True
+    assert "PRIVATE" not in repr(event) and TOKEN not in repr(event)

@@ -17,6 +17,7 @@ from .gui_live_presentation import (
     sync_rows,
 )
 from .gui_live_preview import FAILED, PreviewState
+from .gui_live_retry import LiveRetry, diagnostic
 from .gui_live_state import LiveState, apply, begin, close, disconnect, select
 from .gui_live_transport import (
     AUTH_FAILED,
@@ -42,6 +43,8 @@ class LiveWindow:
         self.preview_state = PreviewState()
         self.preview_photo: Any = None
         self.displayed_preview: Any = None
+        self.live_retry = LiveRetry()
+        self.live_diagnostics: list[dict[str, Any]] = []
         self.log_requests = LogRequestState()
         self.close_prompt = False
         self.queue_controller = QueueController()
@@ -346,6 +349,10 @@ class LiveWindow:
         ttk.Label(parent, textvariable=self.connection_status, wraplength=900).grid(
             row=1, sticky="ew", pady=8
         )
+        self.live_diagnostic_text = tk.StringVar(value="No live subscription failure recorded")
+        ttk.Label(parent, textvariable=self.live_diagnostic_text, wraplength=900).grid(
+            row=6, sticky="ew", pady=8
+        )
         controls = ttk.Frame(parent)
         controls.grid(row=2, sticky="ew", pady=(0, 12))
         self.release_button = ttk.Button(
@@ -431,14 +438,36 @@ class LiveWindow:
         self._render_logs()
         self._controls()
 
-    def _reconnect(self) -> None:
+    def _reconnect(self, *, automatic: bool = False) -> None:
         if self.state.connection == "closed" or self.action_pending:
             return
+        if not automatic:
+            self._retry_state().manual()
+        self._retry_state().starting()
         self.preview_state = PreviewState()
         self.state = begin(self.state)
         self.log_requests = LogRequestState()
         self.runner.reconnect(self.state.generation)
         self._render()
+
+    def _retry_state(self) -> LiveRetry:
+        # Older test adapters can create the view without its Tk constructor.
+        if not hasattr(self, "live_retry"):
+            self.live_retry = LiveRetry()
+            self.live_diagnostics = []
+        return self.live_retry
+
+    def _live_failed(self, details: dict[str, Any]) -> None:
+        self._retry_state().failed(details, time.monotonic())
+        self.live_diagnostics = [*self.live_diagnostics[-31:], details]
+        self._update_live_diagnostics()
+
+    def _update_live_diagnostics(self) -> None:
+        if hasattr(self, "live_diagnostic_text"):
+            last = self._retry_state().last_received_utc or "none"
+            lines = [f"Last validated live response UTC: {last}"]
+            lines.extend(str(item) for item in self.live_diagnostics[-4:])
+            self.live_diagnostic_text.set("\n".join(lines))
 
     def _drain(self) -> None:
         self.timer = None
@@ -453,10 +482,13 @@ class LiveWindow:
                 if before.selected_job_id != self.state.selected_job_id:
                     self.logs, self.log_requests = LogView(), LogRequestState()
                 if self.state.connection == "live":
+                    self._retry_state().received(time.monotonic())
+                    self._update_live_diagnostics()
                     self._record_changes(before)
                 self._render()
                 if self.state.resync_required:
                     self.runner.pause(self.state.generation)
+                    self._live_failed(diagnostic("invalid_response", self.state.generation, 0))
                     self.log_requests = LogRequestState()
                 elif self.state.connection == "live" and self.state.selected_card:
                     if (
@@ -483,6 +515,12 @@ class LiveWindow:
                     event.generation,
                     reason=reasons.get(error) if type(error) is str else None,
                 )
+                details = event.diagnostic or diagnostic(
+                    "invalid_response" if error == INVALID_RESPONSE else
+                    "delivery_gap" if error == DELIVERY_GAP else "unclassified_disconnect",
+                    self.state.generation, 0,
+                )
+                self._live_failed(details)
                 self.log_requests = LogRequestState()
                 self._render()
             elif event.kind == "image":
@@ -530,6 +568,16 @@ class LiveWindow:
                     self._reconnect()
         except queue.Empty:
             pass
+        retry = self._retry_state()
+        now = time.monotonic()
+        if self.state.connection == "disconnected":
+            if retry.due(now) and not self.action_pending and not self._is_closing():
+                self._reconnect(automatic=True)
+            elif retry.deadline is not None:
+                seconds = max(0, int(retry.deadline - now + 0.999))
+                self.status.set(f"状態更新停止・再接続待ち {seconds}秒（試行 {retry.attempts}）")
+            elif retry.stopped:
+                self.status.set(self.state.message + " 自動再接続停止・詳細は Connection")
         self._render_preview()
         self._controls()
         self.timer = self.root.after(50, self._drain)
