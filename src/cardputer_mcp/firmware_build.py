@@ -26,11 +26,11 @@ from .build_locations import (
     slot_lock_path,
     storage_snapshot,
 )
-from .diagnostic_modeproof import collect_modeproof
-from .models import DiagnosticMode
 from .build_logs import BuildLogs
 from .build_process import BuildProcess
 from .build_security import BuildSecurityConfigError, interpret_idf601_security
+from .diagnostic_modeproof import collect_modeproof
+from .models import DiagnosticMode
 
 ALLOWED_ENV = frozenset(
     {

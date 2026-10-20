@@ -10,9 +10,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ConfigDict, Field
 
-from .models import Digest, Identifier, StrictModel
-
 from .build_artifacts import manifest_digest
+from .models import Digest, Identifier, StrictModel
 
 if TYPE_CHECKING:
     from .broker import Broker
