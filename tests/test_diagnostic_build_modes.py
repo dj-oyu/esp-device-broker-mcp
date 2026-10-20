@@ -168,6 +168,16 @@ def test_explicit_null_is_not_a_legacy_receipt_field(target):
         else:
             manifest["diagnostic_entry_sha256"] = None
             (root / "broker-manifest.json").write_text(json.dumps(manifest))
+            row = case.store.db.execute(
+                "SELECT payload FROM build_artifact_references WHERE job_id=?", ("build-0",)
+            ).fetchone()
+            reference = json.loads(row[0])
+            reference["manifest_sha256"] = persistence.digest(manifest)
+            case.store.db.execute(
+                "UPDATE build_artifact_references SET payload=? WHERE job_id=?",
+                (json.dumps(reference), "build-0"),
+            )
+            case.store.db.commit()
         with pytest.raises(ValueError):
             case.context()
     finally:
