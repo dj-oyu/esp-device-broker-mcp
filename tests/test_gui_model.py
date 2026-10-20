@@ -620,3 +620,21 @@ def test_history_does_not_disable_safe_idle_owner_release() -> None:
     controller = ready(data)
     controller.selected_lease = "lease-owner"
     assert controller.can_release()
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_current_execution_uncertainty_is_separate_from_historical_acknowledgement(uncertain):
+    data = state()
+    data.update(execution_uncertain=uncertain, ownership_uncertain=False, needs_review=True)
+    snapshot = QueueSnapshot.parse(data)
+    assert snapshot.execution_uncertain is uncertain
+    assert snapshot.needs_review is True and snapshot.ownership_uncertain is False
+    assert QueueSnapshot.parse(state()).execution_uncertain is None
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "yes"])
+def test_reported_execution_uncertainty_requires_an_actual_boolean(invalid):
+    data = state()
+    data["execution_uncertain"] = invalid
+    with pytest.raises(OperatorClientError):
+        QueueSnapshot.parse(data)

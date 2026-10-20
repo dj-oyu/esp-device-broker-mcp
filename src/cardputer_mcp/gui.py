@@ -196,6 +196,7 @@ class QueueSnapshot:
     active_job: str
     needs_review: bool
     ownership_uncertain: bool
+    execution_uncertain: bool | None = None
 
     @classmethod
     def parse(cls, data: dict[str, Any]) -> QueueSnapshot:
@@ -274,6 +275,7 @@ class QueueSnapshot:
                 _text(data.get("active_job"), optional=True),
                 _flag(data["needs_review"]),
                 _flag(data["ownership_uncertain"]),
+                _flag(data["execution_uncertain"]) if "execution_uncertain" in data else None,
             )
         except (KeyError, TypeError, ValueError, AttributeError):
             raise OperatorClientError("The broker returned an invalid queue snapshot.") from None
