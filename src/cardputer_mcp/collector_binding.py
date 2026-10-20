@@ -145,7 +145,10 @@ def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
     ):
         raise ValueError("collector_build_source_binding_invalid")
     envelope = manifest.get("diagnostic_modeproof")
-    verify_modeproof_bytes(envelope, provenance, manifest.get("artifacts"), files)
+    artifacts = manifest.get("artifacts")
+    if not isinstance(envelope, dict) or not isinstance(artifacts, list):
+        raise ValueError("collector_mode_binding_invalid")
+    verify_modeproof_bytes(envelope, provenance, artifacts, files)
     if envelope["requested_mode"] != manifest["derby_detail_mode"]:
         raise ValueError("collector_mode_binding_invalid")
     elf = _digest(flash.get("expected_elf_sha256"))
