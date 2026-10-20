@@ -374,6 +374,7 @@ def test_logs_are_bounded_selected_reads_with_per_request_identity(runner_factor
     assert len(logs) == 2
     assert logs[-1] == {
         "job_id": "job_B",
+        "include_source_cache": False,
         "cursor": {"epoch": EPOCH, "sequence": 4},
         "levels": ["error", "warning", "info", "debug", "unknown"],
         "context": 0,
@@ -529,6 +530,7 @@ def test_pause_cancels_both_reads_and_requires_explicit_new_generation(runner_fa
     assert [payload for path, payload in requests if path == "/operator/job-logs"] == [
         {
             "job_id": "job_A",
+            "include_source_cache": False,
             "cursor": None,
             "levels": ["error", "warning", "info", "debug", "unknown"],
             "context": 0,

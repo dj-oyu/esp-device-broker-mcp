@@ -209,6 +209,7 @@ class LiveRunner:
         request = BuildLogRequest.model_validate(
             {
                 "job_id": job_id,
+                "include_source_cache": False,
                 "cursor": cursor,
                 "levels": ["error", "warning", "info", "debug", "unknown"],
                 "context": 0,

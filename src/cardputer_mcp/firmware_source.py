@@ -92,6 +92,8 @@ class FirmwareSource:
         except Exception as failure:
             code = failure.code if isinstance(failure, SourceError) else "source_fetch_failed"
             self.record_failure(plan, code)
+            if isinstance(failure, SourceError):
+                raise
             raise SourceError(code) from None
         finally:
             self.active = False
@@ -147,15 +149,16 @@ class FirmwareSource:
         )
         if failed:
             result["diagnostic"] = {"code": failure_code}
-        if not include_cache:
+        if not include_cache or not request.include_source_cache:
             return result
         try:
             result["source_cache"] = self.snapshots.usage(plan["project_id"])
         except Exception as failure:
-            if not failed:
-                raise
-            result["source_cache"] = {
+            unavailable: dict[str, Any] = {
                 "available": False,
                 "code": failure.code if isinstance(failure, SourceError) else "source_fetch_failed",
             }
+            if isinstance(failure, SourceError) and "scan" in failure.public():
+                unavailable["scan"] = failure.public()["scan"]
+            result["source_cache"] = unavailable
         return result

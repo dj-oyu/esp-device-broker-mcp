@@ -120,15 +120,25 @@ class ProfileJobs:
         owned_request = request.model_copy(deep=True)
         if owned_request.project_id is None or owned_request.source_commit is None:
             raise SourceError("source_full_commit_required")
-        details, storage = await self.source_reads.run(
-            partial(
-                source_inputs,
-                captured,
-                owned_request.project_id,
-                owned_request.source_commit,
-                principal,
+        try:
+            details, storage = await self.source_reads.run(
+                partial(
+                    source_inputs,
+                    captured,
+                    owned_request.project_id,
+                    owned_request.source_commit,
+                    principal,
+                )
             )
-        )
+        except SourceError:
+            # Failure counters are private read output too. Never publish them
+            # under a changed grant, registration or resident incarnation.
+            if reauthorize is not None and reauthorize() != (principal, origin):
+                raise BrokerError("principal_not_authorized") from None
+            evidence = _SourcePreflight(store, epoch, settings, identity, {}, {})
+            if broker.closing or not self._source_current(evidence):
+                raise BrokerError("profile_or_principal_no_longer_valid") from None
+            raise
         if reauthorize is not None and reauthorize() != (principal, origin):
             raise BrokerError("principal_not_authorized")
         evidence = _SourcePreflight(store, epoch, settings, identity, details, storage)
@@ -489,7 +499,11 @@ class ProfileJobs:
                         code = "registered_project_state_inconsistent"
                     state = "needs_review" if uncertain else "cancelled" if reason else "failed"
                     outcome = code if uncertain else reason or code
-                    store.set_job(job_id, state, outcome, {"code": outcome})
+                    diagnostic: dict[str, Any] = {"code": outcome}
+                    if isinstance(failure, SourceError) and outcome == failure.code:
+                        if "scan" in failure.public():
+                            diagnostic["scan"] = failure.public()["scan"]
+                    store.set_job(job_id, state, outcome, diagnostic)
                     if uncertain:
                         self.state_uncertain = True
                         broker.logs.append(Event.REVIEW)

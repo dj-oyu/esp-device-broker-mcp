@@ -244,8 +244,13 @@ def _default_build_log_levels() -> list[BuildLogLevel]:
     return ["error", "warning"]
 
 
+class SourceResourcesRequest(StrictModel):
+    project_id: Identifier
+
+
 class BuildLogRequest(StrictModel):
     job_id: Identifier
+    include_source_cache: bool = True
     cursor: LogCursor | None = None
     levels: list[BuildLogLevel] = Field(default_factory=_default_build_log_levels, max_length=5)
     context: int = Field(default=2, ge=0, le=10)

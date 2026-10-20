@@ -45,6 +45,15 @@ def source_usage(settings: Settings, project_id: str, stop: threading.Event) -> 
         raise SourceError("source_fetch_failed") from None
 
 
+def source_inventory(settings: Settings, project_id: str, stop: threading.Event) -> dict[str, Any]:
+    try:
+        return SourceSnapshots(settings).inventory(project_id, stop=stop)
+    except SourceError:
+        raise
+    except Exception:
+        raise SourceError("source_fetch_failed") from None
+
+
 class SourceReadWorker:
     """Reject extra work while a real thread still owns its read/cache guard.
 
