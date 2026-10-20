@@ -86,8 +86,7 @@ def validate_manifest_export(export: Any) -> None:
     try:
         if (
             type(export) is not dict
-            or set(export)
-            != {"schema_version", "contract", "original_manifest_sha256", "manifest"}
+            or set(export) != {"schema_version", "contract", "original_manifest_sha256", "manifest"}
             or type(export["schema_version"]) is not int
             or export["schema_version"] != 1
             or export["contract"] != CONTRACT
@@ -155,7 +154,6 @@ def validate_plan_export(plan: dict[str, Any], manifest: dict[str, Any]) -> None
     if (
         not _hex(plan["manifest_export_sha256"])
         or plan.get("manifest_sha256") != manifest_digest(manifest)
-        or plan["manifest_export_sha256"]
-        != manifest_export_sha256(make_manifest_export(manifest))
+        or plan["manifest_export_sha256"] != manifest_export_sha256(make_manifest_export(manifest))
     ):
         raise ValueError(_ERROR)

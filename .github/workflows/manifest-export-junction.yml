@@ -24,6 +24,8 @@ jobs:
       PRODUCER_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
       FW_HEAD: 824e9f91b52069c08df68e967d83b44e9f7d5240
     steps:
+      - name: Preserve committed fixture bytes before either checkout
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ env.PRODUCER_HEAD }}

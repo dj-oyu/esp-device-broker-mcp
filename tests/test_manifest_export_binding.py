@@ -7,8 +7,8 @@ import pytest
 from test_flash_policy import env as env
 
 from cardputer_mcp.broker import BrokerError, digest_plan
-from cardputer_mcp.flash_binding import prepare_binding, validate_binding
 from cardputer_mcp.firmware_flash import validate_flash_plan
+from cardputer_mcp.flash_binding import prepare_binding, validate_binding
 from cardputer_mcp.manifest_export import manifest_export_sha256
 from cardputer_mcp.models import BuildLogRequest
 from cardputer_mcp.plan_approval import PlanApprovals
@@ -53,7 +53,10 @@ async def test_commitment_damage_cannot_reuse_a_fixed_trusted_plan_hash(env, dam
         plan["manifest_export_other"] = "0" * 64
     else:
         plan["manifest_export_sha256"] = {
-            "null": None, "bool": True, "wrong": "0" * 64, "uppercase": "A" * 64
+            "null": None,
+            "bool": True,
+            "wrong": "0" * 64,
+            "uppercase": "A" * 64,
         }[damage]
     assert digest_plan(plan) != prepared["plan_hash"]
     before = env.driver.writes

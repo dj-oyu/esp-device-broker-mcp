@@ -93,7 +93,10 @@ def test_collector_rechecks_present_export_commitment(make_dma_chain, detail, dm
     rebind(chain)
     export = make_manifest_export(chain.manifest)
     chain.flash["manifest_export_sha256"] = {
-        "none": manifest_export_sha256(export), "wrong": "0" * 64, "null": None, "bool": True
+        "none": manifest_export_sha256(export),
+        "wrong": "0" * 64,
+        "null": None,
+        "bool": True,
     }[damage]
     rebind(chain)
     if damage != "none":

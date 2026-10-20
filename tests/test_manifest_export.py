@@ -36,8 +36,7 @@ class ManifestExportTests(unittest.TestCase):
             with patch("cardputer_mcp.diagnostic_registry._ENTRIES", (DMA_ENTRY,)):
                 envelope = collect_dma_modeproof(root, detail, dma, source, artifacts)
                 envelope["cmake_cache"] += (
-                    "PRIVATE_PATH:PATH=C:/SYNTHETIC_PRIVATE\n"
-                    "TOKEN:STRING=SYNTHETIC_SECRET\n"
+                    "PRIVATE_PATH:PATH=C:/SYNTHETIC_PRIVATE\nTOKEN:STRING=SYNTHETIC_SECRET\n"
                 )
                 cache_hash = hashlib.sha256(envelope["cmake_cache"].encode()).hexdigest()
                 proof = envelope["proof"]

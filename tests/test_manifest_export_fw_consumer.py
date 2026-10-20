@@ -124,8 +124,9 @@ class FixedFirmwareConsumerTests(unittest.TestCase):
     def test_unmodified_durable_response_four_choices_with_fixed_anchor(self):
         for detail in ("OFF", "ON"):
             for dma in ("OFF", "ON"):
-                with self.subTest(detail=detail, dma=dma), patch.object(
-                    registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY)
+                with (
+                    self.subTest(detail=detail, dma=dma),
+                    patch.object(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY)),
                 ):
                     case = persistence.DurableBuildArtifactTests()
                     case.setUp()
