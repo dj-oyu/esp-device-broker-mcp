@@ -67,8 +67,11 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
         (on_dir / "CMakeCache.txt").write_text("POCKET_DERBY_DETAIL_MEASURE:BOOL=ON")
         (on_dir / "sdkconfig").write_text("stale config")
         assert not off_dir.exists()
-        with patch.object(registry, "_ENTRIES", (*registry._ENTRIES,
-                          registry.DiagnosticEntry("fixture/project", "f" * 40))):
+        with patch.object(
+            registry,
+            "_ENTRIES",
+            (*registry._ENTRIES, registry.DiagnosticEntry("fixture/project", "f" * 40)),
+        ):
             assert builder.prepare("fixture", "owner", "a" * 64, "OFF") == off
         provenance["commit"] = "f" * 40
         with pytest.raises(ValueError, match="allowlisted_source"):

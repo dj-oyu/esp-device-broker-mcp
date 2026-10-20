@@ -48,9 +48,9 @@ def diagnostic_entry(provenance: dict[str, Any]) -> DiagnosticEntry:
     if not isinstance(repository, str):
         raise ValueError("diagnostic_mode_requires_allowlisted_source")
     matches = [
-        entry for entry in _ENTRIES
-        if repository.casefold() == entry.repository
-        and provenance.get("commit") == entry.commit
+        entry
+        for entry in _ENTRIES
+        if repository.casefold() == entry.repository and provenance.get("commit") == entry.commit
     ]
     if len(matches) != 1 or matches[0].contract != "j1-fixed-v1":
         raise ValueError("diagnostic_mode_requires_allowlisted_source")
@@ -74,5 +74,9 @@ def same_entry_binding(left: dict[str, Any], right: dict[str, Any]) -> bool:
     if key not in left and key not in right:
         return True
     value = left.get(key)
-    return (isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value) is not None
-            and key in right and value == right[key])
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[a-f0-9]{64}", value) is not None
+        and key in right
+        and value == right[key]
+    )

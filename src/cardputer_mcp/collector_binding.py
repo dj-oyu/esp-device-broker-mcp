@@ -224,9 +224,11 @@ def collector_live(broker: "Broker", plan: dict[str, Any], principal: str) -> bo
             and build["plan_hash"] == binding["build_plan_hash"]
             and build_plan is not None
             and digest_plan(build_plan) == binding["build_plan_hash"]
-            and ("diagnostic_entry_sha256" not in binding or
-                 binding["diagnostic_entry_sha256"] ==
-                 validate_entry_binding(build_plan.get("source_provenance", {}), build_plan))
+            and (
+                "diagnostic_entry_sha256" not in binding
+                or binding["diagnostic_entry_sha256"]
+                == validate_entry_binding(build_plan.get("source_provenance", {}), build_plan)
+            )
         )
     except Exception:
         return False

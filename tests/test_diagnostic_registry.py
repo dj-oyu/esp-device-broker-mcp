@@ -61,6 +61,8 @@ class DiagnosticRegistryTests(unittest.TestCase):
             record = {"diagnostic_entry_sha256": bad}
             self.assertFalse(registry.same_entry_binding(record, {}))
             self.assertFalse(registry.same_entry_binding({}, record))
-        self.assertFalse(registry.same_entry_binding(
-            {"diagnostic_entry_sha256": None}, {"diagnostic_entry_sha256": None}
-        ))
+        self.assertFalse(
+            registry.same_entry_binding(
+                {"diagnostic_entry_sha256": None}, {"diagnostic_entry_sha256": None}
+            )
+        )

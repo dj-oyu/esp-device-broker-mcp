@@ -347,9 +347,11 @@ def test_legacy_receipt_entry_binding_survives_unrelated_policy_addition(chain, 
     legacy["collector_binding"].pop("diagnostic_entry_sha256")
     validate_collector_schema(legacy)
     assert collector_live(chain.resident, legacy, "owner")
-    monkeypatch.setattr(registry, "_ENTRIES", (
-        *registry._ENTRIES, registry.DiagnosticEntry("fixture/project", "f" * 40)
-    ))
+    monkeypatch.setattr(
+        registry,
+        "_ENTRIES",
+        (*registry._ENTRIES, registry.DiagnosticEntry("fixture/project", "f" * 40)),
+    )
     assert prepare_collector(chain.resident, "public-flash", "owner") == original
     assert collector_live(chain.resident, {"test": "derby_fixed_workload", **original}, "owner")
     changed = copy.deepcopy(original)
@@ -376,9 +378,10 @@ def test_new_bound_build_manifest_and_collector_agree_on_entry(chain, corrupt):
         with pytest.raises(ValueError):
             resolve_collector(chain.resident, "public-flash", "owner")
     else:
-        assert resolve_collector(chain.resident, "public-flash", "owner")[
-            "diagnostic_entry_sha256"
-        ] == entry_hash
+        assert (
+            resolve_collector(chain.resident, "public-flash", "owner")["diagnostic_entry_sha256"]
+            == entry_hash
+        )
 
 
 @pytest.mark.parametrize("damage", ["wrong_digest", "null_digest", "unregistered_legacy"])
