@@ -423,7 +423,7 @@ def test_native_status_backgrounds_and_review_labels_preserve_selection(monkeypa
         window = gui_live.LiveWindow(root, OperatorClient("http://127.0.0.1:8765", "synthetic"))
         rows = [
             card("failed", cancel_available=False),
-            card("unreviewed", cancel_available=False),
+            card("unreviewed", cancel_available=False, failure_reason="app_load_out_of_memory"),
             card("reviewed", cancel_available=False),
         ]
         rows[0]["state"] = "failed"
@@ -446,6 +446,9 @@ def test_native_status_backgrounds_and_review_labels_preserve_selection(monkeypa
             assert values[1].startswith("[X]" if job == "failed" else "[!]")
             assert window.job_tree.selection() == (job,)
             assert window.job_tree.focus() == job
+        window.job_tree.selection_set("unreviewed")
+        window._select()
+        assert "理由：起動失敗：メモリ不足の記録" in window.detail_heading.get()
         assert "未確認" in window.job_tree.item("unreviewed", "values")[1]
         assert "確認済み" in window.job_tree.item("reviewed", "values")[1]
     finally:

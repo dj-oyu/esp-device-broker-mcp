@@ -29,6 +29,7 @@ from .gui_live_transport import (
 )
 from .gui_theme import apply_theme
 from .gui_timeline import TimelineOperation, perform_timeline
+from .job_failure_reason import REASON_LABELS
 from .operator_client import OperatorClient
 
 
@@ -602,6 +603,8 @@ class LiveWindow:
             heading = (
                 f"{card.job_id} | {job_status_label(card.state, card.reviewed)} ({card.state})"
             )
+            if card.failure_reason:
+                heading += "\n理由：" + REASON_LABELS[card.failure_reason]
             fields = [f"Request  {card.test or 'Unknown'}"]
             if card.stage:
                 fields.append(f"Stage  {card.stage}")

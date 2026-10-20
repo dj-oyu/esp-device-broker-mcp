@@ -12,6 +12,7 @@ from typing import Any
 from .backend import DeviceOperationFailure
 from .broker import Broker, BrokerError
 from .device_observation import FIRMWARE_LIMITATIONS, REDACTION_LIMITATIONS
+from .job_failure_reason import failure_reason
 from .plan_approval import PlanApprovals
 from .source_snapshot import SOURCE_ERROR_CODES
 
@@ -501,6 +502,10 @@ class OperatorTimeline:
                 CASE WHEN length(j.result)<=128 THEN j.result END AS result,
                 CASE WHEN length(j.created)<=40 THEN j.created END AS created,
                 CASE WHEN length(j.finished)<=40 THEN j.finished END AS finished,
+                CASE WHEN length(CAST(j.diagnostic AS BLOB))<=16384 AND json_valid(j.diagnostic)
+                    THEN json_extract(j.diagnostic,'$.device_fault_category') END AS fault_category,
+                CASE WHEN length(CAST(j.diagnostic AS BLOB))<=16384 AND json_valid(j.diagnostic)
+                    THEN json_extract(j.diagnostic,'$.device_fault_detail') END AS fault_detail,
                 CASE WHEN typeof(j.reviewed)='integer' AND j.reviewed=1
                     THEN 1 ELSE 0 END AS reviewed
                 FROM jobs j JOIN timeline_order t ON t.job_id=j.id
@@ -542,6 +547,7 @@ class OperatorTimeline:
             "created_utc": None,
             "finished_utc": None,
             "reviewed": False,
+            "failure_reason": None,
             "review": None,
             "image": None,
         }
@@ -585,6 +591,9 @@ class OperatorTimeline:
                         created_utc=_utc(row["created"]),
                         finished_utc=_utc(row["finished"]),
                         reviewed=row["reviewed"] == 1,
+                    )
+                    card["failure_reason"] = failure_reason(
+                        card["state"], card["result"], row["fault_category"], row["fault_detail"]
                     )
                     if card["state"] == "succeeded":
                         card["image"] = images.get(row["id"])

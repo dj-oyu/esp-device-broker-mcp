@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from .gui_images import SOURCES, ImagePreview, ImageRow
+from .job_failure_reason import REASON_LABELS
 from .models import TestName
 from .operator_timeline import RESULTS, STAGES, STATES, observation_summary
 
@@ -203,6 +204,7 @@ class TimelineCard:
     reviewed: bool = False
     device_observation: DeviceObservationRow | None = None
     cancel_available: bool = False
+    failure_reason: str | None = None
 
     @property
     def needs_device_review(self) -> bool:
@@ -236,6 +238,13 @@ class TimelineCard:
             state not in ("queued", "running")
             or backend != "registered_project"
             or test not in ("firmware_build", "firmware_fetch_source")
+        ):
+            raise ValueError(INVALID_TIMELINE)
+        reason = data.get("failure_reason")
+        if reason is not None and (
+            type(reason) is not str
+            or reason not in REASON_LABELS
+            or state not in ("failed", "needs_review")
         ):
             raise ValueError(INVALID_TIMELINE)
         image = ImageRow.parse(data["image"], started_at) if data.get("image") else None
@@ -281,6 +290,7 @@ class TimelineCard:
             reviewed=reviewed,
             device_observation=observation,
             cancel_available=cancel,
+            failure_reason=reason,
         )
 
 

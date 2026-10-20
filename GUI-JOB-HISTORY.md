@@ -32,3 +32,13 @@ failed and both review variants, Japanese fallback fonts, 100/150/200 percent DP
 keyboard focus/selection/scroll preservation, and a prepare-to-terminal sequence.
 Track the pre-existing Tk top-visible-row anchor issue separately. This change
 does not deploy, restart or operate a physical device.
+
+Selected failed/review jobs show a bold short reason derived only from fixed
+result/category/detail tokens. Timeline SQL extracts only two bounded diagnostic
+scalars, never raw serial evidence or a full diagnostic document. Unknown details
+are omitted. A generic fault does not establish OOM: old records without a
+specific hint remain generic. Future existing-fault observations can attach a
+fixed OOM hint from an explicit OOM record, or an APP_LOAD compile-out-of-memory
+record. This is display metadata only: fault acceptance, terminal validity, raw
+ownership, review flags and retry behavior remain unchanged. No historical
+record is rewritten to infer a more specific cause.
