@@ -181,11 +181,13 @@ This implementation and synthetic tests do not clean existing installations.
 Deployment/restart and any real-data validation are separate operations. GUI
 placement, private configuration, ESP-IDF 6.0.1 and device operations are unchanged.
 
-The same unchanged scan limits apply: 5 seconds and 1,000,000 entries, including
-empty directories. `source_cache_scan_limit` now reports whether elapsed time or
+The cooperative scan time budget is 30 seconds; the unchanged 1,000,000 entry
+limit includes empty directories. `source_cache_scan_limit` now reports whether elapsed time or
 entry count exhausted the scan, with bounded counters and `complete=false`.
 Incomplete/previous totals are not returned as current capacity. Having 13 of 16
-slots occupied does not imply that the filesystem can be scanned within 5 seconds.
+slots occupied does not imply that the filesystem can be scanned within a fixed
+time budget. See FIRMWARE-BUILD.md for the finite 30-second allowance and its
+measurement boundary.
 Every file's current no-follow metadata and each directory's ancestors are still
 checked. String-based ancestor traversal avoids rebuilding Path tuples without
 omitting any check; it does not make path checks and directory enumeration atomic
@@ -220,5 +222,5 @@ current byte/entry counts, cancellation, deadline and final budget checks remain
 [Microsoft's attribute-query contract](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getfileattributesw)
 documents link and mount-point behavior. This optimization needs native Windows
 measurement against the retained cache; CI/synthetic tests do not prove that any
-particular cache always completes within five seconds under OS load. A timeout
+particular cache always completes within thirty seconds under OS load. A timeout
 still fails closed and publishes no new receipt. No automatic retry is introduced.

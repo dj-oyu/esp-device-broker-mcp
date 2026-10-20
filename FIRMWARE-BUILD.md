@@ -458,3 +458,40 @@ J1 entry may omit the new digest. A present wrong/null digest is rejected.
 Previously prepared detail-build plans require preparation again because their
 fingerprint now includes the entry digest. Adding a new runtime source head or
 changing a proof contract remains a separate reviewed acceptance change.
+
+
+### Source cache scan time budget
+
+Each fresh cache traversal has a finite **30 second** cooperative deadline and
+the existing 1,000,000 entry cap. The earlier 5 second guard was introduced with
+the owned SOURCE read worker, when the payload cache allowed eight snapshots;
+the cache later grew to sixteen without a corresponding metadata-I/O budget
+change. The introducing change does not establish five seconds with a Windows
+cold-cache benchmark. Thirty seconds provides sixfold time headroom while
+keeping the traversal finite; it is a policy allowance, not a measured minimum
+or a guarantee that every filesystem/load completes within that time.
+
+The timer starts inside `_usage`, after registration and cache guard acquisition,
+and covers the fresh directory walk, no-follow metadata checks and evidence-only
+receipt classification. Ordinary source payload bytes are not hashed by this
+capacity walk. Deadline/cancellation checks run between entries and directories
+and again before returning totals. A blocked OS operation cannot be preempted by
+this cooperative timer. A reported cutoff such as 5001 ms identifies the first
+observed exhausted budget, not the duration needed to finish the scan.
+
+The change does not alter the 16 payload / 2 GiB cache bounds, entry cap, evidence
+limits, reference/receipt protection, source hash checks or the separate 180
+second fetch-operation deadline. A deadline failure still returns only bounded
+incomplete counters and publishes no capacity result or source receipt.
+Read/preflight workers pass a stop event and check cancellation between entries.
+An in-fetch scan does not receive that event: its next live/authority recheck can
+be delayed until traversal completes or hits the cooperative 30-second deadline.
+Ownership and the cache lock remain held throughout; final authority is still
+required before publication. Same-cache exclusion remains unchanged.
+
+Cold/warm Windows timings and phase/entry counts should be measured in the
+separate deployment verification. Stage budgets, progress reporting and a
+no-progress timeout could improve diagnosis later; they do not replace the
+finite overall limit. Size-adaptive budgets need measured metadata throughput,
+and cross-call walk/hash caches need mutation and reference-authority proofs.
+Those algorithm changes are outside this time-budget adjustment.

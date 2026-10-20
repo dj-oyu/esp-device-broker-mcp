@@ -51,7 +51,7 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(result["usage"]["bytes"], 4)
         self.assertEqual(sum(r["bytes"] for r in result["records"]), 4)
 
-    def test_thirteen_slots_can_exceed_deadline_on_metadata_latency(self):
+    def test_thirteen_slots_with_slow_metadata_fit_extended_deadline(self):
         for i in range(13):
             self.root.joinpath(f"snapshot-{i}").mkdir()
         clock = SimpleNamespace(now=0.0)
@@ -78,15 +78,14 @@ class ResourceTests(unittest.TestCase):
             patch.object(module, "time", SimpleNamespace(monotonic=lambda: clock.now)),
             patch.object(os, "scandir", lambda p: original(p) if p == self.root else Children()),
         ):
-            with self.assertRaises(CacheScanLimit) as caught:
-                self.snapshots.usage("fixture")
-        diagnostic = caught.exception.public()
-        self.assertEqual(diagnostic["error"], "source_cache_scan_limit")
-        self.assertEqual(diagnostic["scan"]["reason"], "deadline")
-        self.assertLess(diagnostic["scan"]["entries"], 1_000_000)
-        self.assertFalse(diagnostic["scan"]["complete"])
-        self.assertNotIn("bytes", diagnostic["scan"])
-        self.assertNotIn(str(self.root), json.dumps(diagnostic))
+            usage = self.snapshots.usage("fixture")
+        self.assertEqual(usage["snapshots"], 13)
+        self.assertEqual(usage["bytes"], 13 * 3432)
+        self.assertGreater(usage["scan_elapsed_ms"], 5000)
+        self.assertLess(usage["scan_elapsed_ms"], 30000)
+        self.assertLess(usage["scan_entries"], 1_000_000)
+        self.assertEqual(usage["max_snapshots"], 16)
+        self.assertEqual(usage["max_bytes"], 2 * 1024 * 1048576)
 
     def test_execute_rechecks_capacity_once_and_timeout_publishes_no_receipt(self):
         for i in range(13):
@@ -104,7 +103,7 @@ class ResourceTests(unittest.TestCase):
         def delayed(path):
             scans.append(path)
             if path != self.root:
-                clock.now = 6.0
+                clock.now = module.CACHE_SCAN_SECONDS + 1.0
             return original(path)
 
         with (
