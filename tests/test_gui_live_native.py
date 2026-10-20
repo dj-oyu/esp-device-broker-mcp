@@ -435,8 +435,10 @@ def test_native_status_backgrounds_and_review_labels_preserve_selection(monkeypa
         )
         window._drain()
         assert window.state.connection == "live"
-        assert window.job_tree.tag_configure("job_failed", "background") == "#FDE8E7"
-        assert window.job_tree.tag_configure("job_review", "background") == "#FFF0CC"
+        failed_color = window.job_tree.tag_configure("job_failed", "background")
+        assert str(failed_color) == "#FDE8E7"
+        review_color = window.job_tree.tag_configure("job_review", "background")
+        assert str(review_color) == "#FFF0CC"
         for job in ("failed", "unreviewed", "reviewed"):
             window.job_tree.selection_set(job)
             window.job_tree.focus(job)

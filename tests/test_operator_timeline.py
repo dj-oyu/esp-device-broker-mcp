@@ -450,11 +450,16 @@ async def test_failure_reason_projection_is_fixed_bounded_and_read_only(tmp_path
     async with running(tmp_path) as (broker, _, timeline, _):
         store = broker._store()
         store.add_job("fault", "a" * 64)
-        store.set_job("fault", "needs_review", "serial_fault_marker", {
-            "device_fault_category": "device_fault",
-            "device_fault_detail": "app_load_out_of_memory",
-            "private": "PRIVATE arbitrary console text",
-        })
+        store.set_job(
+            "fault",
+            "needs_review",
+            "serial_fault_marker",
+            {
+                "device_fault_category": "device_fault",
+                "device_fault_detail": "app_load_out_of_memory",
+                "private": "PRIVATE arbitrary console text",
+            },
+        )
         before = store.db.total_changes
         row = card(timeline, "fault")
         assert row["failure_reason"] == "app_load_out_of_memory"
@@ -463,6 +468,9 @@ async def test_failure_reason_projection_is_fixed_bounded_and_read_only(tmp_path
         assert parsed.cards[0].failure_reason == "app_load_out_of_memory"
         assert store.db.total_changes == before and row["reviewed"] is False
         store.set_job(
-            "fault", "needs_review", "serial_fault_marker", {"device_fault_category": "device_fault"}
+            "fault",
+            "needs_review",
+            "serial_fault_marker",
+            {"device_fault_category": "device_fault"},
         )
         assert card(timeline, "fault")["failure_reason"] == "device_fault"

@@ -28,7 +28,8 @@ class FailureReasonTests(unittest.TestCase):
             failure_reason("needs_review", "serial_fault_marker", None, None), "device_fault"
         )
         self.assertEqual(
-            failure_reason("needs_review", "serial_fault_marker", "vm_exception", None), "vm_exception"
+            failure_reason("needs_review", "serial_fault_marker", "vm_exception", None),
+            "vm_exception",
         )
         self.assertIsNone(failure_reason("succeeded", "serial_fault_marker", "vm_exception", None))
         self.assertIsNone(failure_reason("failed", "PRIVATE", "PRIVATE", "PRIVATE"))
@@ -37,7 +38,9 @@ class FailureReasonTests(unittest.TestCase):
             "device_fault",
         )
         self.assertEqual(
-            failure_reason("needs_review", "serial_close_unconfirmed", None, "app_load_out_of_memory"),
+            failure_reason(
+                "needs_review", "serial_close_unconfirmed", None, "app_load_out_of_memory"
+            ),
             "serial_close_unconfirmed",
         )
 
