@@ -12,10 +12,13 @@ def initialize_timeline_order(db: sqlite3.Connection) -> None:
             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
             job_id TEXT NOT NULL UNIQUE, created TEXT
         )""")
-        if db.execute(
-            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name IN "
-            "('timeline_plan_registered','timeline_job_registered')"
-        ).fetchone()[0] == 2:
+        if (
+            db.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name IN "
+                "('timeline_plan_registered','timeline_job_registered')"
+            ).fetchone()[0]
+            == 2
+        ):
             return
         db.execute("""INSERT OR IGNORE INTO timeline_order(job_id,created)
             SELECT CASE WHEN length(CAST(p.payload AS BLOB))<=16384 AND json_valid(p.payload)

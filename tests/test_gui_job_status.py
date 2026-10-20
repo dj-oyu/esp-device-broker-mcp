@@ -17,7 +17,7 @@ from cardputer_mcp.timeline_order import initialize_timeline_order
 
 
 class TimelineOrderTests(unittest.TestCase):
-    def database(self, path="" ):
+    def database(self, path=""):
         db = sqlite3.connect(path)
         db.executescript("""
             CREATE TABLE plans(hash TEXT PRIMARY KEY,payload TEXT NOT NULL);
@@ -30,7 +30,9 @@ class TimelineOrderTests(unittest.TestCase):
         db.execute("INSERT INTO plans VALUES(?,?)", (digest, json.dumps({"job_id": job})))
 
     def ordered(self, db):
-        return db.execute("SELECT job_id,created FROM timeline_order ORDER BY sequence DESC").fetchall()
+        return db.execute(
+            "SELECT job_id,created FROM timeline_order ORDER BY sequence DESC"
+        ).fetchall()
 
     def test_prepare_execute_finish_and_review_preserve_registration(self):
         db = self.database()
@@ -62,7 +64,9 @@ class TimelineOrderTests(unittest.TestCase):
             plans = db.execute("SELECT * FROM plans").fetchall()
             initialize_timeline_order(db)
             expected = self.ordered(db)
-            self.assertEqual(expected, [("newer", "2021-01-01"), ("executed", "2020-01-01"), ("undated", None)])
+            self.assertEqual(
+                expected, [("newer", "2021-01-01"), ("executed", "2020-01-01"), ("undated", None)]
+            )
             self.assertEqual(db.execute("SELECT * FROM jobs").fetchall(), original)
             self.assertEqual(db.execute("SELECT * FROM plans").fetchall(), plans)
             db.close()
@@ -77,7 +81,16 @@ class TimelineOrderTests(unittest.TestCase):
 
     def test_invalid_plan_payloads_cannot_break_registration(self):
         db = self.database()
-        for digest, payload in enumerate(["{", "[]", '{"job_id":null}', '{"job_id":1}', '{"job_id":""}', '{"job_id":"' + "x" * 20000 + '"}']):
+        for digest, payload in enumerate(
+            [
+                "{",
+                "[]",
+                '{"job_id":null}',
+                '{"job_id":1}',
+                '{"job_id":""}',
+                '{"job_id":"' + "x" * 20000 + '"}',
+            ]
+        ):
             db.execute("INSERT INTO plans VALUES(?,?)", (str(digest), payload))
         initialize_timeline_order(db)
         self.assertEqual(self.ordered(db), [])
@@ -88,7 +101,24 @@ class TimelineOrderTests(unittest.TestCase):
 
 class JobStatusTests(unittest.TestCase):
     def test_shapes_labels_and_review_badges_are_distinct(self):
-        self.assertEqual(set(LABELS) | {"needs_review"}, {"prepared", "queued", "running", "succeeded", "failed", "cancelled", "expired", "unknown", "approval_required", "awaiting_approval", "approved", "ready", "needs_review"})
+        self.assertEqual(
+            set(LABELS) | {"needs_review"},
+            {
+                "prepared",
+                "queued",
+                "running",
+                "succeeded",
+                "failed",
+                "cancelled",
+                "expired",
+                "unknown",
+                "approval_required",
+                "awaiting_approval",
+                "approved",
+                "ready",
+                "needs_review",
+            },
+        )
         self.assertIn("未実行", job_status_label("prepared"))
         self.assertEqual(job_status_label("failed"), "[X] 失敗")
         self.assertIn("未確認", job_status_label("needs_review"))
@@ -105,7 +135,10 @@ class JobStatusTests(unittest.TestCase):
         self.assertEqual(tree.tag_configure.call_args_list[1].kwargs["background"], "#FFF0CC")
         with patch("cardputer_mcp.gui_job_status.high_contrast_enabled", return_value=True):
             configure_job_status_tags(tree)
-        self.assertEqual(tree.tag_configure.call_args.kwargs, {"background": "SystemWindow", "foreground": "SystemWindowText"})
+        self.assertEqual(
+            tree.tag_configure.call_args.kwargs,
+            {"background": "SystemWindow", "foreground": "SystemWindowText"},
+        )
         tree.configure.assert_not_called()
 
 

@@ -224,17 +224,13 @@ async def test_recent_history_does_not_pin_old_work_or_images(tmp_path):
         snapshot = timeline.snapshot()
         assert len(snapshot["cards"]) == MAX_CARDS and snapshot["has_more"]
         assert "old-image" not in {item["job_id"] for item in snapshot["cards"]}
-        assert {"pending-one", "pending-two"} <= {
-            item["job_id"] for item in snapshot["cards"]
-        }
+        assert {"pending-one", "pending-two"} <= {item["job_id"] for item in snapshot["cards"]}
         broker._store().add_job("durable-queued", "b" * 64)
         snapshot = timeline.snapshot()
         assert snapshot["plans_available"] is False
         assert snapshot["cards"][0]["job_id"] == "durable-queued"
         assert "old-image" not in {item["job_id"] for item in snapshot["cards"]}
-        assert {"pending-one", "pending-two"} <= {
-            item["job_id"] for item in snapshot["cards"]
-        }
+        assert {"pending-one", "pending-two"} <= {item["job_id"] for item in snapshot["cards"]}
         assert all(item["review"] is None for item in snapshot["cards"])
         assert len(snapshot["cards"]) == MAX_CARDS
 
@@ -273,9 +269,7 @@ async def test_plan_query_and_output_bounds_with_more_than_one_page(tmp_path):
         assert all(item["review"] is None for item in snapshot["cards"])
         # Every timeline enumeration is bounded at the database, not sliced
         # after materializing all jobs or durable plan payloads.
-        enumerations = [
-            sql for sql in statements if "ORDER BY t.sequence DESC" in sql
-        ]
+        enumerations = [sql for sql in statements if "ORDER BY t.sequence DESC" in sql]
         assert enumerations and all("LIMIT 33" in sql for sql in enumerations)
         assert len(statements) < 3000
 
@@ -415,7 +409,9 @@ async def test_history_order_is_registration_order_across_state_review_and_execu
         initial = timeline.snapshot()["cards"]
         assert [row["job_id"] for row in initial] == ["second", "first"]
         registered = {row["job_id"]: row["created_utc"] for row in initial}
-        broker.execute(ExecuteRequest(session=broker.session.capability, plan_hash=first["plan_hash"]))
+        broker.execute(
+            ExecuteRequest(session=broker.session.capability, plan_hash=first["plan_hash"])
+        )
         await broker.queue.join()
         store.set_job("first", "needs_review", "broker_restart_no_replay")
         for reviewed in (0, 1):

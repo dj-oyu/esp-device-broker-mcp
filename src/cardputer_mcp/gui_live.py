@@ -572,14 +572,18 @@ class LiveWindow:
                 (
                     card.job_id,
                     card.job_id,
-                    (card.test or "-", job_status_label(card.state, card.reviewed), card.stage or "-"),
+                    (
+                        card.test or "-",
+                        job_status_label(card.state, card.reviewed),
+                        card.stage or "-",
+                    ),
                 )
                 for card in cards
             ],
         )
-        for card in cards:
-            tag = job_status_tag(card.state)
-            self.job_tree.item(card.job_id, tags=(tag,) if tag else ())
+        for row in cards:
+            tag = job_status_tag(row.state)
+            self.job_tree.item(row.job_id, tags=(tag,) if tag else ())
         selected = self.state.selected_job_id
         if selected and self.job_tree.exists(selected):
             if self.job_tree.selection() != (selected,):
@@ -595,7 +599,9 @@ class LiveWindow:
         detail = "Select a job to inspect its status and permitted logs."
         heading = "Selected job"
         if card:
-            heading = f"{card.job_id} | {job_status_label(card.state, card.reviewed)} ({card.state})"
+            heading = (
+                f"{card.job_id} | {job_status_label(card.state, card.reviewed)} ({card.state})"
+            )
             fields = [f"Request  {card.test or 'Unknown'}"]
             if card.stage:
                 fields.append(f"Stage  {card.stage}")
