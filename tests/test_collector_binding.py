@@ -223,6 +223,7 @@ async def test_receipt_selected_hash_admits_and_completes_real_broker_trial(
         esptool_directory=tmp_path / "esptool",
         esptool_sha256="b" * 64,
         backup_directory=tmp_path / "backups",
+        private_backup_acl_confirmed=True,
     )
     wire = FixedWire()
     resident = Broker(
