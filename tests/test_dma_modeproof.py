@@ -22,7 +22,6 @@ from cardputer_mcp.diagnostic_dma_modeproof import (
 from cardputer_mcp.diagnostic_modeproof import collect_modeproof, verify_modeproof_bytes
 from cardputer_mcp.diagnostic_registry import DiagnosticEntry
 
-
 DMA_ENTRY = DiagnosticEntry(
     "dj-oyu/cardputer-adv-pocketjs", "ac7cce7d20eb34fdd54659e6678d672d23e5d2d1",
     contract=CONTRACT, dma_modes=("ON", "OFF"),
