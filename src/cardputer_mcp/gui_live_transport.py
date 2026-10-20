@@ -8,6 +8,7 @@ import asyncio
 import json
 import math
 import re
+import sys
 import threading
 import time
 from collections import deque
@@ -16,6 +17,7 @@ from typing import Any, Literal
 
 import httpx2
 
+from .gui_live_retry import RETRYABLE_CODES, RETRYABLE_HTTP, SAFE_CODES, diagnostic
 from .models import BuildLogRequest, JobRequest
 from .operator_client import OperatorClient, OperatorClientError
 
@@ -37,10 +39,24 @@ class TransportEvent:
     generation: int
     payload: dict[str, Any]
     started_at: float
+    diagnostic: dict[str, Any] | None = None
 
 
 class _TransportFailure(Exception):
     """Carries only fixed, safe diagnostics."""
+
+    def __init__(
+        self,
+        error: str,
+        *,
+        reason: str | None = None,
+        status: int | None = None,
+        code: str | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(error)
+        self.reason = reason or ("invalid_response" if error == INVALID_RESPONSE else "rejected")
+        self.status, self.code, self.retryable = status, code, retryable
 
 
 def _cursor(value: Any) -> dict[str, Any]:
@@ -52,7 +68,7 @@ def _cursor(value: Any) -> dict[str, Any]:
         or type(value.get("sequence")) is not int
         or not 0 <= value["sequence"] <= 2**63 - 1
     ):
-        raise _TransportFailure(INVALID_RESPONSE)
+        raise _TransportFailure(INVALID_RESPONSE, status=200)
     return {"epoch": value["epoch"], "sequence": value["sequence"]}
 
 
@@ -313,7 +329,11 @@ class LiveRunner:
                 self._gap_generation = event.generation
                 self._events.append(
                     TransportEvent(
-                        "disconnected", event.generation, {"error": DELIVERY_GAP}, event.started_at
+                        "disconnected",
+                        event.generation,
+                        {"error": DELIVERY_GAP},
+                        event.started_at,
+                        diagnostic("delivery_gap", event.generation, 0),
                     )
                 )
                 overflow = True
@@ -350,34 +370,69 @@ class LiveRunner:
             try:
                 client.cookies.clear()
                 if response.status_code in (401, 403):
-                    raise _TransportFailure(AUTH_FAILED)
+                    raise _TransportFailure(
+                        AUTH_FAILED, reason="authentication_failed", status=response.status_code
+                    )
                 if response.status_code != 200:
-                    raise _TransportFailure(REJECTED)
+                    raise _TransportFailure(
+                        REJECTED,
+                        reason="http_rejected",
+                        status=response.status_code,
+                        retryable=response.status_code in RETRYABLE_HTTP,
+                    )
                 declared = response.headers.get("content-length")
                 if declared is not None:
                     try:
                         if int(declared) > MAX_RESPONSE_BYTES:
-                            raise _TransportFailure(INVALID_RESPONSE)
+                            raise _TransportFailure(INVALID_RESPONSE, status=200)
                     except ValueError:
-                        raise _TransportFailure(INVALID_RESPONSE) from None
+                        raise _TransportFailure(INVALID_RESPONSE, status=200) from None
                 body = bytearray()
                 async for chunk in response.aiter_bytes(chunk_size=8192):
                     if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
-                        raise _TransportFailure(INVALID_RESPONSE)
+                        raise _TransportFailure(INVALID_RESPONSE, status=200)
                     body.extend(chunk)
                 try:
                     data = json.loads(body)
                 except (ValueError, RecursionError):
-                    raise _TransportFailure(INVALID_RESPONSE) from None
+                    raise _TransportFailure(INVALID_RESPONSE, status=200) from None
                 if not isinstance(data, dict) or type(data.get("ok")) is not bool:
-                    raise _TransportFailure(INVALID_RESPONSE)
+                    raise _TransportFailure(INVALID_RESPONSE, status=200)
                 if not read_once and data["ok"] is not True:
-                    raise _TransportFailure(REJECTED)
+                    code = data.get("error")
+                    safe_code = code if type(code) is str and code in SAFE_CODES else None
+                    raise _TransportFailure(
+                        REJECTED,
+                        reason="broker_rejected",
+                        status=200,
+                        code=safe_code,
+                        retryable=safe_code in RETRYABLE_CODES,
+                    )
                 return data
             finally:
-                await response.aclose()
-        except httpx2.HTTPError:
-            raise _TransportFailure(UNREACHABLE) from None
+                primary_failure = sys.exception()
+                try:
+                    await response.aclose()
+                except httpx2.HTTPError:
+                    # Cleanup must not turn a known auth/permanent rejection
+                    # into a retryable network error. Cancellation still wins.
+                    if primary_failure is None:
+                        raise
+        except httpx2.HTTPError as error:
+            reasons = {
+                "ConnectTimeout": "connect_timeout",
+                "ReadTimeout": "read_timeout",
+                "WriteTimeout": "write_timeout",
+                "PoolTimeout": "pool_timeout",
+                "ConnectError": "connect_failed",
+                "ReadError": "read_failed",
+                "WriteError": "write_failed",
+                "RemoteProtocolError": "peer_disconnected",
+            }
+            reason = reasons.get(type(error).__name__, "transport_error")
+            raise _TransportFailure(
+                UNREACHABLE, reason=reason, retryable=reason != "transport_error"
+            ) from None
 
     async def _subscribe(self, generation: int) -> None:
         cursor = None
@@ -391,7 +446,7 @@ class LiveRunner:
                     or data["schema_version"] != 1
                     or data.get("kind") not in ("snapshot", "reset", "delta", "heartbeat")
                 ):
-                    raise _TransportFailure(INVALID_RESPONSE)
+                    raise _TransportFailure(INVALID_RESPONSE, status=200)
                 next_cursor = _cursor(data.get("cursor"))
                 kind = data["kind"]
                 if (
@@ -399,20 +454,43 @@ class LiveRunner:
                     or (kind == "delta" and _cursor(data.get("base_cursor")) != cursor)
                     or (kind == "heartbeat" and next_cursor != cursor)
                 ):
-                    raise _TransportFailure(INVALID_RESPONSE)
+                    raise _TransportFailure(INVALID_RESPONSE, status=200)
                 if not self._emit(TransportEvent("message", generation, data, started_at)):
                     return
                 cursor = next_cursor
         except _TransportFailure as error:
             self._emit(
-                TransportEvent("disconnected", generation, {"error": str(error)}, started_at)
+                TransportEvent(
+                    "disconnected",
+                    generation,
+                    {"error": str(error)},
+                    started_at,
+                    diagnostic(
+                        error.reason,
+                        generation,
+                        int((time.monotonic() - started_at) * 1000),
+                        status=error.status,
+                        code=error.code,
+                        retryable=error.retryable,
+                    ),
+                )
             )
         except asyncio.CancelledError:
             raise
         except Exception:
             # Never deliver exception text: transports may include URLs or headers.
             self._emit(
-                TransportEvent("disconnected", generation, {"error": UNREACHABLE}, started_at)
+                TransportEvent(
+                    "disconnected",
+                    generation,
+                    {"error": UNREACHABLE},
+                    started_at,
+                    diagnostic(
+                        "unexpected_exception",
+                        generation,
+                        int((time.monotonic() - started_at) * 1000),
+                    ),
+                )
             )
 
     async def _read_logs(self, generation: int, serial: int, request: dict[str, Any]) -> None:
