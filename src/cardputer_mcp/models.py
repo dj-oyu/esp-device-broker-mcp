@@ -143,7 +143,9 @@ class PrepareRequest(StrictModel):
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
     source_receipt: Digest | None = None
     derby_detail_mode: DiagnosticMode | None = None
-    derby_dma_mode: DiagnosticMode | None = None
+    derby_dma_mode: DiagnosticMode | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     flash_job_id: Identifier | None = None
 
     @model_validator(mode="after")

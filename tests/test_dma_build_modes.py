@@ -107,6 +107,13 @@ def test_request_and_approval_schema_require_explicit_typed_dma_axes(tmp_path):
     request = dict(
         job_id="build", test="firmware_build", project_id="fixture", source_receipt="a" * 64
     )
+    source_request = PrepareRequest(
+        job_id="source", test="firmware_fetch_source", project_id="fixture", source_commit="a" * 40
+    )
+    for ordinary in (source_request, PrepareRequest(**request)):
+        payload = ordinary.model_dump(mode="json")
+        assert "derby_dma_mode" not in payload
+        assert PrepareRequest.model_validate(payload) == ordinary
     for detail in ("ON", "OFF"):
         for dma in ("ON", "OFF"):
             parsed = PrepareRequest(**request, derby_detail_mode=detail, derby_dma_mode=dma)
