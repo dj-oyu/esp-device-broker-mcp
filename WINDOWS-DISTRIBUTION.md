@@ -84,3 +84,21 @@ PyInstaller builds Windows executables on Windows; this cloud Linux workspace
 cannot validate a Windows binary locally. See the workflow run for native evidence.
 References: [PyInstaller usage](https://pyinstaller.org/en/v6.16.0/usage.html),
 [PyInstaller release metadata](https://pypi.org/project/pyinstaller/6.16.0/).
+
+### English status and emoji rendering acceptance
+
+The live view uses short English labels (`✅ Succeeded`, `❌ Failed`,
+`⏳ Running`) and an independent Review column (`Not reviewed` / `Reviewed`).
+Machine state values, IDs, raw logs, codes and durable history are unchanged.
+No specific emoji color font is forced: Tk/Windows chooses glyph fallback, so
+color emoji support is not assumed. Status/review columns reserve measured text
+width and retain horizontal scrolling; failure/unknown row colors remain.
+
+On the exact packaged artifact, run the existing native GUI test group, then
+inspect Jobs and Details at normal and 168 DPI with system/high-contrast themes.
+Select succeeded, failed, running, unknown and both review states. Check for
+missing-glyph boxes, clipped emoji/text, row-height clipping, selection visibility
+and correct independent review labels. Record Windows/Tk version and the actual
+font/fallback appearance, and capture screenshots. Metric assertions cannot prove
+glyph appearance or color support. This cloud-only change does not deploy or
+claim that native Windows rendering has been accepted.

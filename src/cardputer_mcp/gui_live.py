@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from .gui import Outcome, QueueController, http_diagnostics_summary, mcp_catalog_summary, perform
-from .gui_job_status import configure_job_status_tags
+from .gui_job_status import LABELS, configure_job_status_tags
 from .gui_live_presentation import (
     LogRequestState,
     LogView,
@@ -146,8 +146,17 @@ class LiveWindow:
             sticky="nsew",
             padx=(0, 16),
         )
-        self.job_tree.heading("state", text="状態・結果")
-        self.job_tree.heading("confirmation", text="確認")
+        self.job_tree.heading("state", text="Status / result")
+        self.job_tree.heading("confirmation", text="Review")
+        from tkinter import font
+
+        status_font = font.nametofont("TkDefaultFont", root=root)
+        for column, labels in (
+            ("state", LABELS.values()),
+            ("confirmation", ("Not reviewed", "Reviewed")),
+        ):
+            width = max(status_font.measure(label) for label in labels) + 24
+            self.job_tree.column(column, minwidth=width, width=width)
         configure_job_status_tags(self.job_tree)
         self.job_tree.bind(
             "<<ThemeChanged>>", lambda _event: configure_job_status_tags(self.job_tree), add="+"
@@ -587,9 +596,9 @@ class LiveWindow:
                 self._reconnect(automatic=True)
             elif retry.deadline is not None:
                 seconds = max(0, int(retry.deadline - now + 0.999))
-                self.status.set(f"状態更新停止・再接続待ち {seconds}秒（試行 {retry.attempts}）")
+                self.status.set(f"Updates paused; reconnecting in {seconds}s (attempt {retry.attempts})")
             elif retry.stopped:
-                self.status.set(self.state.message + " 自動再接続停止・詳細は Connection")
+                self.status.set(self.state.message + " Automatic reconnect paused; see Connection")
         self._render_preview()
         self._controls()
         self.timer = self.root.after(50, self._drain)
@@ -657,7 +666,7 @@ class LiveWindow:
         if card:
             heading = f"{card.job_id} | {card.presentation.label}"
             if card.failure_reason:
-                heading += "\n理由：" + REASON_LABELS[card.failure_reason]
+                heading += "\nReason: " + REASON_LABELS[card.failure_reason]
             display = card.presentation
             fields = [
                 f"Request  {card.test or 'Unknown'}",
@@ -669,11 +678,11 @@ class LiveWindow:
                 fields.append(f"Stage  {card.stage}")
             if card.result:
                 fields.append(f"Diagnostic code  {card.result}")
-            dates = ["登録順：作成時の順序を維持（状態更新では移動しません）"]
+            dates = ["Registration order: status updates do not move jobs"]
             if card.created_utc:
                 dates.append(f"Registered  {card.created_utc}")
             else:
-                dates.append("Registered  日時不明（旧履歴）")
+                dates.append("Registered  time unknown (legacy history)")
             if card.finished_utc:
                 dates.append(f"Finished  {card.finished_utc}")
             dates.append(f"Historical acknowledgement  {display.review_label}")
