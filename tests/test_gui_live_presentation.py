@@ -680,7 +680,10 @@ def test_transient_disconnect_retries_new_generation_and_never_mutations():
     window.status = Mock()
     old = window.state.generation
     failure = TransportEvent(
-        "disconnected", old, {"error": "fixed"}, 0,
+        "disconnected",
+        old,
+        {"error": "fixed"},
+        0,
         diagnostic("read_timeout", old, 35000, retryable=True),
     )
     with patch("cardputer_mcp.gui_live.time.monotonic", return_value=100):

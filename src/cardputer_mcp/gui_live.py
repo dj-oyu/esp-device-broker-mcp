@@ -516,9 +516,13 @@ class LiveWindow:
                     reason=reasons.get(error) if type(error) is str else None,
                 )
                 details = event.diagnostic or diagnostic(
-                    "invalid_response" if error == INVALID_RESPONSE else
-                    "delivery_gap" if error == DELIVERY_GAP else "unclassified_disconnect",
-                    self.state.generation, 0,
+                    "invalid_response"
+                    if error == INVALID_RESPONSE
+                    else "delivery_gap"
+                    if error == DELIVERY_GAP
+                    else "unclassified_disconnect",
+                    self.state.generation,
+                    0,
                 )
                 self._live_failed(details)
                 self.log_requests = LogRequestState()

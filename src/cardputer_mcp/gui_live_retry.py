@@ -16,6 +16,28 @@ SAFE_CODES = RETRYABLE_CODES | frozenset(
     }
 )
 
+SAFE_REASONS = frozenset(
+    {
+        "authentication_failed",
+        "broker_rejected",
+        "connect_failed",
+        "connect_timeout",
+        "delivery_gap",
+        "http_rejected",
+        "invalid_response",
+        "peer_disconnected",
+        "pool_timeout",
+        "read_failed",
+        "read_timeout",
+        "rejected",
+        "transport_error",
+        "unclassified_disconnect",
+        "unexpected_exception",
+        "write_failed",
+        "write_timeout",
+    }
+)
+
 
 def diagnostic(
     reason: str,
@@ -28,7 +50,7 @@ def diagnostic(
 ) -> dict[str, Any]:
     return {
         "utc": datetime.now(UTC).isoformat(timespec="seconds"),
-        "reason": reason,
+        "reason": reason if reason in SAFE_REASONS else "unclassified_disconnect",
         "generation": generation,
         "elapsed_ms": max(0, min(elapsed_ms, 86400000)),
         "http_status": status if type(status) is int and 100 <= status <= 599 else None,
