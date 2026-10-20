@@ -56,7 +56,7 @@ Legacy needs_review is not an outcome. Only serial_fault_marker,
 derby_fixed_trial_invalid, serial_capture_invalid, serial_capture_timeout and
 source_cache_scan_limit establish a failed requested result in this conservative
 presentation mapping. Other legacy needs_review records show result unknown,
-including restart, missing acknowledgement, uncertain close/write and unknown
+including restart, missing device acknowledgements, uncertain close/write and unknown
 codes. This list does not change admission, cancellation or recovery gates.
 
 Unreviewed/acknowledged badges occupy their own column. Acknowledging a record

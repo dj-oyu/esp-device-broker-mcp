@@ -696,7 +696,7 @@ class LiveWindow:
             self.connection_status.set(
                 f"{snapshot.backend} | Owner: {owner.owner if owner else 'none'} | "
                 f"Active job: {snapshot.active_job or 'none'}\n"
-                f"Historical review: {'present' if snapshot.needs_review else 'none'} | "
+                f"Pending historical acknowledgement: {'present' if snapshot.needs_review else 'none'} | "
                 f"Current ownership uncertainty: {'yes' if snapshot.ownership_uncertain else 'no'}"
             )
             sync_rows(
