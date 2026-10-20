@@ -24,6 +24,7 @@ from .flash_lkg_bundle import (
 )
 from .flash_lkg_store import FirmwareSnapshots
 from .flash_manifest import _file, verify_bundle
+from .manifest_export import make_manifest_export, manifest_export_sha256, validate_plan_export
 from .models import TestName
 
 FLASH_ACTIONS: dict[str, Operation] = {
@@ -129,7 +130,14 @@ def validate_flash_plan(plan: dict[str, Any]) -> None:
         "test",
         "stages",
     }
-    if set(plan) != base | FLASH_FIELDS or plan.get("test") not in FLASH_ACTIONS:
+    optional = {"manifest_export_sha256"} if "manifest_export_sha256" in plan else set()
+    if set(plan) != base | FLASH_FIELDS | optional or plan.get("test") not in FLASH_ACTIONS:
+        raise ValueError("invalid_flash_plan")
+    if optional and (
+        plan["test"] != TestName.FLASH.value
+        or type(plan["manifest_export_sha256"]) is not str
+        or re.fullmatch(r"[a-f0-9]{64}", plan["manifest_export_sha256"]) is None
+    ):
         raise ValueError("invalid_flash_plan")
     if (
         plan["flash_operation"] != FLASH_ACTIONS[plan["test"]]
@@ -329,6 +337,7 @@ class FirmwareFlash:
         else:
             usb = hashlib.sha256(("mock:" + self.backend.device).encode()).hexdigest()
         expected_device = backup_digest = manifest_digest = elf_digest = image_digest = None
+        export_digest = None
         lkg_receipt = None
         recovery_kind = "full_backup"
         known = None
@@ -362,6 +371,7 @@ class FirmwareFlash:
                     raise FlashFailure("flash_build_project_mismatch")
                 bundle = verify_bundle(root, manifest, flash_bytes=registration.flash_bytes)
                 manifest_digest = bundle.manifest_sha256
+                export_digest = manifest_export_sha256(make_manifest_export(manifest))
                 layout = json.loads(_file(root, manifest["flash_layout"], 65536))
                 app = layout.get("app", {}).get("file")
                 if not isinstance(app, str) or app not in {item.name for item in bundle.segments}:
@@ -402,6 +412,7 @@ class FirmwareFlash:
             recovery_kind,
         )
         return dict(
+            **({"manifest_export_sha256": export_digest} if export_digest is not None else {}),
             flash_operation=operation,
             lkg_receipt=lkg_receipt,
             recovery_kind=recovery_kind,
@@ -428,6 +439,7 @@ class FirmwareFlash:
     def prepare_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
         from types import SimpleNamespace
 
+        validate_flash_plan(plan)
         request = SimpleNamespace(
             test=TestName(plan["test"]),
             job_id=plan["job_id"],
@@ -436,9 +448,16 @@ class FirmwareFlash:
             backup_job_id=plan["backup_job_id"],
             lkg_receipt=plan["lkg_receipt"],
         )
-        return self.prepare(
+        details = self.prepare(
             request, plan["flash_principal"], plan["broker_epoch"], plan["session_id"]
         )
+        # Old immutable plans stay old: never supplement their committed payload.
+        # A malformed PRESENT commitment was rejected above, without fallback.
+        if "manifest_export_sha256" not in plan:
+            details.pop("manifest_export_sha256", None)
+        elif details.get("manifest_export_sha256") != plan["manifest_export_sha256"]:
+            raise FlashFailure("flash_inputs_changed_needs_review")
+        return details
 
     async def execute(self, plan: dict[str, Any], stage: Any, live: Any) -> str:
         loop = asyncio.get_running_loop()
@@ -477,6 +496,7 @@ class FirmwareFlash:
             _, backup = self._backup(registration, plan["backup_job_id"], plan["flash_principal"])
         if plan["flash_operation"] == "flash":
             root, manifest = self._build_context(plan["build_job_id"], plan["flash_principal"])
+            validate_plan_export(plan, manifest)
             bundle = verify_bundle(root, manifest, flash_bytes=registration.flash_bytes)
             receipts = {item["name"]: item for item in manifest["artifacts"]}
             images = tuple(

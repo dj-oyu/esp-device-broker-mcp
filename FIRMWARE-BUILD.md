@@ -547,3 +547,61 @@ no-progress timeout could improve diagnosis later; they do not replace the
 finite overall limit. Size-adaptive budgets need measured metadata throughput,
 and cross-call walk/hash caches need mutation and reference-authority proofs.
 Those algorithm changes are outside this time-budget adjustment.
+
+### Offline manifest export contract
+
+Successful owned build reads additionally return `manifest_export` and
+`manifest_export_sha256`. The export has exactly four fields: strict integer
+`schema_version: 1`, `contract: "broker-build-manifest-export-v1"`, lowercase
+64-hex `original_manifest_sha256`, and `manifest` (the existing private-cache
+projection). Unknown versions, extra fields, null/boolean versions, duplicate
+JSON keys and invalid cache evidence reject without selecting a legacy format.
+Canonical JSON is UTF-8 with sorted keys, compact `,`/`:` separators, ASCII
+escapes (`ensure_ascii=True`) and no nonfinite numbers (`allow_nan=False`).
+The complete canonical export is bounded to 1 MiB. `cache_evidence` has exactly
+`retained_private: true`, strict integer `bytes` in 1..131072, and lowercase
+64-hex `sha256`; the hash must match the typed proof's DMA and both detail cache
+hashes. Raw cache text, cached paths and secret values remain private.
+
+New flash plans commit `manifest_export_sha256` in their existing immutable plan
+hash, alongside the unchanged internal `manifest_sha256`. Prepare revalidation,
+dispatch and retained collector reads recheck that commitment. The successful
+flash job and planned/captured collector bindings still bind the exact flash
+plan hash and original manifest hash, owner, jobs, device, source, modes, entry,
+proof and BIN/ELF identities. The export hash is not a replacement image digest
+or an execution permission. The read's existing final current-owner, job,
+registration and epoch checks cover the export too.
+
+Durable export generation revalidates the original owned receipt and local bytes;
+log expiry and a broker restart do not change its digest. Busy/unavailable reads
+return no export. Damaged durable plans/references (including duplicate keys or
+a plan payload whose hash changed) do not fall back to RAM. Exporting performs
+no state migration or receipt rewrite.
+
+Existing plans and receipts are never supplemented. Exact legacy J1 manifests
+remain usable through the original full-manifest hash check. A secret-redacted
+legacy DMA export without a committed export hash cannot pass the new offline
+contract. A present malformed commitment must reject, not fall back to legacy.
+The original digest remains the value bound by the successful plan: the redacted
+export cannot recompute a hash that includes the omitted private cache text.
+Consumers verify the export hash against a fixed trusted flash plan and its
+successful job; checking a rewritten export's own hash is insufficient. This
+establishes offline consistency within the existing owner-authorized durable
+record trust boundary, not authenticity of an entirely forged JSON archive.
+
+The response field is `manifest_export_sha256`; `export_sha256` is not an alias.
+The same name in a flash plan remains part of that plan's immutable commitment.
+The pinned FW consumer from commit `824e9f91b52069c08df68e967d83b44e9f7d5240`
+is retained unchanged as `tests/fixtures/derby_manifest_export_pr38.py.txt`
+(original blob `7f4c42db24c69855c10c4b03304d62792b7a7ef1`, SHA256
+`fb275ee8e763e89a59d5deea132529e9d18787d731fae0f27b84acd06f1fc726`).
+Tests pass unmodified producer and durable `read_logs` responses through its
+`read_export_response` and `bind_export` functions for all four detail/DMA choices,
+including fresh logs, restart, log expiry and fixed-anchor tampering refusals.
+The dedicated pinned-FW junction workflow also checks out that exact FW head and
+the exact producer PR head on Linux and Windows. It exercises the complete host
+record chain and the existing HTTP authorization/restart/corruption tests under
+frozen dependencies. All images and durable records in these tests are synthetic;
+no production registry, deployment, device session or hardware action is involved.
+It adds no source admission, authorization scope, credential, device operation,
+deployment or automatic replay.

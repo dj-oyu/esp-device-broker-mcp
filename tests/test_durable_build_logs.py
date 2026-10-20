@@ -16,6 +16,7 @@ from cardputer_mcp.broker import Broker
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import BuildProject, Settings
+from cardputer_mcp.manifest_export import make_manifest_export, manifest_export_sha256
 from cardputer_mcp.models import BuildLogRequest, Origin
 from cardputer_mcp.server import create_app
 
@@ -48,6 +49,9 @@ def test_durable_manifest_is_independent_of_log_retention(receipt, retention):
         BuildLogRequest(job_id="build-0"), "alice", project_id="fixture", broker_epoch="f" * 32
     )
     assert result["manifest"] == manifest
+    assert result["manifest_export"] == make_manifest_export(manifest)
+    assert result["manifest_export_sha256"] == manifest_export_sha256(result["manifest_export"])
+    assert "export_sha256" not in result
     assert result["artifact_status"] == "verified"
     assert result["expired"] is (retention != "fresh")
     if retention != "fresh":
@@ -97,6 +101,7 @@ def test_invalid_receipt_never_falls_back_to_ram_manifest(receipt, file, mutatio
         assert result["entries"]
     assert result["artifact_status"] == "unavailable"
     assert "manifest" not in result
+    assert "manifest_export" not in result and "manifest_export_sha256" not in result
     assert str(root) not in json.dumps(result)
     assert "SYNTHETIC_PRIVATE" not in json.dumps(result)
     assert receipt.store.job("build-0")["state"] == "succeeded"
@@ -112,6 +117,34 @@ def test_unsuccessful_job_cannot_expose_a_durable_manifest(receipt, state):
     )
     assert result["artifact_status"] == "unavailable"
     assert "manifest" not in result
+    assert "manifest_export" not in result and "manifest_export_sha256" not in result
+
+
+@pytest.mark.parametrize("damage", ["plan_hash", "plan_duplicate", "reference_duplicate", "owner"])
+def test_export_rejects_corrupt_durable_plan_or_reference_after_restart(receipt, damage):
+    receipt.publish()
+    if damage == "reference_duplicate":
+        payload = receipt.store.db.execute(
+            "SELECT payload FROM build_artifact_references"
+        ).fetchone()[0]
+        payload = '{"manifest_sha256":"' + "0" * 64 + '",' + payload[1:]
+        receipt.store.db.execute("UPDATE build_artifact_references SET payload=?", (payload,))
+    else:
+        digest = receipt.store.job("build-0")["plan_hash"]
+        plan = receipt.store.plan(digest)
+        if damage == "plan_duplicate":
+            payload = '{"job_id":"build-0",' + json.dumps(plan)[1:]
+        else:
+            plan["build_principal" if damage == "owner" else "fingerprint"] = "other-owner"
+            payload = json.dumps(plan)
+        receipt.store.db.execute("UPDATE plans SET payload=? WHERE hash=?", (payload, digest))
+    receipt.store.db.commit()
+    receipt.restart()
+    result = receipt.builder.read_logs(
+        BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
+    )
+    assert result["artifact_status"] == "unavailable"
+    assert not {"manifest", "manifest_export", "manifest_export_sha256"} & result.keys()
 
 
 @asynccontextmanager
@@ -164,6 +197,7 @@ async def test_actual_mcp_receipt_survives_broker_restart_and_denies_other_princ
         broker.firmware_build.logs["build-0"] = logs
         first = await call(owner, "read_build_logs", {"job_id": "build-0"})
         assert first["ok"] and first["manifest"] == manifest and not first["expired"]
+        expected_export = first["manifest_export"], first["manifest_export_sha256"]
     before = list(receipt.store.db.iterdump())
     async with (
         running(receipt) as (url, broker, _),
@@ -174,8 +208,10 @@ async def test_actual_mcp_receipt_survives_broker_restart_and_denies_other_princ
         result = await call(owner, "read_build_logs", {"job_id": "build-0"})
         assert result["ok"] and result["expired"] and result["gap"]
         assert result["artifact_status"] == "verified" and result["manifest"] == manifest
+        assert (result["manifest_export"], result["manifest_export_sha256"]) == expected_export
         denied = await call(stranger, "read_build_logs", {"job_id": "build-0"})
         assert denied == {"ok": False, "error": "build_log_not_available"}
+        assert "manifest_export" not in denied
         assert broker.session is None and broker.backend.calls == 0
         assert list(receipt.store.db.iterdump()) == before
 
@@ -197,7 +233,7 @@ async def test_mcp_unavailable_artifact_preserves_log_gap_and_success_history(re
 
 
 @pytest.mark.parametrize(
-    "mutation", ["none", "revoke", "registration", "job_state", "plan_hash", "epoch"]
+    "mutation", ["none", "revoke", "registration", "job_state", "plan_hash", "plan_owner", "epoch"]
 )
 async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
     receipt, monkeypatch, mutation
@@ -237,6 +273,8 @@ async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
                 )
                 assert concurrent["ok"] and concurrent["artifact_status"] == "busy"
                 assert "manifest" not in concurrent
+                assert "manifest_export" not in concurrent
+                assert "manifest_export_sha256" not in concurrent
                 status = await asyncio.wait_for(call(status_client, "device_status"), 1)
                 assert status["ok"] and status["active_job"] is None
             if mutation == "revoke":
@@ -251,6 +289,15 @@ async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
                 store.db.commit()
             elif mutation == "epoch":
                 broker.epoch = "f" * 32
+            elif mutation == "plan_owner":
+                store = broker._store()
+                digest = store.job("build-0")["plan_hash"]
+                changed = store.plan(digest)
+                changed["build_principal"] = "other-owner"
+                store.db.execute(
+                    "UPDATE plans SET payload=? WHERE hash=?", (json.dumps(changed), digest)
+                )
+                store.db.commit()
         finally:
             release.set()
         result = await asyncio.wait_for(reading, 3)
@@ -259,6 +306,9 @@ async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
             again = await call(owner, "read_build_logs", {"job_id": "build-0"})
             assert again["ok"] and again["artifact_status"] == "verified"
             assert again["manifest"] == result["manifest"]
+            assert again["manifest_export"] == result["manifest_export"]
+            assert again["manifest_export_sha256"] == result["manifest_export_sha256"]
         else:
             assert result["ok"] is False and "manifest" not in result
+            assert "manifest_export" not in result and "manifest_export_sha256" not in result
             assert result["error"] in {"authentication_required", "build_log_not_available"}
