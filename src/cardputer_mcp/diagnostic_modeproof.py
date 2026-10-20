@@ -120,9 +120,16 @@ def verify_modeproof_bytes(
         if (
             len(canonical) > 16384
             or hashlib.sha256(canonical).hexdigest() != envelope["proof_sha256"]
-            or set(proof) != {
-                "schema_version", "build_mode", "build_measure", "fixed_workload",
-                "detail_measurement", "comparison_seed", "hardware_tested", "artifacts",
+            or set(proof)
+            != {
+                "schema_version",
+                "build_mode",
+                "build_measure",
+                "fixed_workload",
+                "detail_measurement",
+                "comparison_seed",
+                "hardware_tested",
+                "artifacts",
             }
             or type(proof["schema_version"]) is not int
             or proof["schema_version"] != 1
@@ -131,8 +138,10 @@ def verify_modeproof_bytes(
             or proof["build_measure"]["measure_mode"] != "ON"
             or proof["fixed_workload"]["mode"] != "ON"
             or proof["detail_measurement"]["mode"] != envelope["requested_mode"]
-            or proof["fixed_workload"]["owner_completion"] != {
-                "contract": "fixed-owner-v1", "record": "DERBY_DETAIL_EXIT",
+            or proof["fixed_workload"]["owner_completion"]
+            != {
+                "contract": "fixed-owner-v1",
+                "record": "DERBY_DETAIL_EXIT",
                 "detail_mode": envelope["requested_mode"],
             }
             or proof["comparison_seed"]["mode"] != "fixed"
@@ -166,7 +175,13 @@ def verify_modeproof_bytes(
         ):
             raise ValueError(_ERROR)
     except (
-        KeyError, TypeError, AttributeError, ValueError, struct.error, OverflowError, RecursionError
+        KeyError,
+        TypeError,
+        AttributeError,
+        ValueError,
+        struct.error,
+        OverflowError,
+        RecursionError,
     ):
         raise ValueError(_ERROR) from None
 
@@ -187,8 +202,7 @@ def collect_modeproof(
         verify_modeproof_bytes(envelope, provenance, artifacts, files)
         view = _read(root, "generated/derby_fixed_workload/derby_view.js", 1024 * 1024)
         if (
-            hashlib.sha256(view).hexdigest()
-            != proof["comparison_seed"]["embedded_view_sha256"]
+            hashlib.sha256(view).hexdigest() != proof["comparison_seed"]["embedded_view_sha256"]
             or view + b"\0" not in files[_ELF]
         ):
             raise ValueError(_ERROR)

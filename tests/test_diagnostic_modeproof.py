@@ -54,13 +54,17 @@ def image_fixture(root: Path, mode: str):
         "fixed_workload": {
             "mode": "ON",
             "owner_completion": {
-                "contract": "fixed-owner-v1", "record": "DERBY_DETAIL_EXIT", "detail_mode": mode
+                "contract": "fixed-owner-v1",
+                "record": "DERBY_DETAIL_EXIT",
+                "detail_mode": mode,
             },
         },
         "detail_measurement": {"mode": mode},
         "comparison_seed": {
-            "mode": "fixed", "hardware_seed": "2545F491",
-            "elf_seed_symbol_verified": True, "elf_embedded_view_verified": True,
+            "mode": "fixed",
+            "hardware_seed": "2545F491",
+            "elf_seed_symbol_verified": True,
+            "elf_embedded_view_verified": True,
             "embedded_view_sha256": hashlib.sha256(view).hexdigest(),
         },
         "hardware_tested": False,

@@ -32,19 +32,30 @@ def chain(tmp_path):
         model_dump_json=lambda: "registered",
     )
     build = {
-        "test": "firmware_build", "job_id": "public-build", "project_id": "public-project",
-        "build_principal": "owner", "source_receipt": "c" * 64,
-        "source_provenance": provenance, "derby_detail_mode": "OFF",
+        "test": "firmware_build",
+        "job_id": "public-build",
+        "project_id": "public-project",
+        "build_principal": "owner",
+        "source_receipt": "c" * 64,
+        "source_provenance": provenance,
+        "derby_detail_mode": "OFF",
     }
     build_hash = digest_plan(build)
     manifest = {
-        "build_job_id": "public-build", "build_plan_hash": build_hash,
-        "source_provenance": provenance, "derby_detail_mode": "OFF",
-        "diagnostic_modeproof": proof, "artifacts": artifacts,
+        "build_job_id": "public-build",
+        "build_plan_hash": build_hash,
+        "source_provenance": provenance,
+        "derby_detail_mode": "OFF",
+        "diagnostic_modeproof": proof,
+        "artifacts": artifacts,
     }
     flash = {
-        "test": "firmware_flash", "flash_operation": "flash", "job_id": "public-flash",
-        "flash_principal": "owner", "device_id": "public-device", "build_job_id": "public-build",
+        "test": "firmware_flash",
+        "flash_operation": "flash",
+        "job_id": "public-flash",
+        "flash_principal": "owner",
+        "device_id": "public-device",
+        "build_job_id": "public-build",
         "device_fingerprint": device.prepare(Action.DERBY_FIXED)["device_fingerprint"],
         "manifest_sha256": manifest_digest(manifest),
         "expected_elf_sha256": hashlib.sha256(files["cardputer_pocketjs.elf"]).hexdigest(),
@@ -59,29 +70,40 @@ def chain(tmp_path):
     plans = {flash_hash: flash, build_hash: build}
     current = {"completed_job": "public-flash", "receipt": "d" * 64, "kind": "artifact_bundle"}
     summary = {
-        "readback_verified": True, "passive_boot_verified": True,
+        "readback_verified": True,
+        "passive_boot_verified": True,
         "boot_log_matches_expected_artifact": True,
         "verification_basis": "full_segment_sha256_readback_and_boot_elf_prefix",
         "last_known_good_receipt": "d" * 64,
     }
     store = SimpleNamespace(
-        job=jobs.get, plan=plans.get, firmware_summary=lambda *args: summary,
+        job=jobs.get,
+        plan=plans.get,
+        firmware_summary=lambda *args: summary,
         firmware_current=lambda *args: current,
     )
     metadata = {
-        "manifest": manifest, "expected_elf_sha256": flash["expected_elf_sha256"],
+        "manifest": manifest,
+        "expected_elf_sha256": flash["expected_elf_sha256"],
         "expected_app_bin_sha256": flash["expected_app_bin_sha256"],
     }
     resident = SimpleNamespace(
-        settings=SimpleNamespace(
-            serial=config(), flash_devices={"public-device": registration}
-        ),
-        backend=device, _store=lambda: store,
+        settings=SimpleNamespace(serial=config(), flash_devices={"public-device": registration}),
+        backend=device,
+        _store=lambda: store,
         firmware_flash=SimpleNamespace(_known=lambda *args: (current, metadata, files)),
     )
     return SimpleNamespace(
-        resident=resident, jobs=jobs, plans=plans, current=current, summary=summary,
-        metadata=metadata, manifest=manifest, files=files, flash=flash, build=build,
+        resident=resident,
+        jobs=jobs,
+        plans=plans,
+        current=current,
+        summary=summary,
+        metadata=metadata,
+        manifest=manifest,
+        files=files,
+        flash=flash,
+        build=build,
     )
 
 
@@ -141,9 +163,14 @@ def test_bound_plan_schema_and_current_receipt_guard(chain):
 
     details = prepare_collector(chain.resident, "public-flash", "owner")
     plan = {
-        "version": 1, "broker_epoch": "e" * 32, "session_id": "f" * 32,
-        "device": "configured-cardputer", "backend": "serial", "job_id": "public-trial",
-        "test": "derby_fixed_workload", **details,
+        "version": 1,
+        "broker_epoch": "e" * 32,
+        "session_id": "f" * 32,
+        "device": "configured-cardputer",
+        "backend": "serial",
+        "job_id": "public-trial",
+        "test": "derby_fixed_workload",
+        **details,
     }
     PlanApprovals._schema(plan)
     chain.current["completed_job"] = "later-flash"
@@ -186,21 +213,28 @@ async def test_receipt_selected_hash_admits_and_completes_real_broker_trial(
 
     serial = config().model_copy(update={"expected_firmware_sha256": configured_hash})
     registration = FlashDevice(
-        selector=serial.selector, flash_bytes=8388608, project_id="public-project",
+        selector=serial.selector,
+        flash_bytes=8388608,
+        project_id="public-project",
         python_tool=FlashPython(
             executable=tmp_path / "python.exe", sha256="b" * 64, version="Python 3.12.0"
         ),
-        esptool_directory=tmp_path / "esptool", esptool_sha256="b" * 64,
+        esptool_directory=tmp_path / "esptool",
+        esptool_sha256="b" * 64,
         backup_directory=tmp_path / "backups",
     )
     wire = FixedWire()
     resident = Broker(
         Settings(
-            backend="serial", serial=serial, state_dir=tmp_path / "broker",
+            backend="serial",
+            serial=serial,
+            state_dir=tmp_path / "broker",
             flash_devices={"public-device": registration},
         ),
-        backend=backend_for(wire, serial), serial_enabled=True,
-        lock_path=tmp_path / "device.lock", principal_valid=lambda *args: True,
+        backend=backend_for(wire, serial),
+        serial_enabled=True,
+        lock_path=tmp_path / "device.lock",
+        principal_valid=lambda *args: True,
     )
     await resident.start()
     try:
@@ -211,8 +245,11 @@ async def test_receipt_selected_hash_admits_and_completes_real_broker_trial(
             registration.model_dump_json().encode()
         ).hexdigest()
         metadata = {
-            **chain.metadata, "kind": "artifact_bundle", "device_id": "public-device",
-            "principal": "owner", "flash_bytes": registration.flash_bytes,
+            **chain.metadata,
+            "kind": "artifact_bundle",
+            "device_id": "public-device",
+            "principal": "owner",
+            "flash_bytes": registration.flash_bytes,
             "selector_sha256": hashlib.sha256(
                 registration.selector.model_dump_json().encode()
             ).hexdigest(),
@@ -236,15 +273,20 @@ async def test_receipt_selected_hash_admits_and_completes_real_broker_trial(
         )
         store.db.execute("INSERT INTO firmware_lkg_history VALUES (?,?,?,?,?,?)", row)
         store.db.commit()
-        prepared = resident.prepare(PrepareRequest(
-            session=token, job_id="public-trial", test=Action.DERBY_FIXED,
-            flash_job_id="public-flash",
-        ))
+        prepared = resident.prepare(
+            PrepareRequest(
+                session=token,
+                job_id="public-trial",
+                test=Action.DERBY_FIXED,
+                flash_job_id="public-flash",
+            )
+        )
         assert prepared["plan"]["expected_firmware_sha256"] == chain.flash["expected_elf_sha256"]
         assert wire.writes == []
-        assert PlanApprovals(resident).validate_current(
-            prepared["plan_hash"], resident.session
-        ) == prepared["plan"]
+        assert (
+            PlanApprovals(resident).validate_current(prepared["plan_hash"], resident.session)
+            == prepared["plan"]
+        )
         admitted = resident.execute(ExecuteRequest(session=token, plan_hash=prepared["plan_hash"]))
         assert admitted["state"] == "queued"
         await resident.queue.join()

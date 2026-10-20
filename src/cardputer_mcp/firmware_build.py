@@ -368,13 +368,17 @@ class FirmwareBuild:
         return project.model_copy(update={"project_dir": root}), provenance
 
     def prepare(
-        self, project_id: str | None, principal: str, source_receipt: str | None = None,
+        self,
+        project_id: str | None,
+        principal: str,
+        source_receipt: str | None = None,
         derby_detail_mode: DiagnosticMode | str | None = None,
     ) -> dict[str, Any]:
         project, provenance = self._project(project_id, principal, source_receipt)
         if derby_detail_mode is not None:
             derby_detail_mode = DiagnosticMode(derby_detail_mode).value
-            if (provenance is None
+            if (
+                provenance is None
                 or provenance.get("repository", "").casefold() != "dj-oyu/cardputer-adv-pocketjs"
                 or provenance.get("commit") != "b561aea1c0798feb28055a00d36681fae81ac58a"
             ):
@@ -417,8 +421,11 @@ class FirmwareBuild:
                         else (),
                     ),
                     "project_id": project_id,
-                    **({"derby_detail_mode": derby_detail_mode}
-                       if derby_detail_mode is not None else {}),
+                    **(
+                        {"derby_detail_mode": derby_detail_mode}
+                        if derby_detail_mode is not None
+                        else {}
+                    ),
                     **({"source_receipt": source_receipt} if source_receipt is not None else {}),
                     "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
                     "profile": hash_file(project.trusted_profile),
@@ -452,8 +459,7 @@ class FirmwareBuild:
                 if provenance
                 else {}
             ),
-            **({"derby_detail_mode": derby_detail_mode}
-               if derby_detail_mode is not None else {}),
+            **({"derby_detail_mode": derby_detail_mode} if derby_detail_mode is not None else {}),
             fingerprint=fingerprint,
             expected_idf=project.expected_idf,
             target=project.target,
@@ -471,8 +477,11 @@ class FirmwareBuild:
                 "-B",
                 "fingerprint-build-directory",
                 *(["-D", "SDKCONFIG=build-output-sdkconfig"] if provenance is not None else []),
-                *(["-D", "POCKET_DERBY_DETAIL_MEASURE=" + derby_detail_mode]
-                  if derby_detail_mode is not None else []),
+                *(
+                    ["-D", "POCKET_DERBY_DETAIL_MEASURE=" + derby_detail_mode]
+                    if derby_detail_mode is not None
+                    else []
+                ),
                 "build",
             ],
         )
@@ -549,7 +558,9 @@ class FirmwareBuild:
         principal = plan["build_principal"]
         if (
             self.prepare(
-                plan["project_id"], principal, plan.get("source_receipt"),
+                plan["project_id"],
+                principal,
+                plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
             )["fingerprint"]
             != plan["fingerprint"]
@@ -742,7 +753,9 @@ class FirmwareBuild:
         self._check_cancelled()
         if (
             self.prepare(
-                plan["project_id"], principal, plan.get("source_receipt"),
+                plan["project_id"],
+                principal,
+                plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
             )["fingerprint"]
             != plan["fingerprint"]
@@ -765,7 +778,9 @@ class FirmwareBuild:
             raise ValueError("idf_build_failed_needs_review")
         if (
             self.prepare(
-                plan["project_id"], principal, plan.get("source_receipt"),
+                plan["project_id"],
+                principal,
+                plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
             )["fingerprint"]
             != plan["fingerprint"]
@@ -798,12 +813,16 @@ class FirmwareBuild:
         self._check_cancelled()
         diagnostic = (
             collect_modeproof(build_dir, plan["derby_detail_mode"], provenance or {}, artifacts)
-            if plan.get("derby_detail_mode") is not None else None
+            if plan.get("derby_detail_mode") is not None
+            else None
         )
         manifest = dict(
             schema_version=1,
-            **({"derby_detail_mode": plan["derby_detail_mode"],
-                "diagnostic_modeproof": diagnostic} if diagnostic is not None else {}),
+            **(
+                {"derby_detail_mode": plan["derby_detail_mode"], "diagnostic_modeproof": diagnostic}
+                if diagnostic is not None
+                else {}
+            ),
             **({"source_provenance": provenance} if provenance is not None else {}),
             build_job_id=plan["job_id"],
             build_plan_hash=hashlib.sha256(
@@ -856,7 +875,9 @@ class FirmwareBuild:
             raise ValueError("build_final_commit_not_authorized")
         if (
             self.prepare(
-                plan["project_id"], principal, plan.get("source_receipt"),
+                plan["project_id"],
+                principal,
+                plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
             )["fingerprint"]
             != plan["fingerprint"]
@@ -963,8 +984,10 @@ class FirmwareBuild:
             self._verify_owned_artifacts(root, manifest)
         if manifest.get("derby_detail_mode") is not None:
             verified = collect_modeproof(
-                root, manifest["derby_detail_mode"],
-                manifest.get("source_provenance", {}), manifest["artifacts"],
+                root,
+                manifest["derby_detail_mode"],
+                manifest.get("source_provenance", {}),
+                manifest["artifacts"],
             )
             if verified != manifest.get("diagnostic_modeproof"):
                 raise BuildLocationError("build_output_identity_mismatch")

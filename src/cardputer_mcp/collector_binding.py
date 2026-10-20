@@ -85,8 +85,7 @@ def _owned_flash(broker: "Broker", flash_job_id: str, principal: str) -> tuple[A
                 "boot_log_matches_expected_artifact",
             )
         )
-        or summary.get("verification_basis")
-        != "full_segment_sha256_readback_and_boot_elf_prefix"
+        or summary.get("verification_basis") != "full_segment_sha256_readback_and_boot_elf_prefix"
         or current is None
         or current["completed_job"] != flash_job_id
         or current["receipt"] != summary.get("last_known_good_receipt")

@@ -27,19 +27,23 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
     settings = SimpleNamespace(build_projects={"fixture": project}, state_dir=tmp_path / "state")
     builder = FirmwareBuild(settings)
     provenance = {
-        "repository": "dj-oyu/cardputer-adv-pocketjs", "commit": J1_COMMIT,
+        "repository": "dj-oyu/cardputer-adv-pocketjs",
+        "commit": J1_COMMIT,
         "source_receipt": "a" * 64,
     }
     node = SimpleNamespace(version="v22.0.0", executable=profile, sha256="b" * 64)
-    with patch.object(builder, "_project", return_value=(project, provenance)), patch.object(
-        builder, "_registered_tools", return_value={"node": node}
+    with (
+        patch.object(builder, "_project", return_value=(project, provenance)),
+        patch.object(builder, "_registered_tools", return_value={"node": node}),
     ):
         on = builder.prepare("fixture", "owner", "a" * 64, "ON")
         off = builder.prepare("fixture", "owner", "a" * 64, "OFF")
         for mode, plan in (("ON", on), ("OFF", off)):
             assert plan["derby_detail_mode"] == mode
             assert plan["argv_template"][-3:] == [
-                "-D", "POCKET_DERBY_DETAIL_MEASURE=" + mode, "build"
+                "-D",
+                "POCKET_DERBY_DETAIL_MEASURE=" + mode,
+                "build",
             ]
             assert "SDKCONFIG=build-output-sdkconfig" in plan["argv_template"]
         on_dir = build_directory(settings.state_dir, None, on["fingerprint"], "e" * 64)
@@ -64,7 +68,8 @@ def test_modeproof_remains_verified_after_log_loss(mode, retention):
         root, manifest = case.publish(finish=False, publish=False)
         provenance, artifacts, _ = image_fixture(root, mode)
         manifest.update(
-            source_provenance=provenance, derby_detail_mode=mode,
+            source_provenance=provenance,
+            derby_detail_mode=mode,
             diagnostic_modeproof=collect_modeproof(root, mode, provenance, artifacts),
             artifacts=artifacts,
         )
@@ -100,8 +105,12 @@ def test_modeproof_remains_verified_after_log_loss(mode, retention):
 
 
 def test_mode_input_is_enum_and_confined_to_registered_source_build():
-    base = {"job_id": "build", "test": "firmware_build", "project_id": "fixture",
-            "source_receipt": "a" * 64}
+    base = {
+        "job_id": "build",
+        "test": "firmware_build",
+        "project_id": "fixture",
+        "source_receipt": "a" * 64,
+    }
     for mode in ("ON", "OFF"):
         assert PrepareRequest(**base, derby_detail_mode=mode).derby_detail_mode == mode
     for mode in ("-DANY=1", "on", "ON;echo unsafe", True):

@@ -602,16 +602,26 @@ async def test_registered_profile_forwards_explicit_source_mode(
 
     def build_prepare(project, principal, receipt, selected_mode=None):
         seen.append((receipt, selected_mode))
-        return {**original(project, principal), "source_receipt": receipt,
-                "derby_detail_mode": selected_mode}
+        return {
+            **original(project, principal),
+            "source_receipt": receipt,
+            "derby_detail_mode": selected_mode,
+        }
 
     monkeypatch.setattr(broker.firmware_source, "authorize_receipt", lambda *args: None)
     monkeypatch.setattr(broker.firmware_build, "prepare", build_prepare)
     async with connect(service.url, key.token) as remote:
-        prepared = await call(remote, "prepare_test", {
-            "job_id": "mode-build", "test": "firmware_build", "project_id": "fixture",
-            "source_receipt": "c" * 64, "derby_detail_mode": mode,
-        })
+        prepared = await call(
+            remote,
+            "prepare_test",
+            {
+                "job_id": "mode-build",
+                "test": "firmware_build",
+                "project_id": "fixture",
+                "source_receipt": "c" * 64,
+                "derby_detail_mode": mode,
+            },
+        )
     assert prepared["ok"]
     assert prepared["plan"]["derby_detail_mode"] == mode
     assert seen == [("c" * 64, mode)]
