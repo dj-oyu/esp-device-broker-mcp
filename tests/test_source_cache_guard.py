@@ -10,6 +10,7 @@ from test_source_preflight import registered
 
 from cardputer_mcp import source_snapshot
 from cardputer_mcp.config import Settings
+from cardputer_mcp.source_cache_lock import LOCK_NAME
 from cardputer_mcp.source_snapshot import SourceError, SourceSnapshots
 
 
@@ -79,8 +80,10 @@ async def test_fetch_retains_guard_through_failed_download_and_pending_cleanup(
         release.set()
         with pytest.raises(SourceError, match="source_fetch_interrupted"):
             await task
-    assert list(root.iterdir()) == [] and not first.uncertain
-    assert second.usage("alias")["snapshots"] == 0
+    assert list(root.iterdir()) == [root / LOCK_NAME] and not first.uncertain
+    assert (root / LOCK_NAME).stat().st_size == 64
+    usage = second.usage("alias")
+    assert usage["snapshots"] == 0 and usage["pending_snapshots"] == 0
 
 
 def test_cache_inventory_counts_empty_directories_against_entry_budget(tmp_path, monkeypatch):
