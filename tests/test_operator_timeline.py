@@ -269,7 +269,11 @@ async def test_plan_query_and_output_bounds_with_more_than_one_page(tmp_path):
         assert all(item["review"] is None for item in snapshot["cards"])
         # Every timeline enumeration is bounded at the database, not sliced
         # after materializing all jobs or durable plan payloads.
-        enumerations = [sql for sql in statements if "ORDER BY t.sequence DESC" in sql]
+        enumerations = [
+            sql
+            for sql in statements
+            if "ORDER BY t.sequence DESC" in sql or "ORDER BY sequence DESC" in sql
+        ]
         assert enumerations and all("LIMIT 33" in sql for sql in enumerations)
         assert len(statements) < 3000
 
@@ -429,3 +433,13 @@ async def test_history_order_is_registration_order_across_state_review_and_execu
             store.set_job(f"new-{index}", "succeeded", "mock_pass")
         rows = timeline.snapshot()["cards"]
         assert [row["job_id"] for row in rows] == [f"new-{i}" for i in range(39, 7, -1)]
+
+
+async def test_reprepared_plan_keeps_position_and_latest_plan_without_duplicate_slots(tmp_path):
+    async with running(tmp_path) as (broker, _, timeline, _):
+        prepare(broker, "old", Action.CAPTURE)
+        prepare(broker, "new")
+        latest = prepare(broker, "old", Action.DIAGNOSTICS)
+        rows = timeline.snapshot()["cards"]
+        assert [row["job_id"] for row in rows] == ["new", "old"]
+        assert rows[1]["plan_hash"] == latest["plan_hash"]

@@ -515,12 +515,15 @@ class OperatorTimeline:
         return (
             self.broker._store()
             .db.execute(
-                f"""SELECT p.hash
+                f"""WITH ranked AS (
+                SELECT p.hash,t.sequence,
+                    ROW_NUMBER() OVER (PARTITION BY t.sequence ORDER BY p.rowid DESC) AS version
                 FROM plans p JOIN timeline_order t ON t.job_id=
                     CASE WHEN length(CAST(p.payload AS BLOB))<=16384 AND json_valid(p.payload)
                         THEN json_extract(p.payload,'$.job_id') END
                 WHERE length(p.hash)=64 AND {_UNEXECUTED} AND ({where})
-                ORDER BY t.sequence DESC LIMIT ?""",
+                ) SELECT hash FROM ranked WHERE version=1
+                ORDER BY sequence DESC LIMIT ?""",
                 (_MAX_PLAN_BYTES, *args, MAX_CARDS + 1),
             )
             .fetchall()
