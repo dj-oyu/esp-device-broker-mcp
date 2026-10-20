@@ -39,6 +39,7 @@ scalars, never raw serial evidence or a full diagnostic document. Unknown detail
 are omitted. A generic fault does not establish OOM: old records without a
 specific hint remain generic. Future existing-fault observations can attach a
 fixed OOM hint from an explicit OOM record, or an APP_LOAD compile-out-of-memory
-record. This is display metadata only: fault acceptance, terminal validity, raw
+record. The startup-failure label additionally requires an observed START_FAILED;
+otherwise only the memory-shortage observation is shown. This is display metadata only: fault acceptance, terminal validity, raw
 ownership, review flags and retry behavior remain unchanged. No historical
 record is rewritten to infer a more specific cause.

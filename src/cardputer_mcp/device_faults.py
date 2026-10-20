@@ -42,7 +42,9 @@ def fault_detail(raw: bytes) -> str | None:
         cleaned,
         re.IGNORECASE,
     ):
-        return "app_load_out_of_memory"
+        if re.search(rb"\bSTART_FAILED\b", cleaned):
+            return "app_load_out_of_memory"
+        return "out_of_memory_observed"
     if re.search(rb"\bOOM\b", cleaned):
         return "out_of_memory_observed"
     return None
