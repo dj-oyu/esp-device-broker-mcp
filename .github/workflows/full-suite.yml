@@ -47,7 +47,7 @@ jobs:
       - name: Lint and format
         run: |
           uv run --frozen ruff check src tests packaging/full_suite.py packaging/ci_process_tree.py
-          uv run --frozen ruff format --check src tests packaging/full_suite.py packaging/ci_process_tree.py
+          uv run --frozen ruff format --diff src tests packaging/full_suite.py packaging/ci_process_tree.py
       - name: Native strict typing
         run: uv run --frozen mypy src packaging/full_suite.py packaging/ci_process_tree.py
       - name: Complete tests with synthetic devices and credentials

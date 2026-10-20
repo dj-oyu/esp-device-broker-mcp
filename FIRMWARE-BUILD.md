@@ -401,3 +401,44 @@ RAM logs, corrupted manifests/identity/layout/security/binary/ELF bytes, file lo
 unsuccessful jobs, another principal, concurrent-reader limits, event-loop progress
 and grant/registration/job invalidation during hash IO. Existing durable path/link
 and hash checks are reused; no native build, USB or production DB is involved.
+
+## Fixed J1 detail ON/OFF comparison
+
+`prepare_test.request.derby_detail_mode` accepts only `ON` or `OFF` for a
+`firmware_build` with a registered project's `source_receipt`. This limited
+implementation accepts the public `dj-oyu/cardputer-adv-pocketjs` source commit
+`b561aea1c0798feb28055a00d36681fae81ac58a`. It selects only the fixed
+`POCKET_DERBY_DETAIL_MEASURE` boolean; no caller-supplied CMake options or commands
+are accepted. Telemetry, measurement and the fixed workload remain enabled in
+that source revision.
+
+The selected mode is frozen into the plan, fingerprint, isolated build directory,
+build-local sdkconfig and durable manifest. Both modes use the same source
+receipt. A stale cache in the other mode's directory cannot select the output.
+The mandatory source proof must be present and bounded. The broker checks its
+mode and artifact hashes against the actual BIN/ELF, the linked detail-mode and
+hardware-seed symbols, the fixed owner's completion contract and the IDF 6.0.1
+BIN/ELF pairing. Missing or inconsistent proof fails the build. The manifest
+retains `diagnostic_modeproof` with the JSON proof and its canonical SHA256;
+`read_build_logs` can return this verified receipt after log expiry or restart.
+Changing or removing the retained proof or image makes the receipt unavailable.
+Synthetic proof is not a physical test result.
+
+For a verified comparison trial, pass a typed `flash_job_id` to
+`prepare_test` with `test="derby_fixed_workload"`. It must identify this
+principal's successful, verified flash that remains the registered device's
+current firmware receipt. The broker reads retained firmware bytes and manifest,
+checks the build/source/modeproof chain, and freezes the expected ELF hash and
+receipt identities into the collector plan. A hash argument, an old configuration
+hash, a failed flash or another device/principal cannot supply that identity.
+The existing lease, recovery, explicit approval and v2 END/EXIT/STOP/HOME/quiet/
+close checks continue to apply. Legacy trials without `flash_job_id` retain their
+unverified provenance and do not qualify a receipt-bound ON/OFF comparison.
+
+Existing registered project/device configuration is reused; this change does not
+add a variant registration or alter SDK, authentication or operational settings.
+Before actual use, a separately authorized operator must deploy the reviewed
+broker, refresh client tool metadata, confirm the existing allowlisted project
+and device registration, then explicitly fetch/build/flash and run each mode's
+trial. Deployment, configuration edits, hardware writes and merging are separate
+operations; none are performed by these synthetic tests.

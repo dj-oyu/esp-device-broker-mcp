@@ -738,6 +738,10 @@ def create_server(
         firmware_backup requires session/device_id, with no build/recovery inputs.
         firmware_restore requires session/device_id and verified recovery, with no
         build_job_id or project_id. Explicit null optional references are allowed.
+
+        Registered source builds may select derby_detail_mode=ON or OFF for the
+        allowlisted J1 source. Fixed-workload collectors may select flash_job_id
+        to bind expected ELF identity to a successful owned current flash receipt.
         All use request={...}; no caller-supplied port, path or raw flash arguments.
         Backup, flash and restore are independent explicit exact-plan operations.
         Flash may use a retained verified LKG instead of another full backup.

@@ -144,7 +144,16 @@ def private_job(store: Any, job: dict[str, Any], plan: Any, principal: str) -> d
                     "principal_id": principal,
                     "broker_epoch": plan["broker_epoch"],
                     "device_fingerprint": plan["device_fingerprint"],
-                    "configured_expected_firmware_sha256": plan["expected_firmware_sha256"],
+                    **(
+                        {
+                            "expected_firmware_sha256": plan["expected_firmware_sha256"],
+                            "flash_receipt": plan["collector_binding"],
+                        }
+                        if "collector_binding" in plan
+                        else {
+                            "configured_expected_firmware_sha256": plan["expected_firmware_sha256"]
+                        }
+                    ),
                     "protocol_parser_commit": PARSER_COMMIT,
                     "device_reported_session": (
                         record["parsed"]["session"] if record["parsed"] is not None else None
@@ -152,6 +161,12 @@ def private_job(store: Any, job: dict[str, Any], plan: Any, principal: str) -> d
                     "installed_boot_source_image": "unverified",
                 },
             }
+            if "collector_binding" in plan:
+                from .collector_binding import validate_collector_schema
+
+                validate_collector_schema(plan)
+                if plan["collector_binding"]["principal_id"] != principal:
+                    raise ValueError("fixed_record_invalid")
             if len(json.dumps(report, separators=(",", ":")).encode()) > MAX_REPORT_BYTES:
                 raise ValueError("fixed_report_limit")
         except (KeyError, TypeError, ValueError):

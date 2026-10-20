@@ -50,6 +50,11 @@ class RenewRequest(LeaseRequest):
     lease_seconds: int = Field(default=30, ge=1, le=300)
 
 
+class DiagnosticMode(StrEnum):
+    ON = "ON"
+    OFF = "OFF"
+
+
 class PrepareRequest(StrictModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -137,9 +142,17 @@ class PrepareRequest(StrictModel):
     )
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
     source_receipt: Digest | None = None
+    derby_detail_mode: DiagnosticMode | None = None
+    flash_job_id: Identifier | None = None
 
     @model_validator(mode="after")
     def flash_references(self) -> "PrepareRequest":
+        if self.derby_detail_mode is not None and (
+            self.test != TestName.BUILD or self.source_receipt is None
+        ):
+            raise ValueError("diagnostic_mode_requires_source_build")
+        if self.flash_job_id is not None and self.test != TestName.DERBY_FIXED:
+            raise ValueError("flash_job_id_only_for_fixed_collector")
         if self.test not in (TestName.SOURCE, TestName.BUILD) and self.session is None:
             raise ValueError("device_session_required")
         if self.test == TestName.SOURCE:

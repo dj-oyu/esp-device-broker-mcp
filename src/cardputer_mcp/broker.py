@@ -22,6 +22,7 @@ from filelock import FileLock, Timeout
 from .backend import Backend, BackendResult, DeviceDisconnected, DeviceOperationFailure, MockBackend
 from .build_locations import BuildLocationError
 from .capture import CapturedImage
+from .collector_binding import collector_live, prepare_collector
 from .config import Settings
 from .derby_provenance import DerbyProvenance, capture_provenance, finish_provenance
 from .derby_reports import PROVENANCE_KEY
@@ -1154,9 +1155,16 @@ class Broker:
                         request.project_id or "", request.source_receipt, session.principal_id or ""
                     )
                 details = self.firmware_build.prepare(
-                    request.project_id, session.principal_id or "", request.source_receipt
+                    request.project_id,
+                    session.principal_id or "",
+                    request.source_receipt,
+                    request.derby_detail_mode,
                 )
                 storage = self.firmware_build.storage(request.project_id or "")
+            elif request.test == TestName.DERBY_FIXED and request.flash_job_id is not None:
+                if request.project_id is not None:
+                    raise ValueError("project_only_for_build")
+                details = prepare_collector(self, request.flash_job_id, session.principal_id or "")
             else:
                 if request.project_id is not None:
                     raise ValueError("project_only_for_build")
@@ -1286,6 +1294,7 @@ class Broker:
             self.principal_valid is not valid
             or self._runtime_binding() != binding
             or (flash_binding is not None and not live_binding(self, flash_binding, payload))
+            or not collector_live(self, payload, session.principal_id or "")
             or self.session is not session
             or not self._execution_intent_binding_live(intent)
             or self.closing
@@ -1751,6 +1760,16 @@ class Broker:
                 if flash_binding is not None and not validate_binding(self, flash_binding, plan):
                     self._cancel_execution_intent(queued_intent, "flash_binding_invalid")
                     continue
+                if "flash_job_id" in plan:
+                    try:
+                        fresh = prepare_collector(
+                            self, plan["flash_job_id"], lease.principal_id or ""
+                        )
+                        if any(plan.get(key) != value for key, value in fresh.items()):
+                            raise ValueError("collector_binding_changed")
+                    except Exception:
+                        self._cancel_execution_intent(queued_intent, "collector_binding_changed")
+                        continue
                 current_authorized = True
                 if lease.principal_id is not None and (
                     requires_current_principal or self.principal_valid is not None
@@ -1778,6 +1797,7 @@ class Broker:
                     or self.principal_valid is not current_valid
                     or self._runtime_binding() != current_binding
                     or (flash_binding is not None and not live_binding(self, flash_binding, plan))
+                    or not collector_live(self, plan, lease.principal_id or "")
                     or not self._state_lock.is_locked
                     or current_job["state"] != "queued"
                     or current_job["plan_hash"] != job["plan_hash"]
@@ -1864,6 +1884,7 @@ class Broker:
                             authorized
                             and self.principal_valid is valid
                             and self._runtime_binding() == current_binding
+                            and collector_live(self, plan, lease.principal_id or "")
                             and self.session is lease
                             and self._execution_lease_binding_live(queued_intent)
                             and self._device_lock.is_locked
