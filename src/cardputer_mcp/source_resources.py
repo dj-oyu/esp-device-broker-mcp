@@ -8,7 +8,12 @@ REFERENCE_LIMIT = 4096
 
 
 def resource_report(
-    store: Any, project_id: str, principal: str, inventory: dict[str, Any], *, epoch: str | None = None
+    store: Any,
+    project_id: str,
+    principal: str,
+    inventory: dict[str, Any],
+    *,
+    epoch: str | None = None,
 ) -> dict[str, Any]:
     """Combine a fresh complete filesystem scan with bounded owned DB evidence.
 
@@ -16,6 +21,8 @@ def resource_report(
     in this project are exposed; unknown/unowned entries are aggregate counts.
     References are retention evidence, never permission to remove an entry.
     """
+    if epoch is not None:
+        return _lifecycle_report(store, project_id, principal, inventory, epoch)
     rows = store.db.execute(
         "SELECT j.id,j.created,j.finished,j.state,j.diagnostic,p.payload FROM jobs j "
         "JOIN plans p ON p.hash=j.plan_hash ORDER BY j.id LIMIT ?",
@@ -120,35 +127,55 @@ def resource_report(
     result = dict(
         source_cache=usage,
         owned_snapshots=visible,
-        other_or_unclassified_snapshots=usage.get("snapshot_entries", usage["snapshots"]) - len(visible),
-        reference_inventory_complete=complete and len(records) == usage.get("snapshot_entries", usage["snapshots"]),
+        other_or_unclassified_snapshots=usage.get("snapshot_entries", usage["snapshots"])
+        - len(visible),
+        reference_inventory_complete=complete
+        and len(records) == usage.get("snapshot_entries", usage["snapshots"]),
         unresolved_reference_count=unresolved,
         scan_complete=True,
         retention_policy="no_automatic_deletion",
         cleanup_action="offline_operator_review_required_preserve_unknown_and_referenced_entries",
         cleanup_authorized=False,
     )
-    if epoch is not None:
-        from .source_retention import retention_evidence
-
-        policy = retention_evidence(store, project_id, principal, epoch)
-        for row in visible:
-            receipt = row["source_receipt"]
-            reasons = policy["protected"].get(receipt, [])
-            row["payload_present"] = next(
-                record.get("payload_present", True) for record in records if record["name"] == receipt
-            )
-            row["cleanup_eligible"] = bool(
-                row["payload_present"] and policy["complete"] and not reasons
-            )
-            row["protection_reasons"] = ["immutable_receipt_evidence_retained", *reasons]
-            if not policy["complete"]:
-                row["protection_reasons"].append("references_incomplete")
-            row["retained_until"] = "payload_while_referenced_receipt_within_fixed_evidence_bounds"
-        result.update(
-            reference_inventory_complete=policy["complete"] and len(records) == usage.get("snapshot_entries", usage["snapshots"]),
-            retention_policy="bounded_unreferenced_payload_reclamation_on_explicit_fetch",
-            cleanup_action="automatic_on_fetch_preserve_receipts_unknown_and_referenced_entries",
-            automatic_payload_reclamation=True,
-        )
     return result
+
+
+def _lifecycle_report(store: Any, project: str, principal: str, inventory: dict[str, Any],
+                      epoch: str) -> dict[str, Any]:
+    from .source_retention import retention_evidence
+
+    policy = retention_evidence(store, project, principal, epoch)
+    visible = []
+    reason_counts: dict[str, int] = {}
+    for record in inventory["records"]:
+        proofs = policy["sources"].get(record["name"])
+        if not proofs:
+            continue
+        proof = min(proofs, key=lambda item: item["finished"])
+        reasons = policy["protected"].get(record["name"], [])
+        present = record.get("payload_present", True)
+        candidate = bool(present and policy["complete"] and not reasons)
+        for reason in reasons:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        visible.append({
+            "source_receipt": record["name"], "source_job_id": proof["job_id"],
+            "finished": proof["finished"], "state": "succeeded", "bytes": record["bytes"],
+            "entries": record["entries"], "payload_present": present,
+            "payload_reclamation_candidate": candidate,
+            "cleanup_eligible": False,  # A reference read is not full content validation.
+            "protection_reasons": ["immutable_receipt_evidence_retained", *reasons,
+                *([] if policy["complete"] else ["references_incomplete"])],
+            "retained_until": "payload_while_referenced_receipt_within_fixed_evidence_bounds",
+        })
+    usage = inventory["usage"]
+    return {
+        "source_cache": usage, "owned_snapshots": visible,
+        "other_or_unclassified_snapshots": usage["snapshot_entries"] - len(visible),
+        "reference_inventory_complete": policy["complete"] and len(inventory["records"]) == usage["snapshot_entries"],
+        "protection_reason_counts": reason_counts,
+        "reclamation_candidate_payloads": sum(row["payload_reclamation_candidate"] for row in visible),
+        "scan_complete": True,
+        "retention_policy": "bounded_unreferenced_payload_reclamation_on_explicit_fetch",
+        "cleanup_action": "automatic_on_fetch_preserve_receipts_unknown_and_referenced_entries",
+        "cleanup_authorized": False, "automatic_payload_reclamation": True,
+    }

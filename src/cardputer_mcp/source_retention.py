@@ -22,7 +22,10 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
         "FROM plans p LEFT JOIN jobs j ON j.plan_hash=p.hash ORDER BY p.hash LIMIT ?",
         (REFERENCE_LIMIT + 1,),
     ).fetchall()
-    complete = len(rows) <= REFERENCE_LIMIT
+    complete = len(rows) <= REFERENCE_LIMIT and store.db.execute(
+        "SELECT 1 FROM jobs j LEFT JOIN plans p ON p.hash=j.plan_hash "
+        "WHERE p.hash IS NULL LIMIT 1"
+    ).fetchone() is None
     sources: dict[str, Any] = {}
     jobs: dict[str, Any] = {}
     plans: dict[str, Any] = {}
@@ -45,11 +48,12 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
             if row["id"] is not None and row["id"] != job_id:
                 complete = False
                 continue
-            plans[job_id] = plan
             if row["id"] is not None:
                 jobs[job_id] = {"state": row["state"], "plan": plan}
-            if ((row["id"] is not None and row["state"] not in TERMINAL)
-                    or (row["id"] is None and plan.get("broker_epoch") == epoch)):
+                plans[job_id] = plan
+            if (row["id"] is not None and row["state"] not in TERMINAL) or (
+                row["id"] is None and plan.get("broker_epoch") == epoch
+            ):
                 executable.append(plan)
             if plan.get("project_id") != project:
                 continue
@@ -60,11 +64,6 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
                     continue
                 if row["id"] is not None and row["state"] not in TERMINAL:
                     protect(receipt, "unfinished_job")
-                elif row["id"] is None and plan.get("broker_epoch") == epoch:
-                    expiry = plan.get("source_plan_expires_at")
-                    # Legacy plans remain protected throughout their current epoch.
-                    if expiry is None or not isinstance(expiry, (int, float)) or expiry > now:
-                        protect(receipt, "executable_plan")
             if plan.get("source_principal") != principal or row["state"] != "succeeded":
                 continue
             diagnostic = json.loads(row["diagnostic"]) if row["diagnostic"] else {}
@@ -77,11 +76,27 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
                 complete = False
                 continue
             sources.setdefault(receipt, []).append(
-                {"job_id": job_id, "plan": plan, "summary": summary,
-                 "finished": row["finished"] or row["created"]}
+                {
+                    "job_id": job_id,
+                    "plan": plan,
+                    "summary": summary,
+                    "finished": row["finished"] or row["created"],
+                }
             )
         except (ValueError, TypeError, AttributeError):
             complete = False
+
+    # An alternate prepared plan for a job ID already used by another hash can
+    # no longer execute. It must not keep an abandoned reservation alive.
+    executable = [plan for plan in executable if plan["job_id"] not in jobs
+                  or jobs[plan["job_id"]]["plan"] == plan]
+    for plan in executable:
+        if plan["job_id"] in jobs or plan.get("project_id") != project:
+            continue
+        receipt = plan.get("source_receipt")
+        expiry = plan.get("source_plan_expires_at")
+        if receipt is not None and (expiry is None or not isinstance(expiry, (int, float)) or expiry > now):
+            protect(receipt, "executable_plan")
 
     history = store.db.execute(
         "SELECT receipt,completed_job,kind,principal FROM firmware_lkg_history LIMIT ?",
@@ -96,10 +111,13 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
     # A flash in flight (or still executable) can promote a completed build to
     # LKG concurrently with a source fetch. Protect that build's source first.
     for plan in executable:
-        build = plans.get(plan.get("build_job_id"), {})
-        if (build.get("project_id") == project and build.get("source_receipt") is not None):
+        build = plans.get(plan.get("build_job_id", ""), {})
+        if build.get("project_id") == project and build.get("source_receipt") is not None:
             protect(build["source_receipt"], "executable_firmware_operation")
-    for targets, reason in ((current, "current_lkg_evidence"), (history, "recovery_history_evidence")):
+    for targets, reason in (
+        (current, "current_lkg_evidence"),
+        (history, "recovery_history_evidence"),
+    ):
         for target in targets[:REFERENCE_LIMIT]:
             if target["kind"] == "full_backup":
                 continue

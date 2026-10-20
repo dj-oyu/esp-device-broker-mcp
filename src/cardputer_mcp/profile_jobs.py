@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import sqlite3
 import time
 from collections.abc import Callable
@@ -17,8 +18,8 @@ from .firmware_build import BuildPreflightFailure, hash_file
 from .logs import Event
 from .models import CancelRequest, ExecuteRequest, Origin, PrepareRequest, TestName
 from .source_preflight import SourceReadWorker, settings_identity, source_inputs
-from .source_snapshot import SourceError
 from .source_retention import PLAN_LEASE_SECONDS
+from .source_snapshot import SourceError
 
 if TYPE_CHECKING:
     from .broker import Broker
@@ -224,11 +225,13 @@ class ProfileJobs:
                 "SELECT payload FROM plans WHERE json_extract(payload,'$.job_id')=? LIMIT 10001",
                 (request.job_id,),
             ):
-                import json
-
                 prior = json.loads(row[0])
                 prior_expiry = prior.pop("source_plan_expires_at", 0)
-                if prior == plan and isinstance(prior_expiry, (int, float)) and prior_expiry > time.time():
+                if (
+                    prior == plan
+                    and isinstance(prior_expiry, (int, float))
+                    and prior_expiry > time.time()
+                ):
                     expiry = prior_expiry
                     break
             plan["source_plan_expires_at"] = expiry

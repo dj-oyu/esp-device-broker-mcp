@@ -6,8 +6,8 @@ from collections.abc import Callable
 from typing import Any
 
 from .build_logs import BuildLogs
-from .source_snapshot import SOURCE_ERROR_CODES, SourceError, SourceSnapshots
 from .source_retention import retention_evidence
+from .source_snapshot import SOURCE_ERROR_CODES, SourceError, SourceSnapshots
 
 
 class FirmwareSource:
@@ -79,8 +79,9 @@ class FirmwareSource:
         async def evidence() -> dict[str, Any]:
             if not await check():
                 raise SourceError("source_fetch_interrupted")
-            return retention_evidence(self.store(), plan["project_id"],
-                                      plan["source_principal"], plan["broker_epoch"])
+            return retention_evidence(
+                self.store(), plan["project_id"], plan["source_principal"], plan["broker_epoch"]
+            )
 
         # The worker owns the cache lock; the resident loop owns SQLite.
         self.snapshots.retention = lambda: asyncio.run_coroutine_threadsafe(

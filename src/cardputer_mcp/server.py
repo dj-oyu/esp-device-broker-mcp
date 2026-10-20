@@ -677,7 +677,10 @@ def create_server(
                 raise BrokerError("source_log_not_available")
             if failure is not None:
                 raise failure
-            return {"ok": True, **resource_report(store, project_id, owner.principal_id, inventory, epoch=epoch)}
+            return {
+                "ok": True,
+                **resource_report(store, project_id, owner.principal_id, inventory, epoch=epoch),
+            }
         except SourceError as exc:
             return {"ok": False, **exc.public()}
         except BrokerError as exc:

@@ -828,8 +828,12 @@ class SourceSnapshots:
                     snapshot_path = Path(snapshot.path)
                     _not_link(snapshot_path)
                     if snapshot.name == LOCK_NAME:
-                        info = snapshot.stat(follow_symlinks=False)
-                        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 64:
+                        info = snapshot_path.stat(follow_symlinks=False)
+                        if (
+                            not stat.S_ISREG(info.st_mode)
+                            or info.st_nlink != 1
+                            or info.st_size not in (0, 64)
+                        ):
                             raise SourceError("source_cache_unknown_entry")
                         size += info.st_size
                         continue
@@ -862,7 +866,9 @@ class SourceSnapshots:
                                 if stat.S_ISDIR(info.st_mode):
                                     pending.append(Path(item.path))
                                 elif stat.S_ISREG(info.st_mode):
-                                    if info.st_nlink != 1:
+                                    # Windows DirEntry.stat omits link counts (0).
+                                    # Destructive validation uses Path.stat/lstat.
+                                    if info.st_nlink > 1:
                                         raise SourceError("source_linked_path_rejected")
                                     size += info.st_size
                                     if item.name == "receipt.json" and directory == snapshot_path:
@@ -928,8 +934,10 @@ class SourceSnapshots:
         self, plan: dict[str, Any], live: Callable[[], bool], stage: Callable[[str], None]
     ) -> dict[str, Any]:
         _, registration = self.registration(plan["project_id"])
-        BackupStore(registration.cache_root,
-                    windows_private_acl_confirmed=registration.private_acl_confirmed)
+        BackupStore(
+            registration.cache_root,
+            windows_private_acl_confirmed=registration.private_acl_confirmed,
+        )
         with self.cache_guard(plan["project_id"], write=True):
             return self._fetch(plan, live, stage)
 
@@ -959,8 +967,10 @@ class SourceSnapshots:
             or usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 > LIMITS["cache_bytes"]
         ):
             raise SourceError("source_cache_full")
-        if self.restore_source is None and (usage["evidence_snapshots"] >= EVIDENCE_SNAPSHOTS
-                or usage["evidence_bytes"] + 32 * 1048576 > EVIDENCE_BYTES):
+        if self.restore_source is None and (
+            usage["evidence_snapshots"] >= EVIDENCE_SNAPSHOTS
+            or usage["evidence_bytes"] + 32 * 1048576 > EVIDENCE_BYTES
+        ):
             raise SourceError("source_cache_evidence_full")
         root = BackupStore(
             registration.cache_root,
@@ -972,9 +982,16 @@ class SourceSnapshots:
         pending.mkdir(mode=0o700)
         try:
             with (pending / "reservation.json").open("xb") as handle:
-                handle.write(canonical({"job_id": plan["job_id"], "project_id": project_id,
-                                        "principal": principal,
-                                        "registration_sha256": plan["source_registration_sha256"]}))
+                handle.write(
+                    canonical(
+                        {
+                            "job_id": plan["job_id"],
+                            "project_id": project_id,
+                            "principal": principal,
+                            "registration_sha256": plan["source_registration_sha256"],
+                        }
+                    )
+                )
                 handle.flush()
                 os.fsync(handle.fileno())
             repository, commit = plan["source_repository"], plan["source_commit"]
@@ -1004,8 +1021,18 @@ class SourceSnapshots:
                 value["root_source_sha256"] = evidence["source_sha256"]
             restoring = self.restore_source
             if restoring is not None:
-                for key in ("schema_version", "principal", "project_id", "repository", "commit",
-                            "tree_sha1", "source_sha256", "files", "submodules", "root_source_sha256"):
+                for key in (
+                    "schema_version",
+                    "principal",
+                    "project_id",
+                    "repository",
+                    "commit",
+                    "tree_sha1",
+                    "source_sha256",
+                    "files",
+                    "submodules",
+                    "root_source_sha256",
+                ):
                     if value.get(key) != restoring.get(key):
                         raise SourceError("source_snapshot_changed")
                 value = restoring
@@ -1022,7 +1049,10 @@ class SourceSnapshots:
             stage("source_publish")
             target = root / receipt
             if restoring is not None:
-                if not self._evidence_only(target) or (target / "receipt.json").read_bytes() != encoded:
+                if (
+                    not self._evidence_only(target)
+                    or (target / "receipt.json").read_bytes() != encoded
+                ):
                     raise SourceError("source_receipt_changed")
                 source.rename(target / "source")
                 (pending / "receipt.json").unlink()
@@ -1099,15 +1129,18 @@ class SourceSnapshots:
             files: dict[str, dict[str, Any]] = {}
             for item in source.rglob("*"):
                 _not_link(item)
-                if not item.is_file():
+                info = item.lstat()
+                if stat.S_ISDIR(info.st_mode):
                     continue
-                if item.stat().st_nlink != 1:
+                if not stat.S_ISREG(info.st_mode):
+                    raise SourceError("source_cache_unknown_entry")
+                if info.st_nlink != 1:
                     raise SourceError("source_linked_path_rejected")
                 name = item.relative_to(source).as_posix()
                 entry = value["files"].get(name)
                 if (
                     entry is None
-                    or item.stat().st_size != entry["bytes"]
+                    or info.st_size != entry["bytes"]
                     or len(files) >= LIMITS["files"]
                 ):
                     raise SourceError("source_snapshot_changed")
@@ -1124,10 +1157,16 @@ class SourceSnapshots:
     def _evidence_only(path: Path, names: set[str] | None = None) -> bool:
         if re.fullmatch(r"[a-f0-9]{64}", path.name) is None:
             return False
-        if (names if names is not None else {item.name for item in path.iterdir()}) != {"receipt.json"}:
+        if (names if names is not None else {item.name for item in path.iterdir()}) != {
+            "receipt.json"
+        }:
             return False
         receipt = path / "receipt.json"
         _not_link(receipt)
         info = receipt.stat()
-        return (stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-                and info.st_size <= 32 * 1048576 and digest(receipt.read_bytes()) == path.name)
+        return (
+            stat.S_ISREG(info.st_mode)
+            and info.st_nlink == 1
+            and info.st_size <= 32 * 1048576
+            and digest(receipt.read_bytes()) == path.name
+        )
