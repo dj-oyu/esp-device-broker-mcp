@@ -6,10 +6,9 @@ from unittest.mock import patch
 
 import pytest
 import test_build_artifact_persistence as persistence
-
-import cardputer_mcp.diagnostic_registry as registry
 from test_diagnostic_modeproof import image_fixture
 
+import cardputer_mcp.diagnostic_registry as registry
 from cardputer_mcp.build_locations import build_directory
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.diagnostic_modeproof import J1_COMMIT, collect_modeproof

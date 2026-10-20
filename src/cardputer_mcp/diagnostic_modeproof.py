@@ -10,6 +10,7 @@ from typing import Any
 
 from .diagnostic_registry import J1_COMMIT as J1_COMMIT
 from .diagnostic_registry import diagnostic_entry
+
 _PROOF = "diagnostic-mode-proof.json"
 _BIN = "cardputer_pocketjs.bin"
 _ELF = "cardputer_pocketjs.elf"

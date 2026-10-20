@@ -42,6 +42,8 @@ _ENTRIES = (_J1_ENTRY,)
 
 def diagnostic_entry(provenance: dict[str, Any]) -> DiagnosticEntry:
     """Resolve only an exact approved public source, never a branch or descendant."""
+    if not isinstance(provenance, dict):
+        raise ValueError("diagnostic_mode_requires_allowlisted_source")
     repository = provenance.get("repository")
     if not isinstance(repository, str):
         raise ValueError("diagnostic_mode_requires_allowlisted_source")
