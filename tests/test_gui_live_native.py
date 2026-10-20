@@ -348,12 +348,12 @@ def test_native_job_heading_ascii_controls_and_nonlog_empty_loading_states(monke
         window.job_tree.selection_set("job_image_1")
         window._select()
         root.update()
-        assert window.detail_heading.get() == "job_image_1 | succeeded"
+        assert window.detail_heading.get() == "job_image_1 | [OK] 成功 (succeeded)"
         assert window.detail_heading_label.cget("style") == "Section.TLabel"
         assert window.detail_text.cget("font") == "TkTextFont"
         body = window.detail_text.get("1.0", "end-1c")
         assert "Stage  " not in body and "Result  " not in body and "Finished  " not in body
-        assert "Created  " in body and "Historical review  " in body
+        assert "Registered  " in body and "Historical review  " in body
         assert window.logs.phase == "not_applicable"
         assert window.log_button.instate(["disabled"]) and window.runner.reads == []
         assert window.preview_button.cget("text") == "Preview retained image"
@@ -421,7 +421,11 @@ def test_native_status_backgrounds_and_review_labels_preserve_selection(monkeypa
     window = None
     try:
         window = gui_live.LiveWindow(root, OperatorClient("http://127.0.0.1:8765", "synthetic"))
-        rows = [card("failed"), card("unreviewed"), card("reviewed")]
+        rows = [
+            card("failed", cancel_available=False),
+            card("unreviewed", cancel_available=False),
+            card("reviewed", cancel_available=False),
+        ]
         rows[0]["state"] = "failed"
         for row in rows[1:]:
             row["state"] = "needs_review"
@@ -430,6 +434,7 @@ def test_native_status_backgrounds_and_review_labels_preserve_selection(monkeypa
             TransportEvent("message", window.state.generation, snapshot(rows), time.monotonic())
         )
         window._drain()
+        assert window.state.connection == "live"
         assert window.job_tree.tag_configure("job_failed", "background") == "#FDE8E7"
         assert window.job_tree.tag_configure("job_review", "background") == "#FFF0CC"
         for job in ("failed", "unreviewed", "reviewed"):
