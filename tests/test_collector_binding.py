@@ -198,14 +198,15 @@ def test_explicit_receipt_preflight_does_not_require_or_mutate_old_config(chain)
 
 
 @pytest.mark.parametrize("configured_hash", [None, "a" * 64])
+@pytest.mark.parametrize("mutation_phase", ["none", "admission", "final"])
 async def test_receipt_selected_hash_admits_and_completes_real_broker_trial(
-    chain, tmp_path, configured_hash
+    chain, tmp_path, configured_hash, mutation_phase
 ):
     import json
 
     from test_derby_fixed_workload import FixedWire, backend_for
 
-    from cardputer_mcp.broker import Broker
+    from cardputer_mcp.broker import Broker, BrokerError
     from cardputer_mcp.config import Settings
     from cardputer_mcp.flash_models import FlashDevice, FlashPython
     from cardputer_mcp.models import AcquireRequest, ExecuteRequest, Origin, PrepareRequest
@@ -287,10 +288,37 @@ async def test_receipt_selected_hash_admits_and_completes_real_broker_trial(
             PlanApprovals(resident).validate_current(prepared["plan_hash"], resident.session)
             == prepared["plan"]
         )
-        admitted = resident.execute(ExecuteRequest(session=token, plan_hash=prepared["plan_hash"]))
+        changed = []
+
+        def valid(*args):
+            if not changed and (
+                mutation_phase == "admission"
+                or (mutation_phase == "final" and wire.writes and not wire.is_open)
+            ):
+                store.db.execute(
+                    "UPDATE firmware_lkg SET completed_job=? WHERE device_id=?",
+                    ("later-flash", "public-device"),
+                )
+                store.db.commit()
+                changed.append(True)
+            return True
+
+        resident.principal_valid = valid
+        execution = ExecuteRequest(session=token, plan_hash=prepared["plan_hash"])
+        if mutation_phase == "admission":
+            with pytest.raises(BrokerError):
+                resident.execute(execution)
+            assert changed and wire.writes == []
+            assert store.job("public-trial") is None
+            return
+        admitted = resident.execute(execution)
         assert admitted["state"] == "queued"
         await resident.queue.join()
-        assert resident.job("public-trial")["state"] == "succeeded"
+        if mutation_phase == "final":
+            assert changed
+            assert resident.job("public-trial")["state"] != "succeeded"
+        else:
+            assert resident.job("public-trial")["state"] == "succeeded"
         assert resident.settings.serial.expected_firmware_sha256 == configured_hash
         assert not wire.is_open
     finally:
