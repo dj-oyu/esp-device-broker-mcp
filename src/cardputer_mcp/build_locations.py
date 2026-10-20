@@ -79,13 +79,13 @@ def _plain(path: Path) -> None:
         raise BuildLocationError("build_output_linked")
 
 
-def _json(path: Path) -> dict[str, Any]:
+def _json(path: Path, *, limit: int = 65536) -> dict[str, Any]:
     _plain(path)
-    if not path.is_file() or not 0 < path.stat().st_size <= 65536:
+    if not path.is_file() or not 0 < path.stat().st_size <= limit:
         raise BuildLocationError("build_output_identity_mismatch")
     with path.open("rb") as handle:
-        raw = handle.read(65537)
-    if len(raw) > 65536:
+        raw = handle.read(limit + 1)
+    if len(raw) > limit:
         raise BuildLocationError("build_output_identity_mismatch")
 
     def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -286,7 +286,7 @@ def resolve_build_manifest(
         root = build_directory(state_dir, None, fingerprint, environment)
         _plain(root.parent)
         _plain(root)
-        saved = _json(root / "broker-manifest.json")
+        saved = _json(root / "broker-manifest.json", limit=1024 * 1024)
         if (
             type(saved.get("schema_version")) is not int
             or saved.get("schema_version") != 1
@@ -303,7 +303,7 @@ def resolve_build_manifest(
     expected = identity_receipt(state_dir, build_root, fingerprint, environment)
     if _json(root / "broker-build-identity.json") != expected:
         raise BuildLocationError("build_output_identity_mismatch")
-    saved = _json(root / "broker-manifest.json")
+    saved = _json(root / "broker-manifest.json", limit=1024 * 1024)
     if saved != manifest:
         raise BuildLocationError("build_output_identity_mismatch")
     return root

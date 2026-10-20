@@ -109,10 +109,23 @@ def verify_modeproof_bytes(
     files: dict[str, bytes],
 ) -> None:
     """Recheck durable evidence against retained exact BIN/ELF bytes; grant no authority."""
+    _verify_modeproof_bytes(envelope, provenance, artifacts, files, contract="j1-fixed-v1")
+
+
+def _verify_modeproof_bytes(
+    envelope: dict[str, Any],
+    provenance: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+    files: dict[str, bytes],
+    *,
+    contract: str,
+) -> None:
+    """Shared linked-detail checks; only the matching enclosing verifier selects a contract."""
     try:
         entry = diagnostic_entry(provenance)
         if (
-            set(envelope) != {"requested_mode", "proof", "proof_sha256"}
+            entry.contract != contract
+            or set(envelope) != {"requested_mode", "proof", "proof_sha256"}
             or envelope["requested_mode"] not in entry.modes
         ):
             raise ValueError(_ERROR)

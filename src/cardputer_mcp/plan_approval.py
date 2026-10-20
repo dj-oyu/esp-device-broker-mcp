@@ -149,6 +149,13 @@ class PlanApprovals:
                 expected_keys |= {"derby_detail_mode"}
                 if plan["derby_detail_mode"] not in ("ON", "OFF") or "source_receipt" not in plan:
                     raise ValueError
+            if "derby_dma_mode" in plan:
+                expected_keys |= {"derby_dma_mode"}
+                if "diagnostic_entry_sha256" not in plan:
+                    raise ValueError
+            from .diagnostic_registry import validate_diagnostic_record
+
+            validate_diagnostic_record(plan.get("source_provenance", {}), plan)
             if "diagnostic_entry_sha256" in plan:
                 from .diagnostic_registry import validate_entry_binding
 
@@ -221,6 +228,11 @@ class PlanApprovals:
                     *(
                         ["-D", "POCKET_DERBY_DETAIL_MEASURE=" + plan["derby_detail_mode"]]
                         if "derby_detail_mode" in plan
+                        else []
+                    ),
+                    *(
+                        ["-D", "KASANE_DMA_OVERLAP=" + plan["derby_dma_mode"]]
+                        if "derby_dma_mode" in plan
                         else []
                     ),
                     "build",
@@ -473,6 +485,11 @@ class PlanApprovals:
                         lease.principal_id or "",
                         plan.get("source_receipt"),
                         plan.get("derby_detail_mode"),
+                        **(
+                            {"derby_dma_mode": plan["derby_dma_mode"]}
+                            if "derby_dma_mode" in plan
+                            else {}
+                        ),
                     )
                 elif plan["test"] == TestName.DERBY_FIXED.value and "flash_job_id" in plan:
                     from .collector_binding import prepare_collector

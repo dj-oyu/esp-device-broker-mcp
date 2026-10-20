@@ -11,7 +11,13 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import ConfigDict, Field
 
 from .build_artifacts import manifest_digest
-from .diagnostic_registry import J1_REPOSITORY, same_entry_binding, validate_entry_binding
+from .diagnostic_registry import (
+    J1_REPOSITORY,
+    diagnostic_entry,
+    same_diagnostic_selection,
+    validate_diagnostic_selection,
+    validate_entry_binding,
+)
 from .models import Digest, Identifier, StrictModel
 
 if TYPE_CHECKING:
@@ -34,6 +40,7 @@ class CollectorBinding(StrictModel):
     manifest_sha256: Digest
     modeproof_sha256: Digest
     derby_detail_mode: Literal["ON", "OFF"]
+    derby_dma_mode: Literal["ON", "OFF"] | None = None
     expected_elf_sha256: Digest
     expected_app_bin_sha256: Digest
     diagnostic_entry_sha256: Digest | None = None
@@ -41,10 +48,9 @@ class CollectorBinding(StrictModel):
 
 def validate_collector_schema(plan: dict[str, Any]) -> None:
     binding = CollectorBinding.model_validate(plan["collector_binding"])
-    validate_entry_binding(
-        {"repository": J1_REPOSITORY, "commit": binding.source_commit},
-        plan["collector_binding"],
-    )
+    provenance = {"repository": J1_REPOSITORY, "commit": binding.source_commit}
+    validate_entry_binding(provenance, plan["collector_binding"])
+    _validate_selection_record(provenance, plan["collector_binding"])
     if (
         plan.get("test") != "derby_fixed_workload"
         or plan.get("flash_job_id") != binding.flash_job_id
@@ -53,6 +59,17 @@ def validate_collector_schema(plan: dict[str, Any]) -> None:
         or plan.get("firmware_verification") != "successful_flash_receipt"
     ):
         raise ValueError("collector_flash_binding_invalid")
+
+
+def _validate_selection_record(provenance: dict[str, Any], record: dict[str, Any]) -> None:
+    # Presence is significant: explicit null is not an omitted legacy axis.
+    if "derby_dma_mode" in record and record["derby_dma_mode"] is None:
+        raise ValueError("collector_mode_binding_invalid")
+    entry = validate_diagnostic_selection(
+        provenance, record.get("derby_detail_mode"), record.get("derby_dma_mode")
+    )
+    if entry is None or (entry.contract == "j1-fixed-v1" and "derby_dma_mode" in record):
+        raise ValueError("collector_mode_binding_invalid")
 
 
 def _digest(value: Any) -> str:
@@ -104,6 +121,7 @@ def _owned_flash(broker: "Broker", flash_job_id: str, principal: str) -> tuple[A
 def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> dict[str, Any]:
     """Verify retained bytes, source and build chain without creating any job."""
     from .broker import digest_plan
+    from .diagnostic_dma_modeproof import verify_dma_modeproof_bytes
     from .diagnostic_modeproof import verify_modeproof_bytes
 
     flash, current = _owned_flash(broker, flash_job_id, principal)
@@ -152,13 +170,23 @@ def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
         raise ValueError("collector_build_source_binding_invalid")
     entry_hash = validate_entry_binding(provenance, manifest)
     validate_entry_binding(provenance, build)
-    if not same_entry_binding(build, manifest):
+    _validate_selection_record(provenance, build)
+    _validate_selection_record(provenance, manifest)
+    if not same_diagnostic_selection(build, manifest):
         raise ValueError("collector_build_source_binding_invalid")
     envelope = manifest.get("diagnostic_modeproof")
     artifacts = manifest.get("artifacts")
     if not isinstance(envelope, dict) or not isinstance(artifacts, list):
         raise ValueError("collector_mode_binding_invalid")
-    verify_modeproof_bytes(envelope, provenance, artifacts, files)
+    entry = diagnostic_entry(provenance)
+    if entry.contract == "derby-dma-diagnostic-v1":
+        verify_dma_modeproof_bytes(envelope, provenance, artifacts, files)
+        if envelope["requested_dma_mode"] != manifest["derby_dma_mode"]:
+            raise ValueError("collector_mode_binding_invalid")
+    elif entry.contract == "j1-fixed-v1":
+        verify_modeproof_bytes(envelope, provenance, artifacts, files)
+    else:
+        raise ValueError("collector_mode_binding_invalid")
     if envelope["requested_mode"] != manifest["derby_detail_mode"]:
         raise ValueError("collector_mode_binding_invalid")
     elf = _digest(flash.get("expected_elf_sha256"))
@@ -183,6 +211,7 @@ def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
         "modeproof_sha256": envelope["proof_sha256"],
         "diagnostic_entry_sha256": entry_hash,
         "derby_detail_mode": manifest["derby_detail_mode"],
+        **({"derby_dma_mode": manifest["derby_dma_mode"]} if entry.dma_modes else {}),
         "expected_elf_sha256": elf,
         "expected_app_bin_sha256": app,
     }
@@ -219,11 +248,24 @@ def collector_live(broker: "Broker", plan: dict[str, Any], principal: str) -> bo
             and binding["firmware_receipt"] == current["receipt"]
             and binding["device_fingerprint"] == plan["device_fingerprint"]
             and binding["expected_elf_sha256"] == plan["expected_firmware_sha256"]
+            and binding["manifest_sha256"] == flash["manifest_sha256"]
+            and binding["expected_elf_sha256"] == flash["expected_elf_sha256"]
+            and binding["expected_app_bin_sha256"] == flash["expected_app_bin_sha256"]
+            and binding["device_id"] == flash["device_id"]
+            and binding["build_job_id"] == flash["build_job_id"]
             and build is not None
             and build["state"] == "succeeded"
             and build["plan_hash"] == binding["build_plan_hash"]
             and build_plan is not None
             and digest_plan(build_plan) == binding["build_plan_hash"]
+            and build_plan.get("build_principal") == principal
+            and build_plan.get("source_receipt") == binding["source_receipt"]
+            and build_plan.get("source_provenance", {}).get("repository", "").casefold()
+            == J1_REPOSITORY
+            and build_plan.get("source_provenance", {}).get("commit") == binding["source_commit"]
+            and build_plan.get("derby_detail_mode") == binding["derby_detail_mode"]
+            and ("derby_dma_mode" in build_plan) == ("derby_dma_mode" in binding)
+            and build_plan.get("derby_dma_mode") == binding.get("derby_dma_mode")
             and (
                 "diagnostic_entry_sha256" not in binding
                 or binding["diagnostic_entry_sha256"]
