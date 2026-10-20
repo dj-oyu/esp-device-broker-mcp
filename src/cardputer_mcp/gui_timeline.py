@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from .gui_images import SOURCES, ImagePreview, ImageRow
+from .gui_job_status import JobPresentation, job_presentation
 from .job_failure_reason import REASON_LABELS
 from .models import TestName
 from .operator_timeline import RESULTS, STAGES, STATES, observation_summary
@@ -205,6 +206,11 @@ class TimelineCard:
     device_observation: DeviceObservationRow | None = None
     cancel_available: bool = False
     failure_reason: str | None = None
+
+    @property
+    def presentation(self) -> JobPresentation:
+        # Display only: cancellation, ownership and recovery still use broker data.
+        return job_presentation(self.state, result=self.result, reviewed=self.reviewed)
 
     @property
     def needs_device_review(self) -> bool:

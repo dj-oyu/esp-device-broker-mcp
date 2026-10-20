@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from .gui import Outcome, QueueController, http_diagnostics_summary, mcp_catalog_summary, perform
-from .gui_job_status import configure_job_status_tags, job_status_label, job_status_tag
+from .gui_job_status import configure_job_status_tags
 from .gui_live_presentation import (
     LogRequestState,
     LogView,
@@ -137,7 +137,7 @@ class LiveWindow:
             row=2, column=0, columnspan=2 if self._job_pages is not None else 1, sticky="w", pady=8
         )
         job_box, self.job_tree = self._table(
-            list_parent, ("request", "state", "stage"), (160, 240, 200)
+            list_parent, ("request", "state", "confirmation", "stage"), (160, 140, 100, 200)
         )
         job_box.grid(
             row=1,
@@ -146,6 +146,8 @@ class LiveWindow:
             sticky="nsew",
             padx=(0, 16),
         )
+        self.job_tree.heading("state", text="状態・結果")
+        self.job_tree.heading("confirmation", text="確認")
         configure_job_status_tags(self.job_tree)
         self.job_tree.bind(
             "<<ThemeChanged>>", lambda _event: configure_job_status_tags(self.job_tree), add="+"
@@ -627,7 +629,8 @@ class LiveWindow:
                     card.job_id,
                     (
                         card.test or "-",
-                        job_status_label(card.state, card.reviewed),
+                        card.presentation.label,
+                        card.presentation.review_label,
                         card.stage or "-",
                     ),
                 )
@@ -635,7 +638,7 @@ class LiveWindow:
             ],
         )
         for row in cards:
-            tag = job_status_tag(row.state)
+            tag = row.presentation.tag
             self.job_tree.item(row.job_id, tags=(tag,) if tag else ())
         selected = self.state.selected_job_id
         if selected and self.job_tree.exists(selected):
@@ -652,16 +655,20 @@ class LiveWindow:
         detail = "Select a job to inspect its status and permitted logs."
         heading = "Selected job"
         if card:
-            heading = (
-                f"{card.job_id} | {job_status_label(card.state, card.reviewed)} ({card.state})"
-            )
+            heading = f"{card.job_id} | {card.presentation.label}"
             if card.failure_reason:
                 heading += "\n理由：" + REASON_LABELS[card.failure_reason]
-            fields = [f"Request  {card.test or 'Unknown'}"]
+            display = card.presentation
+            fields = [
+                f"Request  {card.test or 'Unknown'}",
+                f"Lifecycle  {display.lifecycle_label}",
+                f"Outcome  {display.outcome_label}",
+                f"Backend record  {card.state}",
+            ]
             if card.stage:
                 fields.append(f"Stage  {card.stage}")
             if card.result:
-                fields.append(f"Result  {card.result}")
+                fields.append(f"Diagnostic code  {card.result}")
             dates = ["登録順：作成時の順序を維持（状態更新では移動しません）"]
             if card.created_utc:
                 dates.append(f"Registered  {card.created_utc}")
@@ -670,7 +677,7 @@ class LiveWindow:
             if card.finished_utc:
                 dates.append(f"Finished  {card.finished_utc}")
             dates.append(
-                f"Historical review  {'recorded' if card.reviewed else 'not marked reviewed'}"
+                f"Historical acknowledgement  {display.review_label}"
             )
             detail = "\n".join(fields) + "\n\n" + "\n".join(dates)
         elif self.state.selected_job_id:

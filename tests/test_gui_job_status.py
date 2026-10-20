@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 from cardputer_mcp.gui_job_status import (
     LABELS,
     configure_job_status_tags,
+    job_presentation,
     job_status_label,
     job_status_tag,
 )
@@ -121,11 +122,10 @@ class JobStatusTests(unittest.TestCase):
         )
         self.assertIn("未実行", job_status_label("prepared"))
         self.assertEqual(job_status_label("failed"), "[X] 失敗")
-        self.assertIn("未確認", job_status_label("needs_review"))
-        self.assertIn("確認済み", job_status_label("needs_review", True))
-        self.assertEqual(job_status_tag("needs_review"), "job_review")
+        self.assertEqual(job_status_label("needs_review"), "[?] 結果不明")
+        self.assertEqual(job_status_tag("needs_review"), "job_unknown")
         self.assertEqual(job_status_tag("succeeded"), "")
-        self.assertEqual(job_status_label("foreign"), "[?] 状態不明")
+        self.assertEqual(job_status_label("foreign"), "[?] 結果不明")
 
     def test_background_and_accessibility_fallback_preserve_selected_theme(self):
         tree = Mock()
@@ -140,6 +140,44 @@ class JobStatusTests(unittest.TestCase):
             {"background": "SystemWindow", "foreground": "SystemWindowText"},
         )
         tree.configure.assert_not_called()
+
+
+
+class JobPresentationTests(unittest.TestCase):
+    def test_confirmed_fault_is_failed_independently_of_acknowledgement(self):
+        for reviewed in (False, True):
+            row = job_presentation("needs_review", result="serial_fault_marker", reviewed=reviewed)
+            self.assertEqual(row.lifecycle, "terminal_record")
+            self.assertEqual(row.outcome, "failed")
+            self.assertEqual(row.label, "[X] 失敗")
+            self.assertEqual(row.tag, "job_failed")
+            self.assertEqual(row.review_label, "[確認済み]" if reviewed else "[未確認]")
+
+    def test_uncertain_completion_or_write_never_becomes_failed_or_success_by_review(self):
+        for code in (
+            None,
+            "broker_restart_no_replay",
+            "serial_close_unconfirmed",
+            "flash_write_unconfirmed",
+            "backend_error_no_retry",
+            "PRIVATE",
+        ):
+            for reviewed in (False, True):
+                row = job_presentation("needs_review", result=code, reviewed=reviewed)
+                self.assertEqual(row.outcome, "unknown")
+                self.assertEqual(row.label, "[?] 結果不明")
+                self.assertEqual(row.tag, "job_unknown")
+                self.assertNotIn("PRIVATE", repr(row))
+
+    def test_lifecycle_and_backend_terminal_outcomes_remain_distinct(self):
+        self.assertEqual(job_presentation("prepared").lifecycle, "prepared")
+        self.assertEqual(job_presentation("prepared").outcome, "not_started")
+        self.assertEqual(job_presentation("running").outcome, "in_progress")
+        for state in ("succeeded", "failed", "cancelled"):
+            row = job_presentation(state)
+            self.assertEqual(row.outcome, state)
+            self.assertEqual(row.acknowledgement, "not_applicable")
+            self.assertEqual(row.review_label, "-")
 
 
 if __name__ == "__main__":
