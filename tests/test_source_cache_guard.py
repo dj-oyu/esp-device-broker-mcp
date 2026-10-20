@@ -102,7 +102,7 @@ def test_cache_inventory_has_cooperative_time_and_stop_budgets(tmp_path, monkeyp
     first, _, root = caches(tmp_path)
     root.mkdir(mode=0o700)
     (root / "synthetic-snapshot").mkdir()
-    ticks = iter([0.0, 0.0, 6.0])
+    ticks = iter([0.0, 0.0, source_snapshot.CACHE_SCAN_SECONDS + 1.0])
     monkeypatch.setattr(source_snapshot, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
     with pytest.raises(SourceError, match="source_cache_scan_limit"):
         first.usage("fixture")
@@ -152,7 +152,7 @@ def test_cache_inventory_checks_deadline_between_pending_empty_directories(tmp_p
         original(path)
         if path.parent == snapshot:
             visited.append(path)
-            clock["now"] = 6.0
+            clock["now"] = source_snapshot.CACHE_SCAN_SECONDS + 1.0
 
     monkeypatch.setattr(source_snapshot, "_not_link", expire_after_first_empty)
     with pytest.raises(SourceError, match="source_cache_scan_limit"):
@@ -180,7 +180,7 @@ def test_cache_inventory_checks_budget_after_last_empty_directory(
         original(path)
         if path == last:
             if expire:
-                clock["now"] = 6.0
+                clock["now"] = source_snapshot.CACHE_SCAN_SECONDS + 1.0
             else:
                 stopped.set()
 
@@ -224,3 +224,36 @@ def test_cache_inventory_rejects_nested_link_before_traversing_it(tmp_path):
     with pytest.raises(SourceError, match="source_linked_path_rejected"):
         first.usage("fixture")
     assert (outside / "private").read_bytes() == b"SECRET"
+
+
+@pytest.mark.parametrize("elapsed", [5.001, 29.999, 30.0, 30.001])
+def test_cache_scan_extended_budget_has_a_finite_exact_boundary(tmp_path, monkeypatch, elapsed):
+    first, _, root = caches(tmp_path)
+    root.mkdir(mode=0o700)
+    last = root / "synthetic-snapshot" / "only-empty"
+    last.mkdir(parents=True)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(source_snapshot, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+    original = source_snapshot._not_link
+
+    def advance_during_last_directory(path):
+        original(path)
+        if path == last:
+            clock["now"] = elapsed
+
+    monkeypatch.setattr(source_snapshot, "_not_link", advance_during_last_directory)
+    assert source_snapshot.CACHE_SCAN_SECONDS == 30.0
+    if elapsed < 30.0:
+        usage = first.usage("fixture")
+        assert usage["snapshots"] == 1 and usage["bytes"] == 0
+        assert usage["max_snapshots"] == 16
+        assert usage["max_bytes"] == 2 * 1024 * 1048576
+        assert usage["scan_elapsed_ms"] > 5000
+    else:
+        with pytest.raises(source_snapshot.CacheScanLimit) as caught:
+            first.usage("fixture")
+        report = caught.value.public()
+        assert report["scan"]["max_elapsed_ms"] == 30000
+        assert report["scan"]["reason"] == "deadline"
+        assert report["scan"]["complete"] is False
+        assert "bytes" not in report["scan"]
