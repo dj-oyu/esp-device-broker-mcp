@@ -399,3 +399,31 @@ def test_collector_history_rejects_invalid_entry_evidence(chain, damage):
         )
     with pytest.raises(ValueError):
         validate_collector_schema(plan)
+
+
+@pytest.mark.parametrize("dma_axis", [None, "ON", "OFF", "wrong"])
+def test_j1_collector_schema_rejects_present_dma_axis(chain, dma_axis):
+    plan = {
+        "test": "derby_fixed_workload",
+        **prepare_collector(chain.resident, "public-flash", "owner"),
+    }
+    plan["collector_binding"]["derby_dma_mode"] = dma_axis
+    with pytest.raises(ValueError):
+        validate_collector_schema(plan)
+    assert not collector_live(chain.resident, plan, "owner")
+
+
+@pytest.mark.parametrize("dma_axis", [None, "ON", "OFF"])
+def test_j1_receipt_cannot_acquire_dma_axis_even_when_hashes_rebound(chain, dma_axis):
+    chain.build["derby_dma_mode"] = dma_axis
+    chain.manifest["derby_dma_mode"] = dma_axis
+    build_hash = digest_plan(chain.build)
+    chain.jobs["public-build"]["plan_hash"] = build_hash
+    chain.plans[build_hash] = chain.build
+    chain.manifest["build_plan_hash"] = build_hash
+    chain.flash["manifest_sha256"] = manifest_digest(chain.manifest)
+    flash_hash = digest_plan(chain.flash)
+    chain.jobs["public-flash"]["plan_hash"] = flash_hash
+    chain.plans[flash_hash] = chain.flash
+    with pytest.raises(ValueError):
+        resolve_collector(chain.resident, "public-flash", "owner")

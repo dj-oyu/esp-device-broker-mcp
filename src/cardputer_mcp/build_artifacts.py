@@ -9,7 +9,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .diagnostic_registry import same_entry_binding
+from .diagnostic_registry import same_diagnostic_selection, same_entry_binding
 
 
 def manifest_digest(manifest: dict[str, Any]) -> str:
@@ -64,7 +64,7 @@ class BuildArtifacts:
                         or manifest.get("build_job_id") != job_id
                         or manifest.get("build_plan_hash") != digest
                         or manifest.get("fingerprint") != plan.get("fingerprint")
-                        or not same_entry_binding(manifest, plan)
+                        or not same_diagnostic_selection(manifest, plan)
                     ):
                         raise ValueError("invalid_internal_artifact_receipt")
                     reference = {

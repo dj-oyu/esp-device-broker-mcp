@@ -740,7 +740,10 @@ def create_server(
         build_job_id or project_id. Explicit null optional references are allowed.
 
         Registered source builds may select derby_detail_mode=ON or OFF for the
-        allowlisted J1 source. Fixed-workload collectors may select flash_job_id
+        allowlisted J1 source. derby_dma_mode is a separate ON/OFF selector that
+        requires both explicit axes and a separately approved DMA-contract entry;
+        the runtime registry currently admits J1 only and rejects DMA requests.
+        Fixed-workload collectors may select flash_job_id
         to bind expected ELF identity to a successful owned current flash receipt.
         All use request={...}; no caller-supplied port, path or raw flash arguments.
         Backup, flash and restore are independent explicit exact-plan operations.

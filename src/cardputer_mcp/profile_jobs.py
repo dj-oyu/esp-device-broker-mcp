@@ -193,7 +193,15 @@ class ProfileJobs:
                     request.project_id, request.source_receipt, principal
                 )
             details = broker.firmware_build.prepare(
-                request.project_id, principal, request.source_receipt, request.derby_detail_mode
+                request.project_id,
+                principal,
+                request.source_receipt,
+                request.derby_detail_mode,
+                **(
+                    {"derby_dma_mode": request.derby_dma_mode}
+                    if request.derby_dma_mode is not None
+                    else {}
+                ),
             )
             storage = broker.firmware_build.storage(request.project_id)
         plan = dict(

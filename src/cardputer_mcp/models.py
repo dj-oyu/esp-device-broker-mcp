@@ -143,10 +143,20 @@ class PrepareRequest(StrictModel):
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
     source_receipt: Digest | None = None
     derby_detail_mode: DiagnosticMode | None = None
+    derby_dma_mode: DiagnosticMode | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     flash_job_id: Identifier | None = None
 
     @model_validator(mode="after")
     def flash_references(self) -> "PrepareRequest":
+        if "derby_dma_mode" in self.model_fields_set and (
+            self.derby_dma_mode is None
+            or self.derby_detail_mode is None
+            or self.test != TestName.BUILD
+            or self.source_receipt is None
+        ):
+            raise ValueError("diagnostic_dma_requires_explicit_source_axes")
         if self.derby_detail_mode is not None and (
             self.test != TestName.BUILD or self.source_receipt is None
         ):

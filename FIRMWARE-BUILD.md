@@ -459,6 +459,58 @@ Previously prepared detail-build plans require preparation again because their
 fingerprint now includes the entry digest. Adding a new runtime source head or
 changing a proof contract remains a separate reviewed acceptance change.
 
+### Isolated DMA consumer contract
+
+The consumer also understands the separate `derby-dma-diagnostic-v1` contract.
+This support does **not** add an admitted source: the production diagnostic registry
+still contains only the original J1 head. `derby_dma_mode` is a separate typed
+`ON`/`OFF` selector; it is rejected for that J1 entry. A future DMA-contract entry
+requires both `derby_detail_mode` and `derby_dma_mode` explicitly, with no defaults,
+null values, arbitrary CMake arguments or fallback to the J1 detail-only proof.
+
+Both axes and the per-entry digest bind preparation, fingerprint/build slot,
+SDKCONFIG location, exact command, successful manifest, flash receipt and collector.
+The separate producer proof must match both requested axes, actual cache settings,
+linked native submit/finish functions, nested detail proof and actual BIN/ELF bytes.
+Missing, duplicate, modified or mismatched evidence fails the build. Raw cache
+bytes are bounded to 128 KiB and retained privately in durable evidence and flash
+snapshots; public build-log manifests return only their hash/size summary. This
+keeps cached paths or credentials out of MCP responses. Broker manifests have a
+1 MiB read bound; the smaller identity receipts keep their 64 KiB bound.
+
+Prospective admission requires a separate reviewed registry change and local
+registration authorization. The exact proposed entry (currently test-only) is:
+
+```python
+DiagnosticEntry(
+    repository="dj-oyu/cardputer-adv-pocketjs",
+    commit="ac7cce7d20eb34fdd54659e6678d672d23e5d2d1",
+    contract="derby-dma-diagnostic-v1",
+    modes=("ON", "OFF"),
+    dma_modes=("ON", "OFF"),
+)
+```
+
+The proposed entry digest is `e40c3f8972225ae25b3a4765e54650a7d2876bfdd4690989ca4383e0cf6ed5d8`.
+The FW source tree is `f14367d2c73e5531823b209117a470f8df64db49`.
+[Producer PR33](https://github.com/dj-oyu/cardputer-adv-pocketjs/pull/33) has four
+successful workflows / twelve jobs at that exact head:
+[fixed](https://github.com/dj-oyu/cardputer-adv-pocketjs/actions/runs/39393775102),
+[DMA host and four target combinations](https://github.com/dj-oyu/cardputer-adv-pocketjs/actions/runs/39393775090),
+[detail](https://github.com/dj-oyu/cardputer-adv-pocketjs/actions/runs/39393775135),
+and [home](https://github.com/dj-oyu/cardputer-adv-pocketjs/actions/runs/39393775132).
+The full capture-contract evidence belongs to the separate integration PR32;
+PR33's path-filtered checks do not repeat that workflow. Target logs contain typed
+proof receipts, but they do not replace an independently retained source receipt
+or downloaded-image verification. The existing source archive/tree/submodule byte
+checks remain mandatory. No archive source hash is guessed from a branch or tree.
+
+Before admission or device use, review the exact entry digest and consumer CI,
+source fetch/build receipts and four actual typed proofs; authorize registry/local
+registration and deployment separately. Physical B0/B1/D1 comparisons and display,
+recovery and normal-exit acceptance remain separate hardware gates. This consumer
+change performs none of those operations.
+
 
 ### Source cache scan time budget
 

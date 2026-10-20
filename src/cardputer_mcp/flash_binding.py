@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .diagnostic_registry import same_entry_binding
+from .diagnostic_registry import same_diagnostic_selection
 from .models import TestName
 
 if TYPE_CHECKING:
@@ -59,7 +59,7 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
         _, manifest = broker.firmware_build.resolve_flash_manifest(
             plan["build_job_id"], principal, project_id
         )
-        if not same_entry_binding(manifest, build):
+        if not same_diagnostic_selection(manifest, build):
             raise ValueError
         receipt = build.get("source_receipt")
         provenance = manifest.get("source_provenance")

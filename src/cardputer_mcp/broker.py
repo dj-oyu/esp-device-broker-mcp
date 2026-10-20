@@ -1159,6 +1159,11 @@ class Broker:
                     session.principal_id or "",
                     request.source_receipt,
                     request.derby_detail_mode,
+                    **(
+                        {"derby_dma_mode": request.derby_dma_mode}
+                        if request.derby_dma_mode is not None
+                        else {}
+                    ),
                 )
                 storage = self.firmware_build.storage(request.project_id or "")
             elif request.test == TestName.DERBY_FIXED and request.flash_job_id is not None:
