@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from .gui import Outcome, QueueController, http_diagnostics_summary, mcp_catalog_summary, perform
+from .gui_job_status import configure_job_status_tags, job_status_label, job_status_tag
 from .gui_live_presentation import (
     LogRequestState,
     LogView,
@@ -28,6 +29,7 @@ from .gui_live_transport import (
 )
 from .gui_theme import apply_theme
 from .gui_timeline import TimelineOperation, perform_timeline
+from .job_failure_reason import REASON_LABELS
 from .operator_client import OperatorClient
 
 
@@ -132,7 +134,7 @@ class LiveWindow:
             row=2, column=0, columnspan=2 if self._job_pages is not None else 1, sticky="w", pady=8
         )
         job_box, self.job_tree = self._table(
-            list_parent, ("request", "state", "stage"), (160, 110, 200)
+            list_parent, ("request", "state", "stage"), (160, 240, 200)
         )
         job_box.grid(
             row=1,
@@ -140,6 +142,10 @@ class LiveWindow:
             columnspan=2 if self._job_pages is not None else 1,
             sticky="nsew",
             padx=(0, 16),
+        )
+        configure_job_status_tags(self.job_tree)
+        self.job_tree.bind(
+            "<<ThemeChanged>>", lambda _event: configure_job_status_tags(self.job_tree), add="+"
         )
         self.job_tree.bind("<<TreeviewSelect>>", self._select)
         if self._job_pages is not None:
@@ -564,10 +570,21 @@ class LiveWindow:
         sync_rows(
             self.job_tree,
             [
-                (card.job_id, card.job_id, (card.test or "-", card.state, card.stage or "-"))
+                (
+                    card.job_id,
+                    card.job_id,
+                    (
+                        card.test or "-",
+                        job_status_label(card.state, card.reviewed),
+                        card.stage or "-",
+                    ),
+                )
                 for card in cards
             ],
         )
+        for row in cards:
+            tag = job_status_tag(row.state)
+            self.job_tree.item(row.job_id, tags=(tag,) if tag else ())
         selected = self.state.selected_job_id
         if selected and self.job_tree.exists(selected):
             if self.job_tree.selection() != (selected,):
@@ -583,15 +600,21 @@ class LiveWindow:
         detail = "Select a job to inspect its status and permitted logs."
         heading = "Selected job"
         if card:
-            heading = f"{card.job_id} | {card.state}"
+            heading = (
+                f"{card.job_id} | {job_status_label(card.state, card.reviewed)} ({card.state})"
+            )
+            if card.failure_reason:
+                heading += "\n理由：" + REASON_LABELS[card.failure_reason]
             fields = [f"Request  {card.test or 'Unknown'}"]
             if card.stage:
                 fields.append(f"Stage  {card.stage}")
             if card.result:
                 fields.append(f"Result  {card.result}")
-            dates = []
+            dates = ["登録順：作成時の順序を維持（状態更新では移動しません）"]
             if card.created_utc:
-                dates.append(f"Created  {card.created_utc}")
+                dates.append(f"Registered  {card.created_utc}")
+            else:
+                dates.append("Registered  日時不明（旧履歴）")
             if card.finished_utc:
                 dates.append(f"Finished  {card.finished_utc}")
             dates.append(

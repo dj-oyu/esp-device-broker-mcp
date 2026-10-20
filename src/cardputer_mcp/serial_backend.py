@@ -21,7 +21,7 @@ from .config import SerialSettings
 from .derby_fixed import FIXED_PLAN, FixedCollector, FixedTrial
 from .derby_observation import DerbyObservation
 from .derby_telemetry import DerbyDiagnosticsCollector
-from .device_faults import fault_category
+from .device_faults import fault_category, fault_detail
 from .device_observation import MAX_RECEIVE_BYTES, DeviceLogCollector, DeviceObservation
 from .home_line import HomeLineProbe
 from .models import TestName
@@ -222,6 +222,8 @@ class Reader:
                 self.derby_diagnostics.mark_partial_line_or_fault()
             failure = self.failure("serial_fault_marker")
             failure.diagnostic["device_fault_category"] = category or "derby_runtime_fault"
+            if detail := fault_detail(cleaned):
+                failure.diagnostic["device_fault_detail"] = detail
             raise failure
         self.fault_tail = cleaned[-256:]
         capture_finished = self.capture_decoder is not None and self.capture_decoder.complete
@@ -902,6 +904,10 @@ class SerialBackend:
                     if "device_fault_category" in operation_failure.diagnostic:
                         close_failure.diagnostic["device_fault_category"] = (
                             operation_failure.diagnostic["device_fault_category"]
+                        )
+                    if "device_fault_detail" in operation_failure.diagnostic:
+                        close_failure.diagnostic["device_fault_detail"] = (
+                            operation_failure.diagnostic["device_fault_detail"]
                         )
                 if derby_summary is not None:
                     close_failure.diagnostic["derby_observation"] = derby_summary

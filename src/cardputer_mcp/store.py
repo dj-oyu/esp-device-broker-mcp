@@ -13,6 +13,7 @@ from typing import Any, Literal
 from .console_logs import console_line
 from .derby_fixed import FIXED_PLAN, MAX_BYTES, FixedTrial, parse_collected
 from .job_outcome import review_summary
+from .timeline_order import initialize_timeline_order
 
 
 class _ObservedConnection(sqlite3.Connection):
@@ -129,6 +130,7 @@ class Store:
             self.db.execute("ALTER TABLE jobs ADD COLUMN diagnostic TEXT")
         self.db.commit()
         self.migrate_explicit_requests()
+        initialize_timeline_order(self.db)
 
     def migrate_explicit_requests(self) -> None:
         """Retire legacy pending work once; historical grants never become requests."""

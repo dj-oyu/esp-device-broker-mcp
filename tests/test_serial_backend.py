@@ -232,3 +232,19 @@ async def test_port_not_created_until_explicit_authenticated_execution(tmp_path)
         assert port.opens == port.closes == 1
     finally:
         await broker.close()
+
+
+def test_observed_oom_attaches_fixed_reason_without_commands_or_raw_diagnostic():
+    clock = Clock()
+    port = FakePort(clock)
+    port.chunks.append(
+        b"PRIVATE APP_LOAD play compile out of memory\n"
+        b"OOM first_req=1 used=2\nSTART_FAILED ESP_FAIL\n"
+    )
+    reader = Reader(port, lambda _: None, clock, 1)
+    with pytest.raises(SerialFailure) as error:
+        reader.read_once()
+    assert error.value.code == "serial_fault_marker"
+    assert error.value.diagnostic["device_fault_detail"] == "app_load_out_of_memory"
+    assert "PRIVATE" not in repr(error.value.diagnostic)
+    assert port.writes == []

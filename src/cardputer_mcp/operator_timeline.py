@@ -12,6 +12,7 @@ from typing import Any
 from .backend import DeviceOperationFailure
 from .broker import Broker, BrokerError
 from .device_observation import FIRMWARE_LIMITATIONS, REDACTION_LIMITATIONS
+from .job_failure_reason import failure_reason
 from .plan_approval import PlanApprovals
 from .source_snapshot import SOURCE_ERROR_CODES
 
@@ -267,10 +268,6 @@ _JOB_STATES = frozenset(
     {"awaiting_approval", "queued", "running", "succeeded", "failed", "cancelled", "needs_review"}
 )
 _MAX_PLAN_BYTES = 16 * 1024
-_ACTIVE = (
-    "(j.state IN ('awaiting_approval','queued','running') "
-    "OR (j.state='needs_review' AND j.reviewed=0))"
-)
 _UNEXECUTED = """CASE WHEN length(CAST(p.payload AS BLOB))<=? AND json_valid(p.payload)
     THEN NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id=json_extract(p.payload,'$.job_id'))
     ELSE 0 END"""
@@ -505,10 +502,15 @@ class OperatorTimeline:
                 CASE WHEN length(j.result)<=128 THEN j.result END AS result,
                 CASE WHEN length(j.created)<=40 THEN j.created END AS created,
                 CASE WHEN length(j.finished)<=40 THEN j.finished END AS finished,
+                CASE WHEN length(CAST(j.diagnostic AS BLOB))<=16384 AND json_valid(j.diagnostic)
+                    THEN json_extract(j.diagnostic,'$.device_fault_category') END AS fault_category,
+                CASE WHEN length(CAST(j.diagnostic AS BLOB))<=16384 AND json_valid(j.diagnostic)
+                    THEN json_extract(j.diagnostic,'$.device_fault_detail') END AS fault_detail,
                 CASE WHEN typeof(j.reviewed)='integer' AND j.reviewed=1
                     THEN 1 ELSE 0 END AS reviewed
-                FROM jobs j WHERE length(j.id) BETWEEN 1 AND 64 AND ({where})
-                ORDER BY j.rowid DESC LIMIT ?""",
+                FROM jobs j JOIN timeline_order t ON t.job_id=j.id
+                WHERE length(j.id) BETWEEN 1 AND 64 AND ({where})
+                ORDER BY t.sequence DESC LIMIT ?""",
                 (*args, MAX_CARDS + 1),
             )
             .fetchall()
@@ -518,9 +520,15 @@ class OperatorTimeline:
         return (
             self.broker._store()
             .db.execute(
-                f"""SELECT p.hash
-                FROM plans p WHERE length(p.hash)=64 AND {_UNEXECUTED} AND ({where})
-                ORDER BY p.rowid DESC LIMIT ?""",
+                f"""WITH ranked AS (
+                SELECT p.hash,t.sequence,
+                    ROW_NUMBER() OVER (PARTITION BY t.sequence ORDER BY p.rowid DESC) AS version
+                FROM plans p JOIN timeline_order t ON t.job_id=
+                    CASE WHEN length(CAST(p.payload AS BLOB))<=16384 AND json_valid(p.payload)
+                        THEN json_extract(p.payload,'$.job_id') END
+                WHERE length(p.hash)=64 AND {_UNEXECUTED} AND ({where})
+                ) SELECT hash FROM ranked WHERE version=1
+                ORDER BY sequence DESC LIMIT ?""",
                 (_MAX_PLAN_BYTES, *args, MAX_CARDS + 1),
             )
             .fetchall()
@@ -539,6 +547,7 @@ class OperatorTimeline:
             "created_utc": None,
             "finished_utc": None,
             "reviewed": False,
+            "failure_reason": None,
             "review": None,
             "image": None,
         }
@@ -557,26 +566,9 @@ class OperatorTimeline:
         if not _matches(epoch, r"[a-f0-9]{32}"):
             raise ValueError
         images = self._images()
-        lease = broker.session
-        lease_id = lease.id if lease is not None else ""
-        current = """CASE WHEN json_valid(p.payload) THEN
-            json_extract(p.payload,'$.broker_epoch')=?
-            AND (json_extract(p.payload,'$.session_id')=?
-                 OR json_extract(p.payload,'$.execution_context')='registered_project')
-            ELSE 0 END"""
-        groups: list[tuple[str, list[Any]]] = [
-            ("job", self._job_rows(_ACTIVE)),
-            ("plan", self._plan_rows(current, (epoch, lease_id))),
-        ]
-        if images:
-            marks = ",".join("?" for _ in images)
-            groups.append(("job", self._job_rows(f"j.id IN ({marks})", tuple(images))))
-        groups.extend(
-            [
-                ("job", self._job_rows(f"NOT {_ACTIVE}")),
-                ("plan", self._plan_rows(f"NOT ({current})", (epoch, lease_id))),
-            ]
-        )
+        # Both candidate sets use the same immutable registration sequence.
+        # No active/review/image priority may displace a newer history entry.
+        groups = [("job", self._job_rows("1")), ("plan", self._plan_rows("1"))]
         cards: dict[str, dict[str, Any]] = {}
         has_more = False
         for kind, rows in groups:
@@ -600,6 +592,9 @@ class OperatorTimeline:
                         finished_utc=_utc(row["finished"]),
                         reviewed=row["reviewed"] == 1,
                     )
+                    card["failure_reason"] = failure_reason(
+                        card["state"], card["result"], row["fault_category"], row["fault_detail"]
+                    )
                     if card["state"] == "succeeded":
                         card["image"] = images.get(row["id"])
                 else:
@@ -621,7 +616,21 @@ class OperatorTimeline:
                     card["state"] = "prepared" if live else "expired"
                 cards.setdefault(card["job_id"], card)
         has_more = has_more or len(cards) > MAX_CARDS
-        selected = list(cards.values())[:MAX_CARDS]
+        if cards:
+            marks = ",".join("?" for _ in cards)
+            registrations = {
+                row["job_id"]: row
+                for row in broker._store().db.execute(
+                    f"SELECT job_id,sequence,created FROM timeline_order WHERE job_id IN ({marks})",
+                    tuple(cards),
+                )
+            }
+            ordered = sorted(cards, key=lambda key: registrations[key]["sequence"], reverse=True)
+            selected = [cards[key] for key in ordered[:MAX_CARDS]]
+            for card in selected:
+                card["created_utc"] = _utc(registrations[card["job_id"]]["created"])
+        else:
+            selected = []
         broker._prune_captures()
         for card in selected:
             image = card["image"]

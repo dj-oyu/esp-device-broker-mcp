@@ -67,7 +67,7 @@ def test_native_job_selection_delta_log_navigation_and_close(monkeypatch):
         window.job_tree.focus("a")
         window._select()
         assert window.runner.reads[-1][1] == "a"
-        assert window.detail_heading.get() == "a | running"
+        assert window.detail_heading.get() == "a | [>] 実行中 (running)"
         window.runner.events.extend(
             [
                 TransportEvent(
@@ -348,12 +348,12 @@ def test_native_job_heading_ascii_controls_and_nonlog_empty_loading_states(monke
         window.job_tree.selection_set("job_image_1")
         window._select()
         root.update()
-        assert window.detail_heading.get() == "job_image_1 | succeeded"
+        assert window.detail_heading.get() == "job_image_1 | [OK] 成功 (succeeded)"
         assert window.detail_heading_label.cget("style") == "Section.TLabel"
         assert window.detail_text.cget("font") == "TkTextFont"
         body = window.detail_text.get("1.0", "end-1c")
         assert "Stage  " not in body and "Result  " not in body and "Finished  " not in body
-        assert "Created  " in body and "Historical review  " in body
+        assert "Registered  " in body and "Historical review  " in body
         assert window.logs.phase == "not_applicable"
         assert window.log_button.instate(["disabled"]) and window.runner.reads == []
         assert window.preview_button.cget("text") == "Preview retained image"
@@ -367,7 +367,7 @@ def test_native_job_heading_ascii_controls_and_nonlog_empty_loading_states(monke
         window._select()
         assert window.runner.reads[-1][1] == "build"
         assert window.log_status.get() == "Reading permitted output..."
-        assert window.detail_heading.get() == "build | running"
+        assert window.detail_heading.get() == "build | [>] 実行中 (running)"
         window.runner.events.append(
             TransportEvent(
                 "logs",
@@ -406,3 +406,56 @@ def test_native_job_heading_ascii_controls_and_nonlog_empty_loading_states(monke
                 root.destroy()
             except tk.TclError:
                 pass
+
+
+def test_native_status_backgrounds_and_review_labels_preserve_selection(monkeypatch):
+    import tkinter as tk
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Native Tk requires a desktop display")
+    root.withdraw()
+    monkeypatch.setattr(gui_live, "LiveRunner", Runner)
+    monkeypatch.setattr("cardputer_mcp.gui_job_status.high_contrast_enabled", lambda: False)
+    window = None
+    try:
+        window = gui_live.LiveWindow(root, OperatorClient("http://127.0.0.1:8765", "synthetic"))
+        rows = [
+            card("failed", cancel_available=False),
+            card("unreviewed", cancel_available=False, failure_reason="app_load_out_of_memory"),
+            card("reviewed", cancel_available=False),
+        ]
+        rows[0]["state"] = "failed"
+        for row in rows[1:]:
+            row["state"] = "needs_review"
+        rows[2]["reviewed"] = True
+        window.runner.events.append(
+            TransportEvent("message", window.state.generation, snapshot(rows), time.monotonic())
+        )
+        window._drain()
+        assert window.state.connection == "live"
+        failed_color = window.job_tree.tag_configure("job_failed", "background")
+        assert str(failed_color) == "#FDE8E7"
+        review_color = window.job_tree.tag_configure("job_review", "background")
+        assert str(review_color) == "#FFF0CC"
+        for job in ("failed", "unreviewed", "reviewed"):
+            window.job_tree.selection_set(job)
+            window.job_tree.focus(job)
+            window._select()
+            window._render()
+            values = window.job_tree.item(job, "values")
+            assert values[1].startswith("[X]" if job == "failed" else "[!]")
+            assert window.job_tree.selection() == (job,)
+            assert window.job_tree.focus() == job
+        window.job_tree.selection_set("unreviewed")
+        window._select()
+        assert "理由：起動失敗：メモリ不足の記録" in window.detail_heading.get()
+        assert "未確認" in window.job_tree.item("unreviewed", "values")[1]
+        assert "確認済み" in window.job_tree.item("reviewed", "values")[1]
+    finally:
+        if window is not None:
+            window.runner.close()
+            if window.timer is not None:
+                root.after_cancel(window.timer)
+        root.destroy()

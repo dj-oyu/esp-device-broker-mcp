@@ -32,3 +32,19 @@ def fault_category(raw: bytes, *, fixed_workload: bool = False) -> str | None:
     if re.search(rb"(?:Internal|Type|Range|Reference|Syntax|Eval|URI)Error\s*:", cleaned):
         return "vm_exception"
     return "device_fault"
+
+
+def fault_detail(raw: bytes) -> str | None:
+    """Display hint only, after an existing fault decision; never retain text."""
+    cleaned = ANSI.sub(b"", raw)
+    if re.search(
+        rb"\bAPP_LOAD\b[^\r\n]{0,256}\bcompile\b[^\r\n]{0,64}\bout of memory\b",
+        cleaned,
+        re.IGNORECASE,
+    ):
+        if re.search(rb"\bSTART_FAILED\b", cleaned):
+            return "app_load_out_of_memory"
+        return "out_of_memory_observed"
+    if re.search(rb"\bOOM\b", cleaned):
+        return "out_of_memory_observed"
+    return None
