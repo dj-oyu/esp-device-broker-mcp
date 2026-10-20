@@ -1,7 +1,6 @@
 """Registered external ESP-IDF 6.0.1 build; no flash or USB operation."""
 
 import asyncio
-import copy
 import hashlib
 import json
 import os
@@ -38,6 +37,7 @@ from .diagnostic_registry import (
     validate_diagnostic_selection,
     validate_entry_binding,
 )
+from .manifest_export import export_response, public_manifest
 from .models import DiagnosticMode
 
 ALLOWED_ENV = frozenset(
@@ -1079,18 +1079,7 @@ class FirmwareBuild:
     @staticmethod
     def _public_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         """Keep raw CMake cache private; it can contain paths and cached credentials."""
-        result = copy.deepcopy(manifest)
-        envelope = result.get("diagnostic_modeproof")
-        if isinstance(envelope, dict):
-            cache = envelope.pop("cmake_cache", None)
-            if isinstance(cache, str):
-                raw = cache.encode("utf-8")
-                envelope["cache_evidence"] = {
-                    "retained_private": True,
-                    "bytes": len(raw),
-                    "sha256": hashlib.sha256(raw).hexdigest(),
-                }
-        return result
+        return public_manifest(manifest)
 
     def read_logs(
         self,
@@ -1126,7 +1115,7 @@ class FirmwareBuild:
             if project_id is None and self.artifacts.history is None:
                 manifest = self.manifests.get(request.job_id)
                 if manifest and manifest[0] == principal and not result["expired"]:
-                    result["manifest"] = self._public_manifest(manifest[1])
+                    result.update(export_response(manifest[1]))
         if project_id is not None:
             if not self._receipt_read_lock.acquire(blocking=False):
                 result["artifact_status"] = "busy"
@@ -1136,11 +1125,12 @@ class FirmwareBuild:
                     _, manifest_data = self.resolve_flash_manifest(
                         request.job_id, principal, project_id
                     )
+                    exported = export_response(manifest_data)
                 except Exception:
                     # Do not leak paths/OS errors, adopt files or return a stale cache.
                     result["artifact_status"] = "unavailable"
                 else:
-                    result["manifest"] = self._public_manifest(manifest_data)
+                    result.update(exported)
                     result["artifact_status"] = "verified"
             finally:
                 self._receipt_read_lock.release()

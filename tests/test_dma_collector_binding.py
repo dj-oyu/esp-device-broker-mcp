@@ -17,6 +17,7 @@ from cardputer_mcp.collector_binding import (
     validate_collector_schema,
 )
 from cardputer_mcp.diagnostic_dma_modeproof import collect_dma_modeproof
+from cardputer_mcp.manifest_export import make_manifest_export, manifest_export_sha256
 
 
 def rebind(chain):
@@ -81,6 +82,33 @@ def test_four_axis_choices_bind_to_verified_retained_flash(make_dma_chain, detai
         details["expected_firmware_sha256"]
         != chain.resident.settings.serial.expected_firmware_sha256
     )
+
+
+@pytest.mark.parametrize("detail", ["ON", "OFF"])
+@pytest.mark.parametrize("dma", ["ON", "OFF"])
+@pytest.mark.parametrize("damage", ["none", "wrong", "null", "bool"])
+def test_collector_rechecks_present_export_commitment(make_dma_chain, detail, dma, damage):
+    chain = make_dma_chain(detail, dma)
+    chain.manifest["schema_version"] = 1
+    rebind(chain)
+    export = make_manifest_export(chain.manifest)
+    chain.flash["manifest_export_sha256"] = {
+        "none": manifest_export_sha256(export), "wrong": "0" * 64, "null": None, "bool": True
+    }[damage]
+    rebind(chain)
+    if damage != "none":
+        with pytest.raises(ValueError):
+            resolve_collector(chain.resident, "public-flash", "owner")
+        return
+    details = prepare_collector(chain.resident, "public-flash", "owner")
+    binding = details["collector_binding"]
+    assert binding["manifest_sha256"] == export["original_manifest_sha256"]
+    assert binding["flash_plan_hash"] == digest_plan(chain.flash)
+    plan = {"test": "derby_fixed_workload", **details}
+    assert collector_live(chain.resident, plan, "owner")
+    chain.flash.pop("manifest_export_sha256")
+    # Removing the commitment changes the fixed trusted flash plan hash.
+    assert not collector_live(chain.resident, plan, "owner")
 
 
 @pytest.mark.parametrize("record", ["build", "manifest"])

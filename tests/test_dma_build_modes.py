@@ -211,6 +211,20 @@ def test_dma_durable_evidence_after_restart_and_log_expiry(detail, dma):
             assert "sentinel-secret-value" not in json.dumps(result)
             assert public_envelope["proof"] == envelope["proof"]
             assert public_envelope["cache_evidence"]["retained_private"]
+            from cardputer_mcp.build_artifacts import manifest_digest
+            from cardputer_mcp.manifest_export import manifest_export_sha256
+
+            exported = result["manifest_export"]
+            assert exported["original_manifest_sha256"] == manifest_digest(manifest)
+            assert exported["manifest"] == result["manifest"]
+            assert manifest_digest(result["manifest"]) != exported["original_manifest_sha256"]
+            assert result["manifest_export_sha256"] == manifest_export_sha256(exported)
+            case.restart()
+            again = case.builder.read_logs(
+                BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
+            )
+            assert again["manifest_export"] == exported
+            assert again["manifest_export_sha256"] == result["manifest_export_sha256"]
             assert case.context()[1]["diagnostic_modeproof"] == envelope
             for filename in ("CMakeCache.txt", PROOF_NAME):
                 saved = (root / filename).read_bytes()
@@ -219,6 +233,7 @@ def test_dma_durable_evidence_after_restart_and_log_expiry(detail, dma):
                     BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
                 )
                 assert result["artifact_status"] == "unavailable"
+                assert "manifest_export" not in result and "manifest_export_sha256" not in result
                 (root / filename).write_bytes(saved)
     finally:
         case.doCleanups()

@@ -945,6 +945,8 @@ def create_server(
         A successful build includes a revalidated durable manifest even after RAM log
         expiry/restart. expired/gap still report lost logs. artifact_status is
         verified, unavailable or busy. No manifest grants flash permission.
+        manifest_export/manifest_export_sha256 give the versioned private-cache projection;
+        new flash plans bind its hash alongside the unchanged original manifest hash.
         Flash summaries survive log expiry/restart and contain bounded matched IDF/ELF
         evidence. Full BIN readback hashes plus boot prefix support artifact matching;
         boot text alone is not authenticated or cryptographic identity proof.

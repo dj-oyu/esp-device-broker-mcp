@@ -18,6 +18,7 @@ from .diagnostic_registry import (
     validate_diagnostic_selection,
     validate_entry_binding,
 )
+from .manifest_export import validate_plan_export
 from .models import Digest, Identifier, StrictModel
 
 if TYPE_CHECKING:
@@ -147,6 +148,7 @@ def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
         or metadata.get("expected_app_bin_sha256") != flash.get("expected_app_bin_sha256")
     ):
         raise ValueError("collector_image_binding_invalid")
+    validate_plan_export(flash, manifest)
     store = broker._store()
     build_job = store.job(flash["build_job_id"])
     build = store.plan(build_job["plan_hash"]) if build_job else None

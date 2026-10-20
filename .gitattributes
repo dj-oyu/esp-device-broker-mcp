@@ -1,1 +1,2 @@
 tests/fixtures/derby_fixed_v1.log -text
+tests/fixtures/derby_manifest_export_pr38.py.txt -text

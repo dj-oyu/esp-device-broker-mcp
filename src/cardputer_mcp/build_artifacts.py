@@ -18,6 +18,15 @@ def manifest_digest(manifest: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("owned_build_artifact_not_available")
+        result[key] = value
+    return result
+
+
 class BuildArtifacts:
     def __init__(self, history: Path | None = None) -> None:
         self.history = history
@@ -40,9 +49,11 @@ class BuildArtifacts:
         ).fetchone()
         if row is None:
             raise ValueError("owned_build_artifact_not_available")
-        plan = json.loads(row[1])
+        plan = json.loads(row[1], object_pairs_hook=_unique)
         if (
-            not principal
+            not isinstance(plan, dict)
+            or manifest_digest(plan) != row[0]
+            or not principal
             or plan.get("build_principal") != principal
             or plan.get("test") != "firmware_build"
             or plan.get("job_id") != job_id
@@ -105,7 +116,7 @@ class BuildArtifacts:
                 or len(row[0].encode()) > 4096
             ):
                 raise ValueError("owned_build_artifact_not_available")
-            reference = json.loads(row[0])
+            reference = json.loads(row[0], object_pairs_hook=_unique)
             if (
                 not isinstance(reference, dict)
                 or reference.get("project_id") != project_id

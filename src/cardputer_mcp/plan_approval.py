@@ -102,6 +102,8 @@ class PlanApprovals:
 
             validate_flash_plan(plan)
             expected_keys = _BASE_KEYS | FLASH_FIELDS
+            if "manifest_export_sha256" in plan:
+                expected_keys |= {"manifest_export_sha256"}
         elif test == TestName.SOURCE.value:
             from .source_snapshot import LIMITS
 
