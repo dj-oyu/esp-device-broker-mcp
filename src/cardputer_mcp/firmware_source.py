@@ -88,6 +88,17 @@ class FirmwareSource:
             evidence(), loop
         ).result(timeout=5)
 
+        async def publication(receipt: str) -> None:
+            if not await check():
+                raise SourceError("source_fetch_interrupted")
+            self.store().record_source_publication(
+                receipt, plan["job_id"], plan["project_id"], plan["source_principal"]
+            )
+
+        self.snapshots.publication = lambda receipt: asyncio.run_coroutine_threadsafe(
+            publication(receipt), loop
+        ).result(timeout=5)
+
         worker = asyncio.create_task(asyncio.to_thread(self.snapshots.fetch, plan, valid, emit))
         interrupted = False
         try:
@@ -110,6 +121,7 @@ class FirmwareSource:
             raise SourceError(code) from None
         finally:
             self.snapshots.retention = None
+            self.snapshots.publication = None
             self.active = False
 
     def record_failure(self, plan: dict[str, Any], code: str) -> None:
@@ -162,10 +174,11 @@ class FirmwareSource:
             and failure_code in SOURCE_ERROR_CODES
         )
         if failed:
-            result["diagnostic"] = {"code": failure_code}
+            failure_diagnostic: dict[str, Any] = {"code": failure_code}
             explanation = SourceError(failure_code).public().get("explanation")
             if explanation is not None:
-                result["diagnostic"]["explanation"] = explanation
+                failure_diagnostic["explanation"] = explanation
+            result["diagnostic"] = failure_diagnostic
         if not include_cache or not request.include_source_cache:
             return result
         try:

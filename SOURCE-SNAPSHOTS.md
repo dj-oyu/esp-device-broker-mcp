@@ -150,8 +150,12 @@ Restart can resume validated unreferenced remnants; unknown files, symlinks,
 reparse points and hardlinks are rejected. Recognized reservations left by
 terminal owned fetch jobs are reconciled under the same lock; legacy/unknown
 pending directories and unfinished/review jobs are retained. Failed/cancelled
-publications can be reclaimed only with matching durable origin evidence and
-full payload verification; they never grant build authority.
+publications can be reclaimed only with matching durable publication intent and
+full payload verification; they never grant build authority. Publication intent
+is committed on the resident SQLite loop before the filesystem rename. Intent
+alone never grants success or build authorization. Legacy uncertain publications
+without this binding remain unknown and are preserved. The ledger is limited by
+the existing 10,000-job history bound, with at most one receipt per fetch job.
 
 The root OS lock is released by process death and rejects concurrent threads or
 processes without waiting. Its owner digest binds the cache to one state-store

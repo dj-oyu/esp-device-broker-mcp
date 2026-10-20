@@ -144,4 +144,14 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
                 continue
             if build.get("project_id") == project and build.get("source_receipt") is not None:
                 protect(build["source_receipt"], reason)
-    return {"complete": complete, "sources": sources, "protected": protected, "jobs": jobs}
+    publications = store.db.execute("SELECT * FROM source_publications LIMIT ?",
+                                    (REFERENCE_LIMIT + 1,)).fetchall()
+    complete = complete and len(publications) <= REFERENCE_LIMIT
+    owned_publications = {}
+    for row in publications[:REFERENCE_LIMIT]:
+        if row["job_id"] not in jobs:
+            complete = False
+        if row["project_id"] == project and row["principal"] == principal:
+            owned_publications[row["receipt"]] = row["job_id"]
+    return {"complete": complete, "sources": sources, "protected": protected, "jobs": jobs,
+            "publications": owned_publications}

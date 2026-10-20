@@ -91,6 +91,8 @@ class CacheFixture:
     def fetch(self, number, job=None, principal="owner", commit=True, live=lambda: True):
         plan = self.plan(number, job, principal)
         self.add(plan, "running")
+        self.snapshots.publication = lambda receipt: self.store.record_source_publication(
+            receipt, plan["job_id"], "fixture", principal)
         result = self.snapshots.fetch(plan, live, lambda _: None)
         if commit:
             self.store.set_job(plan["job_id"], "succeeded", diagnostic={"source": result})
@@ -321,6 +323,61 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         self.assertFalse(self.payload(first).exists())
         self.assertEqual(self.downloads, 2)
         self.assertTrue((self.payload(first).parent / "receipt.json").exists())
+
+    def test_failed_publication_without_durable_intent_is_unknown_and_preserved(self):
+        with patch.object(self.store, "record_source_publication", lambda *args: None):
+            first = self.fetch(1, commit=False)
+        self.store.set_job("source-1", "failed", "synthetic_failure")
+        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
+            with self.assertRaisesRegex(SourceError, "source_cache_protected"):
+                self.fetch(2)
+        self.assertTrue(self.payload(first).exists())
+
+    def test_publication_ledger_failure_publishes_nothing_and_latches_uncertainty(self):
+        with patch.object(self.store, "record_source_publication", side_effect=OSError("synthetic")):
+            with self.assertRaisesRegex(SourceError, "source_cleanup_unconfirmed"):
+                self.fetch(1)
+        self.assertTrue(self.snapshots.uncertain)
+        self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 0)
+        self.assertEqual(list((self.root / "cache").rglob("receipt.json")), [])
+
+    def test_two_real_fetches_cannot_download_or_reserve_concurrently(self):
+        entered, release = threading.Event(), threading.Event()
+        original = self.snapshots.__class__
+        from cardputer_mcp.source_snapshot import RepositoryArchives
+
+        fetch = RepositoryArchives.fetch
+        results, errors = [], []
+        plan = self.plan(1)
+        snapshots = original(self.settings)
+
+        def delayed(archives, *args, **kwargs):
+            entered.set()
+            if not release.wait(10):
+                raise SourceError("source_fetch_interrupted")
+            return fetch(archives, *args, **kwargs)
+
+        def first():
+            try:
+                results.append(snapshots.fetch(plan, lambda: True, lambda _: None))
+            except Exception as failure:
+                errors.append(failure)
+
+        with patch.object(RepositoryArchives, "fetch", delayed):
+            thread = threading.Thread(target=first)
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(10))
+                with self.assertRaisesRegex(SourceError, "source_fetch_busy"):
+                    original(self.settings).fetch(self.plan(2), lambda: True, lambda _: None)
+            finally:
+                release.set()
+                thread.join(10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(self.downloads, 1)
+        self.assertEqual(snapshots.usage("fixture")["snapshots"], 1)
 
     def test_terminal_reservation_reconciled_on_restart_active_and_unknown_preserved(self):
         plan = self.plan(1)

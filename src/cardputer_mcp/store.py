@@ -57,6 +57,10 @@ class Store:
         CREATE TABLE IF NOT EXISTS build_artifact_references (
             job_id TEXT PRIMARY KEY, principal TEXT NOT NULL, payload TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS source_publications (
+            receipt TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE,
+            project_id TEXT NOT NULL, principal TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS firmware_job_summaries (
             job_id TEXT PRIMARY KEY, principal TEXT NOT NULL, payload TEXT NOT NULL
         );
@@ -350,6 +354,26 @@ class Store:
             (digest, json.dumps(payload, sort_keys=True)),
         )
         self.db.commit()
+
+    def record_source_publication(self, receipt: str, job_id: str,
+                                  project_id: str, principal: str) -> None:
+        """Durable intent before filesystem publication; no success authority."""
+        if re.fullmatch(r"[a-f0-9]{64}", receipt) is None:
+            raise ValueError("source_publication_invalid")
+        job = self.job(job_id)
+        plan = self.plan(job["plan_hash"]) if job is not None else None
+        if (job is None or job["state"] != "running" or plan is None
+                or plan.get("project_id") != project_id
+                or plan.get("source_principal") != principal
+                or plan.get("test") != "firmware_fetch_source"):
+            raise ValueError("source_publication_not_authorized")
+        with self.db:
+            self.db.execute("INSERT OR IGNORE INTO source_publications VALUES(?,?,?,?)",
+                            (receipt, job_id, project_id, principal))
+            row = self.db.execute("SELECT * FROM source_publications WHERE job_id=?",
+                                  (job_id,)).fetchone()
+            if row is None or tuple(row) != (receipt, job_id, project_id, principal):
+                raise ValueError("source_publication_conflict")
 
     def plan(self, digest: str) -> dict[str, Any] | None:
         row = self.db.execute("SELECT payload FROM plans WHERE hash=?", (digest,)).fetchone()

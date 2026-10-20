@@ -342,7 +342,14 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
 
 @pytest.mark.parametrize(
     "failure_kind",
-    ["known", "unknown", "unsafe_source_error", "commit_known", "commit_unknown", "cache_protected"],
+    [
+        "known",
+        "unknown",
+        "unsafe_source_error",
+        "commit_known",
+        "commit_unknown",
+        "cache_protected",
+    ],
 )
 async def test_failed_source_retains_safe_diagnostic_through_broker(
     registry_service, tmp_path, monkeypatch, failure_kind

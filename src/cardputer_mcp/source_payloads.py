@@ -54,6 +54,7 @@ def metadata(
         job = evidence["jobs"].get(value.get("fetch_job_id"), {})
         if (
             job.get("state") not in {"failed", "cancelled"}
+            or evidence["publications"].get(receipt) != value.get("fetch_job_id")
             or job.get("plan", {}).get("test") != "firmware_fetch_source"
             or job.get("plan", {}).get("source_principal") != plan["source_principal"]
             or job.get("plan", {}).get("project_id") != plan["project_id"]
@@ -244,8 +245,9 @@ def admit_source(
         if value is None:
             continue
         proofs = evidence["sources"].get(receipt, [])
+        successful_origin = any(item["job_id"] == value["fetch_job_id"] for item in proofs)
         if (
-            proofs
+            successful_origin
             and value["commit"] == plan["source_commit"]
             and not (path / "reclaim.json").exists()
         ):

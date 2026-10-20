@@ -729,6 +729,7 @@ class SourceSnapshots:
         self.settings, self.transport = settings, transport
         self.uncertain = False
         self.retention: Callable[[], dict[str, Any]] | None = None
+        self.publication: Callable[[str], None] | None = None
         self.restore_source: dict[str, Any] | None = None
 
     @contextmanager
@@ -1067,6 +1068,16 @@ class SourceSnapshots:
             elif target.exists():
                 raise SourceError("source_snapshot_conflict")
             else:
+                if self.publication is not None:
+                    try:
+                        self.publication(receipt)
+                    except SourceError:
+                        raise
+                    except Exception:
+                        self.uncertain = True
+                        raise SourceError("source_cleanup_unconfirmed") from None
+                    if valid() is not True:
+                        raise SourceError("source_fetch_interrupted")
                 (pending / "reservation.json").unlink()
                 pending.rename(target)
             return dict(
