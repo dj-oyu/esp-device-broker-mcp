@@ -8,7 +8,12 @@ from typing import Any
 RETRYABLE_HTTP = frozenset({408, 429, 500, 502, 503, 504})
 RETRYABLE_CODES = frozenset({"unavailable", "operator_timeline_unavailable"})
 SAFE_CODES = RETRYABLE_CODES | frozenset(
-    {"operator_request_failed", "invalid_request", "authentication_required", "local_operator_required"}
+    {
+        "operator_request_failed",
+        "invalid_request",
+        "authentication_required",
+        "local_operator_required",
+    }
 )
 
 

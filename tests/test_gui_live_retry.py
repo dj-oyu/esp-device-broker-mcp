@@ -26,7 +26,9 @@ class LiveRetryTests(unittest.TestCase):
         self.assertEqual(retry.deadline, 300.8)
 
     def test_authentication_and_permanent_rejections_stop(self):
-        for reason in ["authentication_failed", "http_rejected", "broker_rejected", "unexpected_exception"]:
+        for reason in [
+            "authentication_failed", "http_rejected", "broker_rejected", "unexpected_exception"
+        ]:
             retry = LiveRetry()
             retry.failed(diagnostic(reason, 1, 4), 0, jitter=1)
             self.assertTrue(retry.stopped)
@@ -53,7 +55,9 @@ class LiveRetryTests(unittest.TestCase):
         self.assertIsNone(details["code"])
         self.assertNotIn("PRIVATE", repr(details))
         self.assertIn("+00:00", details["utc"])
-        self.assertEqual(diagnostic("broker_rejected", 7, -1, code="unavailable")["code"], "unavailable")
+        self.assertEqual(
+            diagnostic("broker_rejected", 7, -1, code="unavailable")["code"], "unavailable"
+        )
 
 
 if __name__ == "__main__":

@@ -63,7 +63,7 @@ def _cursor(value: Any) -> dict[str, Any]:
         or type(value.get("sequence")) is not int
         or not 0 <= value["sequence"] <= 2**63 - 1
     ):
-        raise _TransportFailure(INVALID_RESPONSE)
+        raise _TransportFailure(INVALID_RESPONSE, status=200)
     return {"epoch": value["epoch"], "sequence": value["sequence"]}
 
 
@@ -362,7 +362,9 @@ class LiveRunner:
             try:
                 client.cookies.clear()
                 if response.status_code in (401, 403):
-                    raise _TransportFailure(AUTH_FAILED, reason="authentication_failed", status=response.status_code)
+                    raise _TransportFailure(
+                        AUTH_FAILED, reason="authentication_failed", status=response.status_code
+                    )
                 if response.status_code != 200:
                     raise _TransportFailure(
                         REJECTED, reason="http_rejected", status=response.status_code,
@@ -372,20 +374,20 @@ class LiveRunner:
                 if declared is not None:
                     try:
                         if int(declared) > MAX_RESPONSE_BYTES:
-                            raise _TransportFailure(INVALID_RESPONSE)
+                            raise _TransportFailure(INVALID_RESPONSE, status=200)
                     except ValueError:
-                        raise _TransportFailure(INVALID_RESPONSE) from None
+                        raise _TransportFailure(INVALID_RESPONSE, status=200) from None
                 body = bytearray()
                 async for chunk in response.aiter_bytes(chunk_size=8192):
                     if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
-                        raise _TransportFailure(INVALID_RESPONSE)
+                        raise _TransportFailure(INVALID_RESPONSE, status=200)
                     body.extend(chunk)
                 try:
                     data = json.loads(body)
                 except (ValueError, RecursionError):
-                    raise _TransportFailure(INVALID_RESPONSE) from None
+                    raise _TransportFailure(INVALID_RESPONSE, status=200) from None
                 if not isinstance(data, dict) or type(data.get("ok")) is not bool:
-                    raise _TransportFailure(INVALID_RESPONSE)
+                    raise _TransportFailure(INVALID_RESPONSE, status=200)
                 if not read_once and data["ok"] is not True:
                     code = data.get("error")
                     safe_code = code if type(code) is str and code in SAFE_CODES else None
@@ -420,7 +422,7 @@ class LiveRunner:
                     or data["schema_version"] != 1
                     or data.get("kind") not in ("snapshot", "reset", "delta", "heartbeat")
                 ):
-                    raise _TransportFailure(INVALID_RESPONSE)
+                    raise _TransportFailure(INVALID_RESPONSE, status=200)
                 next_cursor = _cursor(data.get("cursor"))
                 kind = data["kind"]
                 if (
@@ -428,7 +430,7 @@ class LiveRunner:
                     or (kind == "delta" and _cursor(data.get("base_cursor")) != cursor)
                     or (kind == "heartbeat" and next_cursor != cursor)
                 ):
-                    raise _TransportFailure(INVALID_RESPONSE)
+                    raise _TransportFailure(INVALID_RESPONSE, status=200)
                 if not self._emit(TransportEvent("message", generation, data, started_at)):
                     return
                 cursor = next_cursor

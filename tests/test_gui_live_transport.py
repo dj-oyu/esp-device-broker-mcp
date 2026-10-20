@@ -1029,8 +1029,16 @@ def test_old_generation_image_request_cannot_invalidate_current_pending_preview(
     assert events[0].payload["response"]["body"] == "current preview"
 
 
-@pytest.mark.parametrize("status,retryable", [(302, False), (400, False), (401, False), (403, False), (404, False), (408, True), (429, True), (500, True), (502, True), (503, True), (504, True)])
-def test_live_failure_diagnostics_classify_status_without_response_text(runner_factory, status, retryable):
+@pytest.mark.parametrize(
+    "status,retryable",
+    [
+        (302, False), (400, False), (401, False), (403, False), (404, False),
+        (408, True), (429, True), (500, True), (502, True), (503, True), (504, True),
+    ],
+)
+def test_live_failure_diagnostics_classify_status_without_response_text(
+    runner_factory, status, retryable
+):
     make, _ = runner_factory
 
     async def handler(request):
@@ -1047,7 +1055,13 @@ def test_live_failure_diagnostics_classify_status_without_response_text(runner_f
     assert TOKEN not in repr(event) and "PRIVATE" not in repr(event)
 
 
-@pytest.mark.parametrize("code,retryable", [("unavailable", True), ("operator_timeline_unavailable", True), ("operator_request_failed", False), ("PRIVATE", False)])
+@pytest.mark.parametrize(
+    "code,retryable",
+    [
+        ("unavailable", True), ("operator_timeline_unavailable", True),
+        ("operator_request_failed", False), ("PRIVATE", False),
+    ],
+)
 def test_live_ok_false_classification_is_allowlisted(runner_factory, code, retryable):
     make, _ = runner_factory
 

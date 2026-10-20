@@ -679,7 +679,10 @@ def test_transient_disconnect_retries_new_generation_and_never_mutations():
     window = live_window()
     window.status = Mock()
     old = window.state.generation
-    failure = TransportEvent("disconnected", old, {"error": "fixed"}, 0, diagnostic("read_timeout", old, 35000, retryable=True))
+    failure = TransportEvent(
+        "disconnected", old, {"error": "fixed"}, 0,
+        diagnostic("read_timeout", old, 35000, retryable=True),
+    )
     with patch("cardputer_mcp.gui_live.time.monotonic", return_value=100):
         drain(window, failure)
     assert window.state.connection == "disconnected"
@@ -706,7 +709,9 @@ def test_scheduled_live_reconnect_respects_owned_action_and_close(blocked):
     window = live_window()
     window.status = Mock()
     window.state = disconnect(window.state, window.state.generation)
-    window._retry_state().failed(diagnostic("read_timeout", window.state.generation, 0, retryable=True), 0, jitter=1)
+    window._retry_state().failed(
+        diagnostic("read_timeout", window.state.generation, 0, retryable=True), 0, jitter=1
+    )
     if blocked == "pending":
         window.action_pending = True
     elif blocked == "closing":
@@ -734,3 +739,32 @@ def test_manual_reconnect_cancels_scheduled_retry_and_drops_old_failure():
         drain(window, TransportEvent("disconnected", old, {"error": "fixed"}, 0))
     window.runner.reconnect.assert_called_once_with(old + 1)
     assert window.state.connection == "connecting"
+
+
+def test_repeated_reducer_invalidity_stops_after_one_full_resync():
+    window = live_window()
+    with patch("cardputer_mcp.gui_live.time.monotonic", return_value=100):
+        drain(window, message(window, {"ok": True, "kind": "invalid"}))
+    window.runner.pause.assert_called_once_with(window.state.generation)
+    assert window.live_retry.invalid_count == 1 and window.live_retry.deadline is not None
+    window.live_retry.deadline = 101
+    with patch("cardputer_mcp.gui_live.time.monotonic", return_value=102):
+        drain(window)
+    with patch("cardputer_mcp.gui_live.time.monotonic", return_value=103):
+        drain(window, message(window, {"ok": True, "kind": "invalid"}))
+    assert window.live_retry.stopped and window.live_retry.deadline is None
+    window.runner.reconnect.assert_called_once()
+
+
+def test_auth_failure_records_diagnostic_and_never_schedules_retry():
+    from cardputer_mcp.gui_live_retry import diagnostic
+    from cardputer_mcp.gui_live_transport import AUTH_FAILED
+
+    window = live_window()
+    old = window.state.generation
+    details = diagnostic("authentication_failed", old, 5, status=401)
+    drain(window, TransportEvent("disconnected", old, {"error": AUTH_FAILED}, 0, details))
+    assert window.live_retry.stopped and window.live_retry.deadline is None
+    assert window.live_diagnostics == [details]
+    assert window.state.connection == "disconnected"
+    window.runner.reconnect.assert_not_called()

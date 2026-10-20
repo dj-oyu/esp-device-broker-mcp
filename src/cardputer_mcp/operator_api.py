@@ -336,6 +336,9 @@ class OperatorAPI:
                 release = ReleaseIdle.model_validate(payload)
                 result = self.broker.operator_release_idle(release.lease_id)
         except BrokerError as error:
+            # Live subscriptions also use this JSON error boundary. HTTP 200
+            # alone does not mean success; GUI recovery must classify the fixed
+            # error code and must not blindly retry every rejected request.
             await self._respond(send, 200, {"ok": False, "error": str(error)})
         except ValueError:
             await self._respond(send, 400, {"ok": False, "error": "invalid_request"})
