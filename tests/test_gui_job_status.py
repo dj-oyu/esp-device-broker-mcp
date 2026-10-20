@@ -142,7 +142,6 @@ class JobStatusTests(unittest.TestCase):
         tree.configure.assert_not_called()
 
 
-
 class JobPresentationTests(unittest.TestCase):
     def test_confirmed_fault_is_failed_independently_of_acknowledgement(self):
         for reviewed in (False, True):

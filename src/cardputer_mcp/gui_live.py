@@ -676,9 +676,7 @@ class LiveWindow:
                 dates.append("Registered  日時不明（旧履歴）")
             if card.finished_utc:
                 dates.append(f"Finished  {card.finished_utc}")
-            dates.append(
-                f"Historical acknowledgement  {display.review_label}"
-            )
+            dates.append(f"Historical acknowledgement  {display.review_label}")
             detail = "\n".join(fields) + "\n\n" + "\n".join(dates)
         elif self.state.selected_job_id:
             heading = f"{self.state.selected_job_id} | Outside retained view"
@@ -696,7 +694,8 @@ class LiveWindow:
             self.connection_status.set(
                 f"{snapshot.backend} | Owner: {owner.owner if owner else 'none'} | "
                 f"Active job: {snapshot.active_job or 'none'}\n"
-                f"Pending historical acknowledgement: {'present' if snapshot.needs_review else 'none'} | "
+                "Pending historical acknowledgement: "
+                f"{'present' if snapshot.needs_review else 'none'} | "
                 f"Current ownership uncertainty: {'yes' if snapshot.ownership_uncertain else 'no'}"
             )
             sync_rows(
