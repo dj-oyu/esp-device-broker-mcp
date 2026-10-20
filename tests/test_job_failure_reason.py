@@ -20,6 +20,9 @@ class FailureReasonTests(unittest.TestCase):
         self.assertIn("メモリ不足", REASON_LABELS[reason])
         self.assertNotIn("PRIVATE", repr((category, detail, reason)))
         self.assertEqual(fault_detail(b"OOM first_req=1 used=2"), "out_of_memory_observed")
+        self.assertEqual(
+            fault_detail(b"APP_LOAD play compile out of memory\n"), "out_of_memory_observed"
+        )
         self.assertIsNone(fault_detail(b"APP ERROR\n"))
         self.assertIsNone(fault_detail(b"ROOM BOOM\n"))
 
