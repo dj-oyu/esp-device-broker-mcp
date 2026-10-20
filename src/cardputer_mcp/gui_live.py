@@ -596,7 +596,9 @@ class LiveWindow:
                 self._reconnect(automatic=True)
             elif retry.deadline is not None:
                 seconds = max(0, int(retry.deadline - now + 0.999))
-                self.status.set(f"Updates paused; reconnecting in {seconds}s (attempt {retry.attempts})")
+                self.status.set(
+                    f"Updates paused; reconnecting in {seconds}s (attempt {retry.attempts})"
+                )
             elif retry.stopped:
                 self.status.set(self.state.message + " Automatic reconnect paused; see Connection")
         self._render_preview()
