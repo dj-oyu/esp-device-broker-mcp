@@ -544,7 +544,7 @@ async def test_source_build_lease_is_idempotent_expiry_blocks_execute_and_queue_
     monkeypatch.setattr(
         broker.firmware_build,
         "prepare",
-        lambda project, principal, source: {
+        lambda project, principal, source, mode=None: {
             "project_id": project,
             "build_principal": principal,
             "source_receipt": source,

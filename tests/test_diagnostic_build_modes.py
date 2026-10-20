@@ -22,8 +22,12 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
     profile = tmp_path / "profile.ps1"
     profile.write_text("synthetic profile")
     project = SimpleNamespace(
-        project_dir=source, trusted_profile=profile, expected_idf="6.0.1", target="esp32s3",
-        build_root=tmp_path / "output", build_min_free_bytes=0,
+        project_dir=source,
+        trusted_profile=profile,
+        expected_idf="6.0.1",
+        target="esp32s3",
+        build_root=tmp_path / "output",
+        build_min_free_bytes=0,
     )
     settings = SimpleNamespace(build_projects={"fixture": project}, state_dir=tmp_path / "state")
     builder = FirmwareBuild(settings)
@@ -47,8 +51,12 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
                 "build",
             ]
             assert "SDKCONFIG=build-output-sdkconfig" in plan["argv_template"]
-        on_dir = build_directory(settings.state_dir, project.build_root, on["fingerprint"], "e" * 64)
-        off_dir = build_directory(settings.state_dir, project.build_root, off["fingerprint"], "e" * 64)
+        on_dir = build_directory(
+            settings.state_dir, project.build_root, on["fingerprint"], "e" * 64
+        )
+        off_dir = build_directory(
+            settings.state_dir, project.build_root, off["fingerprint"], "e" * 64
+        )
         assert on_dir != off_dir
         on_dir.mkdir(parents=True)
         (on_dir / "CMakeCache.txt").write_text("POCKET_DERBY_DETAIL_MEASURE:BOOL=ON")
