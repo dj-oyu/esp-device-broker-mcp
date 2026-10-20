@@ -391,7 +391,8 @@ class FirmwareBuild:
         entry = validate_diagnostic_selection(provenance or {}, derby_detail_mode, derby_dma_mode)
         selection = (
             {"derby_detail_mode": derby_detail_mode, "diagnostic_entry_sha256": entry.sha256}
-            if entry is not None else {}
+            if entry is not None
+            else {}
         )
         if derby_dma_mode is not None:
             selection["derby_dma_mode"] = derby_dma_mode
@@ -835,8 +836,11 @@ class FirmwareBuild:
         if plan.get("derby_detail_mode") is not None:
             diagnostic = (
                 collect_dma_modeproof(
-                    build_dir, plan["derby_detail_mode"], plan["derby_dma_mode"],
-                    provenance or {}, artifacts,
+                    build_dir,
+                    plan["derby_detail_mode"],
+                    plan["derby_dma_mode"],
+                    provenance or {},
+                    artifacts,
                 )
                 if "derby_dma_mode" in plan
                 else collect_modeproof(
@@ -1025,13 +1029,18 @@ class FirmwareBuild:
             validate_entry_binding(manifest.get("source_provenance", {}), manifest)
             verified = (
                 collect_dma_modeproof(
-                    root, manifest["derby_detail_mode"], manifest["derby_dma_mode"],
-                    manifest.get("source_provenance", {}), manifest["artifacts"],
+                    root,
+                    manifest["derby_detail_mode"],
+                    manifest["derby_dma_mode"],
+                    manifest.get("source_provenance", {}),
+                    manifest["artifacts"],
                 )
                 if entry.contract == "derby-dma-diagnostic-v1"
                 else collect_modeproof(
-                    root, manifest["derby_detail_mode"],
-                    manifest.get("source_provenance", {}), manifest["artifacts"],
+                    root,
+                    manifest["derby_detail_mode"],
+                    manifest.get("source_provenance", {}),
+                    manifest["artifacts"],
                 )
             )
             if verified != manifest.get("diagnostic_modeproof"):
@@ -1077,7 +1086,8 @@ class FirmwareBuild:
             if isinstance(cache, str):
                 raw = cache.encode("utf-8")
                 envelope["cache_evidence"] = {
-                    "retained_private": True, "bytes": len(raw),
+                    "retained_private": True,
+                    "bytes": len(raw),
                     "sha256": hashlib.sha256(raw).hexdigest(),
                 }
         return result

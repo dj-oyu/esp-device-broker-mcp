@@ -86,9 +86,7 @@ def test_four_axis_choices_bind_to_verified_retained_flash(make_dma_chain, detai
 @pytest.mark.parametrize("record", ["build", "manifest"])
 @pytest.mark.parametrize("axis", ["derby_detail_mode", "derby_dma_mode"])
 @pytest.mark.parametrize("damage", ["missing", "null", "opposite"])
-def test_build_manifest_axes_must_match_even_after_rehash(
-    make_dma_chain, record, axis, damage
-):
+def test_build_manifest_axes_must_match_even_after_rehash(make_dma_chain, record, axis, damage):
     chain = make_dma_chain()
     target = getattr(chain, record)
     if damage == "missing":
@@ -111,7 +109,9 @@ def test_collector_dma_axis_has_no_legacy_default(make_dma_chain, damage):
         plan["collector_binding"].pop("derby_dma_mode")
     else:
         plan["collector_binding"]["derby_dma_mode"] = {
-            "null": None, "wrong": "automatic", "opposite": "OFF"
+            "null": None,
+            "wrong": "automatic",
+            "opposite": "OFF",
         }[damage]
     if damage != "opposite":
         with pytest.raises(ValueError):
@@ -185,7 +185,8 @@ def test_receipt_proof_rejects_modified_images_cache_contract_and_downgrade(make
     else:
         nested = copy.deepcopy(envelope["proof"]["diagnostic"])
         chain.manifest["diagnostic_modeproof"] = {
-            "requested_mode": "OFF", "proof": nested,
+            "requested_mode": "OFF",
+            "proof": nested,
             "proof_sha256": digest_plan(nested),
         }
     rebind(chain)
@@ -203,9 +204,11 @@ def test_dma_receipt_rejects_wrong_source_principal_device_or_unsuccessful_flash
         rebind(chain)
     elif target == "device":
         chain.resident.settings.serial = chain.resident.settings.serial.model_copy(
-            update={"selector": chain.resident.settings.serial.selector.model_copy(
-                update={"serial_number": "OTHER-SYNTHETIC"}
-            )}
+            update={
+                "selector": chain.resident.settings.serial.selector.model_copy(
+                    update={"serial_number": "OTHER-SYNTHETIC"}
+                )
+            }
         )
     elif target == "failed_flash":
         chain.jobs["public-flash"]["state"] = "failed"

@@ -26,15 +26,25 @@ def build_fixture(tmp_path):
     profile = tmp_path / "profile.ps1"
     profile.write_text("synthetic profile")
     project = SimpleNamespace(
-        project_dir=source, trusted_profile=profile, expected_idf="6.0.1",
-        target="esp32s3", build_root=tmp_path / "output", build_min_free_bytes=0,
+        project_dir=source,
+        trusted_profile=profile,
+        expected_idf="6.0.1",
+        target="esp32s3",
+        build_root=tmp_path / "output",
+        build_min_free_bytes=0,
     )
-    builder = FirmwareBuild(SimpleNamespace(
-        build_projects={"fixture": project}, state_dir=tmp_path / "state",
-    ))
+    builder = FirmwareBuild(
+        SimpleNamespace(
+            build_projects={"fixture": project},
+            state_dir=tmp_path / "state",
+        )
+    )
     provenance = {
-        "repository": DMA_ENTRY.repository, "commit": DMA_ENTRY.commit,
-        "source_receipt": "a" * 64, "tree_sha1": "b" * 40, "source_sha256": "c" * 64,
+        "repository": DMA_ENTRY.repository,
+        "commit": DMA_ENTRY.commit,
+        "source_receipt": "a" * 64,
+        "tree_sha1": "b" * 40,
+        "source_sha256": "c" * 64,
         "dependency_policy": "vendored_components_no_fetch",
     }
     node = SimpleNamespace(version="v22.0.0", executable=profile, sha256="b" * 64)
@@ -54,12 +64,18 @@ def test_four_plans_bind_both_axes_and_isolate_cache_sdkconfig(tmp_path):
                 plan = builder.prepare("fixture", "owner", "a" * 64, detail, dma)
                 assert plan["diagnostic_entry_sha256"] == DMA_ENTRY.sha256
                 assert plan["argv_template"][-5:] == [
-                    "-D", "POCKET_DERBY_DETAIL_MEASURE=" + detail,
-                    "-D", "KASANE_DMA_OVERLAP=" + dma, "build",
+                    "-D",
+                    "POCKET_DERBY_DETAIL_MEASURE=" + detail,
+                    "-D",
+                    "KASANE_DMA_OVERLAP=" + dma,
+                    "build",
                 ]
                 assert "SDKCONFIG=build-output-sdkconfig" in plan["argv_template"]
                 directory = build_directory(
-                    builder.settings.state_dir, project.build_root, plan["fingerprint"], "e" * 64,
+                    builder.settings.state_dir,
+                    project.build_root,
+                    plan["fingerprint"],
+                    "e" * 64,
                 )
                 assert not directory.exists()
                 directory.mkdir(parents=True)
@@ -111,8 +127,13 @@ def test_request_and_approval_schema_require_explicit_typed_dma_axes(tmp_path):
         patch.object(builder, "_registered_tools", return_value={"node": node}),
     ):
         plan = dict(
-            version=1, broker_epoch="e" * 32, session_id="a" * 32,
-            device="mock-cardputer", backend="mock", job_id="build", test="firmware_build",
+            version=1,
+            broker_epoch="e" * 32,
+            session_id="a" * 32,
+            device="mock-cardputer",
+            backend="mock",
+            job_id="build",
+            test="firmware_build",
             **builder.prepare("fixture", "owner", "a" * 64, "ON", "OFF"),
         )
         PlanApprovals._schema(plan)
@@ -147,14 +168,19 @@ def test_dma_durable_evidence_after_restart_and_log_expiry(detail, dma):
         with patch.object(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY)):
             envelope = collect_dma_modeproof(root, detail, dma, source, artifacts)
             manifest.update(
-                source_provenance=source, derby_detail_mode=detail, derby_dma_mode=dma,
-                diagnostic_entry_sha256=DMA_ENTRY.sha256, diagnostic_modeproof=envelope,
+                source_provenance=source,
+                derby_detail_mode=detail,
+                derby_dma_mode=dma,
+                diagnostic_entry_sha256=DMA_ENTRY.sha256,
+                diagnostic_modeproof=envelope,
                 artifacts=artifacts,
             )
             job = case.store.job("build-0")
             plan = case.store.plan(job["plan_hash"])
             plan.update(
-                derby_detail_mode=detail, derby_dma_mode=dma, source_provenance=source,
+                derby_detail_mode=detail,
+                derby_dma_mode=dma,
+                source_provenance=source,
                 diagnostic_entry_sha256=DMA_ENTRY.sha256,
             )
             digest = persistence.digest(plan)
@@ -213,7 +239,8 @@ def test_j1_durable_manifest_null_axis_is_not_legacy_omission(key):
         root, manifest = case.publish(finish=False, publish=False)
         source, artifacts, _ = image_fixture(root, "ON")
         manifest.update(
-            source_provenance=source, derby_detail_mode="ON",
+            source_provenance=source,
+            derby_detail_mode="ON",
             diagnostic_modeproof=collect_modeproof(root, "ON", source, artifacts),
             artifacts=artifacts,
         )

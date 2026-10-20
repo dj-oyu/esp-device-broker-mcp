@@ -102,12 +102,16 @@ def validate_diagnostic_selection(
     try:
         entry = diagnostic_entry(provenance)
     except ValueError:
-        if detail_mode is not None or dma_mode is not None or any(
-            isinstance(provenance, dict)
-            and isinstance(provenance.get("repository"), str)
-            and provenance["repository"].casefold() == candidate.repository
-            and provenance.get("commit") == candidate.commit
-            for candidate in _ENTRIES
+        if (
+            detail_mode is not None
+            or dma_mode is not None
+            or any(
+                isinstance(provenance, dict)
+                and isinstance(provenance.get("repository"), str)
+                and provenance["repository"].casefold() == candidate.repository
+                and provenance.get("commit") == candidate.commit
+                for candidate in _ENTRIES
+            )
         ):
             raise
         return None
@@ -140,8 +144,7 @@ def validate_diagnostic_record(
 ) -> DiagnosticEntry | None:
     """Validate raw optional-field presence before resolving the selected contract."""
     if any(
-        key in record and record[key] is None
-        for key in ("derby_detail_mode", "derby_dma_mode")
+        key in record and record[key] is None for key in ("derby_detail_mode", "derby_dma_mode")
     ):
         raise ValueError("diagnostic_axes_required")
     return validate_diagnostic_selection(

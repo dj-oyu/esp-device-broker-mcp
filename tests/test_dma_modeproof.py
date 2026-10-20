@@ -23,8 +23,10 @@ from cardputer_mcp.diagnostic_modeproof import collect_modeproof, verify_modepro
 from cardputer_mcp.diagnostic_registry import DiagnosticEntry
 
 DMA_ENTRY = DiagnosticEntry(
-    "dj-oyu/cardputer-adv-pocketjs", "ac7cce7d20eb34fdd54659e6678d672d23e5d2d1",
-    contract=CONTRACT, dma_modes=("ON", "OFF"),
+    "dj-oyu/cardputer-adv-pocketjs",
+    "ac7cce7d20eb34fdd54659e6678d672d23e5d2d1",
+    contract=CONTRACT,
+    dma_modes=("ON", "OFF"),
 )
 
 
@@ -36,8 +38,10 @@ def dma_fixture(root, detail_mode="ON", dma_mode="ON", *, native_symbols=None, s
     data = struct.pack("<II", detail_mode == "ON", 0x2545F491)
     data += b"DERBY_DETAIL_EXIT v=1 session=%u clean=1\n\0" + view + b"\0"
     selected = (
-        ("board_present_finish", "board_present_submit") if dma_mode == "ON" else ()
-    ) if native_symbols is None else native_symbols
+        (("board_present_finish", "board_present_submit") if dma_mode == "ON" else ())
+        if native_symbols is None
+        else native_symbols
+    )
     names = bytearray(b"\0")
     rows = []
     for name, value, size, kind, section in [
@@ -73,10 +77,7 @@ def dma_fixture(root, detail_mode="ON", dma_mode="ON", *, native_symbols=None, s
         {"name": name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
         for name, raw in files.items()
     ]
-    cache = (
-        f"POCKET_DERBY_DETAIL_MEASURE:BOOL={detail_mode}\n"
-        f"KASANE_DMA_OVERLAP:BOOL={dma_mode}\n"
-    )
+    cache = f"POCKET_DERBY_DETAIL_MEASURE:BOOL={detail_mode}\nKASANE_DMA_OVERLAP:BOOL={dma_mode}\n"
     cache_hash = hashlib.sha256(cache.encode()).hexdigest()
     diagnostic = json.loads((root / "diagnostic-mode-proof.json").read_text())
     diagnostic["artifacts"] = {
@@ -87,16 +88,21 @@ def dma_fixture(root, detail_mode="ON", dma_mode="ON", *, native_symbols=None, s
         diagnostic[key]["cmake_cache_sha256"] = cache_hash
     axes = {"detail_measurement": detail_mode, "dma_overlap": dma_mode}
     proof = {
-        "schema_version": 1, "proof_contract": CONTRACT,
-        "requested_axes": axes, "verified_axes": dict(axes),
+        "schema_version": 1,
+        "proof_contract": CONTRACT,
+        "requested_axes": axes,
+        "verified_axes": dict(axes),
         "dma_overlap": {
-            "mode": dma_mode, "symbol_contract": "board-present-submit-finish-v1",
+            "mode": dma_mode,
+            "symbol_contract": "board-present-submit-finish-v1",
             "native_symbols": (
                 ["board_present_finish", "board_present_submit"] if dma_mode == "ON" else []
             ),
             "cmake_cache_sha256": cache_hash,
         },
-        "diagnostic": diagnostic, "artifacts": diagnostic["artifacts"], "hardware_tested": False,
+        "diagnostic": diagnostic,
+        "artifacts": diagnostic["artifacts"],
+        "hardware_tested": False,
     }
     for name, raw in files.items():
         (root / name).write_bytes(raw)
@@ -204,13 +210,15 @@ class DMAModeproofTests(unittest.TestCase):
                     envelope, {**source, "commit": "e" * 40}, artifacts, files
                 )
             wrong_files = {
-                **files, "cardputer_pocketjs.bin": files["cardputer_pocketjs.bin"] + b"x"
+                **files,
+                "cardputer_pocketjs.bin": files["cardputer_pocketjs.bin"] + b"x",
             }
             with self.assertRaises(ValueError):
                 verify_dma_modeproof_bytes(envelope, source, artifacts, wrong_files)
             nested = envelope["proof"]["diagnostic"]
             detail_envelope = {
-                "requested_mode": "ON", "proof": nested,
+                "requested_mode": "ON",
+                "proof": nested,
                 "proof_sha256": hashlib.sha256(
                     json.dumps(nested, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest(),

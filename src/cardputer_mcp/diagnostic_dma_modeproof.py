@@ -62,12 +62,7 @@ def _dma_functions(elf: bytes) -> set[str]:
                 target = sections[index]
                 delta = value - target[3]
                 # Native linked functions must occupy executable initialized image bytes.
-                if (
-                    target[1] != 1
-                    or target[2] & 4 == 0
-                    or delta < 0
-                    or delta + size > target[5]
-                ):
+                if target[1] != 1 or target[2] & 4 == 0 or delta < 0 or delta + size > target[5]:
                     raise ValueError(_ERROR)
                 area(target[4] + delta, size)
                 found.add(wanted)
@@ -85,7 +80,8 @@ def _cache_axes(cache: str, detail_mode: str, dma_mode: str) -> bytes:
         ("KASANE_DMA_OVERLAP", dma_mode),
     ):
         lines = [
-            line for line in cache.splitlines()
+            line
+            for line in cache.splitlines()
             if line.startswith(key + ":") or line.startswith(key + "=")
         ]
         if lines != [f"{key}:BOOL={requested}"]:
@@ -104,9 +100,8 @@ def verify_dma_modeproof_bytes(
         entry = diagnostic_entry(provenance)
         if (
             entry.contract != CONTRACT
-            or set(envelope) != {
-                "requested_mode", "requested_dma_mode", "proof", "proof_sha256", "cmake_cache"
-            }
+            or set(envelope)
+            != {"requested_mode", "requested_dma_mode", "proof", "proof_sha256", "cmake_cache"}
             or type(envelope["requested_mode"]) is not str
             or type(envelope["requested_dma_mode"]) is not str
             or envelope["requested_mode"] not in entry.modes
@@ -122,9 +117,16 @@ def verify_dma_modeproof_bytes(
         if (
             len(canonical) > MAX_PROOF_BYTES
             or hashlib.sha256(canonical).hexdigest() != envelope["proof_sha256"]
-            or set(proof) != {
-                "schema_version", "proof_contract", "requested_axes", "verified_axes",
-                "dma_overlap", "diagnostic", "artifacts", "hardware_tested",
+            or set(proof)
+            != {
+                "schema_version",
+                "proof_contract",
+                "requested_axes",
+                "verified_axes",
+                "dma_overlap",
+                "diagnostic",
+                "artifacts",
+                "hardware_tested",
             }
             or type(proof["schema_version"]) is not int
             or proof["schema_version"] != 1
@@ -132,7 +134,8 @@ def verify_dma_modeproof_bytes(
             or proof["hardware_tested"] is not False
             or proof["requested_axes"] != axes
             or proof["verified_axes"] != axes
-            or proof["dma_overlap"] != {
+            or proof["dma_overlap"]
+            != {
                 "mode": dma_mode,
                 "symbol_contract": "board-present-submit-finish-v1",
                 "native_symbols": symbols,
@@ -148,13 +151,25 @@ def verify_dma_modeproof_bytes(
             raise ValueError(_ERROR)
         nested = proof["diagnostic"]
         _verify_detail(
-            {"requested_mode": detail_mode, "proof": nested,
-             "proof_sha256": hashlib.sha256(_canonical(nested)).hexdigest()},
-            provenance, artifacts, files, contract=CONTRACT,
+            {
+                "requested_mode": detail_mode,
+                "proof": nested,
+                "proof_sha256": hashlib.sha256(_canonical(nested)).hexdigest(),
+            },
+            provenance,
+            artifacts,
+            files,
+            contract=CONTRACT,
         )
     except (
-        KeyError, TypeError, AttributeError, ValueError, struct.error,
-        OverflowError, RecursionError, UnicodeError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        ValueError,
+        struct.error,
+        OverflowError,
+        RecursionError,
+        UnicodeError,
     ):
         raise ValueError(_ERROR) from None
 
@@ -197,8 +212,11 @@ def verify_dma_modeproof(
     artifacts: list[dict[str, Any]],
 ) -> None:
     current = collect_dma_modeproof(
-        root, envelope.get("requested_mode", ""), envelope.get("requested_dma_mode", ""),
-        provenance, artifacts,
+        root,
+        envelope.get("requested_mode", ""),
+        envelope.get("requested_dma_mode", ""),
+        provenance,
+        artifacts,
     )
     if current != envelope:
         raise ValueError(_ERROR)
