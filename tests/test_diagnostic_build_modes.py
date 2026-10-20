@@ -8,6 +8,7 @@ import pytest
 import test_build_artifact_persistence as persistence
 from test_diagnostic_modeproof import image_fixture
 
+import cardputer_mcp.diagnostic_registry as registry
 from cardputer_mcp.build_locations import build_directory
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.diagnostic_modeproof import J1_COMMIT, collect_modeproof
@@ -35,6 +36,8 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
         "repository": "dj-oyu/cardputer-adv-pocketjs",
         "commit": J1_COMMIT,
         "source_receipt": "a" * 64,
+        "tree_sha1": "b" * 40,
+        "source_sha256": "c" * 64,
     }
     node = SimpleNamespace(version="v22.0.0", executable=profile, sha256="b" * 64)
     with (
@@ -43,6 +46,8 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
     ):
         on = builder.prepare("fixture", "owner", "a" * 64, "ON")
         off = builder.prepare("fixture", "owner", "a" * 64, "OFF")
+        assert on["diagnostic_entry_sha256"] == off["diagnostic_entry_sha256"]
+        assert on["source_provenance"]["source_sha256"] == off["source_provenance"]["source_sha256"]
         for mode, plan in (("ON", on), ("OFF", off)):
             assert plan["derby_detail_mode"] == mode
             assert plan["argv_template"][-3:] == [
@@ -62,7 +67,12 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
         (on_dir / "CMakeCache.txt").write_text("POCKET_DERBY_DETAIL_MEASURE:BOOL=ON")
         (on_dir / "sdkconfig").write_text("stale config")
         assert not off_dir.exists()
-        assert builder.prepare("fixture", "owner", "a" * 64, "OFF") == off
+        with patch.object(
+            registry,
+            "_ENTRIES",
+            (*registry._ENTRIES, registry.DiagnosticEntry("fixture/project", "f" * 40)),
+        ):
+            assert builder.prepare("fixture", "owner", "a" * 64, "OFF") == off
         provenance["commit"] = "f" * 40
         with pytest.raises(ValueError, match="allowlisted_source"):
             builder.prepare("fixture", "owner", "a" * 64, "ON")
@@ -70,7 +80,8 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
 
 @pytest.mark.parametrize("mode", ["ON", "OFF"])
 @pytest.mark.parametrize("retention", ["restart", "expired"])
-def test_modeproof_remains_verified_after_log_loss(mode, retention):
+@pytest.mark.parametrize("record_format", ["legacy", "bound"])
+def test_modeproof_remains_verified_after_log_loss(mode, retention, record_format):
     case = persistence.DurableBuildArtifactTests()
     case.setUp()
     try:
@@ -85,6 +96,10 @@ def test_modeproof_remains_verified_after_log_loss(mode, retention):
         job = case.store.job("build-0")
         plan = case.store.plan(job["plan_hash"])
         plan.update(derby_detail_mode=mode, source_provenance=provenance)
+        if record_format == "bound":
+            entry_hash = registry.diagnostic_entry(provenance).sha256
+            manifest["diagnostic_entry_sha256"] = entry_hash
+            plan["diagnostic_entry_sha256"] = entry_hash
         plan_hash = persistence.digest(plan)
         case.store.put_plan(plan_hash, plan)
         case.store.db.execute("UPDATE jobs SET plan_hash=? WHERE id=?", (plan_hash, "build-0"))
@@ -97,9 +112,11 @@ def test_modeproof_remains_verified_after_log_loss(mode, retention):
         if retention == "expired":
             case.builder.logs["build-0"] = BuildLogs("alice")
             case.builder.logs["build-0"].deadline = 0
-        result = case.builder.read_logs(
-            BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
-        )
+        unrelated = registry.DiagnosticEntry("fixture/project", "f" * 40)
+        with patch.object(registry, "_ENTRIES", (*registry._ENTRIES, unrelated)):
+            result = case.builder.read_logs(
+                BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
+            )
         assert result["expired"]
         assert result["artifact_status"] == "verified"
         assert result["manifest"]["diagnostic_modeproof"] == manifest["diagnostic_modeproof"]
@@ -129,3 +146,39 @@ def test_mode_input_is_enum_and_confined_to_registered_source_build():
         PrepareRequest(job_id="build", test="firmware_build", derby_detail_mode="OFF")
     with pytest.raises(ValueError):
         PrepareRequest(**base, flash_job_id="flash")
+
+
+@pytest.mark.parametrize("target", ["reference", "manifest"])
+def test_explicit_null_is_not_a_legacy_receipt_field(target):
+    case = persistence.DurableBuildArtifactTests()
+    case.setUp()
+    try:
+        root, manifest = case.publish()
+        if target == "reference":
+            row = case.store.db.execute(
+                "SELECT payload FROM build_artifact_references WHERE job_id=?", ("build-0",)
+            ).fetchone()
+            reference = json.loads(row[0])
+            reference["diagnostic_entry_sha256"] = None
+            case.store.db.execute(
+                "UPDATE build_artifact_references SET payload=? WHERE job_id=?",
+                (json.dumps(reference), "build-0"),
+            )
+            case.store.db.commit()
+        else:
+            manifest["diagnostic_entry_sha256"] = None
+            (root / "broker-manifest.json").write_text(json.dumps(manifest))
+            row = case.store.db.execute(
+                "SELECT payload FROM build_artifact_references WHERE job_id=?", ("build-0",)
+            ).fetchone()
+            reference = json.loads(row[0])
+            reference["manifest_sha256"] = persistence.digest(manifest)
+            case.store.db.execute(
+                "UPDATE build_artifact_references SET payload=? WHERE job_id=?",
+                (json.dumps(reference), "build-0"),
+            )
+            case.store.db.commit()
+        with pytest.raises(ValueError):
+            case.context()
+    finally:
+        case.doCleanups()

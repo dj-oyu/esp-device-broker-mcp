@@ -333,3 +333,69 @@ async def test_receipt_selected_hash_admits_and_completes_real_broker_trial(
         assert not wire.is_open
     finally:
         await resident.close()
+
+
+def test_legacy_receipt_entry_binding_survives_unrelated_policy_addition(chain, monkeypatch):
+    import cardputer_mcp.diagnostic_registry as registry
+
+    original = prepare_collector(chain.resident, "public-flash", "owner")
+    binding = original["collector_binding"]
+    expected = registry.diagnostic_entry(chain.manifest["source_provenance"]).sha256
+    assert binding["diagnostic_entry_sha256"] == expected
+    assert "diagnostic_entry_sha256" not in chain.manifest
+    legacy = {"test": "derby_fixed_workload", **copy.deepcopy(original)}
+    legacy["collector_binding"].pop("diagnostic_entry_sha256")
+    validate_collector_schema(legacy)
+    assert collector_live(chain.resident, legacy, "owner")
+    monkeypatch.setattr(
+        registry,
+        "_ENTRIES",
+        (*registry._ENTRIES, registry.DiagnosticEntry("fixture/project", "f" * 40)),
+    )
+    assert prepare_collector(chain.resident, "public-flash", "owner") == original
+    assert collector_live(chain.resident, {"test": "derby_fixed_workload", **original}, "owner")
+    changed = copy.deepcopy(original)
+    changed["collector_binding"]["diagnostic_entry_sha256"] = "e" * 64
+    assert not collector_live(chain.resident, {"test": "derby_fixed_workload", **changed}, "owner")
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_new_bound_build_manifest_and_collector_agree_on_entry(chain, corrupt):
+    import cardputer_mcp.diagnostic_registry as registry
+
+    entry_hash = registry.diagnostic_entry(chain.manifest["source_provenance"]).sha256
+    chain.build["diagnostic_entry_sha256"] = entry_hash
+    chain.manifest["diagnostic_entry_sha256"] = "e" * 64 if corrupt else entry_hash
+    build_hash = digest_plan(chain.build)
+    chain.jobs["public-build"]["plan_hash"] = build_hash
+    chain.plans[build_hash] = chain.build
+    chain.manifest["build_plan_hash"] = build_hash
+    chain.flash["manifest_sha256"] = manifest_digest(chain.manifest)
+    flash_hash = digest_plan(chain.flash)
+    chain.jobs["public-flash"]["plan_hash"] = flash_hash
+    chain.plans[flash_hash] = chain.flash
+    if corrupt:
+        with pytest.raises(ValueError):
+            resolve_collector(chain.resident, "public-flash", "owner")
+    else:
+        assert (
+            resolve_collector(chain.resident, "public-flash", "owner")["diagnostic_entry_sha256"]
+            == entry_hash
+        )
+
+
+@pytest.mark.parametrize("damage", ["wrong_digest", "null_digest", "unregistered_legacy"])
+def test_collector_history_rejects_invalid_entry_evidence(chain, damage):
+    plan = {
+        "test": "derby_fixed_workload",
+        **prepare_collector(chain.resident, "public-flash", "owner"),
+    }
+    if damage == "unregistered_legacy":
+        plan["collector_binding"].pop("diagnostic_entry_sha256")
+        plan["collector_binding"]["source_commit"] = "f" * 40
+    else:
+        plan["collector_binding"]["diagnostic_entry_sha256"] = (
+            None if damage == "null_digest" else "e" * 64
+        )
+    with pytest.raises(ValueError):
+        validate_collector_schema(plan)

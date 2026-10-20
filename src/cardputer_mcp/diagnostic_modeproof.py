@@ -8,7 +8,9 @@ import struct
 from pathlib import Path
 from typing import Any
 
-J1_COMMIT = "b561aea1c0798feb28055a00d36681fae81ac58a"
+from .diagnostic_registry import J1_COMMIT as J1_COMMIT
+from .diagnostic_registry import diagnostic_entry
+
 _PROOF = "diagnostic-mode-proof.json"
 _BIN = "cardputer_pocketjs.bin"
 _ELF = "cardputer_pocketjs.elf"
@@ -108,11 +110,10 @@ def verify_modeproof_bytes(
 ) -> None:
     """Recheck durable evidence against retained exact BIN/ELF bytes; grant no authority."""
     try:
+        entry = diagnostic_entry(provenance)
         if (
             set(envelope) != {"requested_mode", "proof", "proof_sha256"}
-            or envelope["requested_mode"] not in ("ON", "OFF")
-            or provenance["repository"].casefold() != "dj-oyu/cardputer-adv-pocketjs"
-            or provenance["commit"] != J1_COMMIT
+            or envelope["requested_mode"] not in entry.modes
         ):
             raise ValueError(_ERROR)
         proof = envelope["proof"]
