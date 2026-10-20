@@ -9,6 +9,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from .diagnostic_registry import same_entry_binding
+
 
 def manifest_digest(manifest: dict[str, Any]) -> str:
     return hashlib.sha256(
@@ -62,6 +64,7 @@ class BuildArtifacts:
                         or manifest.get("build_job_id") != job_id
                         or manifest.get("build_plan_hash") != digest
                         or manifest.get("fingerprint") != plan.get("fingerprint")
+                        or not same_entry_binding(manifest, plan)
                     ):
                         raise ValueError("invalid_internal_artifact_receipt")
                     reference = {
@@ -73,6 +76,8 @@ class BuildArtifacts:
                         "manifest_sha256": manifest_digest(manifest),
                         "root_sha256": hashlib.sha256(str(root.resolve()).encode()).hexdigest(),
                     }
+                    if "diagnostic_entry_sha256" in plan:
+                        reference["diagnostic_entry_sha256"] = plan["diagnostic_entry_sha256"]
                     payload = json.dumps(reference, sort_keys=True, separators=(",", ":"))
                     if len(payload.encode()) > 4096:
                         raise ValueError("invalid_internal_artifact_receipt")
@@ -106,6 +111,7 @@ class BuildArtifacts:
                 or reference.get("project_id") != project_id
                 or reference.get("build_plan_hash") != digest
                 or reference.get("fingerprint") != plan.get("fingerprint")
+                or not same_entry_binding(reference, plan)
             ):
                 raise ValueError("owned_build_artifact_not_available")
             return reference

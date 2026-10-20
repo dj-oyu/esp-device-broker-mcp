@@ -149,6 +149,13 @@ class PlanApprovals:
                 expected_keys |= {"derby_detail_mode"}
                 if plan["derby_detail_mode"] not in ("ON", "OFF") or "source_receipt" not in plan:
                     raise ValueError
+            if "diagnostic_entry_sha256" in plan:
+                from .diagnostic_registry import validate_entry_binding
+
+                if "derby_detail_mode" not in plan:
+                    raise ValueError
+                expected_keys |= {"diagnostic_entry_sha256"}
+                validate_entry_binding(plan.get("source_provenance", {}), plan)
             if "source_receipt" in plan:
                 expected_keys |= {"source_receipt", "source_provenance"}
                 provenance = plan.get("source_provenance")

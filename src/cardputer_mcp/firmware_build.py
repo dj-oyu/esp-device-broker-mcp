@@ -30,6 +30,7 @@ from .build_logs import BuildLogs
 from .build_process import BuildProcess
 from .build_security import BuildSecurityConfigError, interpret_idf601_security
 from .diagnostic_modeproof import collect_modeproof
+from .diagnostic_registry import diagnostic_entry, same_entry_binding, validate_entry_binding
 from .models import DiagnosticMode
 
 ALLOWED_ENV = frozenset(
@@ -377,11 +378,8 @@ class FirmwareBuild:
         project, provenance = self._project(project_id, principal, source_receipt)
         if derby_detail_mode is not None:
             derby_detail_mode = DiagnosticMode(derby_detail_mode).value
-            if (
-                provenance is None
-                or provenance.get("repository", "").casefold() != "dj-oyu/cardputer-adv-pocketjs"
-                or provenance.get("commit") != "b561aea1c0798feb28055a00d36681fae81ac58a"
-            ):
+            entry = diagnostic_entry(provenance or {})
+            if derby_detail_mode not in entry.modes:
                 raise ValueError("diagnostic_mode_requires_allowlisted_source")
         if hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
             self.settings.state_dir.resolve()
@@ -422,7 +420,10 @@ class FirmwareBuild:
                     ),
                     "project_id": project_id,
                     **(
-                        {"derby_detail_mode": derby_detail_mode}
+                        {
+                            "derby_detail_mode": derby_detail_mode,
+                            "diagnostic_entry_sha256": entry.sha256,
+                        }
                         if derby_detail_mode is not None
                         else {}
                     ),
@@ -459,7 +460,14 @@ class FirmwareBuild:
                 if provenance
                 else {}
             ),
-            **({"derby_detail_mode": derby_detail_mode} if derby_detail_mode is not None else {}),
+            **(
+                {
+                    "derby_detail_mode": derby_detail_mode,
+                    "diagnostic_entry_sha256": entry.sha256,
+                }
+                if derby_detail_mode is not None
+                else {}
+            ),
             fingerprint=fingerprint,
             expected_idf=project.expected_idf,
             target=project.target,
@@ -569,6 +577,8 @@ class FirmwareBuild:
         project, provenance = self._project(
             plan["project_id"], principal, plan.get("source_receipt")
         )
+        if plan.get("derby_detail_mode") is not None:
+            validate_entry_binding(provenance or {}, plan)
         logs = BuildLogs(principal, job_id=plan["job_id"], on_change=self.on_logs_change)
         logs.redactions = tuple(
             value
@@ -819,7 +829,11 @@ class FirmwareBuild:
         manifest = dict(
             schema_version=1,
             **(
-                {"derby_detail_mode": plan["derby_detail_mode"], "diagnostic_modeproof": diagnostic}
+                {
+                    "derby_detail_mode": plan["derby_detail_mode"],
+                    "diagnostic_modeproof": diagnostic,
+                    "diagnostic_entry_sha256": plan["diagnostic_entry_sha256"],
+                }
                 if diagnostic is not None
                 else {}
             ),
@@ -970,6 +984,7 @@ class FirmwareBuild:
                 manifest_digest(manifest) != reference.get("manifest_sha256")
                 or manifest.get("build_job_id") != job_id
                 or manifest.get("build_plan_hash") != reference.get("build_plan_hash")
+                or not same_entry_binding(manifest, reference)
                 or manifest.get("idf_version") != "6.0.1"
                 or manifest.get("target") != project.target
                 or manifest.get("flash_authorized") is not False
@@ -983,6 +998,7 @@ class FirmwareBuild:
         if self.artifacts.history is not None:
             self._verify_owned_artifacts(root, manifest)
         if manifest.get("derby_detail_mode") is not None:
+            validate_entry_binding(manifest.get("source_provenance", {}), manifest)
             verified = collect_modeproof(
                 root,
                 manifest["derby_detail_mode"],

@@ -442,3 +442,19 @@ broker, refresh client tool metadata, confirm the existing allowlisted project
 and device registration, then explicitly fetch/build/flash and run each mode's
 trial. Deployment, configuration edits, hardware writes and merging are separate
 operations; none are performed by these synthetic tests.
+
+Diagnostic admission is centralized in a closed source registry containing only
+that J1 commit. New detail-build plans, fingerprints, manifests and collector
+bindings include the selected entry's `diagnostic_entry_sha256`. It hashes that
+entry's exact source/contract policy, independently of unrelated registry entries;
+source byte/tree/submodule identities remain verified by the existing source
+receipt and build/flash provenance chain. An unrelated entry cannot change an
+existing entry's digest. The production registry adds no source heads or DMA
+selection, and has no configuration or MCP editing interface.
+
+Successful J1 manifests and collector history from before this field existed
+remain readable through the original proof and receipt checks. Only the original
+J1 entry may omit the new digest. A present wrong/null digest is rejected.
+Previously prepared detail-build plans require preparation again because their
+fingerprint now includes the entry digest. Adding a new runtime source head or
+changing a proof contract remains a separate reviewed acceptance change.

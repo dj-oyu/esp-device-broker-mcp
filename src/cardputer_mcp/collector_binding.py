@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import ConfigDict, Field
 
 from .build_artifacts import manifest_digest
+from .diagnostic_registry import J1_REPOSITORY, same_entry_binding, validate_entry_binding
 from .models import Digest, Identifier, StrictModel
 
 if TYPE_CHECKING:
@@ -35,10 +36,15 @@ class CollectorBinding(StrictModel):
     derby_detail_mode: Literal["ON", "OFF"]
     expected_elf_sha256: Digest
     expected_app_bin_sha256: Digest
+    diagnostic_entry_sha256: Digest | None = None
 
 
 def validate_collector_schema(plan: dict[str, Any]) -> None:
     binding = CollectorBinding.model_validate(plan["collector_binding"])
+    validate_entry_binding(
+        {"repository": J1_REPOSITORY, "commit": binding.source_commit},
+        plan["collector_binding"],
+    )
     if (
         plan.get("test") != "derby_fixed_workload"
         or plan.get("flash_job_id") != binding.flash_job_id
@@ -144,6 +150,10 @@ def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
         or build.get("derby_detail_mode") != manifest.get("derby_detail_mode")
     ):
         raise ValueError("collector_build_source_binding_invalid")
+    entry_hash = validate_entry_binding(provenance, manifest)
+    validate_entry_binding(provenance, build)
+    if not same_entry_binding(build, manifest):
+        raise ValueError("collector_build_source_binding_invalid")
     envelope = manifest.get("diagnostic_modeproof")
     artifacts = manifest.get("artifacts")
     if not isinstance(envelope, dict) or not isinstance(artifacts, list):
@@ -171,6 +181,7 @@ def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
         "source_commit": provenance["commit"],
         "manifest_sha256": flash["manifest_sha256"],
         "modeproof_sha256": envelope["proof_sha256"],
+        "diagnostic_entry_sha256": entry_hash,
         "derby_detail_mode": manifest["derby_detail_mode"],
         "expected_elf_sha256": elf,
         "expected_app_bin_sha256": app,
@@ -196,6 +207,7 @@ def collector_live(broker: "Broker", plan: dict[str, Any], principal: str) -> bo
     try:
         from .broker import digest_plan
 
+        validate_collector_schema(plan)
         flash, current = _owned_flash(broker, plan["flash_job_id"], principal)
         binding = plan["collector_binding"]
         build = broker._store().job(binding["build_job_id"])
@@ -212,6 +224,9 @@ def collector_live(broker: "Broker", plan: dict[str, Any], principal: str) -> bo
             and build["plan_hash"] == binding["build_plan_hash"]
             and build_plan is not None
             and digest_plan(build_plan) == binding["build_plan_hash"]
+            and ("diagnostic_entry_sha256" not in binding or
+                 binding["diagnostic_entry_sha256"] ==
+                 validate_entry_binding(build_plan.get("source_provenance", {}), build_plan))
         )
     except Exception:
         return False
