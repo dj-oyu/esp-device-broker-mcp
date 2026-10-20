@@ -200,7 +200,7 @@ def test_explicit_receipt_preflight_does_not_require_or_mutate_old_config(chain)
 @pytest.mark.parametrize("configured_hash", [None, "a" * 64])
 @pytest.mark.parametrize("mutation_phase", ["none", "admission", "final"])
 async def test_receipt_selected_hash_admits_and_completes_real_broker_trial(
-    chain, tmp_path, configured_hash, mutation_phase
+    chain, tmp_path, configured_hash, mutation_phase, monkeypatch
 ):
     import json
 
@@ -289,10 +289,19 @@ async def test_receipt_selected_hash_admits_and_completes_real_broker_trial(
             == prepared["plan"]
         )
         changed = []
+        preflight_complete = []
+        original_validate = PlanApprovals.validate_current
+
+        def validate_then_arm(approvals, *args, **kwargs):
+            result = original_validate(approvals, *args, **kwargs)
+            preflight_complete.append(True)
+            return result
+
+        monkeypatch.setattr(PlanApprovals, "validate_current", validate_then_arm)
 
         def valid(*args):
             if not changed and (
-                mutation_phase == "admission"
+                (mutation_phase == "admission" and preflight_complete)
                 or (mutation_phase == "final" and wire.writes and not wire.is_open)
             ):
                 store.db.execute(
