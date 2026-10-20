@@ -193,7 +193,7 @@ class ProfileJobs:
                     request.project_id, request.source_receipt, principal
                 )
             details = broker.firmware_build.prepare(
-                request.project_id, principal, request.source_receipt
+                request.project_id, principal, request.source_receipt, request.derby_detail_mode
             )
             storage = broker.firmware_build.storage(request.project_id)
         plan = dict(

@@ -522,7 +522,16 @@ class SerialBackend:
         self.last_closed_plan: dict[str, Any] | None = None
         self.smoke_stop = threading.Event()
 
+    def prepare_fixed_receipt(self, expected_elf_sha256: str) -> dict[str, Any]:
+        """Internal receipt-bound preflight; never mutates the registered config."""
+        if re.fullmatch(r"[a-f0-9]{64}", expected_elf_sha256) is None:
+            raise ValueError("collector_flash_binding_invalid")
+        return self._prepare(TestName.DERBY_FIXED, expected_elf_sha256)
+
     def prepare(self, test: TestName) -> dict[str, Any]:
+        return self._prepare(test)
+
+    def _prepare(self, test: TestName, receipt_elf: str | None = None) -> dict[str, Any]:
         if test not in (
             TestName.OBSERVE,
             TestName.FIRMWARE,
@@ -536,6 +545,7 @@ class SerialBackend:
         if (
             test in (TestName.HELLO, TestName.CAPTURE, TestName.DERBY, TestName.DERBY_FIXED)
             and self.config.expected_firmware_sha256 is None
+            and receipt_elf is None
         ):
             raise ValueError("expected_firmware_required")
         inventory = list(self.inventory())
@@ -624,7 +634,11 @@ class SerialBackend:
                 "Device-reported firmware metadata is unverified and does not attest the image",
             ]
         protocol: str = self.config.protocol
-        verification = "configured_expected_hash_only"
+        verification = (
+            "successful_flash_receipt"
+            if receipt_elf is not None
+            else "configured_expected_hash_only"
+        )
         observe_seconds = self.config.observe_seconds if test == TestName.OBSERVE else None
         if test == TestName.DERBY:
             protocol = "pocketjs-derby-smoke-v1"
@@ -641,7 +655,7 @@ class SerialBackend:
             "port": port.port,
             "device_fingerprint": fingerprint(port),
             "protocol": protocol,
-            "expected_firmware_sha256": self.config.expected_firmware_sha256,
+            "expected_firmware_sha256": receipt_elf or self.config.expected_firmware_sha256,
             "firmware_verification": verification,
             "observe_seconds": observe_seconds,
             "effects": effects,
@@ -773,7 +787,11 @@ class SerialBackend:
     ) -> str | BackendResult:
         self.last_closed_plan = None
         test = TestName(plan["test"])
-        current = self.prepare(test)
+        current = (
+            self.prepare_fixed_receipt(plan["collector_binding"]["expected_elf_sha256"])
+            if test == TestName.DERBY_FIXED and "collector_binding" in plan
+            else self.prepare(test)
+        )
         if any(plan.get(key) != value for key, value in current.items()):
             raise SerialFailure("device_or_plan_changed")
         if test == TestName.RESTART:

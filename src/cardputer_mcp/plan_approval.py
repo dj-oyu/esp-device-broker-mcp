@@ -145,6 +145,10 @@ class PlanApprovals:
                 "argv_template",
                 "profile_execution_policy",
             }
+            if "derby_detail_mode" in plan:
+                expected_keys |= {"derby_detail_mode"}
+                if plan["derby_detail_mode"] not in ("ON", "OFF") or "source_receipt" not in plan:
+                    raise ValueError
             if "source_receipt" in plan:
                 expected_keys |= {"source_receipt", "source_provenance"}
                 provenance = plan.get("source_provenance")
@@ -207,6 +211,11 @@ class PlanApprovals:
                         if "source_receipt" in plan
                         else []
                     ),
+                    *(
+                        ["-D", "POCKET_DERBY_DETAIL_MEASURE=" + plan["derby_detail_mode"]]
+                        if "derby_detail_mode" in plan
+                        else []
+                    ),
                     "build",
                 ]
             ):
@@ -234,6 +243,11 @@ class PlanApprovals:
                 expected_keys = expected_keys | {"fixed_workload"}
                 if plan.get("fixed_workload") != FIXED_PLAN:
                     raise ValueError
+                if "flash_job_id" in plan or "collector_binding" in plan:
+                    from .collector_binding import validate_collector_schema
+
+                    expected_keys |= {"flash_job_id", "collector_binding"}
+                    validate_collector_schema(plan)
             if test == "restart_and_observe":
                 expected_keys = expected_keys | {"restart"}
                 restart = plan.get("restart")
@@ -314,6 +328,8 @@ class PlanApprovals:
                 != (
                     "unverified_device_report"
                     if test in ("firmware_observe", "restart_and_observe")
+                    else "successful_flash_receipt"
+                    if test == "derby_fixed_workload" and "flash_job_id" in plan
                     else "configured_expected_hash_only"
                 )
                 or plan.get("protocol")
@@ -387,8 +403,18 @@ class PlanApprovals:
                 raise BrokerError("plan_session_mismatch")
         elif plan["backend"] == "serial":
             config = self.broker.settings.serial
+            receipt_bound = plan["test"] == TestName.DERBY_FIXED.value and "flash_job_id" in plan
+            if receipt_bound:
+                from .collector_binding import validate_collector_schema
+
+                validate_collector_schema(plan)
+                if plan["collector_binding"]["principal_id"] != lease.principal_id:
+                    raise BrokerError("plan_session_mismatch")
             if config is None or (
-                plan["expected_firmware_sha256"] != config.expected_firmware_sha256
+                (
+                    not receipt_bound
+                    and plan["expected_firmware_sha256"] != config.expected_firmware_sha256
+                )
                 or plan["observe_seconds"]
                 != (
                     config.observe_seconds
@@ -436,7 +462,16 @@ class PlanApprovals:
                             plan["project_id"], plan["source_receipt"], lease.principal_id or ""
                         )
                     details = self.broker.firmware_build.prepare(
-                        plan["project_id"], lease.principal_id or "", plan.get("source_receipt")
+                        plan["project_id"],
+                        lease.principal_id or "",
+                        plan.get("source_receipt"),
+                        plan.get("derby_detail_mode"),
+                    )
+                elif plan["test"] == TestName.DERBY_FIXED.value and "flash_job_id" in plan:
+                    from .collector_binding import prepare_collector
+
+                    details = prepare_collector(
+                        self.broker, plan["flash_job_id"], lease.principal_id or ""
                     )
                 else:
                     details = self.broker.backend.prepare(TestName(plan["test"]))
