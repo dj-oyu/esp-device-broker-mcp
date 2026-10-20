@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from test_diagnostic_modeproof import image_fixture
+
 from cardputer_mcp.diagnostic_dma_modeproof import (
     CONTRACT,
     MAX_CACHE_BYTES,
@@ -20,7 +22,6 @@ from cardputer_mcp.diagnostic_dma_modeproof import (
 from cardputer_mcp.diagnostic_modeproof import collect_modeproof, verify_modeproof_bytes
 from cardputer_mcp.diagnostic_registry import DiagnosticEntry
 
-from test_diagnostic_modeproof import image_fixture
 
 DMA_ENTRY = DiagnosticEntry(
     "dj-oyu/cardputer-adv-pocketjs", "ac7cce7d20eb34fdd54659e6678d672d23e5d2d1",
