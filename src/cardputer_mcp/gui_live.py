@@ -691,11 +691,15 @@ class LiveWindow:
         if snapshot:
             owner = snapshot.owner
             self.queue_controller.selected_lease = owner.lease_id if owner else ""
+            execution_uncertainty = "not reported"
+            if snapshot.execution_uncertain is not None:
+                execution_uncertainty = "yes" if snapshot.execution_uncertain else "no"
             self.connection_status.set(
                 f"{snapshot.backend} | Owner: {owner.owner if owner else 'none'} | "
                 f"Active job: {snapshot.active_job or 'none'}\n"
                 "Pending historical acknowledgement: "
                 f"{'present' if snapshot.needs_review else 'none'} | "
+                f"Current execution uncertainty: {execution_uncertainty} | "
                 f"Current ownership uncertainty: {'yes' if snapshot.ownership_uncertain else 'no'}"
             )
             sync_rows(

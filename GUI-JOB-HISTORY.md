@@ -64,3 +64,8 @@ never makes its result successful or known. A confirmed fault stays failed after
 acknowledgement; an unknown write/completion stays unknown. A failed measurement
 also does not establish the current physical device state. The existing raw
 needs_device_review property and all backend histories remain unchanged.
+
+The broker's existing execution_uncertain flag is now read for display alongside
+ownership_uncertain. Older snapshots that omit it show not reported, never false.
+These current fields are not inferred from review acknowledgements and are not
+used to change existing GUI admission/cancellation/recovery decisions.
