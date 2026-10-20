@@ -17,7 +17,7 @@ class FailureReasonTests(unittest.TestCase):
         detail = fault_detail(raw)
         self.assertEqual(detail, "app_load_out_of_memory")
         reason = failure_reason("needs_review", "serial_fault_marker", category, detail)
-        self.assertIn("メモリ不足", REASON_LABELS[reason])
+        self.assertEqual(REASON_LABELS[reason], "App load failed: out of memory observed")
         self.assertNotIn("PRIVATE", repr((category, detail, reason)))
         self.assertEqual(fault_detail(b"OOM first_req=1 used=2"), "out_of_memory_observed")
         self.assertEqual(

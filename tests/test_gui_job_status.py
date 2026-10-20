@@ -120,12 +120,15 @@ class JobStatusTests(unittest.TestCase):
                 "needs_review",
             },
         )
-        self.assertIn("未実行", job_status_label("prepared"))
-        self.assertEqual(job_status_label("failed"), "[X] 失敗")
-        self.assertEqual(job_status_label("needs_review"), "[?] 結果不明")
+        self.assertEqual(job_status_label("prepared"), "⏸ Prepared")
+        self.assertEqual(job_status_label("failed"), "❌ Failed")
+        self.assertEqual(job_status_label("needs_review"), "❔ Unknown")
         self.assertEqual(job_status_tag("needs_review"), "job_unknown")
         self.assertEqual(job_status_tag("succeeded"), "")
-        self.assertEqual(job_status_label("foreign"), "[?] 結果不明")
+        self.assertEqual(job_status_label("foreign"), "❔ Unknown")
+        self.assertTrue(all("[" not in label and "]" not in label for label in LABELS.values()))
+        self.assertEqual(job_status_label("succeeded"), "✅ Succeeded")
+        self.assertEqual(job_status_label("running"), "⏳ Running")
 
     def test_background_and_accessibility_fallback_preserve_selected_theme(self):
         tree = Mock()
@@ -148,9 +151,9 @@ class JobPresentationTests(unittest.TestCase):
             row = job_presentation("needs_review", result="serial_fault_marker", reviewed=reviewed)
             self.assertEqual(row.lifecycle, "terminal_record")
             self.assertEqual(row.outcome, "failed")
-            self.assertEqual(row.label, "[X] 失敗")
+            self.assertEqual(row.label, "❌ Failed")
             self.assertEqual(row.tag, "job_failed")
-            self.assertEqual(row.review_label, "[確認済み]" if reviewed else "[未確認]")
+            self.assertEqual(row.review_label, "Reviewed" if reviewed else "Not reviewed")
 
     def test_uncertain_completion_or_write_never_becomes_failed_or_success_by_review(self):
         for code in (
@@ -164,7 +167,7 @@ class JobPresentationTests(unittest.TestCase):
             for reviewed in (False, True):
                 row = job_presentation("needs_review", result=code, reviewed=reviewed)
                 self.assertEqual(row.outcome, "unknown")
-                self.assertEqual(row.label, "[?] 結果不明")
+                self.assertEqual(row.label, "❔ Unknown")
                 self.assertEqual(row.tag, "job_unknown")
                 self.assertNotIn("PRIVATE", repr(row))
 
