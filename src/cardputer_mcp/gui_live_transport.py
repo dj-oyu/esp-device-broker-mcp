@@ -8,6 +8,7 @@ import asyncio
 import json
 import math
 import re
+import sys
 import threading
 import time
 from collections import deque
@@ -409,7 +410,14 @@ class LiveRunner:
                     )
                 return data
             finally:
-                await response.aclose()
+                primary_failure = sys.exception()
+                try:
+                    await response.aclose()
+                except httpx2.HTTPError:
+                    # Cleanup must not turn a known auth/permanent rejection
+                    # into a retryable network error. Cancellation still wins.
+                    if primary_failure is None:
+                        raise
         except httpx2.HTTPError as error:
             reasons = {
                 "ConnectTimeout": "connect_timeout",

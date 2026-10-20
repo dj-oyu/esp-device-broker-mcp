@@ -1100,3 +1100,28 @@ def test_live_timeout_diagnostic_drops_exception_text(runner_factory):
     assert event.diagnostic["reason"] == "read_timeout"
     assert event.diagnostic["retryable"] is True
     assert "PRIVATE" not in repr(event) and TOKEN not in repr(event)
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_response_close_error_cannot_replace_permanent_rejection(runner_factory, status):
+    make, _ = runner_factory
+
+    class BrokenClose(httpx2.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"PRIVATE"
+
+        async def aclose(self):
+            raise httpx2.ReadError("PRIVATE cleanup failure")
+
+    async def handler(request):
+        return httpx2.Response(status, stream=BrokenClose())
+
+    runner = make(handler)
+    runner.start(1)
+    event = wait_until(runner.drain)[0]
+    assert event.diagnostic["http_status"] == status
+    assert event.diagnostic["retryable"] is False
+    assert event.diagnostic["reason"] == (
+        "authentication_failed" if status in (401, 403) else "http_rejected"
+    )
+    assert "PRIVATE" not in repr(event)
