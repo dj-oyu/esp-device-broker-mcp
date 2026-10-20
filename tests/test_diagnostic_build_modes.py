@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from test_build_artifact_persistence import DurableBuildArtifactTests, digest
+import test_build_artifact_persistence as persistence
 from test_diagnostic_modeproof import image_fixture
 
 from cardputer_mcp.build_locations import build_directory
@@ -71,7 +71,7 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
 @pytest.mark.parametrize("mode", ["ON", "OFF"])
 @pytest.mark.parametrize("retention", ["restart", "expired"])
 def test_modeproof_remains_verified_after_log_loss(mode, retention):
-    case = DurableBuildArtifactTests()
+    case = persistence.DurableBuildArtifactTests()
     case.setUp()
     try:
         root, manifest = case.publish(finish=False, publish=False)
@@ -85,7 +85,7 @@ def test_modeproof_remains_verified_after_log_loss(mode, retention):
         job = case.store.job("build-0")
         plan = case.store.plan(job["plan_hash"])
         plan.update(derby_detail_mode=mode, source_provenance=provenance)
-        plan_hash = digest(plan)
+        plan_hash = persistence.digest(plan)
         case.store.put_plan(plan_hash, plan)
         case.store.db.execute("UPDATE jobs SET plan_hash=? WHERE id=?", (plan_hash, "build-0"))
         case.store.db.commit()
