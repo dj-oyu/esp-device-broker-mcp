@@ -187,7 +187,7 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
                     "build_principal": "owner",
                     "source_receipt": first[index]["source_receipt"],
                     "broker_epoch": "old" if index == 1 else "epoch",
-                    "source_plan_expires_at": time.time() - 1,
+                    "source_plan_deadline": time.monotonic() - 1,
                 },
                 "queued" if index == 2 else None,
             )

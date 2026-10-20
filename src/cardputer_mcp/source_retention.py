@@ -11,7 +11,14 @@ PLAN_LEASE_SECONDS = 1800
 TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 
 
-def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> dict[str, Any]:
+def retention_evidence(
+    store: Any,
+    project: str,
+    principal: str,
+    epoch: str,
+    *,
+    now: float | None = None,
+) -> dict[str, Any]:
     """Protect executable plans, unfinished jobs and every recovery association.
 
     Completed build plans are provenance, not permanent payload reservations.
@@ -40,7 +47,7 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
     plans: dict[str, Any] = {}
     executable: list[dict[str, Any]] = []
     protected: dict[str, list[str]] = {}
-    now = time.time()
+    now = time.monotonic() if now is None else now
 
     def protect(receipt: str, reason: str) -> None:
         reasons = protected.setdefault(receipt, [])
@@ -110,7 +117,7 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
         if plan["job_id"] in jobs or plan.get("project_id") != project:
             continue
         receipt = plan.get("source_receipt")
-        expiry = plan.get("source_plan_expires_at")
+        expiry = plan.get("source_plan_deadline")
         if receipt is not None and (
             expiry is None or not isinstance(expiry, (int, float)) or expiry > now
         ):

@@ -124,8 +124,9 @@ If new bytes need space, the explicit fetch reclaims the oldest eligible payload
 under an OS cache lock. Current executable source-build plans, unfinished jobs,
 executable/unfinished firmware operations and every current/history LKG source
 association protect their payloads. New source-build plans have a visible
-30-minute lease; expired unexecuted plans cannot execute and must be prepared
-again. Preparing unchanged inputs during a live lease does not renew it. Once a
+30-minute lease bound to the broker epoch and monotonic clock; wall-clock
+changes cannot expire or revive it. `source_plan_expires_at` is display-only.
+Expired unexecuted plans cannot execute and must be prepared again. Preparing unchanged inputs during a live lease does not renew it. Once a
 job is queued its protection lasts through completion, regardless of lease expiry.
 Legacy unexecuted plans remain protected for their current broker epoch. Old
 broker epochs cannot execute. Completed build history alone is provenance, not

@@ -14,6 +14,7 @@ def resource_report(
     inventory: dict[str, Any],
     *,
     epoch: str | None = None,
+    now: float | None = None,
 ) -> dict[str, Any]:
     """Combine a fresh complete filesystem scan with bounded owned DB evidence.
 
@@ -22,7 +23,7 @@ def resource_report(
     References are retention evidence, never permission to remove an entry.
     """
     if epoch is not None:
-        return _lifecycle_report(store, project_id, principal, inventory, epoch)
+        return _lifecycle_report(store, project_id, principal, inventory, epoch, now)
     rows = store.db.execute(
         "SELECT j.id,j.created,j.finished,j.state,j.diagnostic,p.payload FROM jobs j "
         "JOIN plans p ON p.hash=j.plan_hash ORDER BY j.id LIMIT ?",
@@ -141,11 +142,16 @@ def resource_report(
 
 
 def _lifecycle_report(
-    store: Any, project: str, principal: str, inventory: dict[str, Any], epoch: str
+    store: Any,
+    project: str,
+    principal: str,
+    inventory: dict[str, Any],
+    epoch: str,
+    now: float | None,
 ) -> dict[str, Any]:
     from .source_retention import retention_evidence
 
-    policy = retention_evidence(store, project, principal, epoch)
+    policy = retention_evidence(store, project, principal, epoch, now=now)
     visible = []
     reason_counts: dict[str, int] = {}
     for record in inventory["records"]:

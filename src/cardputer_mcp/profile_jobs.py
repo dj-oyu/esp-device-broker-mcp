@@ -219,6 +219,7 @@ class ProfileJobs:
         )
         if request.test == TestName.BUILD and request.source_receipt is not None:
             expiry = time.time() + PLAN_LEASE_SECONDS
+            deadline = broker.clock() + PLAN_LEASE_SECONDS
             # Repeated preparation of the same inputs must not consume history
             # or silently extend a still executable reservation.
             for row in store.db.execute(
@@ -227,14 +228,17 @@ class ProfileJobs:
             ):
                 prior = json.loads(row[0])
                 prior_expiry = prior.pop("source_plan_expires_at", 0)
+                prior_deadline = prior.pop("source_plan_deadline", 0)
                 if (
                     prior == plan
-                    and isinstance(prior_expiry, (int, float))
-                    and prior_expiry > time.time()
+                    and isinstance(prior_deadline, (int, float))
+                    and prior_deadline > broker.clock()
                 ):
                     expiry = prior_expiry
+                    deadline = prior_deadline
                     break
             plan["source_plan_expires_at"] = expiry
+            plan["source_plan_deadline"] = deadline
         digest = digest_plan(plan)
         existing = store.job(request.job_id)
         if existing and existing["plan_hash"] != digest:
@@ -285,9 +289,9 @@ class ProfileJobs:
                 and plan["broker_epoch"] == broker.epoch
                 and registration == plan["registration_sha256"]
                 and (
-                    "source_plan_expires_at" not in plan
+                    "source_plan_deadline" not in plan
                     or self.broker._store().job(plan["job_id"]) is not None
-                    or time.time() < plan["source_plan_expires_at"]
+                    or broker.clock() < plan["source_plan_deadline"]
                 )
                 and self._registration(plan["project_id"]) == registration
                 and (

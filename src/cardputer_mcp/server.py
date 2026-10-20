@@ -679,7 +679,14 @@ def create_server(
                 raise failure
             return {
                 "ok": True,
-                **resource_report(store, project_id, owner.principal_id, inventory, epoch=epoch),
+                **resource_report(
+                    store,
+                    project_id,
+                    owner.principal_id,
+                    inventory,
+                    epoch=epoch,
+                    now=resident.clock(),
+                ),
             }
         except SourceError as exc:
             return {"ok": False, **exc.public()}

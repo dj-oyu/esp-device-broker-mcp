@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -11,8 +12,11 @@ from .source_snapshot import SOURCE_ERROR_CODES, SourceError, SourceSnapshots
 
 
 class FirmwareSource:
-    def __init__(self, settings: Any, store: Any) -> None:
+    def __init__(
+        self, settings: Any, store: Any, *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self.settings, self.store = settings, store
+        self.clock = clock
         self.snapshots = SourceSnapshots(settings)
         self.stop = threading.Event()
         self.active = False
@@ -80,7 +84,11 @@ class FirmwareSource:
             if not await check():
                 raise SourceError("source_fetch_interrupted")
             return retention_evidence(
-                self.store(), plan["project_id"], plan["source_principal"], plan["broker_epoch"]
+                self.store(),
+                plan["project_id"],
+                plan["source_principal"],
+                plan["broker_epoch"],
+                now=self.clock(),
             )
 
         # The worker owns the cache lock; the resident loop owns SQLite.

@@ -537,9 +537,9 @@ async def test_source_build_lease_is_idempotent_expiry_blocks_execute_and_queue_
     broker = service.resident
     owner = service.keys["second"].metadata
     receipt = "a" * 64
-    clock = SimpleNamespace(now=time.time())
-    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock.now))
-    monkeypatch.setattr(timeline_module, "time", SimpleNamespace(time=lambda: clock.now))
+    clock, wall = SimpleNamespace(now=broker.clock()), SimpleNamespace(now=time.time())
+    monkeypatch.setattr(broker, "clock", lambda: clock.now)
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: wall.now))
     monkeypatch.setattr(broker.firmware_source, "authorize_receipt", lambda *args: None)
     monkeypatch.setattr(
         broker.firmware_build,
@@ -565,17 +565,25 @@ async def test_source_build_lease_is_idempotent_expiry_blocks_execute_and_queue_
         )
 
     assert shown_state() == "prepared"
-    clock.now = first["plan"]["source_plan_expires_at"] + 1
+    wall.now += 86400
+    assert broker.profile_jobs._binding_live(first["plan"])
+    wall.now -= 172800
+    assert broker.profile_jobs._binding_live(first["plan"])
+    unchanged = broker.profile_jobs.prepare(request, owner.principal_id, owner.origin.value)
+    assert unchanged["plan_hash"] == first["plan_hash"]
+    clock.now = first["plan"]["source_plan_deadline"] + 1
     assert shown_state() == "expired"
     with pytest.raises(BrokerError, match="profile_or_principal_no_longer_valid"):
         broker.profile_jobs.execute(
             ExecuteRequest(plan_hash=first["plan_hash"]), owner.principal_id, owner.origin.value
         )
     assert broker._store().job("leased-source") is None
+    wall.now -= 86400
+    assert not broker.profile_jobs._binding_live(first["plan"])
     renewed = broker.profile_jobs.prepare(request, owner.principal_id, owner.origin.value)
     assert renewed["plan_hash"] != first["plan_hash"]
     assert shown_state() == "prepared"
     broker._store().add_job("leased-source", renewed["plan_hash"])
-    clock.now = renewed["plan"]["source_plan_expires_at"] + 1
+    clock.now = renewed["plan"]["source_plan_deadline"] + 1
     assert broker.profile_jobs._binding_live(renewed["plan"])
     broker._store().set_job("leased-source", "cancelled", "synthetic_test_cleanup")
