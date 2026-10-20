@@ -341,7 +341,15 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
 
 
 @pytest.mark.parametrize(
-    "failure_kind", ["known", "unknown", "unsafe_source_error", "commit_known", "commit_unknown"]
+    "failure_kind",
+    [
+        "known",
+        "unknown",
+        "unsafe_source_error",
+        "commit_known",
+        "commit_unknown",
+        "cache_protected",
+    ],
 )
 async def test_failed_source_retains_safe_diagnostic_through_broker(
     registry_service, tmp_path, monkeypatch, failure_kind
@@ -370,7 +378,9 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
     private_path = str(tmp_path / "synthetic-private-fixture")
     native_message = secret + " https://example.test/?token=" + key.token + " " + private_path
     expected = (
-        "source_git_tree_mismatch"
+        "source_cache_protected"
+        if failure_kind == "cache_protected"
+        else "source_git_tree_mismatch"
         if failure_kind == "known"
         else "source_final_commit_not_authorized"
         if failure_kind == "commit_known"
@@ -379,6 +389,8 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
 
     def failed_fetch(plan, live, stage):
         stage("source_validate")
+        if failure_kind == "cache_protected":
+            raise SourceError("source_cache_protected")
         if failure_kind == "known":
             raise SourceError("source_git_tree_mismatch")
         if failure_kind == "unsafe_source_error":
@@ -424,12 +436,15 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         job = service.resident.job("source-failure")
         assert job["state"] == ("needs_review" if failure_kind.startswith("commit_") else "failed")
         assert job["result"] == expected
-        assert job["diagnostic"] == {"code": expected}
+        expected_diagnostic = {"code": expected}
+        if failure_kind == "cache_protected":
+            expected_diagnostic["explanation"] = SourceError(expected).public()["explanation"]
+        assert job["diagnostic"] == expected_diagnostic
         assert service.resident._store().needs_review() == failure_kind.startswith("commit_")
         report = await call(
             remote, "read_build_logs", {"job_id": "source-failure", "levels": ["error"]}
         )
-        assert report["diagnostic"] == {"code": expected}
+        assert report["diagnostic"] == expected_diagnostic
         assert any(expected in item["text"] for item in report["entries"])
         for value in (secret, key.token, private_path, "https://example.test/"):
             assert value not in json.dumps(job | {"logs": report})
@@ -444,7 +459,7 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         recovered = source.read_logs(
             BuildLogRequest(job_id="source-failure"), key.metadata.principal_id
         )
-        assert recovered["expired"] and recovered["diagnostic"] == {"code": expected}
+        assert recovered["expired"] and recovered["diagnostic"] == expected_diagnostic
 
         def unavailable_cache(project_id):
             raise RuntimeError(native_message)
@@ -453,7 +468,7 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         recovered = source.read_logs(
             BuildLogRequest(job_id="source-failure"), key.metadata.principal_id
         )
-        assert recovered["diagnostic"] == {"code": expected}
+        assert recovered["diagnostic"] == expected_diagnostic
         assert recovered["source_cache"] == {"available": False, "code": "source_fetch_failed"}
         assert secret not in json.dumps(recovered) and private_path not in json.dumps(recovered)
 

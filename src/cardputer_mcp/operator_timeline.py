@@ -65,6 +65,8 @@ STAGES = frozenset(
         "source_download",
         "source_validate",
         "source_publish",
+        "source_reuse_verified",
+        "source_reclaim_unreferenced_payload",
         "idf_profile",
         "idf_diagnostics",
         "idf_build",
@@ -613,6 +615,17 @@ class OperatorTimeline:
                         and plan.get("broker_epoch") == epoch
                         and plan.get("session_id") == lease.id
                     )
+                    if (
+                        plan.get("backend") == "registered_project"
+                        and "source_plan_deadline" in plan
+                    ):
+                        expiry = plan["source_plan_deadline"]
+                        live = bool(
+                            live
+                            and type(expiry) in (int, float)
+                            and math.isfinite(expiry)
+                            and broker.clock() < expiry
+                        )
                     card["state"] = "prepared" if live else "expired"
                 cards.setdefault(card["job_id"], card)
         has_more = has_more or len(cards) > MAX_CARDS

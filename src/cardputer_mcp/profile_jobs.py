@@ -2,7 +2,9 @@
 
 import asyncio
 import hashlib
+import json
 import sqlite3
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
@@ -16,6 +18,7 @@ from .firmware_build import BuildPreflightFailure, hash_file
 from .logs import Event
 from .models import CancelRequest, ExecuteRequest, Origin, PrepareRequest, TestName
 from .source_preflight import SourceReadWorker, settings_identity, source_inputs
+from .source_retention import PLAN_LEASE_SECONDS
 from .source_snapshot import SourceError
 
 if TYPE_CHECKING:
@@ -214,6 +217,28 @@ class ProfileJobs:
                 else {}
             ),
         )
+        if request.test == TestName.BUILD and request.source_receipt is not None:
+            expiry = time.time() + PLAN_LEASE_SECONDS
+            deadline = broker.clock() + PLAN_LEASE_SECONDS
+            # Repeated preparation of the same inputs must not consume history
+            # or silently extend a still executable reservation.
+            for row in store.db.execute(
+                "SELECT payload FROM plans WHERE json_extract(payload,'$.job_id')=? LIMIT 10001",
+                (request.job_id,),
+            ):
+                prior = json.loads(row[0])
+                prior_expiry = prior.pop("source_plan_expires_at", 0)
+                prior_deadline = prior.pop("source_plan_deadline", 0)
+                if (
+                    prior == plan
+                    and isinstance(prior_deadline, (int, float))
+                    and prior_deadline > broker.clock()
+                ):
+                    expiry = prior_expiry
+                    deadline = prior_deadline
+                    break
+            plan["source_plan_expires_at"] = expiry
+            plan["source_plan_deadline"] = deadline
         digest = digest_plan(plan)
         existing = store.job(request.job_id)
         if existing and existing["plan_hash"] != digest:
@@ -263,6 +288,11 @@ class ProfileJobs:
                 and broker._state_lock.is_locked
                 and plan["broker_epoch"] == broker.epoch
                 and registration == plan["registration_sha256"]
+                and (
+                    "source_plan_deadline" not in plan
+                    or self.broker._store().job(plan["job_id"]) is not None
+                    or broker.clock() < plan["source_plan_deadline"]
+                )
                 and self._registration(plan["project_id"]) == registration
                 and (
                     plan["test"] != TestName.BUILD.value
@@ -500,6 +530,8 @@ class ProfileJobs:
                     state = "needs_review" if uncertain else "cancelled" if reason else "failed"
                     outcome = code if uncertain else reason or code
                     diagnostic: dict[str, Any] = {"code": outcome}
+                    if source and "explanation" in SourceError(outcome).public():
+                        diagnostic["explanation"] = SourceError(outcome).public()["explanation"]
                     if isinstance(failure, SourceError) and outcome == failure.code:
                         if "scan" in failure.public():
                             diagnostic["scan"] = failure.public()["scan"]

@@ -222,7 +222,7 @@ class Broker:
         self.firmware_build = FirmwareBuild(settings, settings.state_dir / "history.sqlite3")
         from .firmware_source import FirmwareSource
 
-        self.firmware_source = FirmwareSource(settings, self._store)
+        self.firmware_source = FirmwareSource(settings, self._store, clock=lambda: self.clock())
         from .profile_jobs import ProfileJobs
 
         self.profile_jobs = ProfileJobs(self)

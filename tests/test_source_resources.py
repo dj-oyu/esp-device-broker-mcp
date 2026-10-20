@@ -56,9 +56,11 @@ class ResourceTests(unittest.TestCase):
             self.root.joinpath(f"snapshot-{i}").mkdir()
         clock = SimpleNamespace(now=0.0)
         original = os.scandir
-        info = SimpleNamespace(st_mode=stat.S_IFREG, st_size=1)
+        info = SimpleNamespace(st_mode=stat.S_IFREG, st_size=1, st_nlink=1)
 
         class Entry:
+            name = "synthetic"
+
             def stat(self, *, follow_symlinks):
                 self_test.assertFalse(follow_symlinks)
                 clock.now += 0.000125
@@ -116,7 +118,7 @@ class ResourceTests(unittest.TestCase):
             transport.assert_not_called()
         self.assertEqual(caught.exception.scan["reason"], "deadline")
         self.assertEqual(scans.count(self.root), 1)
-        self.assertEqual(len(list(self.root.iterdir())), 13)
+        self.assertEqual(len([p for p in self.root.iterdir() if p.is_dir()]), 13)
         self.assertFalse(list(self.root.rglob("receipt.json")))
         self.assertFalse(self.snapshots.uncertain)
 
@@ -124,8 +126,8 @@ class ResourceTests(unittest.TestCase):
         snapshot = self.root / "snapshot"
         snapshot.mkdir()
         original = os.scandir
-        info = SimpleNamespace(st_mode=stat.S_IFREG, st_size=0)
-        entry = SimpleNamespace(stat=lambda **kwargs: info)
+        info = SimpleNamespace(st_mode=stat.S_IFREG, st_size=0, st_nlink=1)
+        entry = SimpleNamespace(name="synthetic", stat=lambda **kwargs: info)
 
         class Children:
             def __enter__(self):

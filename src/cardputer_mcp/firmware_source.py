@@ -2,16 +2,21 @@
 
 import asyncio
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
 from .build_logs import BuildLogs
+from .source_retention import retention_evidence
 from .source_snapshot import SOURCE_ERROR_CODES, SourceError, SourceSnapshots
 
 
 class FirmwareSource:
-    def __init__(self, settings: Any, store: Any) -> None:
+    def __init__(
+        self, settings: Any, store: Any, *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self.settings, self.store = settings, store
+        self.clock = clock
         self.snapshots = SourceSnapshots(settings)
         self.stop = threading.Event()
         self.active = False
@@ -75,6 +80,33 @@ class FirmwareSource:
         def emit(name: str) -> None:
             loop.call_soon_threadsafe(append, name)
 
+        async def evidence() -> dict[str, Any]:
+            if not await check():
+                raise SourceError("source_fetch_interrupted")
+            return retention_evidence(
+                self.store(),
+                plan["project_id"],
+                plan["source_principal"],
+                plan["broker_epoch"],
+                now=self.clock(),
+            )
+
+        # The worker owns the cache lock; the resident loop owns SQLite.
+        self.snapshots.retention = lambda: asyncio.run_coroutine_threadsafe(
+            evidence(), loop
+        ).result(timeout=5)
+
+        async def publication(receipt: str) -> None:
+            if not await check():
+                raise SourceError("source_fetch_interrupted")
+            self.store().record_source_publication(
+                receipt, plan["job_id"], plan["project_id"], plan["source_principal"]
+            )
+
+        self.snapshots.publication = lambda receipt: asyncio.run_coroutine_threadsafe(
+            publication(receipt), loop
+        ).result(timeout=5)
+
         worker = asyncio.create_task(asyncio.to_thread(self.snapshots.fetch, plan, valid, emit))
         interrupted = False
         try:
@@ -96,6 +128,8 @@ class FirmwareSource:
                 raise
             raise SourceError(code) from None
         finally:
+            self.snapshots.retention = None
+            self.snapshots.publication = None
             self.active = False
 
     def record_failure(self, plan: dict[str, Any], code: str) -> None:
@@ -148,7 +182,11 @@ class FirmwareSource:
             and failure_code in SOURCE_ERROR_CODES
         )
         if failed:
-            result["diagnostic"] = {"code": failure_code}
+            failure_diagnostic: dict[str, Any] = {"code": failure_code}
+            explanation = SourceError(failure_code).public().get("explanation")
+            if explanation is not None:
+                failure_diagnostic["explanation"] = explanation
+            result["diagnostic"] = failure_diagnostic
         if not include_cache or not request.include_source_cache:
             return result
         try:
