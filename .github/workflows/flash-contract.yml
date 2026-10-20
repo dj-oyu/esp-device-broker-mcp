@@ -121,6 +121,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Source and build regression
         run: |
+          .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_source_lifecycle.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_firmware_build.py' -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Real public Cardputer archive integrity without build or USB

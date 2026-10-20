@@ -22,10 +22,14 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
         "FROM plans p LEFT JOIN jobs j ON j.plan_hash=p.hash ORDER BY p.hash LIMIT ?",
         (REFERENCE_LIMIT + 1,),
     ).fetchall()
-    complete = len(rows) <= REFERENCE_LIMIT and store.db.execute(
-        "SELECT 1 FROM jobs j LEFT JOIN plans p ON p.hash=j.plan_hash "
-        "WHERE p.hash IS NULL LIMIT 1"
-    ).fetchone() is None
+    complete = (
+        len(rows) <= REFERENCE_LIMIT
+        and store.db.execute(
+            "SELECT 1 FROM jobs j LEFT JOIN plans p ON p.hash=j.plan_hash "
+            "WHERE p.hash IS NULL LIMIT 1"
+        ).fetchone()
+        is None
+    )
     sources: dict[str, Any] = {}
     jobs: dict[str, Any] = {}
     plans: dict[str, Any] = {}
@@ -88,14 +92,19 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
 
     # An alternate prepared plan for a job ID already used by another hash can
     # no longer execute. It must not keep an abandoned reservation alive.
-    executable = [plan for plan in executable if plan["job_id"] not in jobs
-                  or jobs[plan["job_id"]]["plan"] == plan]
+    executable = [
+        plan
+        for plan in executable
+        if plan["job_id"] not in jobs or jobs[plan["job_id"]]["plan"] == plan
+    ]
     for plan in executable:
         if plan["job_id"] in jobs or plan.get("project_id") != project:
             continue
         receipt = plan.get("source_receipt")
         expiry = plan.get("source_plan_expires_at")
-        if receipt is not None and (expiry is None or not isinstance(expiry, (int, float)) or expiry > now):
+        if receipt is not None and (
+            expiry is None or not isinstance(expiry, (int, float)) or expiry > now
+        ):
             protect(receipt, "executable_plan")
 
     history = store.db.execute(

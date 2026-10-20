@@ -329,10 +329,16 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         root.mkdir(mode=0o700)
         pending = root / ("pending-" + "a" * 32)
         pending.mkdir()
-        (pending / "reservation.json").write_bytes(canonical({
-            "job_id": plan["job_id"], "project_id": "fixture", "principal": "owner",
-            "registration_sha256": plan["source_registration_sha256"],
-        }))
+        (pending / "reservation.json").write_bytes(
+            canonical(
+                {
+                    "job_id": plan["job_id"],
+                    "project_id": "fixture",
+                    "principal": "owner",
+                    "registration_sha256": plan["source_registration_sha256"],
+                }
+            )
+        )
         (pending / "source").mkdir()
         (pending / "source" / "partial.c").write_text("interrupted")
         with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
@@ -347,12 +353,19 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
 
     def test_alternate_plans_for_used_job_do_not_pin_or_replace_recovery_origin(self):
         first, second = self.fill(2)
-        base = {"job_id": "build", "test": "firmware_build", "project_id": "fixture",
-                "build_principal": "owner", "broker_epoch": "epoch"}
+        base = {
+            "job_id": "build",
+            "test": "firmware_build",
+            "project_id": "fixture",
+            "build_principal": "owner",
+            "broker_epoch": "epoch",
+        }
         self.add(base | {"source_receipt": first["source_receipt"]}, "succeeded")
         self.add(base | {"source_receipt": second["source_receipt"]})
         self.assertNotIn(second["source_receipt"], self.evidence()["protected"])
-        self.add({"job_id": "flash", "flash_principal": "owner", "build_job_id": "build"}, "running")
+        self.add(
+            {"job_id": "flash", "flash_principal": "owner", "build_job_id": "build"}, "running"
+        )
         self.assertIn(first["source_receipt"], self.evidence()["protected"])
         self.assertNotIn(second["source_receipt"], self.evidence()["protected"])
 

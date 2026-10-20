@@ -140,8 +140,9 @@ def resource_report(
     return result
 
 
-def _lifecycle_report(store: Any, project: str, principal: str, inventory: dict[str, Any],
-                      epoch: str) -> dict[str, Any]:
+def _lifecycle_report(
+    store: Any, project: str, principal: str, inventory: dict[str, Any], epoch: str
+) -> dict[str, Any]:
     from .source_retention import retention_evidence
 
     policy = retention_evidence(store, project, principal, epoch)
@@ -157,25 +158,39 @@ def _lifecycle_report(store: Any, project: str, principal: str, inventory: dict[
         candidate = bool(present and policy["complete"] and not reasons)
         for reason in reasons:
             reason_counts[reason] = reason_counts.get(reason, 0) + 1
-        visible.append({
-            "source_receipt": record["name"], "source_job_id": proof["job_id"],
-            "finished": proof["finished"], "state": "succeeded", "bytes": record["bytes"],
-            "entries": record["entries"], "payload_present": present,
-            "payload_reclamation_candidate": candidate,
-            "cleanup_eligible": False,  # A reference read is not full content validation.
-            "protection_reasons": ["immutable_receipt_evidence_retained", *reasons,
-                *([] if policy["complete"] else ["references_incomplete"])],
-            "retained_until": "payload_while_referenced_receipt_within_fixed_evidence_bounds",
-        })
+        visible.append(
+            {
+                "source_receipt": record["name"],
+                "source_job_id": proof["job_id"],
+                "finished": proof["finished"],
+                "state": "succeeded",
+                "bytes": record["bytes"],
+                "entries": record["entries"],
+                "payload_present": present,
+                "payload_reclamation_candidate": candidate,
+                "cleanup_eligible": False,  # A reference read is not full content validation.
+                "protection_reasons": [
+                    "immutable_receipt_evidence_retained",
+                    *reasons,
+                    *([] if policy["complete"] else ["references_incomplete"]),
+                ],
+                "retained_until": "payload_while_referenced_receipt_within_fixed_evidence_bounds",
+            }
+        )
     usage = inventory["usage"]
     return {
-        "source_cache": usage, "owned_snapshots": visible,
+        "source_cache": usage,
+        "owned_snapshots": visible,
         "other_or_unclassified_snapshots": usage["snapshot_entries"] - len(visible),
-        "reference_inventory_complete": policy["complete"] and len(inventory["records"]) == usage["snapshot_entries"],
+        "reference_inventory_complete": policy["complete"]
+        and len(inventory["records"]) == usage["snapshot_entries"],
         "protection_reason_counts": reason_counts,
-        "reclamation_candidate_payloads": sum(row["payload_reclamation_candidate"] for row in visible),
+        "reclamation_candidate_payloads": sum(
+            row["payload_reclamation_candidate"] for row in visible
+        ),
         "scan_complete": True,
         "retention_policy": "bounded_unreferenced_payload_reclamation_on_explicit_fetch",
         "cleanup_action": "automatic_on_fetch_preserve_receipts_unknown_and_referenced_entries",
-        "cleanup_authorized": False, "automatic_payload_reclamation": True,
+        "cleanup_authorized": False,
+        "automatic_payload_reclamation": True,
     }

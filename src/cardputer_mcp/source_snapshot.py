@@ -181,11 +181,17 @@ class SourceError(ValueError):
         explanations = {
             "source_cache_protected": "No safely reclaimable payload: executable plans, "
             "unfinished jobs, recovery references, or unknown/unowned entries occupy capacity",
-            "source_cache_references_incomplete": "Reference evidence is incomplete; no payload reclaimed",
-            "source_cache_evidence_full": "Finite receipt evidence capacity exhausted; receipts preserved",
+            "source_cache_references_incomplete": (
+                "Reference evidence is incomplete; no payload reclaimed"
+            ),
+            "source_cache_evidence_full": (
+                "Finite receipt evidence capacity exhausted; receipts preserved"
+            ),
             "source_snapshot_evicted_fetch_required": "Receipt retained; explicitly fetch the same "
             "registered commit to restore verified source bytes before preparing a build",
-            "source_cache_owner_conflict": "Cache is bound to another state store; no shared-store reclamation",
+            "source_cache_owner_conflict": (
+                "Cache is bound to another state store; no shared-store reclamation"
+            ),
         }
         if self.code in explanations:
             result["explanation"] = explanations[self.code]
@@ -1138,11 +1144,7 @@ class SourceSnapshots:
                     raise SourceError("source_linked_path_rejected")
                 name = item.relative_to(source).as_posix()
                 entry = value["files"].get(name)
-                if (
-                    entry is None
-                    or info.st_size != entry["bytes"]
-                    or len(files) >= LIMITS["files"]
-                ):
+                if entry is None or info.st_size != entry["bytes"] or len(files) >= LIMITS["files"]:
                     raise SourceError("source_snapshot_changed")
                 files[name] = file_receipt(item.read_bytes(), entry["mode"])
             if files != value["files"] or digest(canonical(files)) != value["source_sha256"]:

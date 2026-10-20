@@ -526,6 +526,8 @@ class ProfileJobs:
                     state = "needs_review" if uncertain else "cancelled" if reason else "failed"
                     outcome = code if uncertain else reason or code
                     diagnostic: dict[str, Any] = {"code": outcome}
+                    if source and "explanation" in SourceError(outcome).public():
+                        diagnostic["explanation"] = SourceError(outcome).public()["explanation"]
                     if isinstance(failure, SourceError) and outcome == failure.code:
                         if "scan" in failure.public():
                             diagnostic["scan"] = failure.public()["scan"]

@@ -163,6 +163,9 @@ class FirmwareSource:
         )
         if failed:
             result["diagnostic"] = {"code": failure_code}
+            explanation = SourceError(failure_code).public().get("explanation")
+            if explanation is not None:
+                result["diagnostic"]["explanation"] = explanation
         if not include_cache or not request.include_source_cache:
             return result
         try:

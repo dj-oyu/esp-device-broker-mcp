@@ -538,19 +538,27 @@ async def test_source_build_lease_is_idempotent_expiry_blocks_execute_and_queue_
     clock = SimpleNamespace(now=time.time())
     monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock.now))
     monkeypatch.setattr(broker.firmware_source, "authorize_receipt", lambda *args: None)
-    monkeypatch.setattr(broker.firmware_build, "prepare", lambda project, principal, source: {
-        "project_id": project, "build_principal": principal, "source_receipt": source,
-    })
+    monkeypatch.setattr(
+        broker.firmware_build,
+        "prepare",
+        lambda project, principal, source: {
+            "project_id": project,
+            "build_principal": principal,
+            "source_receipt": source,
+        },
+    )
     monkeypatch.setattr(broker.firmware_build, "storage", lambda project: {})
-    request = PrepareRequest(job_id="leased-source", test=Action.BUILD,
-                             project_id="fixture", source_receipt=receipt)
+    request = PrepareRequest(
+        job_id="leased-source", test=Action.BUILD, project_id="fixture", source_receipt=receipt
+    )
     first = broker.profile_jobs.prepare(request, owner.principal_id, owner.origin.value)
     second = broker.profile_jobs.prepare(request, owner.principal_id, owner.origin.value)
     assert first["plan_hash"] == second["plan_hash"]
     clock.now = first["plan"]["source_plan_expires_at"] + 1
     with pytest.raises(BrokerError, match="profile_or_principal_no_longer_valid"):
-        broker.profile_jobs.execute(ExecuteRequest(plan_hash=first["plan_hash"]),
-                                    owner.principal_id, owner.origin.value)
+        broker.profile_jobs.execute(
+            ExecuteRequest(plan_hash=first["plan_hash"]), owner.principal_id, owner.origin.value
+        )
     assert broker._store().job("leased-source") is None
     renewed = broker.profile_jobs.prepare(request, owner.principal_id, owner.origin.value)
     assert renewed["plan_hash"] != first["plan_hash"]

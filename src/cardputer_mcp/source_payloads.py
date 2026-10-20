@@ -127,7 +127,8 @@ def _reclaim(
     receipt: str,
     value: dict[str, Any],
     live: Callable[[], bool],
-    *, dry_run: bool = False,
+    *,
+    dry_run: bool = False,
 ) -> int:
     _, registration = snapshots.registration(plan["project_id"])
     root = registration.cache_root / receipt
@@ -143,7 +144,11 @@ def _reclaim(
         raise SourceError("source_cache_unknown_entry")
     if marker.exists():
         _not_link(marker)
-        if marker.stat().st_nlink != 1 or marker.stat().st_size > 1024 or marker.read_bytes() != canonical(expected):
+        if (
+            marker.stat().st_nlink != 1
+            or marker.stat().st_size > 1024
+            or marker.read_bytes() != canonical(expected)
+        ):
             raise SourceError("source_cache_unknown_entry")
         if source.exists() and removing.exists():
             raise SourceError("source_cache_unknown_entry")
@@ -282,15 +287,19 @@ def admit_source(
     chosen = []
     remaining_count, remaining_bytes = usage["snapshots"], usage["bytes"]
     for _, receipt, value in sorted(candidates, key=lambda item: (item[0], item[1])):
-        if (remaining_count < LIMITS["cache_snapshots"]
-                and remaining_bytes + LIMITS["expanded_bytes"] + 32 * 1048576 <= LIMITS["cache_bytes"]):
+        if (
+            remaining_count < LIMITS["cache_snapshots"]
+            and remaining_bytes + LIMITS["expanded_bytes"] + 32 * 1048576 <= LIMITS["cache_bytes"]
+        ):
             break
         freed = _reclaim(snapshots, plan, receipt, value, live, dry_run=True)
         chosen.append((receipt, value))
         remaining_count -= 1
         remaining_bytes -= freed
-    if (remaining_count >= LIMITS["cache_snapshots"]
-            or remaining_bytes + LIMITS["expanded_bytes"] + 32 * 1048576 > LIMITS["cache_bytes"]):
+    if (
+        remaining_count >= LIMITS["cache_snapshots"]
+        or remaining_bytes + LIMITS["expanded_bytes"] + 32 * 1048576 > LIMITS["cache_bytes"]
+    ):
         raise SourceError("source_cache_protected")
     for receipt, value in chosen:
         stage("source_reclaim_unreferenced_payload")
