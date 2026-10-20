@@ -355,23 +355,31 @@ class Store:
         )
         self.db.commit()
 
-    def record_source_publication(self, receipt: str, job_id: str,
-                                  project_id: str, principal: str) -> None:
+    def record_source_publication(
+        self, receipt: str, job_id: str, project_id: str, principal: str
+    ) -> None:
         """Durable intent before filesystem publication; no success authority."""
         if re.fullmatch(r"[a-f0-9]{64}", receipt) is None:
             raise ValueError("source_publication_invalid")
         job = self.job(job_id)
         plan = self.plan(job["plan_hash"]) if job is not None else None
-        if (job is None or job["state"] != "running" or plan is None
-                or plan.get("project_id") != project_id
-                or plan.get("source_principal") != principal
-                or plan.get("test") != "firmware_fetch_source"):
+        if (
+            job is None
+            or job["state"] != "running"
+            or plan is None
+            or plan.get("project_id") != project_id
+            or plan.get("source_principal") != principal
+            or plan.get("test") != "firmware_fetch_source"
+        ):
             raise ValueError("source_publication_not_authorized")
         with self.db:
-            self.db.execute("INSERT OR IGNORE INTO source_publications VALUES(?,?,?,?)",
-                            (receipt, job_id, project_id, principal))
-            row = self.db.execute("SELECT * FROM source_publications WHERE job_id=?",
-                                  (job_id,)).fetchone()
+            self.db.execute(
+                "INSERT OR IGNORE INTO source_publications VALUES(?,?,?,?)",
+                (receipt, job_id, project_id, principal),
+            )
+            row = self.db.execute(
+                "SELECT * FROM source_publications WHERE job_id=?", (job_id,)
+            ).fetchone()
             if row is None or tuple(row) != (receipt, job_id, project_id, principal):
                 raise ValueError("source_publication_conflict")
 

@@ -6,6 +6,7 @@ read only for display; observing a prepared plan never requests execution.
 
 import math
 import re
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -615,6 +616,17 @@ class OperatorTimeline:
                         and plan.get("broker_epoch") == epoch
                         and plan.get("session_id") == lease.id
                     )
+                    if (
+                        plan.get("backend") == "registered_project"
+                        and "source_plan_expires_at" in plan
+                    ):
+                        expiry = plan["source_plan_expires_at"]
+                        live = bool(
+                            live
+                            and type(expiry) in (int, float)
+                            and math.isfinite(expiry)
+                            and time.time() < expiry
+                        )
                     card["state"] = "prepared" if live else "expired"
                 cards.setdefault(card["job_id"], card)
         has_more = has_more or len(cards) > MAX_CARDS

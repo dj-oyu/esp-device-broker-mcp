@@ -16,6 +16,7 @@ from cardputer_mcp.source_payloads import _reclaim
 from cardputer_mcp.source_resources import resource_report
 from cardputer_mcp.source_retention import retention_evidence
 from cardputer_mcp.source_snapshot import (
+    LIMITS,
     SourceError,
     SourceSnapshots,
     canonical,
@@ -92,7 +93,8 @@ class CacheFixture:
         plan = self.plan(number, job, principal)
         self.add(plan, "running")
         self.snapshots.publication = lambda receipt: self.store.record_source_publication(
-            receipt, plan["job_id"], "fixture", principal)
+            receipt, plan["job_id"], "fixture", principal
+        )
         result = self.snapshots.fetch(plan, live, lambda _: None)
         if commit:
             self.store.set_job(plan["job_id"], "succeeded", diagnostic={"source": result})
@@ -253,6 +255,15 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         )
         self.assertFalse(self.evidence()["complete"])
 
+    def test_changed_plan_digest_disables_reclamation(self):
+        first = self.fetch(1)
+        self.store.db.execute("UPDATE plans SET payload='{}'")
+        self.assertFalse(self.evidence()["complete"])
+        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
+            with self.assertRaisesRegex(SourceError, "source_cache_references_incomplete"):
+                self.fetch(2)
+        self.assertTrue(self.payload(first).exists())
+
     def test_evidence_quota_and_disk_preflight_do_not_evict(self):
         first = self.fetch(1)
         with patch("cardputer_mcp.source_payloads.EVIDENCE_SNAPSHOTS", 1):
@@ -266,6 +277,45 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
                 with self.assertRaisesRegex(SourceError, "source_disk_reserve_required"):
                     self.fetch(3)
         self.assertTrue(self.payload(first).exists())
+
+    def test_receipt_byte_headroom_is_bounded_and_reuse_needs_no_new_evidence(self):
+        first = self.fetch(1)
+        usage = self.snapshots.usage("fixture")
+        with patch(
+            "cardputer_mcp.source_payloads.EVIDENCE_BYTES",
+            usage["evidence_bytes"] + 32 * 1048576 - 1,
+        ):
+            with self.assertRaisesRegex(SourceError, "source_cache_evidence_full"):
+                self.fetch(2)
+            reused = self.fetch(1, "reuse-at-evidence-limit")
+        self.assertEqual(reused["source_receipt"], first["source_receipt"])
+        self.assertTrue(self.payload(first).exists())
+
+    def test_byte_pressure_reclaims_only_enough_and_insufficient_bytes_preserve_payload(self):
+        first = self.fill(3)
+        usage = self.snapshots.usage("fixture")
+        maximum = usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 - 1
+        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_bytes=maximum):
+            self.fetch(4)
+        self.assertEqual(sum(not self.payload(item).exists() for item in first), 1)
+        remaining = [item for item in first if self.payload(item).exists()]
+        for index, item in enumerate(remaining):
+            self.add(
+                {
+                    "job_id": f"pin-{index}",
+                    "project_id": "fixture",
+                    "broker_epoch": "epoch",
+                    "source_receipt": item["source_receipt"],
+                }
+            )
+        newest = self.store.job("source-4")["diagnostic"]["source"]
+        payload_bytes = newest["bytes"]
+        usage = self.snapshots.usage("fixture")
+        maximum = usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 - payload_bytes - 1
+        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_bytes=maximum):
+            with self.assertRaisesRegex(SourceError, "source_cache_protected"):
+                self.fetch(5)
+        self.assertTrue(self.payload(newest).exists())
 
     def test_failed_download_leaves_no_pending_and_old_receipt_is_retained(self):
         first = self.fetch(1)
@@ -334,7 +384,9 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         self.assertTrue(self.payload(first).exists())
 
     def test_publication_ledger_failure_publishes_nothing_and_latches_uncertainty(self):
-        with patch.object(self.store, "record_source_publication", side_effect=OSError("synthetic")):
+        with patch.object(
+            self.store, "record_source_publication", side_effect=OSError("synthetic")
+        ):
             with self.assertRaisesRegex(SourceError, "source_cleanup_unconfirmed"):
                 self.fetch(1)
         self.assertTrue(self.snapshots.uncertain)

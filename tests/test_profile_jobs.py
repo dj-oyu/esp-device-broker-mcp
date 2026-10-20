@@ -528,7 +528,9 @@ async def test_source_build_lease_is_idempotent_expiry_blocks_execute_and_queue_
 ):
     from types import SimpleNamespace
 
+    import cardputer_mcp.operator_timeline as timeline_module
     import cardputer_mcp.profile_jobs as module
+    from cardputer_mcp.plan_approval import PlanApprovals
 
     service = registry_service
     register(service, tmp_path)
@@ -537,6 +539,7 @@ async def test_source_build_lease_is_idempotent_expiry_blocks_execute_and_queue_
     receipt = "a" * 64
     clock = SimpleNamespace(now=time.time())
     monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock.now))
+    monkeypatch.setattr(timeline_module, "time", SimpleNamespace(time=lambda: clock.now))
     monkeypatch.setattr(broker.firmware_source, "authorize_receipt", lambda *args: None)
     monkeypatch.setattr(
         broker.firmware_build,
@@ -554,7 +557,16 @@ async def test_source_build_lease_is_idempotent_expiry_blocks_execute_and_queue_
     first = broker.profile_jobs.prepare(request, owner.principal_id, owner.origin.value)
     second = broker.profile_jobs.prepare(request, owner.principal_id, owner.origin.value)
     assert first["plan_hash"] == second["plan_hash"]
+    timeline = timeline_module.OperatorTimeline(broker, PlanApprovals(broker))
+
+    def shown_state():
+        return next(
+            row["state"] for row in timeline.snapshot()["cards"] if row["job_id"] == "leased-source"
+        )
+
+    assert shown_state() == "prepared"
     clock.now = first["plan"]["source_plan_expires_at"] + 1
+    assert shown_state() == "expired"
     with pytest.raises(BrokerError, match="profile_or_principal_no_longer_valid"):
         broker.profile_jobs.execute(
             ExecuteRequest(plan_hash=first["plan_hash"]), owner.principal_id, owner.origin.value
@@ -562,6 +574,7 @@ async def test_source_build_lease_is_idempotent_expiry_blocks_execute_and_queue_
     assert broker._store().job("leased-source") is None
     renewed = broker.profile_jobs.prepare(request, owner.principal_id, owner.origin.value)
     assert renewed["plan_hash"] != first["plan_hash"]
+    assert shown_state() == "prepared"
     broker._store().add_job("leased-source", renewed["plan_hash"])
     clock.now = renewed["plan"]["source_plan_expires_at"] + 1
     assert broker.profile_jobs._binding_live(renewed["plan"])

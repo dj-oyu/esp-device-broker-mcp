@@ -1,5 +1,6 @@
 """Bounded resident-thread retention evidence; never access SQLite from a worker."""
 
+import hashlib
 import json
 import re
 import time
@@ -18,7 +19,11 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
     Unknown/truncated evidence disables all reclamation, including orphan cleanup.
     """
     rows = store.db.execute(
-        "SELECT p.hash,p.payload,j.id,j.state,j.diagnostic,j.created,j.finished "
+        "SELECT p.hash,CASE WHEN length(CAST(p.payload AS BLOB))<=16384 "
+        "THEN p.payload END AS payload,j.id,j.state,"
+        "CASE WHEN length(CAST(j.diagnostic AS BLOB))<=16384 "
+        "THEN j.diagnostic END AS diagnostic,"
+        "j.created,j.finished "
         "FROM plans p LEFT JOIN jobs j ON j.plan_hash=p.hash ORDER BY p.hash LIMIT ?",
         (REFERENCE_LIMIT + 1,),
     ).fetchall()
@@ -46,6 +51,10 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
         try:
             plan = json.loads(row["payload"])
             if not isinstance(plan, dict) or not isinstance(plan.get("job_id"), str):
+                complete = False
+                continue
+            encoded = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+            if hashlib.sha256(encoded).hexdigest() != row["hash"]:
                 complete = False
                 continue
             job_id = plan["job_id"]
@@ -144,8 +153,9 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
                 continue
             if build.get("project_id") == project and build.get("source_receipt") is not None:
                 protect(build["source_receipt"], reason)
-    publications = store.db.execute("SELECT * FROM source_publications LIMIT ?",
-                                    (REFERENCE_LIMIT + 1,)).fetchall()
+    publications = store.db.execute(
+        "SELECT * FROM source_publications LIMIT ?", (REFERENCE_LIMIT + 1,)
+    ).fetchall()
     complete = complete and len(publications) <= REFERENCE_LIMIT
     owned_publications = {}
     for row in publications[:REFERENCE_LIMIT]:
@@ -153,5 +163,10 @@ def retention_evidence(store: Any, project: str, principal: str, epoch: str) -> 
             complete = False
         if row["project_id"] == project and row["principal"] == principal:
             owned_publications[row["receipt"]] = row["job_id"]
-    return {"complete": complete, "sources": sources, "protected": protected, "jobs": jobs,
-            "publications": owned_publications}
+    return {
+        "complete": complete,
+        "sources": sources,
+        "protected": protected,
+        "jobs": jobs,
+        "publications": owned_publications,
+    }
