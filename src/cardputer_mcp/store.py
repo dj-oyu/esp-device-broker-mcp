@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from .console_logs import console_line
 from .derby_fixed import FIXED_PLAN, MAX_BYTES, FixedTrial, parse_collected
+from .job_outcome import review_summary
 
 
 class _ObservedConnection(sqlite3.Connection):
@@ -358,6 +359,7 @@ class Store:
             return None
         result = dict(row)
         result["diagnostic"] = json.loads(row["diagnostic"]) if row["diagnostic"] else None
+        result["review"] = review_summary(row["state"], row["reviewed"])
         return result
 
     def add_job(self, job_id: str, digest: str) -> None:
@@ -428,6 +430,7 @@ class Store:
         state: str,
         code: str,
         trial: FixedTrial,
+        diagnostic: dict[str, Any] | None = None,
     ) -> None:
         """Commit private raw bytes and terminal job state in one transaction."""
         receipt = trial.receipt
@@ -476,7 +479,7 @@ class Store:
                 or plan.get("backend") != "serial"
                 or plan.get("job_id") != job_id
                 or plan.get("fixed_workload") != FIXED_PLAN
-                or plan.get("protocol") != "pocketjs-derby-fixed-v1"
+                or plan.get("protocol") != "pocketjs-derby-fixed-v2"
                 or hashlib.sha256(
                     json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest()
@@ -504,7 +507,7 @@ class Store:
             self.db.execute(
                 """UPDATE jobs SET state=?,result=?,diagnostic=?,finished=CURRENT_TIMESTAMP
                 WHERE id=? AND state='running'""",
-                (state, code, json.dumps({"code": code}), job_id),
+                (state, code, json.dumps(diagnostic or {"code": code}), job_id),
             )
         self._console_state(job_id, state)
 
