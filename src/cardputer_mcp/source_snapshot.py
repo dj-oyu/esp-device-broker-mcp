@@ -86,7 +86,9 @@ LIMITS = {
     "submodule_count": 16,
 }
 
-CACHE_SCAN_SECONDS = 5.0
+# Allow finite headroom for cold metadata I/O across the 16-snapshot cache.
+# This remains a cooperative per-traversal deadline, separate from fetch's 180s.
+CACHE_SCAN_SECONDS = 30.0
 CACHE_SCAN_ENTRIES = 1_000_000
 EVIDENCE_SNAPSHOTS = 4096
 EVIDENCE_BYTES = 128 * 1048576
