@@ -5,18 +5,18 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 LABELS = {
-    "prepared": "[ ] 準備済・未実行",
-    "queued": "[..] 実行待ち",
-    "running": "[>] 実行中",
-    "succeeded": "[OK] 成功",
-    "failed": "[X] 失敗",
-    "cancelled": "[-] 取消済",
-    "expired": "[-] 準備期限切れ",
-    "unknown": "[?] 結果不明",
-    "approval_required": "[..] 旧承認待ち",
-    "awaiting_approval": "[..] 旧承認待ち",
-    "approved": "[ ] 旧承認済",
-    "ready": "[ ] 旧実行準備済",
+    "prepared": "⏸ Prepared",
+    "queued": "⌛ Queued",
+    "running": "⏳ Running",
+    "succeeded": "✅ Succeeded",
+    "failed": "❌ Failed",
+    "cancelled": "⏹ Cancelled",
+    "expired": "⌛ Expired",
+    "unknown": "❔ Unknown",
+    "approval_required": "⏸ Legacy pending",
+    "awaiting_approval": "⏸ Legacy pending",
+    "approved": "☑ Legacy approved",
+    "ready": "▶ Legacy ready",
 }
 
 
@@ -43,30 +43,30 @@ class JobPresentation:
 
     @property
     def review_label(self) -> str:
-        labels = {"pending": "[未確認]", "recorded": "[確認済み]", "not_applicable": "-"}
+        labels = {"pending": "Not reviewed", "recorded": "Reviewed", "not_applicable": "-"}
         return labels[self.acknowledgement]
 
     @property
     def lifecycle_label(self) -> str:
         return {
-            "prepared": "準備済・未実行",
-            "queued": "実行待ち",
-            "running": "実行中",
-            "expired": "期限切れ・未実行",
-            "legacy_pending": "旧形式・未実行",
-            "terminal_record": "終了記録",
-            "unknown": "記録不明",
+            "prepared": "Prepared, not run",
+            "queued": "Queued",
+            "running": "Running",
+            "expired": "Expired, not run",
+            "legacy_pending": "Legacy, not run",
+            "terminal_record": "Finished record",
+            "unknown": "Unknown record",
         }[self.lifecycle]
 
     @property
     def outcome_label(self) -> str:
         return {
-            "not_started": "未実行",
-            "in_progress": "未確定",
-            "succeeded": "成功",
-            "failed": "失敗",
-            "cancelled": "取消済",
-            "unknown": "結果不明",
+            "not_started": "Not started",
+            "in_progress": "Not final",
+            "succeeded": "Succeeded",
+            "failed": "Failed",
+            "cancelled": "Cancelled",
+            "unknown": "Unknown",
         }[self.outcome]
 
 
@@ -133,5 +133,5 @@ def configure_job_status_tags(tree: Any) -> None:
         unknown = {"background": "#FFF0CC", "foreground": "#202020"}
     tree.tag_configure("job_failed", **failed)
     tree.tag_configure("job_unknown", **unknown)
-    # Leave native selected/focus colors intact. ASCII shape badges and Japanese
-    # text stay visible when the selection theme overrides the row background.
+    # Leave native selected/focus colors intact. Emoji and English
+    # labels stay visible when the selection theme overrides the row background.

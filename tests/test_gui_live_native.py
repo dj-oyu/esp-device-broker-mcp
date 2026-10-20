@@ -67,7 +67,7 @@ def test_native_job_selection_delta_log_navigation_and_close(monkeypatch):
         window.job_tree.focus("a")
         window._select()
         assert window.runner.reads[-1][1] == "a"
-        assert window.detail_heading.get() == "a | [>] 実行中"
+        assert window.detail_heading.get() == "a | ⏳ Running"
         window.runner.events.extend(
             [
                 TransportEvent(
@@ -348,7 +348,7 @@ def test_native_job_heading_ascii_controls_and_nonlog_empty_loading_states(monke
         window.job_tree.selection_set("job_image_1")
         window._select()
         root.update()
-        assert window.detail_heading.get() == "job_image_1 | [OK] 成功"
+        assert window.detail_heading.get() == "job_image_1 | ✅ Succeeded"
         assert window.detail_heading_label.cget("style") == "Section.TLabel"
         assert window.detail_text.cget("font") == "TkTextFont"
         body = window.detail_text.get("1.0", "end-1c")
@@ -367,7 +367,7 @@ def test_native_job_heading_ascii_controls_and_nonlog_empty_loading_states(monke
         window._select()
         assert window.runner.reads[-1][1] == "build"
         assert window.log_status.get() == "Reading permitted output..."
-        assert window.detail_heading.get() == "build | [>] 実行中"
+        assert window.detail_heading.get() == "build | ⏳ Running"
         window.runner.events.append(
             TransportEvent(
                 "logs",
@@ -454,14 +454,26 @@ def test_native_status_backgrounds_and_review_labels_preserve_selection(monkeypa
             window._select()
             window._render()
             values = window.job_tree.item(job, "values")
-            assert values[1].startswith("[?]" if job == "uncertain" else "[X]")
+            assert values[1] == ("❔ Unknown" if job == "uncertain" else "❌ Failed")
+            from tkinter import font, ttk
+
+            status_font = font.nametofont("TkDefaultFont", root=root)
+            assert int(window.job_tree.column("state", "minwidth")) >= (
+                status_font.measure(values[1]) + 16
+            )
+            assert int(window.job_tree.column("confirmation", "minwidth")) >= (
+                status_font.measure(values[2]) + 16
+            )
+            assert int(ttk.Style(root).lookup("Treeview", "rowheight")) >= (
+                status_font.metrics("linespace")
+            )
             assert window.job_tree.selection() == (job,)
             assert window.job_tree.focus() == job
         window.job_tree.selection_set("unreviewed")
         window._select()
-        assert "理由：起動失敗：メモリ不足の記録" in window.detail_heading.get()
-        assert "未確認" in window.job_tree.item("unreviewed", "values")[2]
-        assert "確認済み" in window.job_tree.item("reviewed", "values")[2]
+        assert "Reason: App load failed: out of memory observed" in window.detail_heading.get()
+        assert "Not reviewed" in window.job_tree.item("unreviewed", "values")[2]
+        assert "Reviewed" in window.job_tree.item("reviewed", "values")[2]
         for job in ("unreviewed", "reviewed"):
             assert tuple(map(str, window.job_tree.item(job, "tags"))) == ("job_failed",)
         assert tuple(map(str, window.job_tree.item("uncertain", "tags"))) == ("job_unknown",)
