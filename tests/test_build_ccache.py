@@ -294,7 +294,7 @@ class RealCompilerCacheTests(unittest.TestCase):
             project = root / "project"
             project.mkdir()
             (project / "CMakeLists.txt").write_text(
-                'cmake_minimum_required(VERSION 3.22)\nproject(cache_flags C)\n'
+                "cmake_minimum_required(VERSION 3.22)\nproject(cache_flags C)\n"
                 'file(WRITE "${CMAKE_BINARY_DIR}/flags.txt" '
                 '"${CMAKE_C_FLAGS}\\n${CMAKE_CXX_FLAGS}")\n'
             )
@@ -302,7 +302,7 @@ class RealCompilerCacheTests(unittest.TestCase):
             # initialization considers ENV{CFLAGS}/ENV{CXXFLAGS}. No SDK build.
             toolchain = project / "early-flags.cmake"
             toolchain.write_text(
-                'foreach(lang C CXX)\n'
+                "foreach(lang C CXX)\n"
                 '  set(CMAKE_${lang}_FLAGS "${CMAKE_${lang}_FLAGS}" '
                 'CACHE STRING "early toolchain flags" FORCE)\nendforeach()\n'
             )
