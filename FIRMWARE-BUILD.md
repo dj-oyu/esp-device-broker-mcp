@@ -402,114 +402,72 @@ unsuccessful jobs, another principal, concurrent-reader limits, event-loop progr
 and grant/registration/job invalidation during hash IO. Existing durable path/link
 and hash checks are reused; no native build, USB or production DB is involved.
 
-## Fixed J1 detail ON/OFF comparison
+## Fixed diagnostic recipes and ON/OFF comparison
 
 `prepare_test.request.derby_detail_mode` accepts only `ON` or `OFF` for a
-`firmware_build` with a registered project's `source_receipt`. This limited
-implementation accepts the public `dj-oyu/cardputer-adv-pocketjs` source commit
-`b561aea1c0798feb28055a00d36681fae81ac58a`. It selects only the fixed
-`POCKET_DERBY_DETAIL_MEASURE` boolean; no caller-supplied CMake options or commands
-are accepted. Telemetry, measurement and the fixed workload remain enabled in
-that source revision.
+`firmware_build` with a registered project's owned `source_receipt`. An explicit
+single detail selector chooses the built-in `j1-fixed-v1` recipe. Supplying both
+`derby_detail_mode` and `derby_dma_mode` chooses `derby-dma-diagnostic-v1`.
+The latter requires both typed axes; it does not infer missing values or fall
+back after invalid evidence. No arbitrary CMake arguments or commands are accepted.
 
-The selected mode is frozen into the plan, fingerprint, isolated build directory,
-build-local sdkconfig and durable manifest. Both modes use the same source
-receipt. A stale cache in the other mode's directory cannot select the output.
-The mandatory source proof must be present and bounded. The broker checks its
-mode and artifact hashes against the actual BIN/ELF, the linked detail-mode and
-hardware-seed symbols, the fixed owner's completion contract and the IDF 6.0.1
-BIN/ELF pairing. Missing or inconsistent proof fails the build. The manifest
-retains `diagnostic_modeproof` with the JSON proof and its canonical SHA256;
-`read_build_logs` can return this verified receipt after log expiry or restart.
-Changing or removing the retained proof or image makes the receipt unavailable.
-Synthetic proof is not a physical test result.
+There is no diagnostic source-commit admission catalogue. Compatible new commits
+use the same recipe without updating the broker. Full source/tree/submodule and
+registered project/profile/tool identities remain bound to the existing owned
+source receipt and build plan. A source SHA identifies bytes, not firmware quality
+or execution authority. Ordinary builds without diagnostic selectors remain
+independent of optional diagnostics and CI status.
 
-For a verified comparison trial, pass a typed `flash_job_id` to
-`prepare_test` with `test="derby_fixed_workload"`. It must identify this
-principal's successful, verified flash that remains the registered device's
-current firmware receipt. The broker reads retained firmware bytes and manifest,
-checks the build/source/modeproof chain, and freezes the expected ELF hash and
-receipt identities into the collector plan. A hash argument, an old configuration
-hash, a failed flash or another device/principal cannot supply that identity.
-The existing lease, recovery, explicit approval and v2 END/EXIT/STOP/HOME/quiet/
-close checks continue to apply. Legacy trials without `flash_job_id` retain their
-unverified provenance and do not qualify a receipt-bound ON/OFF comparison.
+Both requested axes, when present, are frozen into the plan, fingerprint, isolated
+build directory, build-local sdkconfig and durable manifest. Diagnostic recipe
+tool requirements apply to explicitly selected diagnostic builds. Existing
+registered tool/environment restrictions still apply to ordinary builds.
 
-Existing registered project/device configuration is reused; this change does not
-add a variant registration or alter SDK, authentication or operational settings.
-Before actual use, a separately authorized operator must deploy the reviewed
-broker, refresh client tool metadata, confirm the existing allowlisted project
-and device registration, then explicitly fetch/build/flash and run each mode's
-trial. Deployment, configuration edits, hardware writes and merging are separate
-operations; none are performed by these synthetic tests.
+The recipe adapter checks mandatory bounded producer proof against actual BIN/ELF
+bytes, mode and hardware-seed symbols, fixed completion contract and IDF 6.0.1
+BIN/ELF pairing. DMA evidence additionally binds actual cache settings and native
+submit/finish functions. An enabled DMA image cannot be relabelled using nested
+J1-only proof. Missing or inconsistent evidence fails validation; a contract ID
+alone cannot certify compatibility or quality.
 
-Diagnostic admission is centralized in a closed source registry containing only
-that J1 commit. New detail-build plans, fingerprints, manifests and collector
-bindings include the selected entry's `diagnostic_entry_sha256`. It hashes that
-entry's exact source/contract policy, independently of unrelated registry entries;
-source byte/tree/submodule identities remain verified by the existing source
-receipt and build/flash provenance chain. An unrelated entry cannot change an
-existing entry's digest. The production registry adds no source heads or DMA
-selection, and has no configuration or MCP editing interface.
+The existing `diagnostic_entry_sha256` wire field remains an identity digest of
+source plus selected recipe, using its historical descriptor encoding. It is not
+an entry in an approval list. Saved hashes/plans/receipts are not rewritten.
+Only the exact original J1 repository/commit/contract without a DMA axis may omit
+this field in legacy records. Present wrong/null digests are rejected. Unknown
+contracts are unsupported, known-contract evidence can be incompatible, and an
+unavailable requested feature is not inferred from a source commit.
 
-Successful J1 manifests and collector history from before this field existed
-remain readable through the original proof and receipt checks. Only the original
-J1 entry may omit the new digest. A present wrong/null digest is rejected.
-Previously prepared detail-build plans require preparation again because their
-fingerprint now includes the entry digest. Adding a new runtime source head or
-changing a proof contract remains a separate reviewed acceptance change.
+Successful manifests retain proof and canonical hashes. `read_build_logs` can
+revalidate retained exact bytes after log expiry/restart, independently of missing
+RAM output. Changed or missing artifacts make evidence unavailable; expiry/gap
+still describe lost logs. Artifact verification does not mean CI or hardware pass.
+Raw CMake cache remains private and bounded to 128 KiB; export v1 publishes only
+bounded cache hash/size and commits the projection through the immutable flash
+plan. Existing original-manifest, export, owner and success-plan checks remain.
 
-### Isolated DMA consumer contract
+For a receipt-bound trial, `prepare_test(test="derby_fixed_workload", flash_job_id=... )`
+uses the principal's successful verified flash that remains the registered device's
+current firmware receipt. Retained build/source/proof/artifact identities select
+the comparison, not a caller hash or configured expected hash. Existing leases,
+recovery, explicit execution, current authority, END/EXIT/STOP/HOME/quiet and
+confirmed-close requirements remain. Legacy unbound trials do not become verified
+receipt-bound comparisons.
 
-The consumer also understands the separate `derby-dma-diagnostic-v1` contract.
-This support does **not** add an admitted source: the production diagnostic registry
-still contains only the original J1 head. `derby_dma_mode` is a separate typed
-`ON`/`OFF` selector; it is rejected for that J1 entry. A future DMA-contract entry
-requires both `derby_detail_mode` and `derby_dma_mode` explicitly, with no defaults,
-null values, arbitrary CMake arguments or fallback to the J1 detail-only proof.
+Firmware CI owns quality/regression and diagnostic-contract validation. Its
+source/configuration/run/job/attempt and exact artifact identities can accompany
+retained evidence. Source-only CI success is not proof that a different local
+rebuild's bytes passed artifact tests. Runtime execution requires no live CI API
+or new approval/attestation service. CI-unrun local development remains possible
+within registered capabilities; quality evidence is reported as unverified when
+not established. No CI/host/mock result substitutes for physical acceptance.
 
-Both axes and the per-entry digest bind preparation, fingerprint/build slot,
-SDKCONFIG location, exact command, successful manifest, flash receipt and collector.
-The separate producer proof must match both requested axes, actual cache settings,
-linked native submit/finish functions, nested detail proof and actual BIN/ELF bytes.
-Missing, duplicate, modified or mismatched evidence fails the build. Raw cache
-bytes are bounded to 128 KiB and retained privately in durable evidence and flash
-snapshots; public build-log manifests return only their hash/size summary. This
-keeps cached paths or credentials out of MCP responses. Broker manifests have a
-1 MiB read bound; the smaller identity receipts keep their 64 KiB bound.
-
-Prospective admission requires a separate reviewed registry change and local
-registration authorization. The exact proposed entry (currently test-only) is:
-
-```python
-DiagnosticEntry(
-    repository="dj-oyu/cardputer-adv-pocketjs",
-    commit="ac7cce7d20eb34fdd54659e6678d672d23e5d2d1",
-    contract="derby-dma-diagnostic-v1",
-    modes=("ON", "OFF"),
-    dma_modes=("ON", "OFF"),
-)
-```
-
-The proposed entry digest is `e40c3f8972225ae25b3a4765e54650a7d2876bfdd4690989ca4383e0cf6ed5d8`.
-The FW source tree is `f14367d2c73e5531823b209117a470f8df64db49`.
-[Producer PR33](https://github.com/dj-oyu/cardputer-adv-pocketjs/pull/33) has four
-successful workflows / twelve jobs at that exact head:
-[fixed](https://github.com/dj-oyu/cardputer-adv-pocketjs/actions/runs/39393775102),
-[DMA host and four target combinations](https://github.com/dj-oyu/cardputer-adv-pocketjs/actions/runs/39393775090),
-[detail](https://github.com/dj-oyu/cardputer-adv-pocketjs/actions/runs/39393775135),
-and [home](https://github.com/dj-oyu/cardputer-adv-pocketjs/actions/runs/39393775132).
-The full capture-contract evidence belongs to the separate integration PR32;
-PR33's path-filtered checks do not repeat that workflow. Target logs contain typed
-proof receipts, but they do not replace an independently retained source receipt
-or downloaded-image verification. The existing source archive/tree/submodule byte
-checks remain mandatory. No archive source hash is guessed from a branch or tree.
-
-Before admission or device use, review the exact entry digest and consumer CI,
-source fetch/build receipts and four actual typed proofs; authorize registry/local
-registration and deployment separately. Physical B0/B1/D1 comparisons and display,
-recovery and normal-exit acceptance remain separate hardware gates. This consumer
-change performs none of those operations.
+Historical synthetic DMA fixtures use commit
+`ac7cce7d20eb34fdd54659e6678d672d23e5d2d1` and descriptor digest
+`e40c3f8972225ae25b3a4765e54650a7d2876bfdd4690989ca4383e0cf6ed5d8`.
+Their bytes and hashes remain compatible; they no longer require a test patch
+or a production admission entry. Local registration, deployment and device use
+remain separate explicit operations. This change performs none of them.
 
 
 ### Source cache scan time budget

@@ -122,7 +122,7 @@ def _verify_modeproof_bytes(
 ) -> None:
     """Shared linked-detail checks; only the matching enclosing verifier selects a contract."""
     try:
-        entry = diagnostic_entry(provenance)
+        entry = diagnostic_entry(provenance, contract=contract)
         if (
             entry.contract != contract
             or set(envelope) != {"requested_mode", "proof", "proof_sha256"}
@@ -177,6 +177,13 @@ def _verify_modeproof_bytes(
             ):
                 raise ValueError(_ERROR)
         image, elf = files[_BIN], files[_ELF]
+        if contract == "j1-fixed-v1":
+            # Recipe compatibility comes from the image, never a source allowlist.
+            # Do not strip an enabled DMA image down to nested J1 evidence.
+            from .diagnostic_dma_modeproof import _dma_functions
+
+            if _dma_functions(elf):
+                raise ValueError(_ERROR)
         if (
             _symbol_u32(elf, "df_detail_enabled") != int(envelope["requested_mode"] == "ON")
             or _symbol_u32(elf, "pocket_derby_comparison_hw_seed") != 0x2545F491

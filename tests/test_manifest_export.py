@@ -6,9 +6,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
-from test_dma_modeproof import DMA_ENTRY, dma_fixture, resign
+from test_dma_modeproof import dma_fixture, resign
 
 from cardputer_mcp.build_artifacts import manifest_digest
 from cardputer_mcp.diagnostic_dma_modeproof import (
@@ -33,18 +32,17 @@ class ManifestExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             source, artifacts, files = dma_fixture(root, detail, dma)
-            with patch("cardputer_mcp.diagnostic_registry._ENTRIES", (DMA_ENTRY,)):
-                envelope = collect_dma_modeproof(root, detail, dma, source, artifacts)
-                envelope["cmake_cache"] += (
-                    "PRIVATE_PATH:PATH=C:/SYNTHETIC_PRIVATE\nTOKEN:STRING=SYNTHETIC_SECRET\n"
-                )
-                cache_hash = hashlib.sha256(envelope["cmake_cache"].encode()).hexdigest()
-                proof = envelope["proof"]
-                proof["dma_overlap"]["cmake_cache_sha256"] = cache_hash
-                for key in ("build_mode", "build_measure"):
-                    proof["diagnostic"][key]["cmake_cache_sha256"] = cache_hash
-                resign(envelope)
-                verify_dma_modeproof_bytes(envelope, source, artifacts, files)
+            envelope = collect_dma_modeproof(root, detail, dma, source, artifacts)
+            envelope["cmake_cache"] += (
+                "PRIVATE_PATH:PATH=C:/SYNTHETIC_PRIVATE\nTOKEN:STRING=SYNTHETIC_SECRET\n"
+            )
+            cache_hash = hashlib.sha256(envelope["cmake_cache"].encode()).hexdigest()
+            proof = envelope["proof"]
+            proof["dma_overlap"]["cmake_cache_sha256"] = cache_hash
+            for key in ("build_mode", "build_measure"):
+                proof["diagnostic"][key]["cmake_cache_sha256"] = cache_hash
+            resign(envelope)
+            verify_dma_modeproof_bytes(envelope, source, artifacts, files)
             return {
                 "schema_version": 1,
                 "build_job_id": "synthetic-build",

@@ -403,10 +403,9 @@ class FirmwareBuild:
         if not (project.project_dir / "CMakeLists.txt").is_file():
             raise ValueError("idf_project_required")
         registered_tools = self._registered_tools(project)
-        if (
-            provenance is not None
-            and provenance["repository"].casefold() == "dj-oyu/cardputer-adv-pocketjs"
-        ):
+        # Recipe tool requirements apply only to an explicit diagnostic build.
+        # Ordinary registered builds do not acquire diagnostic admission rules.
+        if entry is not None:
             node = registered_tools.get("node")
             if node is None or int(node.version.split(".")[0][1:]) < 16:
                 raise ValueError("registered_node_16_required_for_source_project")

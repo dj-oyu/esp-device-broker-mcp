@@ -97,7 +97,7 @@ def verify_dma_modeproof_bytes(
 ) -> None:
     """Verify retained exact image bytes and cache evidence after build-cache eviction."""
     try:
-        entry = diagnostic_entry(provenance)
+        entry = diagnostic_entry(provenance, contract=CONTRACT)
         if (
             entry.contract != CONTRACT
             or set(envelope)

@@ -1,4 +1,4 @@
-"""Two-axis receipt-chain isolation; producer heads are admitted only by test patches."""
+"""Two-axis receipt-chain isolation; all compatible commits use actual image bindings."""
 
 import copy
 import hashlib
@@ -33,8 +33,7 @@ def rebind(chain):
 
 
 @pytest.fixture
-def make_dma_chain(chain, tmp_path, monkeypatch):
-    monkeypatch.setattr(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY))
+def make_dma_chain(chain, tmp_path):
 
     def make(detail="OFF", dma="ON"):
         provenance, artifacts, files = dma_image_fixture(tmp_path, detail, dma)

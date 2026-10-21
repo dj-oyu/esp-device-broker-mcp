@@ -36,21 +36,29 @@ final checks and uncertain-cleanup ownership barriers remain in place.
 | Runtime safety | I6 recovery, I7 bounded I/O | Existing flash/recovery and serial implementation unchanged |
 | Evidence scope | I9 quality vs identity, I12 no mock-to-hardware claim | This refactor does not certify firmware or physical execution |
 
-## Following stages
+## Contract selection and historical compatibility (M2/M3)
 
-M1 is structural separation only. M2 must remove exact-commit membership from
-new diagnostic selection and use supported recipes plus actual artifact/config
-bindings. Merely hiding a registry behind a port does not complete that work.
-M3 isolates historical descriptor decoding without rewriting old plans, hashes,
-receipts or recovery references.
+New diagnostic selection uses the explicit supported recipe and actual retained
+image/configuration proof, not a verified-commit catalogue. Ordinary builds with
+both axes omitted do not select a diagnostic recipe. Unknown contracts, invalid
+known-contract evidence, and missing requested features are distinct concerns;
+none certifies quality or expands the registered project/device authority.
 
-The final acceptance is that compatible firmware commits work without broker
-updates; ordinary local builds remain possible without CI; and contract changes
-cannot bypass authority, target, lease or recovery checks. CI evidence can be
-retained with exact artifacts. Execution must not require a live CI API, a new
-approval mechanism, attestation service, or dynamic code-loading framework.
+`diagnostic_contracts.py` owns the two built-in recipe descriptors and typed
+selection. The compatibility facade keeps existing APIs. `diagnostic_legacy.py`
+retains the historical source/recipe digest encoding and exact omitted-J1
+exception for reading old records. There is no `_ENTRIES` membership lookup.
+The existing wire digest remains an identity binding, not source admission.
+Tests exercise compatible sibling commits, actual image-mode mismatch, legacy
+hashes, durable restart/export and private-owner boundaries without test-only
+admission patches.
+
+Firmware CI owns quality. Optional retained CI evidence is associated with its
+actual source/configuration and artifact bytes, without a live CI call during
+execution. Local development is not newly gated on CI. Inner fixed-diagnostic
+rules do not depend on either this recipe adapter or its legacy decoder.
 
 Migrate one flow at a time. Existing wire APIs and records remain compatible.
 Rollback means selecting the previous code path, never replaying a physical
 operation, rewriting durable history, or implicitly restoring firmware. No
-deployment or hardware behavior is established by synthetic tests.
+new device operations, permissions, deployment or hardware acceptance are implied.

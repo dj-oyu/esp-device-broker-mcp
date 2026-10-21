@@ -1,4 +1,4 @@
-"""Synthetic two-axis linked fixtures; production allowlist is never expanded."""
+"""Synthetic two-axis linked fixtures; no source-commit admission patches."""
 
 import copy
 import hashlib
@@ -7,7 +7,6 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from test_diagnostic_modeproof import image_fixture
 
@@ -121,11 +120,6 @@ dma_image_fixture = dma_fixture
 
 
 class DMAModeproofTests(unittest.TestCase):
-    def setUp(self):
-        self.registry = patch("cardputer_mcp.diagnostic_registry._ENTRIES", (DMA_ENTRY,))
-        self.registry.start()
-        self.addCleanup(self.registry.stop)
-
     def test_four_axes_and_retained_cache_evidence(self):
         for detail in ("OFF", "ON"):
             for dma in ("OFF", "ON"):
@@ -207,7 +201,7 @@ class DMAModeproofTests(unittest.TestCase):
                 verify_dma_modeproof_bytes(forged, source, artifacts, files)
             with self.assertRaises(ValueError):
                 verify_dma_modeproof_bytes(
-                    envelope, {**source, "commit": "e" * 40}, artifacts, files
+                    envelope, {**source, "commit": "main"}, artifacts, files
                 )
             wrong_files = {
                 **files,

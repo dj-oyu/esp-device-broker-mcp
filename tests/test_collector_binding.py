@@ -335,7 +335,7 @@ async def test_receipt_selected_hash_admits_and_completes_real_broker_trial(
         await resident.close()
 
 
-def test_legacy_receipt_entry_binding_survives_unrelated_policy_addition(chain, monkeypatch):
+def test_legacy_receipt_entry_binding_is_stable_without_admission_catalogue(chain):
     import cardputer_mcp.diagnostic_registry as registry
 
     original = prepare_collector(chain.resident, "public-flash", "owner")
@@ -347,16 +347,47 @@ def test_legacy_receipt_entry_binding_survives_unrelated_policy_addition(chain, 
     legacy["collector_binding"].pop("diagnostic_entry_sha256")
     validate_collector_schema(legacy)
     assert collector_live(chain.resident, legacy, "owner")
-    monkeypatch.setattr(
-        registry,
-        "_ENTRIES",
-        (*registry._ENTRIES, registry.DiagnosticEntry("fixture/project", "f" * 40)),
-    )
     assert prepare_collector(chain.resident, "public-flash", "owner") == original
     assert collector_live(chain.resident, {"test": "derby_fixed_workload", **original}, "owner")
     changed = copy.deepcopy(original)
     changed["collector_binding"]["diagnostic_entry_sha256"] = "e" * 64
     assert not collector_live(chain.resident, {"test": "derby_fixed_workload", **changed}, "owner")
+
+
+@pytest.mark.parametrize("commit", ["f" * 40, "7" * 40])
+def test_compatible_new_commit_uses_owned_chain_without_broker_registration(chain, commit):
+    from cardputer_mcp.diagnostic_registry import diagnostic_entry
+
+    source = {**chain.build["source_provenance"], "commit": commit}
+    entry = diagnostic_entry(source)
+    for record in (chain.build, chain.manifest):
+        record["source_provenance"] = source
+        record["diagnostic_entry_sha256"] = entry.sha256
+    build_hash = digest_plan(chain.build)
+    chain.jobs["public-build"]["plan_hash"] = build_hash
+    chain.plans[build_hash] = chain.build
+    chain.manifest["build_plan_hash"] = build_hash
+    chain.flash["manifest_sha256"] = manifest_digest(chain.manifest)
+    flash_hash = digest_plan(chain.flash)
+    chain.jobs["public-flash"]["plan_hash"] = flash_hash
+    chain.plans[flash_hash] = chain.flash
+    prepared = prepare_collector(chain.resident, "public-flash", "owner")
+    assert prepared["collector_binding"]["source_commit"] == commit
+    assert prepared["collector_binding"]["diagnostic_entry_sha256"] == entry.sha256
+    plan = {"test": "derby_fixed_workload", **prepared}
+    validate_collector_schema(plan)
+    assert collector_live(chain.resident, plan, "owner")
+    assert not collector_live(chain.resident, plan, "peer")
+    plan["collector_binding"]["source_commit"] = "8" * 40
+    assert not collector_live(chain.resident, plan, "owner")
+
+
+def test_legacy_missing_digest_cannot_acquire_a_dma_axis(chain):
+    prepared = prepare_collector(chain.resident, "public-flash", "owner")
+    prepared["collector_binding"].pop("diagnostic_entry_sha256")
+    prepared["collector_binding"]["derby_dma_mode"] = "ON"
+    with pytest.raises(ValueError, match="diagnostic_entry_binding_required"):
+        validate_collector_schema({"test": "derby_fixed_workload", **prepared})
 
 
 @pytest.mark.parametrize("corrupt", [False, True])
@@ -397,8 +428,12 @@ def test_collector_history_rejects_invalid_entry_evidence(chain, damage):
         plan["collector_binding"]["diagnostic_entry_sha256"] = (
             None if damage == "null_digest" else "e" * 64
         )
-    with pytest.raises(ValueError):
-        validate_collector_schema(plan)
+    if damage == "wrong_digest":
+        validate_collector_schema(plan)  # Syntactic shape, not a trusted source lookup.
+    else:
+        with pytest.raises(ValueError):
+            validate_collector_schema(plan)
+    assert not collector_live(chain.resident, plan, "owner")
 
 
 @pytest.mark.parametrize("dma_axis", [None, "ON", "OFF", "wrong"])
@@ -408,8 +443,11 @@ def test_j1_collector_schema_rejects_present_dma_axis(chain, dma_axis):
         **prepare_collector(chain.resident, "public-flash", "owner"),
     }
     plan["collector_binding"]["derby_dma_mode"] = dma_axis
-    with pytest.raises(ValueError):
-        validate_collector_schema(plan)
+    if dma_axis in ("ON", "OFF"):
+        validate_collector_schema(plan)  # Stored source/recipe semantics checked by live guard.
+    else:
+        with pytest.raises(ValueError):
+            validate_collector_schema(plan)
     assert not collector_live(chain.resident, plan, "owner")
 
 

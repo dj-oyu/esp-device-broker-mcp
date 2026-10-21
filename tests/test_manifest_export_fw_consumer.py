@@ -9,12 +9,10 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import test_build_artifact_persistence as persistence
 from test_dma_modeproof import DMA_ENTRY, dma_fixture
 
-import cardputer_mcp.diagnostic_registry as registry
 from cardputer_mcp.build_artifacts import manifest_digest
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.diagnostic_dma_modeproof import collect_dma_modeproof
@@ -126,7 +124,6 @@ class FixedFirmwareConsumerTests(unittest.TestCase):
             for dma in ("OFF", "ON"):
                 with (
                     self.subTest(detail=detail, dma=dma),
-                    patch.object(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY)),
                 ):
                     case = persistence.DurableBuildArtifactTests()
                     case.setUp()
