@@ -1,4 +1,4 @@
-"""Two-axis receipt-chain isolation; producer heads are admitted only by test patches."""
+"""Two-axis receipt-chain isolation; all compatible commits use actual image bindings."""
 
 import copy
 import hashlib
@@ -33,8 +33,7 @@ def rebind(chain):
 
 
 @pytest.fixture
-def make_dma_chain(chain, tmp_path, monkeypatch):
-    monkeypatch.setattr(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY))
+def make_dma_chain(chain, tmp_path):
 
     def make(detail="OFF", dma="ON"):
         provenance, artifacts, files = dma_image_fixture(tmp_path, detail, dma)
@@ -144,9 +143,12 @@ def test_collector_dma_axis_has_no_legacy_default(make_dma_chain, damage):
             "wrong": "automatic",
             "opposite": "OFF",
         }[damage]
-    if damage != "opposite":
+    if damage in {"null", "wrong"}:
         with pytest.raises(ValueError):
             validate_collector_schema(plan)
+    else:
+        # Shape alone cannot establish which recipe the stored build requested.
+        validate_collector_schema(plan)
     assert not collector_live(chain.resident, plan, "owner")
 
 
@@ -164,8 +166,11 @@ def test_new_contract_entry_digest_is_required_at_every_boundary(make_dma_chain,
     else:
         target["diagnostic_entry_sha256"] = None if damage == "null" else "e" * 64
     if record == "collector":
-        with pytest.raises(ValueError):
+        if damage == "different":
             validate_collector_schema(plan)
+        else:
+            with pytest.raises(ValueError):
+                validate_collector_schema(plan)
         assert not collector_live(chain.resident, plan, "owner")
     else:
         rebind(chain)

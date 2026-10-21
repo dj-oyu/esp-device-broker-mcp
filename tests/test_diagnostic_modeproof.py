@@ -139,7 +139,7 @@ class DiagnosticModeproofTests(unittest.TestCase):
             root = Path(directory)
             provenance, artifacts, files = image_fixture(root, "ON")
             envelope = collect_modeproof(root, "ON", provenance, artifacts)
-            other_source = {**provenance, "commit": "0" * 40}
+            other_source = {**provenance, "commit": "main"}
             with self.assertRaises(ValueError):
                 verify_modeproof_bytes(envelope, other_source, artifacts, files)
             with self.assertRaises(ValueError):

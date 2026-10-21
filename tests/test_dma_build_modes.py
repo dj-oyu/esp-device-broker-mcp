@@ -1,4 +1,4 @@
-"""Two-axis preparation/durable tests use a test-only registry entry and no SDK."""
+"""Explicit recipe selection and durable identity, without source admission patches."""
 
 import copy
 import hashlib
@@ -55,7 +55,6 @@ def test_four_plans_bind_both_axes_and_isolate_cache_sdkconfig(tmp_path):
     builder, project, source, node = build_fixture(tmp_path)
     plans, directories = [], []
     with (
-        patch.object(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY)),
         patch.object(builder, "_project", return_value=(project, source)),
         patch.object(builder, "_registered_tools", return_value={"node": node}),
     ):
@@ -84,23 +83,21 @@ def test_four_plans_bind_both_axes_and_isolate_cache_sdkconfig(tmp_path):
                 plans.append(plan)
                 directories.append(directory)
         assert len({p["fingerprint"] for p in plans}) == len(set(directories)) == 4
-        unrelated = registry.DiagnosticEntry("fixture/other", "f" * 40)
-        with patch.object(registry, "_ENTRIES", (*registry._ENTRIES, unrelated)):
-            assert builder.prepare("fixture", "owner", "a" * 64, "ON", "ON") == plans[0]
-        for detail, dma in ((None, None), ("ON", None), (None, "OFF"), (True, "OFF")):
+        assert builder.prepare("fixture", "owner", "a" * 64, "ON", "ON") == plans[0]
+        ordinary = builder.prepare("fixture", "owner", "a" * 64)
+        assert "derby_detail_mode" not in ordinary
+        assert "diagnostic_entry_sha256" not in ordinary
+        j1 = builder.prepare("fixture", "owner", "a" * 64, "ON")
+        assert "derby_dma_mode" not in j1
+        for detail, dma in ((None, "OFF"), (True, "OFF")):
             with pytest.raises(ValueError):
                 builder.prepare("fixture", "owner", "a" * 64, detail, dma)
-    # Neither the new source nor DMA on the original admitted J1 is enabled.
-    assert registry._ENTRIES == (registry._J1_ENTRY,)
-    with (
-        patch.object(builder, "_project", return_value=(project, source)),
-        patch.object(builder, "_registered_tools", return_value={"node": node}),
-    ):
-        with pytest.raises(ValueError):
-            builder.prepare("fixture", "owner", "a" * 64, "ON", "OFF")
-        source["commit"] = registry.J1_COMMIT
-        with pytest.raises(ValueError):
-            builder.prepare("fixture", "owner", "a" * 64, "ON", "OFF")
+        # Same contract, another exact source: no broker/registry update.
+        source["commit"] = "f" * 40
+        sibling = builder.prepare("fixture", "owner", "a" * 64, "ON", "OFF")
+        expected = registry.diagnostic_entry(source, contract="derby-dma-diagnostic-v1")
+        assert sibling["diagnostic_entry_sha256"] == expected.sha256
+        assert sibling["source_provenance"]["commit"] == "f" * 40
 
 
 def test_request_and_approval_schema_require_explicit_typed_dma_axes(tmp_path):
@@ -129,7 +126,6 @@ def test_request_and_approval_schema_require_explicit_typed_dma_axes(tmp_path):
         )
     builder, project, source, node = build_fixture(tmp_path)
     with (
-        patch.object(registry, "_ENTRIES", (DMA_ENTRY,)),
         patch.object(builder, "_project", return_value=(project, source)),
         patch.object(builder, "_registered_tools", return_value={"node": node}),
     ):
@@ -172,69 +168,68 @@ def test_dma_durable_evidence_after_restart_and_log_expiry(detail, dma):
         for key in ("build_mode", "build_measure"):
             producer["diagnostic"][key]["cmake_cache_sha256"] = cache_hash
         (root / PROOF_NAME).write_text(json.dumps(producer))
-        with patch.object(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY)):
-            envelope = collect_dma_modeproof(root, detail, dma, source, artifacts)
-            manifest.update(
-                source_provenance=source,
-                derby_detail_mode=detail,
-                derby_dma_mode=dma,
-                diagnostic_entry_sha256=DMA_ENTRY.sha256,
-                diagnostic_modeproof=envelope,
-                artifacts=artifacts,
-            )
-            job = case.store.job("build-0")
-            plan = case.store.plan(job["plan_hash"])
-            plan.update(
-                derby_detail_mode=detail,
-                derby_dma_mode=dma,
-                source_provenance=source,
-                diagnostic_entry_sha256=DMA_ENTRY.sha256,
-            )
-            digest = persistence.digest(plan)
-            case.store.put_plan(digest, plan)
-            case.store.db.execute("UPDATE jobs SET plan_hash=? WHERE id=?", (digest, "build-0"))
-            case.store.db.commit()
-            manifest["build_plan_hash"] = digest
-            (root / "broker-manifest.json").write_text(json.dumps(manifest))
-            case.builder.artifacts.publish("build-0", "alice", root, manifest)
-            case.store.set_job("build-0", "succeeded", "firmware_build_succeeded_no_flash")
-            case.restart()
-            case.builder.logs["build-0"] = BuildLogs("alice")
-            case.builder.logs["build-0"].deadline = 0
+        envelope = collect_dma_modeproof(root, detail, dma, source, artifacts)
+        manifest.update(
+            source_provenance=source,
+            derby_detail_mode=detail,
+            derby_dma_mode=dma,
+            diagnostic_entry_sha256=DMA_ENTRY.sha256,
+            diagnostic_modeproof=envelope,
+            artifacts=artifacts,
+        )
+        job = case.store.job("build-0")
+        plan = case.store.plan(job["plan_hash"])
+        plan.update(
+            derby_detail_mode=detail,
+            derby_dma_mode=dma,
+            source_provenance=source,
+            diagnostic_entry_sha256=DMA_ENTRY.sha256,
+        )
+        digest = persistence.digest(plan)
+        case.store.put_plan(digest, plan)
+        case.store.db.execute("UPDATE jobs SET plan_hash=? WHERE id=?", (digest, "build-0"))
+        case.store.db.commit()
+        manifest["build_plan_hash"] = digest
+        (root / "broker-manifest.json").write_text(json.dumps(manifest))
+        case.builder.artifacts.publish("build-0", "alice", root, manifest)
+        case.store.set_job("build-0", "succeeded", "firmware_build_succeeded_no_flash")
+        case.restart()
+        case.builder.logs["build-0"] = BuildLogs("alice")
+        case.builder.logs["build-0"].deadline = 0
+        result = case.builder.read_logs(
+            BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
+        )
+        assert result["expired"] and result["artifact_status"] == "verified"
+        public_envelope = result["manifest"]["diagnostic_modeproof"]
+        assert "cmake_cache" not in public_envelope
+        assert "sentinel-source" not in json.dumps(result)
+        assert "sentinel-secret-value" not in json.dumps(result)
+        assert public_envelope["proof"] == envelope["proof"]
+        assert public_envelope["cache_evidence"]["retained_private"]
+        from cardputer_mcp.build_artifacts import manifest_digest
+        from cardputer_mcp.manifest_export import manifest_export_sha256
+
+        exported = result["manifest_export"]
+        assert exported["original_manifest_sha256"] == manifest_digest(manifest)
+        assert exported["manifest"] == result["manifest"]
+        assert manifest_digest(result["manifest"]) != exported["original_manifest_sha256"]
+        assert result["manifest_export_sha256"] == manifest_export_sha256(exported)
+        case.restart()
+        again = case.builder.read_logs(
+            BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
+        )
+        assert again["manifest_export"] == exported
+        assert again["manifest_export_sha256"] == result["manifest_export_sha256"]
+        assert case.context()[1]["diagnostic_modeproof"] == envelope
+        for filename in ("CMakeCache.txt", PROOF_NAME):
+            saved = (root / filename).read_bytes()
+            (root / filename).unlink()
             result = case.builder.read_logs(
                 BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
             )
-            assert result["expired"] and result["artifact_status"] == "verified"
-            public_envelope = result["manifest"]["diagnostic_modeproof"]
-            assert "cmake_cache" not in public_envelope
-            assert "sentinel-source" not in json.dumps(result)
-            assert "sentinel-secret-value" not in json.dumps(result)
-            assert public_envelope["proof"] == envelope["proof"]
-            assert public_envelope["cache_evidence"]["retained_private"]
-            from cardputer_mcp.build_artifacts import manifest_digest
-            from cardputer_mcp.manifest_export import manifest_export_sha256
-
-            exported = result["manifest_export"]
-            assert exported["original_manifest_sha256"] == manifest_digest(manifest)
-            assert exported["manifest"] == result["manifest"]
-            assert manifest_digest(result["manifest"]) != exported["original_manifest_sha256"]
-            assert result["manifest_export_sha256"] == manifest_export_sha256(exported)
-            case.restart()
-            again = case.builder.read_logs(
-                BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
-            )
-            assert again["manifest_export"] == exported
-            assert again["manifest_export_sha256"] == result["manifest_export_sha256"]
-            assert case.context()[1]["diagnostic_modeproof"] == envelope
-            for filename in ("CMakeCache.txt", PROOF_NAME):
-                saved = (root / filename).read_bytes()
-                (root / filename).unlink()
-                result = case.builder.read_logs(
-                    BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
-                )
-                assert result["artifact_status"] == "unavailable"
-                assert "manifest_export" not in result and "manifest_export_sha256" not in result
-                (root / filename).write_bytes(saved)
+            assert result["artifact_status"] == "unavailable"
+            assert "manifest_export" not in result and "manifest_export_sha256" not in result
+            (root / filename).write_bytes(saved)
     finally:
         case.doCleanups()
 

@@ -67,15 +67,11 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
         (on_dir / "CMakeCache.txt").write_text("POCKET_DERBY_DETAIL_MEASURE:BOOL=ON")
         (on_dir / "sdkconfig").write_text("stale config")
         assert not off_dir.exists()
-        with patch.object(
-            registry,
-            "_ENTRIES",
-            (*registry._ENTRIES, registry.DiagnosticEntry("fixture/project", "f" * 40)),
-        ):
-            assert builder.prepare("fixture", "owner", "a" * 64, "OFF") == off
+        assert builder.prepare("fixture", "owner", "a" * 64, "OFF") == off
         provenance["commit"] = "f" * 40
-        with pytest.raises(ValueError, match="allowlisted_source"):
-            builder.prepare("fixture", "owner", "a" * 64, "ON")
+        sibling = builder.prepare("fixture", "owner", "a" * 64, "ON")
+        assert sibling["source_provenance"]["commit"] == "f" * 40
+        assert sibling["fingerprint"] != on["fingerprint"]
 
 
 @pytest.mark.parametrize("mode", ["ON", "OFF"])
@@ -112,11 +108,9 @@ def test_modeproof_remains_verified_after_log_loss(mode, retention, record_forma
         if retention == "expired":
             case.builder.logs["build-0"] = BuildLogs("alice")
             case.builder.logs["build-0"].deadline = 0
-        unrelated = registry.DiagnosticEntry("fixture/project", "f" * 40)
-        with patch.object(registry, "_ENTRIES", (*registry._ENTRIES, unrelated)):
-            result = case.builder.read_logs(
-                BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
-            )
+        result = case.builder.read_logs(
+            BuildLogRequest(job_id="build-0"), "alice", project_id="fixture"
+        )
         assert result["expired"]
         assert result["artifact_status"] == "verified"
         assert result["manifest"]["diagnostic_modeproof"] == manifest["diagnostic_modeproof"]

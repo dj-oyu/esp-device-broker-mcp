@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import ConfigDict, Field
 
 from .build_artifacts import manifest_digest
+from .diagnostic_contracts import select_contract
+from .diagnostic_legacy import omitted_collector_digest_shape
 from .diagnostic_registry import (
-    J1_REPOSITORY,
-    diagnostic_entry,
     same_diagnostic_selection,
     validate_diagnostic_selection,
     validate_entry_binding,
@@ -55,9 +55,15 @@ class CollectorBinding(StrictModel):
 
 def validate_collector_schema(plan: dict[str, Any]) -> None:
     binding = CollectorBinding.model_validate(plan["collector_binding"])
-    provenance = {"repository": J1_REPOSITORY, "commit": binding.source_commit}
-    validate_entry_binding(provenance, plan["collector_binding"])
-    _validate_selection_record(provenance, plan["collector_binding"])
+    record = plan["collector_binding"]
+    if "diagnostic_entry_sha256" in record:
+        _digest(record["diagnostic_entry_sha256"])
+    elif not omitted_collector_digest_shape(binding.source_commit, "derby_dma_mode" in record):
+        raise ValueError("diagnostic_entry_binding_required")
+    if "derby_dma_mode" in record and record["derby_dma_mode"] is None:
+        raise ValueError("collector_mode_binding_invalid")
+    if select_contract(binding.derby_detail_mode, binding.derby_dma_mode) is None:
+        raise ValueError("collector_mode_binding_invalid")
     if (
         plan.get("test") != "derby_fixed_workload"
         or plan.get("flash_job_id") != binding.flash_job_id
@@ -158,7 +164,11 @@ def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
     artifacts = manifest.get("artifacts")
     if not isinstance(envelope, dict) or not isinstance(artifacts, list):
         raise ValueError("collector_mode_binding_invalid")
-    entry = diagnostic_entry(provenance)
+    entry = validate_diagnostic_selection(
+        provenance, manifest["derby_detail_mode"], manifest.get("derby_dma_mode")
+    )
+    if entry is None:
+        raise ValueError("collector_mode_binding_invalid")
     if entry.contract == "derby-dma-diagnostic-v1":
         verify_dma_modeproof_bytes(envelope, provenance, artifacts, files)
         if envelope["requested_dma_mode"] != manifest["derby_dma_mode"]:
@@ -253,17 +263,12 @@ def collector_live(broker: "Broker", plan: dict[str, Any], principal: str) -> bo
             and digest_plan(build_plan) == binding["build_plan_hash"]
             and build_plan.get("build_principal") == principal
             and build_plan.get("source_receipt") == binding["source_receipt"]
-            and build_plan.get("source_provenance", {}).get("repository", "").casefold()
-            == J1_REPOSITORY
             and build_plan.get("source_provenance", {}).get("commit") == binding["source_commit"]
             and build_plan.get("derby_detail_mode") == binding["derby_detail_mode"]
             and ("derby_dma_mode" in build_plan) == ("derby_dma_mode" in binding)
             and build_plan.get("derby_dma_mode") == binding.get("derby_dma_mode")
-            and (
-                "diagnostic_entry_sha256" not in binding
-                or binding["diagnostic_entry_sha256"]
-                == validate_entry_binding(build_plan.get("source_provenance", {}), build_plan)
-            )
+            and validate_entry_binding(build_plan.get("source_provenance", {}), binding)
+            == validate_entry_binding(build_plan.get("source_provenance", {}), build_plan)
         )
     except Exception:
         return False
