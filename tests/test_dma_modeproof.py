@@ -200,9 +200,7 @@ class DMAModeproofTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verify_dma_modeproof_bytes(forged, source, artifacts, files)
             with self.assertRaises(ValueError):
-                verify_dma_modeproof_bytes(
-                    envelope, {**source, "commit": "main"}, artifacts, files
-                )
+                verify_dma_modeproof_bytes(envelope, {**source, "commit": "main"}, artifacts, files)
             wrong_files = {
                 **files,
                 "cardputer_pocketjs.bin": files["cardputer_pocketjs.bin"] + b"x",
