@@ -14,13 +14,24 @@ from test_flash_lkg_geometry import table as partition_table
 
 from cardputer_mcp.broker import Broker, BrokerError, digest_plan
 from cardputer_mcp.build_locations import build_location, claim_build_directory
+from cardputer_mcp.firmware_flash import operation_from_plan
+from cardputer_mcp.flash_backup import BackupStore
+from cardputer_mcp.flash_lifecycle import FlashLifecycle
 from cardputer_mcp.flash_models import FlashDevice, UnattendedFlash
 from cardputer_mcp.models import AcquireRequest, ExecuteRequest, Origin, PrepareRequest
 from cardputer_mcp.models import TestName as Action
 
 
 @pytest.fixture
-async def env(tmp_path):
+async def env(tmp_path, request):
+    # Each case keeps its own broker, SQLite database, files and driver. Only
+    # the prerequisite backup avoids repeating broker dispatch/stage commits;
+    # the full 8 MiB broker bootstrap remains covered explicitly below.
+    bootstrap = getattr(request, "param", None)
+    assert bootstrap in (None, "broker-bootstrap"), "unknown bootstrap fixture mode"
+    broker_bootstrap = bootstrap == "broker-bootstrap"
+    flash_size = "8MB" if broker_bootstrap else "4MB"
+    flash_bytes = (8 if broker_bootstrap else 4) * 1024 * 1024
     source = source_tests.SourceTests()
     source.setUp()
     fixture = manifest_tests.FlashManifestTests("test_verified_layout_is_inert_and_manifest_bound")
@@ -39,10 +50,13 @@ async def env(tmp_path):
         fixture.layout["bootloader"] = {"offset": "0x0", "file": "boot.bin"}
         fixture.layout["partition-table"] = {"offset": "0x8000", "file": "partition_table.bin"}
         fixture.layout["flash_files"]["0x8000"] = "partition_table.bin"
+        size_index = fixture.layout["write_flash_args"].index("--flash-size") + 1
+        fixture.layout["write_flash_args"][size_index] = flash_size
+        fixture.layout["flash_settings"]["flash_size"] = flash_size
         fixture.save_layout()
         registration = FlashDevice(
             selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
-            flash_bytes=8388608,
+            flash_bytes=flash_bytes,
             project_id="fixture",
             python_tool={
                 "executable": tmp_path / "python.exe",
@@ -140,10 +154,35 @@ async def env(tmp_path):
         def execute(prepared):
             return broker.execute(ExecuteRequest(session=session, plan_hash=prepared["plan_hash"]))
 
-        # Existing explicit manual bootstrap; unattended never authorizes this full backup.
+        # The scenario under test starts with an owned backup and a flashed LKG.
+        # Run the prerequisite ROM backup/persistence directly in matrix cases;
+        # every initial flash and scenario operation still uses the real broker.
         initial = prepare("backup-one", Action.BACKUP)
-        execute(initial)
-        await broker.queue.join()
+        if broker_bootstrap:
+            execute(initial)
+            await broker.queue.join()
+        else:
+            operation = operation_from_plan(initial["plan"])
+            backup_engine = FlashLifecycle(driver)
+            backup_receipt, backup_data, _ = backup_engine.run(
+                operation,
+                operation.digest,
+                live=lambda: True,
+                reader_closed=lambda: (
+                    not broker.backend.active
+                    and not broker.backend.hardware_connected
+                    and not getattr(broker.backend, "ownership_uncertain", False)
+                ),
+                stage=lambda _: None,
+            )
+            assert backup_receipt is not None and backup_data is not None
+            BackupStore(
+                registration.backup_directory,
+                windows_private_acl_confirmed=registration.private_backup_acl_confirmed,
+            ).save("backup-one", "alice", backup_receipt, backup_data)
+            assert driver.closed and not backup_engine.active and not backup_engine.uncertain
+            store.add_job("backup-one", initial["plan_hash"])
+            store.set_job("backup-one", "succeeded")
         assert broker.job("backup-one")["state"] == "succeeded"
         initial = prepare("flash-one", build_job_id="build-one", backup_job_id="backup-one")
         execute(initial)
@@ -188,6 +227,7 @@ async def env(tmp_path):
         source.tearDown()
 
 
+@pytest.mark.parametrize("env", ["broker-bootstrap"], indirect=True)
 async def test_preparation_never_executes_and_no_policy_grant_is_needed(env):
     before = env.driver.writes
     prepared = env.prepare("explicit", build_job_id="build-one")
