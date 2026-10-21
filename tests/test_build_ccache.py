@@ -271,9 +271,16 @@ class RealCompilerCacheTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((second[0] / "unit.o").read_bytes(), warm)
+            with patch("cardputer_mcp.build_ccache.shutil.which", return_value=cache):
+                cold_counters = ccache_statistics(second[1], run, second[0])
+            self.assertIsNotNone(cold_counters)
+            # Forced recache has its own counter; do not assume it is a normal miss.
+            self.assertEqual(
+                cold_counters["direct_cache_hit"] + cold_counters["preprocessed_cache_hit"], 1
+            )
             changed = compile_generation(3, value=43)
-            self.assertEqual(changed[3]["cache_miss"], 3)  # first, forced-cold, changed header
+            self.assertEqual(changed[3]["cache_miss"], cold_counters["cache_miss"] + 1)
             self.assertNotEqual((changed[0] / "unit.o").read_bytes(), warm)
             other_mode = compile_generation(4, dma="ON")
             self.assertNotEqual(second[4]["namespace"], other_mode[4]["namespace"])
-            self.assertEqual(other_mode[3]["cache_miss"], 4)
+            self.assertEqual(other_mode[3]["cache_miss"], changed[3]["cache_miss"] + 1)
