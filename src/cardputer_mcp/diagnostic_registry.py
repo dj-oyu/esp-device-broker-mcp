@@ -12,10 +12,12 @@ from .diagnostic_contracts import J1, known_contract, select_contract, validate_
 from .diagnostic_legacy import J1_COMMIT as J1_COMMIT
 from .diagnostic_legacy import J1_REPOSITORY as J1_REPOSITORY
 from .diagnostic_legacy import LegacyDiagnosticDescriptor as DiagnosticEntry
-from .diagnostic_legacy import _J1_ENTRY
+from .diagnostic_legacy import historical_binding_digest
 
 
-def diagnostic_entry(provenance: dict[str, Any], *, contract: str = "j1-fixed-v1") -> DiagnosticEntry:
+def diagnostic_entry(
+    provenance: dict[str, Any], *, contract: str = "j1-fixed-v1"
+) -> DiagnosticEntry:
     """Reconstruct an identity descriptor for a supported recipe, without membership checks."""
     recipe = known_contract(contract)
     repository, commit = validate_source_identity(provenance)
@@ -30,12 +32,7 @@ def validate_entry_binding(provenance: dict[str, Any], record: dict[str, Any]) -
         raise ValueError("diagnostic_axes_required")
     recipe = select_contract(record.get("derby_detail_mode"), record.get("derby_dma_mode"))
     entry = diagnostic_entry(provenance, contract=(recipe or J1).identifier)
-    if "diagnostic_entry_sha256" in record:
-        if record["diagnostic_entry_sha256"] != entry.sha256:
-            raise ValueError("diagnostic_entry_binding_invalid")
-    elif entry != _J1_ENTRY:
-        raise ValueError("diagnostic_entry_binding_required")
-    return entry.sha256
+    return historical_binding_digest(entry, record)
 
 
 def same_entry_binding(left: dict[str, Any], right: dict[str, Any]) -> bool:

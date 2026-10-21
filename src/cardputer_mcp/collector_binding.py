@@ -12,7 +12,7 @@ from pydantic import ConfigDict, Field
 
 from .build_artifacts import manifest_digest
 from .diagnostic_contracts import select_contract
-from .diagnostic_legacy import J1_COMMIT
+from .diagnostic_legacy import omitted_collector_digest_shape
 from .diagnostic_registry import (
     same_diagnostic_selection,
     validate_diagnostic_selection,
@@ -58,7 +58,7 @@ def validate_collector_schema(plan: dict[str, Any]) -> None:
     record = plan["collector_binding"]
     if "diagnostic_entry_sha256" in record:
         _digest(record["diagnostic_entry_sha256"])
-    elif binding.source_commit != J1_COMMIT or "derby_dma_mode" in record:
+    elif not omitted_collector_digest_shape(binding.source_commit, "derby_dma_mode" in record):
         raise ValueError("diagnostic_entry_binding_required")
     if "derby_dma_mode" in record and record["derby_dma_mode"] is None:
         raise ValueError("collector_mode_binding_invalid")
