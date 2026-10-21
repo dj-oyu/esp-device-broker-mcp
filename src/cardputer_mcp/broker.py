@@ -28,6 +28,7 @@ from .derby_provenance import DerbyProvenance, capture_provenance, finish_proven
 from .derby_reports import PROVENANCE_KEY
 from .device_observation import DeviceObservation
 from .firmware_build import BuildPreflightFailure
+from .fixed_diagnostic import DiagnosticContext, finish_fixed_diagnostic
 from .flash_binding import FlashBinding, live_binding, prepare_binding, validate_binding
 from .flash_lifecycle import FlashFailure, _bounded_read_diagnostic
 from .flash_manifest import FlashAdmissionError
@@ -2181,15 +2182,19 @@ class Broker:
                             fixed_review = (
                                 not running_authorized() or self.backend.smoke_stop.is_set()
                             )
-                            store.finish_fixed_trial(
+                            finish_fixed_diagnostic(
+                                DiagnosticContext(
+                                    capture_principal,
+                                    origin=lease.owner,
+                                    epoch=self.epoch,
+                                    lease_id=lease.id,
+                                ),
                                 job_id,
                                 job["plan_hash"],
-                                capture_principal,
-                                "needs_review" if fixed_review else "succeeded",
-                                "operation_interrupted_review_required"
-                                if fixed_review
-                                else completed,
+                                completed,
                                 result.fixed_trial,
+                                fixed_review,
+                                store,
                             )
                         else:
                             diagnostic = (
