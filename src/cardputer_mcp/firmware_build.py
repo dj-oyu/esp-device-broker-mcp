@@ -14,6 +14,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .build_artifacts import BuildArtifacts, manifest_digest
+from .build_ccache import CONTRACT as CCACHE_CONTRACT
+from .build_ccache import ccache_statistics, configure_ccache, probe_ccache
 from .build_locations import (
     BuildLocationError,
     _json,
@@ -49,6 +51,7 @@ ALLOWED_ENV = frozenset(
         "IDF_TOOLS_INSTALL_CMD",
         "IDF_TARGET",
         "ESP_IDF_VERSION",
+        "IDF_CCACHE_ENABLE",
         "PATH",
         "PATHEXT",
         "SYSTEMROOT",
@@ -73,6 +76,7 @@ OS_ENV = ALLOWED_ENV - {
     "IDF_TOOLS_INSTALL_CMD",
     "IDF_TARGET",
     "ESP_IDF_VERSION",
+    "IDF_CCACHE_ENABLE",
     "PATH",
 }
 
@@ -98,6 +102,8 @@ class FixedDiagnosticFailure(BuildPreflightFailure):
             "external_toolchain_resolution_changed",
             "node_requires_explicit_local_registration",
             "build_inputs_changed",
+            "compiler_cache_setting_invalid",
+            "compiler_cache_diagnostic_failed",
         }:
             raise ValueError("invalid_build_diagnostic_code")
         self.code = code
@@ -439,6 +445,7 @@ class FirmwareBuild:
                     "profile": hash_file(project.trusted_profile),
                     "version": project.expected_idf,
                     "target": project.target,
+                    "compiler_cache_contract": CCACHE_CONTRACT,
                     "profile_policy": getattr(project, "profile_execution_policy", "inherit"),
                     "build_min_free_bytes": getattr(
                         project, "build_min_free_bytes", 512 * 1024 * 1024
@@ -724,6 +731,15 @@ class FirmwareBuild:
             raise FixedDiagnosticFailure("external_toolchain_resolution_changed")
         if "node" not in registered_tools and shutil.which("node.exe", path=env["PATH"]):
             raise FixedDiagnosticFailure("node_requires_explicit_local_registration")
+        try:
+            cache_policy = probe_ccache(env, run, project.project_dir)
+        except ValueError as failure:
+            if str(failure) in {
+                "compiler_cache_setting_invalid",
+                "compiler_cache_diagnostic_failed",
+            }:
+                raise FixedDiagnosticFailure(str(failure)) from None
+            raise
         environment_fingerprint = hashlib.sha256(
             json.dumps(
                 {
@@ -731,6 +747,7 @@ class FirmwareBuild:
                     "python": hash_file(python),
                     "compiler": hash_file(Path(compiler)),
                     "environment": env,
+                    "compiler_cache": cache_policy,
                 },
                 sort_keys=True,
             ).encode()
@@ -758,6 +775,15 @@ class FirmwareBuild:
         build_dir = claim_build_directory(
             self.settings.state_dir, build_root, plan["fingerprint"], environment_fingerprint
         )
+        cache_receipt = configure_ccache(
+            cache_policy, env, self.settings.state_dir, build_dir, plan["project_id"],
+            principal, environment_fingerprint,
+            {key: plan.get(key) for key in ("derby_detail_mode", "derby_dma_mode")},
+        )
+        logs.append("-- Compiler cache: " + cache_receipt["reason"])
+        cache_before = (
+            ccache_statistics(env, run, project.project_dir) if cache_policy["enabled"] else None
+        )
         stage("idf_build")
 
         def emit(line: str, stream: str) -> None:
@@ -780,7 +806,9 @@ class FirmwareBuild:
             logs.append("error: build inputs changed before launch; prepare a new plan")
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
-        build_args = [str(python), str(idf_py), "-B", str(build_dir)]
+        build_args = [str(python), str(idf_py),
+                      "--ccache" if cache_policy["enabled"] else "--no-ccache",
+                      "-B", str(build_dir)]
         if provenance is not None:
             build_args += ["-D", "SDKCONFIG=" + str(build_dir / "sdkconfig")]
         if plan.get("derby_detail_mode") is not None:
@@ -795,6 +823,19 @@ class FirmwareBuild:
             emit,
         ):
             raise ValueError("idf_build_failed_needs_review")
+        if cache_policy["enabled"]:
+            after = ccache_statistics(env, run, project.project_dir)
+            cache_receipt["statistics_available"] = cache_before is not None and after is not None
+            if cache_before is not None and after is not None:
+                if all(after[key] >= cache_before[key] for key in after):
+                    cache_receipt["counter_delta"] = {
+                        key: after[key] - cache_before[key] for key in after
+                    }
+                    logs.append(
+                        "-- Compiler cache counters: " + json.dumps(cache_receipt["counter_delta"])
+                    )
+                else:
+                    cache_receipt["statistics_available"] = False
         if (
             self.prepare(
                 plan["project_id"],
@@ -871,6 +912,7 @@ class FirmwareBuild:
             target=project.target,
             fingerprint=plan["fingerprint"],
             environment_fingerprint=environment_fingerprint,
+            compiler_cache=cache_receipt,
             artifacts=artifacts,
             registered_tool_versions=registered_versions,
             flash_layout=flash_layout,

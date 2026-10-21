@@ -72,7 +72,8 @@ jobs are cancelled; interrupted running work requires review because completion
 and ownership are not established. Old approvals/needs_review records are neither
 deleted nor automatically acknowledged.
 
-The fixed build argument vector is external Python, external `tools/idf.py`, `-B`,
+The fixed build argument vector is external Python, external `tools/idf.py`,
+explicit `--ccache`/`--no-ccache`, `-B`,
 the broker-generated directory, `build`. Canonical registered project identity plus source/profile hashes and external
 Python/idf.py/compiler/environment fingerprints partition build directories. The
 expected target is fixed through IDF_TARGET and checked against the generated
@@ -107,6 +108,72 @@ lengths and SHA-256. `flash_authorized=false` is explicit. A later flash feature
 must reverify artifacts and obtain independent immutable-plan execution;
 this feature provides no flash operation or permission. Old interrupted build
 jobs are not marked recovered or successful.
+
+## Cross-generation compiler cache
+
+Build output slots remain partitioned by the complete source/receipt/profile and
+resolved tool/environment fingerprints. A compiler cache can share unchanged
+compilation results between those slots; it never substitutes a source receipt,
+build workspace, generated configuration, artifact hash or diagnostic proof.
+Existing source validation, generated target/security checks, artifact publication,
+owner checks, cancellation and process cleanup still run on warm builds.
+
+The existing trusted IDF export profile may emit `IDF_CCACHE_ENABLE=1`. The broker
+then resolves `ccache.exe` from that profile's PATH and uses IDF's `--ccache` switch.
+No new broker setting, grant, source registration or dependency installation is
+introduced. ESP-IDF 6.0.1 lists ccache 4.12.1 for Windows; this contract supports
+ccache 4.8 through 4.x. A missing/disabled switch, missing executable or unsupported
+version selects explicit `--no-ccache` with a fixed reason. An invalid switch,
+failed executable diagnostic or executable mutation fails the build preflight.
+A compilation failure remains a failed build: there is no automatic uncached
+retry. The broker does not install ccache or change the local IDF environment.
+
+An enabled build records the cache executable's version/content/path digests,
+configuration digest and normalization contract in its environment identity.
+The cache root is `state_dir/compiler-cache/<project-and-owner-digest>`.
+Namespaces additionally separate the exact resolved environment and detail/DMA
+modes, while excluding generation-specific source hashes from that namespace.
+Ccache itself keys each compilation by compiler content, arguments and source/
+included-header inputs. Different sources remain different compilation inputs.
+The root's native ccache cleanup target is **2 GiB**, shared across its namespaces;
+this is approximate cache cleanup, not an instantaneous hard filesystem quota or
+a global broker storage limit. Source payload and build retention are unchanged.
+
+Only the current build directory is normalized with `CCACHE_BASEDIR` and
+`-fdebug-prefix-map` (both native and generic Windows path spellings). Debug paths
+under that directory become `/broker-build`. `hash_dir` stays enabled; compiler
+content checks stay enabled. Source absolute paths remain significant, so changed
+application source locations may miss; stable IDF source locations with identical
+headers/configuration can hit. This does not promise all cross-generation units
+will hit or that an entire cached build equals the old uncached recipe bytewise.
+The warm/cold equivalence contract compares the same explicit cache recipe.
+
+A per-build UTF-8/LF configuration disables hard links, inode shortcuts, sloppiness
+and remote storage. Ambient `CCACHE_*` options are not forwarded. Per-build config,
+output isolation and namespaces protect technical cache correctness; they do not
+add a separate authorization policy. The source/profile remain trusted executable
+inputs under the existing local project model.
+
+The additive `compiler_cache` manifest record reports policy and best-effort
+before/after hit/miss counter deltas from the real build. Counters are cache-root
+statistics and can include concurrent use; they are not performance acceptance or
+artifact provenance. Missing/malformed/reset counters are marked unavailable;
+owned-process cancellation/cleanup failures still propagate. No cache is reset
+and no extra benchmark build is started. Manifest/export/flash-plan hashes bind
+the new record normally. Retained manifests/receipts require no data migration;
+new plans use the new recipe identity, so pending plans may need preparation again.
+Rolling back the executable leaves old receipts and firmware bytes intact; cache
+files are disposable acceleration data and are not recovery artifacts.
+
+Host acceptance includes actual ccache/GCC cross-slot hits, changed-header misses,
+mode namespace separation, dependency-file path checks and warm/forced-cold object
+identity. Linux CI installs a test-only ccache fixture; it does not install an SDK.
+Windows path handling and actual ESP-IDF hit counts/timing must also be checked
+on the next genuinely required firmware build. Synthetic host results alone do
+not establish Omnibook speedup or device behavior.
+
+References: [ESP-IDF 6.0.1 idf.py options](https://docs.espressif.com/projects/esp-idf/en/v6.0.1/esp32s3/api-guides/tools/idf-py.html),
+[ccache configuration and statistics](https://ccache.dev/manual/4.12.1.html).
 
 ## Historical validation in the delegated cloud environment
 
