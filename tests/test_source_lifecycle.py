@@ -229,7 +229,9 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         policy = self.evidence()
         self.assertTrue(policy["complete"])
         self.assertIn("current_lkg_evidence", policy["protected"][first[0]["source_receipt"]])
-        self.assertNotIn("recovery_history_evidence", policy["protected"][first[0]["source_receipt"]])
+        self.assertNotIn(
+            "recovery_history_evidence", policy["protected"][first[0]["source_receipt"]]
+        )
         self.assertIn("recovery_history_evidence", policy["provenance"][first[0]["source_receipt"]])
         self.assertIn(
             "executable_firmware_operation", policy["protected"][first[1]["source_receipt"]]

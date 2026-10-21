@@ -311,16 +311,14 @@ class SourceHistoryRetentionTests(HistoryFixture, unittest.TestCase):
                     "source_receipt": old["source_receipt"],
                 }
 
-                def changed():
+                def changed(change=change, raced_plan=raced_plan):
                     nonlocal calls
                     calls += 1
                     if calls == 2:
                         if change == "prepared":
                             self.add(raced_plan)
                         else:
-                            self.store.db.execute(
-                                "UPDATE firmware_lkg SET receipt=?", (receipt,)
-                            )
+                            self.store.db.execute("UPDATE firmware_lkg SET receipt=?", (receipt,))
                     return self.evidence()
 
                 self.snapshots.retention = changed
