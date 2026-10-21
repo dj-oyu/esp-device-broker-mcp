@@ -776,8 +776,13 @@ class FirmwareBuild:
             self.settings.state_dir, build_root, plan["fingerprint"], environment_fingerprint
         )
         cache_receipt = configure_ccache(
-            cache_policy, env, self.settings.state_dir, build_dir, plan["project_id"],
-            principal, environment_fingerprint,
+            cache_policy,
+            env,
+            self.settings.state_dir,
+            build_dir,
+            plan["project_id"],
+            principal,
+            environment_fingerprint,
             {key: plan.get(key) for key in ("derby_detail_mode", "derby_dma_mode")},
         )
         logs.append("-- Compiler cache: " + cache_receipt["reason"])
@@ -806,9 +811,13 @@ class FirmwareBuild:
             logs.append("error: build inputs changed before launch; prepare a new plan")
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
-        build_args = [str(python), str(idf_py),
-                      "--ccache" if cache_policy["enabled"] else "--no-ccache",
-                      "-B", str(build_dir)]
+        build_args = [
+            str(python),
+            str(idf_py),
+            "--ccache" if cache_policy["enabled"] else "--no-ccache",
+            "-B",
+            str(build_dir),
+        ]
         if provenance is not None:
             build_args += ["-D", "SDKCONFIG=" + str(build_dir / "sdkconfig")]
         if plan.get("derby_detail_mode") is not None:

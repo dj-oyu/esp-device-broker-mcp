@@ -486,13 +486,18 @@ class FirmwareVerticalTests(unittest.TestCase):
                 patch.object(module, "hash_file", side_effect=hash_hook),
             ):
                 if cache_mode in ("broken", "compile_failed"):
-                    code = ("compiler_cache_diagnostic_failed" if cache_mode == "broken"
-                            else "idf_build_failed_needs_review")
+                    code = (
+                        "compiler_cache_diagnostic_failed"
+                        if cache_mode == "broken"
+                        else "idf_build_failed_needs_review"
+                    )
                     with self.assertRaisesRegex(ValueError, code):
                         builder._execute(plan, lambda _: None)
                     self.assertFalse(builder.manifests)
-                    self.assertEqual(sum(args[-1] == "build" for args in calls),
-                                     1 if cache_mode == "compile_failed" else 0)
+                    self.assertEqual(
+                        sum(args[-1] == "build" for args in calls),
+                        1 if cache_mode == "compile_failed" else 0,
+                    )
                     return
                 if node_mode in ("wrong_version", "ambiguous", "unregistered"):
                     code = {
@@ -561,10 +566,14 @@ class FirmwareVerticalTests(unittest.TestCase):
                     calls[0][1:5], ["-NoProfile", "-ExecutionPolicy", "RemoteSigned", "-File"]
                 )
             build_call = next(args for args in calls if args[-1] == "build")
-            build_env = next(env for args, env in zip(calls, environments, strict=True)
-                             if args[-1] == "build")
-            self.assertEqual(len(calls), (6 if node_mode else 5)
-                             + (3 if cache_mode == "on" else 1 if cache_mode == "old" else 0))
+            build_env = next(
+                env for args, env in zip(calls, environments, strict=True) if args[-1] == "build"
+            )
+            self.assertEqual(
+                len(calls),
+                (6 if node_mode else 5)
+                + (3 if cache_mode == "on" else 1 if cache_mode == "old" else 0),
+            )
             report = builder.read_logs(SimpleNamespace(job_id="job", **vars(request())), "alice")
             self.assertFalse(report["manifest"]["flash_authorized"])
             receipt = report["manifest"]["compiler_cache"]

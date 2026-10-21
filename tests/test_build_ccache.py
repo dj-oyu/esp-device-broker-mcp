@@ -78,7 +78,10 @@ class CompilerCacheTests(unittest.TestCase):
 
     def test_bad_setting_probe_or_changed_executable_is_not_silent_fallback(self):
         for arguments in (
-            {"setting": "garbage"}, {"code": 1}, {"mutate": True}, {"version": "bad"}
+            {"setting": "garbage"},
+            {"code": 1},
+            {"mutate": True},
+            {"version": "bad"},
         ):
             with (
                 self.subTest(arguments=arguments),
@@ -93,8 +96,18 @@ class CompilerCacheTests(unittest.TestCase):
             build = self.root / f"generation {number}"
             build.mkdir()
             env = {"PATH": str(self.root), "CCACHE_SLOPPINESS": "time_macros"}
-            receipts.append(configure_ccache(policy, env, self.root / "state", build,
-                                             "project", "owner", "e" * 64, {"detail": "ON"}))
+            receipts.append(
+                configure_ccache(
+                    policy,
+                    env,
+                    self.root / "state",
+                    build,
+                    "project",
+                    "owner",
+                    "e" * 64,
+                    {"detail": "ON"},
+                )
+            )
             envs.append(env)
             self.assertEqual(Path(env["CCACHE_CONFIGPATH"]).read_text(), CONFIG)
             self.assertNotIn("CCACHE_SLOPPINESS", env)
@@ -114,8 +127,9 @@ class CompilerCacheTests(unittest.TestCase):
         windows = PureWindowsPath("C:/build root/generation")
         env = {}
         with patch.object(Path, "resolve", return_value=windows):
-            configure_ccache(policy, env, self.root / "state", build,
-                             "project", "owner", "e" * 64, {})
+            configure_ccache(
+                policy, env, self.root / "state", build, "project", "owner", "e" * 64, {}
+            )
         self.assertIn(str(windows), env["CFLAGS"])
         self.assertIn(windows.as_posix(), env["CFLAGS"])
         self.assertEqual(env["CFLAGS"].count("/broker-build"), 2)
@@ -128,34 +142,53 @@ class CompilerCacheTests(unittest.TestCase):
         build.mkdir()
         for detail in ("ON", "OFF"):
             for dma in ("ON", "OFF"):
-                receipt = configure_ccache(policy, {}, self.root / "state", build,
-                                           "project", "owner", "e" * 64,
-                                           {"detail": detail, "dma": dma})
+                receipt = configure_ccache(
+                    policy,
+                    {},
+                    self.root / "state",
+                    build,
+                    "project",
+                    "owner",
+                    "e" * 64,
+                    {"detail": detail, "dma": dma},
+                )
                 namespaces.add(receipt["namespace"])
         for owner, environment in (("other", "e" * 64), ("owner", "f" * 64)):
-            receipt = configure_ccache(policy, {}, self.root / "state", build,
-                                       "project", owner, environment,
-                                       {"detail": "ON", "dma": "ON"})
+            receipt = configure_ccache(
+                policy,
+                {},
+                self.root / "state",
+                build,
+                "project",
+                owner,
+                environment,
+                {"detail": "ON", "dma": "ON"},
+            )
             namespaces.add(receipt["namespace"])
         self.assertEqual(len(namespaces), 6)
 
     def test_statistics_are_optional_but_process_failure_propagates(self):
         def run(args, env, cwd, emit, **kwargs):
             for key, value in (
-                ("direct_cache_hit", 2), ("preprocessed_cache_hit", 3), ("cache_miss", 4)
+                ("direct_cache_hit", 2),
+                ("preprocessed_cache_hit", 3),
+                ("cache_miss", 4),
             ):
                 emit(f"{key}\t{value}", "stdout")
             return 0
 
         with patch("cardputer_mcp.build_ccache.shutil.which", return_value=str(self.tool)):
-            self.assertEqual(ccache_statistics({"PATH": ""}, run, self.root),
-                             {"direct_cache_hit": 2, "preprocessed_cache_hit": 3, "cache_miss": 4})
+            self.assertEqual(
+                ccache_statistics({"PATH": ""}, run, self.root),
+                {"direct_cache_hit": 2, "preprocessed_cache_hit": 3, "cache_miss": 4},
+            )
 
             def malformed(args, env, cwd, emit, **kwargs):
                 emit("x" * 1025, "stdout")
                 return 0
 
             self.assertIsNone(ccache_statistics({"PATH": ""}, malformed, self.root))
+
             def process_failure(*args, **kwargs):
                 raise ValueError("build_tree_stop_unconfirmed")
 
@@ -163,8 +196,10 @@ class CompilerCacheTests(unittest.TestCase):
                 ccache_statistics({"PATH": ""}, process_failure, self.root)
 
 
-@unittest.skipUnless(os.name == "posix" and shutil.which("ccache") and shutil.which("gcc"),
-                     "real Linux ccache/GCC contract fixture required")
+@unittest.skipUnless(
+    os.name == "posix" and shutil.which("ccache") and shutil.which("gcc"),
+    "real Linux ccache/GCC contract fixture required",
+)
 class RealCompilerCacheTests(unittest.TestCase):
     def test_cross_slot_hit_header_invalidation_mode_isolation_and_cold_equivalence(self):
         cache, compiler = shutil.which("ccache"), shutil.which("gcc")
@@ -176,8 +211,9 @@ class RealCompilerCacheTests(unittest.TestCase):
             policy = {"contract": CONTRACT, "enabled": True, "reason": "available"}
 
             def run(args, env, cwd, emit, timeout=30):
-                result = subprocess.run(args, env=env, cwd=cwd, capture_output=True,
-                                        text=True, timeout=timeout)
+                result = subprocess.run(
+                    args, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout
+                )
                 for line in result.stdout.splitlines():
                     emit(line, "stdout")
                 return result.returncode
@@ -188,12 +224,32 @@ class RealCompilerCacheTests(unittest.TestCase):
                 (build / "config").mkdir()
                 (build / "config" / "sdkconfig.h").write_text(f"#define VALUE {value}\n")
                 env = dict(os.environ)
-                receipt = configure_ccache(policy, env, root / "state", build,
-                                           "project", "owner", "e" * 64,
-                                           {"detail": "ON", "dma": dma})
-                args = [cache, compiler, "-g", "-O2", *shlex.split(env["CFLAGS"]),
-                        "-I", str(build / "config"), "-c", str(source),
-                        "-o", str(build / "unit.o"), "-MD", "-MF", str(build / "unit.d")]
+                receipt = configure_ccache(
+                    policy,
+                    env,
+                    root / "state",
+                    build,
+                    "project",
+                    "owner",
+                    "e" * 64,
+                    {"detail": "ON", "dma": dma},
+                )
+                args = [
+                    cache,
+                    compiler,
+                    "-g",
+                    "-O2",
+                    *shlex.split(env["CFLAGS"]),
+                    "-I",
+                    str(build / "config"),
+                    "-c",
+                    str(source),
+                    "-o",
+                    str(build / "unit.o"),
+                    "-MD",
+                    "-MF",
+                    str(build / "unit.d"),
+                ]
                 result = subprocess.run(args, env=env, cwd=build, capture_output=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 with patch("cardputer_mcp.build_ccache.shutil.which", return_value=cache):

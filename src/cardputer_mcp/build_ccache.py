@@ -98,8 +98,13 @@ def configure_ccache(
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     namespace = hashlib.sha256(
         json.dumps(
-            {"contract": CONTRACT, "owner": owner, "environment": environment_fingerprint,
-             "modes": modes}, sort_keys=True,
+            {
+                "contract": CONTRACT,
+                "owner": owner,
+                "environment": environment_fingerprint,
+                "modes": modes,
+            },
+            sort_keys=True,
         ).encode()
     ).hexdigest()
     # An explicit per-build config prevents ambient/system ccache options (e.g.
