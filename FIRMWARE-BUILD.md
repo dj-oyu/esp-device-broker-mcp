@@ -144,7 +144,9 @@ Only the current build directory is normalized with `CCACHE_BASEDIR` and
 under that directory become `/broker-build`. The broker also passes these generated
 flags through explicit `idf.py -D CMAKE_C_FLAGS/CMAKE_CXX_FLAGS` definitions: IDF
 6.0.1 seeds its toolchain response flags before CMake considers environment flags.
-Environment `CFLAGS` alone does not establish this path. `hash_dir` stays enabled; compiler
+Environment `CFLAGS` alone does not establish this path. Native backslashes are
+escaped for the GCC response-file consumer, including inside quoted space-bearing
+paths; Windows process-argument quoting is not used as the response-file encoding. `hash_dir` stays enabled; compiler
 content checks stay enabled. Source absolute paths remain significant, so changed
 application source locations may miss; stable IDF source locations with identical
 headers/configuration can hit. This does not promise all cross-generation units
@@ -171,7 +173,9 @@ files are disposable acceleration data and are not recovery artifacts.
 Host acceptance includes actual ccache/GCC cross-slot hits, changed-header misses,
 mode namespace separation, dependency-file path checks and warm/forced-cold object
 identity. A real CMake regression reproduces early toolchain cache initialization
-and verifies that explicit definitions preserve the generated flags. Linux CI installs a test-only ccache fixture; it does not install an SDK.
+and verifies that explicit definitions preserve the generated flags. Native paths
+with and without spaces also pass through CMake-generated response bytes and the
+real GCC response parser; exact native/generic prefix values must survive. Linux CI installs a test-only ccache fixture; it does not install an SDK.
 Windows path handling and actual ESP-IDF hit counts/timing must also be checked
 on the next genuinely required firmware build. Synthetic host results alone do
 not establish Omnibook speedup or device behavior.

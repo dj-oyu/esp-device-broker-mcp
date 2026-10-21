@@ -130,8 +130,9 @@ class CompilerCacheTests(unittest.TestCase):
             configure_ccache(
                 policy, env, self.root / "state", build, "project", "owner", "e" * 64, {}
             )
-        self.assertIn(str(windows), env["CFLAGS"])
-        self.assertIn(windows.as_posix(), env["CFLAGS"])
+        flags = shlex.split(env["CFLAGS"])
+        self.assertIn("-fdebug-prefix-map=" + str(windows) + "=/broker-build", flags)
+        self.assertIn("-fdebug-prefix-map=" + windows.as_posix() + "=/broker-build", flags)
         self.assertEqual(env["CFLAGS"].count("/broker-build"), 2)
         self.assertEqual((build / "broker-ccache.conf").read_bytes(), CONFIG.encode())
 
@@ -342,3 +343,62 @@ class RealCompilerCacheTests(unittest.TestCase):
                         self.assertEqual(flags, [env["CFLAGS"], env["CXXFLAGS"]])
                     else:
                         self.assertNotIn("/broker-build", "\n".join(flags))
+
+    def test_native_paths_survive_cmake_to_gcc_response_file_roundtrip(self):
+        cmake, compiler = shutil.which("cmake"), shutil.which("gcc")
+        if cmake is None:
+            self.skipTest("real CMake fixture required")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bridge = root / "idf-response-boundary.cmake"
+            # IDF preserves quoted flag tokens in toolchain/cflags. Exercise the
+            # CMake string-to-response boundary with the real compiler consumer.
+            bridge.write_text('file(WRITE "${OUTPUT}" "${FLAGS}\\n")\n')
+            source = root / "unit.c"
+            source.write_text("int answer(void) { return 42; }\n")
+            for index, spelling in enumerate(("C:/build/slot", "C:/build root/slot")):
+                with self.subTest(native_path=spelling):
+                    build = root / f"case-{index}"
+                    build.mkdir()
+                    windows = PureWindowsPath(spelling)
+                    env = dict(os.environ)
+                    with patch.object(Path, "resolve", return_value=windows):
+                        configure_ccache(
+                            {"enabled": True},
+                            env,
+                            root / "state",
+                            build,
+                            "project",
+                            "owner",
+                            "e" * 64,
+                            {},
+                        )
+                    response = build / "cflags"
+                    result = subprocess.run(
+                        [
+                            cmake,
+                            "-DFLAGS=" + env["CFLAGS"],
+                            "-DOUTPUT=" + str(response),
+                            "-P",
+                            str(bridge),
+                        ],
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(response.read_bytes(), (env["CFLAGS"] + "\n").encode())
+                    result = subprocess.run(
+                        [compiler, "-###", "@" + str(response), "-c", str(source)],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    line = next(
+                        line
+                        for line in result.stderr.splitlines()
+                        if line.startswith("COLLECT_GCC_OPTIONS=")
+                    )
+                    options = shlex.split(line.partition("=")[2])
+                    for path in (str(windows), windows.as_posix()):
+                        self.assertIn("-fdebug-prefix-map=" + path + "=/broker-build", options)

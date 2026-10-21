@@ -4,7 +4,6 @@ import hashlib
 import json
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -13,7 +12,7 @@ from .build_locations import _plain
 
 CONTRACT = "idf-compiler-cache-v1"
 MAX_SIZE = "2Gi"
-NORMALIZATION = "build-debug-prefix-cmake-cache-v1"
+NORMALIZATION = "build-debug-prefix-gcc-response-v1"
 CONFIG = (
     "compiler_check = content\n"
     "hash_dir = true\n"
@@ -132,9 +131,11 @@ def configure_ccache(
     # Map both spellings on Windows so hash_dir stays effective across slots.
     resolved = build_dir.resolve()
     spellings = dict.fromkeys((str(resolved), resolved.as_posix()))
-    flag = subprocess.list2cmdline(
-        ["-fdebug-prefix-map=" + path + "=/broker-build" for path in spellings]
-    )
+    # IDF writes CMake flag strings to GCC @response files. Use response-file
+    # escaping, including doubled native backslashes inside double quotes.
+    # Windows CRT argv quoting leaves those backslashes ambiguous to ccache.
+    flags = ["-fdebug-prefix-map=" + path + "=/broker-build" for path in spellings]
+    flag = " ".join('"' + item.replace("\\", "\\\\").replace('"', '\\"') + '"' for item in flags)
     for key in ("CFLAGS", "CXXFLAGS"):
         env[key] = " ".join(filter(None, (env.get(key), flag)))
     return policy | {"namespace": namespace, "path_normalization": NORMALIZATION}
