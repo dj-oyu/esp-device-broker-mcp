@@ -284,3 +284,61 @@ class RealCompilerCacheTests(unittest.TestCase):
             other_mode = compile_generation(4, dma="ON")
             self.assertNotEqual(second[4]["namespace"], other_mode[4]["namespace"])
             self.assertEqual(other_mode[3]["cache_miss"], changed[3]["cache_miss"] + 1)
+
+    def test_cmake_early_toolchain_flags_require_explicit_cache_definition(self):
+        cmake = shutil.which("cmake")
+        if cmake is None:
+            self.skipTest("real CMake fixture required")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = root / "project"
+            project.mkdir()
+            (project / "CMakeLists.txt").write_text(
+                'cmake_minimum_required(VERSION 3.22)\nproject(cache_flags C)\n'
+                'file(WRITE "${CMAKE_BINARY_DIR}/flags.txt" '
+                '"${CMAKE_C_FLAGS}\\n${CMAKE_CXX_FLAGS}")\n'
+            )
+            # Model IDF 6.0.1's early CACHE FORCE definition, before language
+            # initialization considers ENV{CFLAGS}/ENV{CXXFLAGS}. No SDK build.
+            toolchain = project / "early-flags.cmake"
+            toolchain.write_text(
+                'foreach(lang C CXX)\n'
+                '  set(CMAKE_${lang}_FLAGS "${CMAKE_${lang}_FLAGS}" '
+                'CACHE STRING "early toolchain flags" FORCE)\nendforeach()\n'
+            )
+            for explicit in (False, True):
+                with self.subTest(explicit_cache_definition=explicit):
+                    build = root / f"build with spaces {explicit}"
+                    build.mkdir()
+                    env = dict(os.environ)
+                    configure_ccache(
+                        {"enabled": True},
+                        env,
+                        root / "state",
+                        build,
+                        "project",
+                        "owner",
+                        "e" * 64,
+                        {},
+                    )
+                    args = [
+                        cmake,
+                        "-S",
+                        str(project),
+                        "-B",
+                        str(build),
+                        "-DCMAKE_TOOLCHAIN_FILE=" + str(toolchain),
+                        "-DCMAKE_C_COMPILER=" + shutil.which("gcc"),
+                    ]
+                    if explicit:
+                        args += [
+                            "-DCMAKE_C_FLAGS=" + env["CFLAGS"],
+                            "-DCMAKE_CXX_FLAGS=" + env["CXXFLAGS"],
+                        ]
+                    result = subprocess.run(args, env=env, capture_output=True, timeout=60)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    flags = (build / "flags.txt").read_text().splitlines()
+                    if explicit:
+                        self.assertEqual(flags, [env["CFLAGS"], env["CXXFLAGS"]])
+                    else:
+                        self.assertNotIn("/broker-build", "\n".join(flags))

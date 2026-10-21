@@ -586,6 +586,10 @@ class FirmwareVerticalTests(unittest.TestCase):
                 )
                 self.assertTrue(Path(build_env["CCACHE_CONFIGPATH"]).is_file())
                 self.assertIn("/broker-build", build_env["CFLAGS"])
+                self.assertIn("CMAKE_C_FLAGS=" + build_env["CFLAGS"], build_call)
+                self.assertIn("CMAKE_CXX_FLAGS=" + build_env["CXXFLAGS"], build_call)
+            else:
+                self.assertFalse(any(arg.startswith("CMAKE_C_FLAGS=") for arg in build_call))
             if source_mode:
                 self.assertEqual(
                     report["manifest"]["source_provenance"]["source_receipt"], source_receipt

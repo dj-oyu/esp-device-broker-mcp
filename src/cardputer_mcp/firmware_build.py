@@ -818,6 +818,16 @@ class FirmwareBuild:
             "-B",
             str(build_dir),
         ]
+        if cache_policy["enabled"]:
+            # IDF 6.0.1 seeds CMAKE_*_FLAGS before CMake reads environment flags.
+            # Pass our generated flags at the cache-definition entry, so IDF
+            # copies them into its toolchain response files on first configure.
+            build_args += [
+                "-D",
+                "CMAKE_C_FLAGS=" + env["CFLAGS"],
+                "-D",
+                "CMAKE_CXX_FLAGS=" + env["CXXFLAGS"],
+            ]
         if provenance is not None:
             build_args += ["-D", "SDKCONFIG=" + str(build_dir / "sdkconfig")]
         if plan.get("derby_detail_mode") is not None:

@@ -13,7 +13,7 @@ from .build_locations import _plain
 
 CONTRACT = "idf-compiler-cache-v1"
 MAX_SIZE = "2Gi"
-NORMALIZATION = "build-debug-prefix-native-and-generic-v1"
+NORMALIZATION = "build-debug-prefix-cmake-cache-v1"
 CONFIG = (
     "compiler_check = content\n"
     "hash_dir = true\n"
