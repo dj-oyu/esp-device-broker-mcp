@@ -1,8 +1,9 @@
-"""Two-axis preparation/durable tests use a test-only registry entry and no SDK."""
+"""Synthetic two-axis preparation/durable tests; no SDK or device operations."""
 
 import copy
 import hashlib
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -51,18 +52,24 @@ def build_fixture(tmp_path):
     return builder, project, provenance, node
 
 
-def test_four_plans_bind_both_axes_and_isolate_cache_sdkconfig(tmp_path):
+@pytest.mark.parametrize("entry", [DMA_ENTRY, registry._RUNTIME_RESOURCES_ENTRY])
+def test_four_plans_bind_both_axes_and_isolate_cache_sdkconfig(tmp_path, entry):
     builder, project, source, node = build_fixture(tmp_path)
+    source["commit"] = entry.commit
     plans, directories = [], []
     with (
-        patch.object(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY)),
+        (
+            patch.object(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY))
+            if entry == DMA_ENTRY
+            else nullcontext()
+        ),
         patch.object(builder, "_project", return_value=(project, source)),
         patch.object(builder, "_registered_tools", return_value={"node": node}),
     ):
         for detail in ("ON", "OFF"):
             for dma in ("ON", "OFF"):
                 plan = builder.prepare("fixture", "owner", "a" * 64, detail, dma)
-                assert plan["diagnostic_entry_sha256"] == DMA_ENTRY.sha256
+                assert plan["diagnostic_entry_sha256"] == entry.sha256
                 assert plan["argv_template"][-5:] == [
                     "-D",
                     "POCKET_DERBY_DETAIL_MEASURE=" + detail,
@@ -90,8 +97,9 @@ def test_four_plans_bind_both_axes_and_isolate_cache_sdkconfig(tmp_path):
         for detail, dma in ((None, None), ("ON", None), (None, "OFF"), (True, "OFF")):
             with pytest.raises(ValueError):
                 builder.prepare("fixture", "owner", "a" * 64, detail, dma)
-    # Neither the new source nor DMA on the original admitted J1 is enabled.
-    assert registry._ENTRIES == (registry._J1_ENTRY,)
+    # The synthetic comparison source and DMA on the original J1 stay unadmitted.
+    assert DMA_ENTRY not in registry._ENTRIES
+    source["commit"] = DMA_ENTRY.commit
     with (
         patch.object(builder, "_project", return_value=(project, source)),
         patch.object(builder, "_registered_tools", return_value={"node": node}),
@@ -103,7 +111,8 @@ def test_four_plans_bind_both_axes_and_isolate_cache_sdkconfig(tmp_path):
             builder.prepare("fixture", "owner", "a" * 64, "ON", "OFF")
 
 
-def test_request_and_approval_schema_require_explicit_typed_dma_axes(tmp_path):
+@pytest.mark.parametrize("entry", [DMA_ENTRY, registry._RUNTIME_RESOURCES_ENTRY])
+def test_request_and_approval_schema_require_explicit_typed_dma_axes(tmp_path, entry):
     request = dict(
         job_id="build", test="firmware_build", project_id="fixture", source_receipt="a" * 64
     )
@@ -128,8 +137,9 @@ def test_request_and_approval_schema_require_explicit_typed_dma_axes(tmp_path):
             job_id="build", test="firmware_build", derby_detail_mode="ON", derby_dma_mode="OFF"
         )
     builder, project, source, node = build_fixture(tmp_path)
+    source["commit"] = entry.commit
     with (
-        patch.object(registry, "_ENTRIES", (DMA_ENTRY,)),
+        patch.object(registry, "_ENTRIES", (DMA_ENTRY,)) if entry == DMA_ENTRY else nullcontext(),
         patch.object(builder, "_project", return_value=(project, source)),
         patch.object(builder, "_registered_tools", return_value={"node": node}),
     ):
@@ -153,16 +163,23 @@ def test_request_and_approval_schema_require_explicit_typed_dma_axes(tmp_path):
                     changed[key] = value
                 with pytest.raises((ValueError, TypeError)):
                     PlanApprovals._schema(changed)
+        for other in (registry._J1_ENTRY, DMA_ENTRY, registry._RUNTIME_RESOURCES_ENTRY):
+            if other == entry:
+                continue
+            with pytest.raises(ValueError):
+                PlanApprovals._schema({**plan, "diagnostic_entry_sha256": other.sha256})
 
 
 @pytest.mark.parametrize("detail", ["ON", "OFF"])
 @pytest.mark.parametrize("dma", ["ON", "OFF"])
-def test_dma_durable_evidence_after_restart_and_log_expiry(detail, dma):
+@pytest.mark.parametrize("entry", [DMA_ENTRY, registry._RUNTIME_RESOURCES_ENTRY])
+def test_dma_durable_evidence_after_restart_and_log_expiry(detail, dma, entry):
     case = persistence.DurableBuildArtifactTests()
     case.setUp()
     try:
         root, manifest = case.publish(finish=False, publish=False)
         source, artifacts, _ = dma_fixture(root, detail, dma)
+        source["commit"] = entry.commit
         cache = (root / "CMakeCache.txt").read_bytes()
         cache += b"PRIVATE_PATH:PATH=/private/sentinel-source\nTOKEN:STRING=sentinel-secret-value\n"
         (root / "CMakeCache.txt").write_bytes(cache)
@@ -172,13 +189,17 @@ def test_dma_durable_evidence_after_restart_and_log_expiry(detail, dma):
         for key in ("build_mode", "build_measure"):
             producer["diagnostic"][key]["cmake_cache_sha256"] = cache_hash
         (root / PROOF_NAME).write_text(json.dumps(producer))
-        with patch.object(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY)):
+        with (
+            patch.object(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY))
+            if entry == DMA_ENTRY
+            else nullcontext()
+        ):
             envelope = collect_dma_modeproof(root, detail, dma, source, artifacts)
             manifest.update(
                 source_provenance=source,
                 derby_detail_mode=detail,
                 derby_dma_mode=dma,
-                diagnostic_entry_sha256=DMA_ENTRY.sha256,
+                diagnostic_entry_sha256=entry.sha256,
                 diagnostic_modeproof=envelope,
                 artifacts=artifacts,
             )
@@ -188,7 +209,7 @@ def test_dma_durable_evidence_after_restart_and_log_expiry(detail, dma):
                 derby_detail_mode=detail,
                 derby_dma_mode=dma,
                 source_provenance=source,
-                diagnostic_entry_sha256=DMA_ENTRY.sha256,
+                diagnostic_entry_sha256=entry.sha256,
             )
             digest = persistence.digest(plan)
             case.store.put_plan(digest, plan)

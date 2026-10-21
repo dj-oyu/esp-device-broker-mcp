@@ -41,7 +41,14 @@ class DiagnosticEntry:
 J1_COMMIT = "b561aea1c0798feb28055a00d36681fae81ac58a"
 J1_REPOSITORY = "dj-oyu/cardputer-adv-pocketjs"
 _J1_ENTRY = DiagnosticEntry(J1_REPOSITORY, J1_COMMIT)
-_ENTRIES = (_J1_ENTRY,)
+RUNTIME_RESOURCES_COMMIT = "d6609bbf153c261f8d2e682793035e00f72e6ccc"
+_RUNTIME_RESOURCES_ENTRY = DiagnosticEntry(
+    J1_REPOSITORY,
+    RUNTIME_RESOURCES_COMMIT,
+    contract="derby-dma-diagnostic-v1",
+    dma_modes=("ON", "OFF"),
+)
+_ENTRIES = (_J1_ENTRY, _RUNTIME_RESOURCES_ENTRY)
 
 
 def diagnostic_entry(provenance: dict[str, Any]) -> DiagnosticEntry:

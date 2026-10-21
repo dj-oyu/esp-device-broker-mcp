@@ -1,4 +1,4 @@
-"""Two-axis receipt-chain isolation; producer heads are admitted only by test patches."""
+"""Synthetic receipt-chain checks for test-only and exact registered source entries."""
 
 import copy
 import hashlib
@@ -32,12 +32,18 @@ def rebind(chain):
     chain.plans[flash_hash] = chain.flash
 
 
-@pytest.fixture
-def make_dma_chain(chain, tmp_path, monkeypatch):
-    monkeypatch.setattr(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY))
+@pytest.fixture(
+    params=[DMA_ENTRY, registry._RUNTIME_RESOURCES_ENTRY],
+    ids=["synthetic-comparison", "registered-runtime-resources"],
+)
+def make_dma_chain(chain, tmp_path, monkeypatch, request):
+    entry = request.param
+    if entry == DMA_ENTRY:
+        monkeypatch.setattr(registry, "_ENTRIES", (*registry._ENTRIES, DMA_ENTRY))
 
     def make(detail="OFF", dma="ON"):
         provenance, artifacts, files = dma_image_fixture(tmp_path, detail, dma)
+        provenance["commit"] = entry.commit
         provenance["source_receipt"] = "c" * 64
         envelope = collect_dma_modeproof(tmp_path, detail, dma, provenance, artifacts)
         for record in (chain.build, chain.manifest):
@@ -45,7 +51,7 @@ def make_dma_chain(chain, tmp_path, monkeypatch):
                 source_provenance=provenance,
                 derby_detail_mode=detail,
                 derby_dma_mode=dma,
-                diagnostic_entry_sha256=DMA_ENTRY.sha256,
+                diagnostic_entry_sha256=entry.sha256,
             )
         chain.manifest.update(diagnostic_modeproof=envelope, artifacts=artifacts)
         chain.files.clear()
@@ -66,10 +72,10 @@ def test_four_axis_choices_bind_to_verified_retained_flash(make_dma_chain, detai
     chain = make_dma_chain(detail, dma)
     details = prepare_collector(chain.resident, "public-flash", "owner")
     binding = details["collector_binding"]
-    assert binding["source_commit"] == DMA_ENTRY.commit
+    assert binding["source_commit"] == chain.build["source_provenance"]["commit"]
     assert binding["derby_detail_mode"] == detail
     assert binding["derby_dma_mode"] == dma
-    assert binding["diagnostic_entry_sha256"] == DMA_ENTRY.sha256
+    assert binding["diagnostic_entry_sha256"] == chain.build["diagnostic_entry_sha256"]
     assert binding["build_plan_hash"] == chain.jobs["public-build"]["plan_hash"]
     assert binding["flash_plan_hash"] == chain.jobs["public-flash"]["plan_hash"]
     assert binding["modeproof_sha256"] == chain.manifest["diagnostic_modeproof"]["proof_sha256"]

@@ -443,14 +443,15 @@ and device registration, then explicitly fetch/build/flash and run each mode's
 trial. Deployment, configuration edits, hardware writes and merging are separate
 operations; none are performed by these synthetic tests.
 
-Diagnostic admission is centralized in a closed source registry containing only
-that J1 commit. New detail-build plans, fingerprints, manifests and collector
+Diagnostic admission is centralized in a closed source registry containing that
+J1 commit and the exact runtime-resource source described below. New detail-build
+plans, fingerprints, manifests and collector
 bindings include the selected entry's `diagnostic_entry_sha256`. It hashes that
 entry's exact source/contract policy, independently of unrelated registry entries;
 source byte/tree/submodule identities remain verified by the existing source
 receipt and build/flash provenance chain. An unrelated entry cannot change an
-existing entry's digest. The production registry adds no source heads or DMA
-selection, and has no configuration or MCP editing interface.
+existing entry's digest. The registry has no configuration or MCP editing interface;
+additional source identities require reviewed code changes.
 
 Successful J1 manifests and collector history from before this field existed
 remain readable through the original proof and receipt checks. Only the original
@@ -462,10 +463,9 @@ changing a proof contract remains a separate reviewed acceptance change.
 ### Isolated DMA consumer contract
 
 The consumer also understands the separate `derby-dma-diagnostic-v1` contract.
-This support does **not** add an admitted source: the production diagnostic registry
-still contains only the original J1 head. `derby_dma_mode` is a separate typed
-`ON`/`OFF` selector; it is rejected for that J1 entry. A future DMA-contract entry
-requires both `derby_detail_mode` and `derby_dma_mode` explicitly, with no defaults,
+`derby_dma_mode` is a separate typed `ON`/`OFF` selector; it remains rejected for
+the original J1 entry. The admitted DMA-contract entry requires both
+`derby_detail_mode` and `derby_dma_mode` explicitly, with no defaults,
 null values, arbitrary CMake arguments or fallback to the J1 detail-only proof.
 
 Both axes and the per-entry digest bind preparation, fingerprint/build slot,
@@ -478,8 +478,29 @@ snapshots; public build-log manifests return only their hash/size summary. This
 keeps cached paths or credentials out of MCP responses. Broker manifests have a
 1 MiB read bound; the smaller identity receipts keep their 64 KiB bound.
 
-Prospective admission requires a separate reviewed registry change and local
-registration authorization. The exact proposed entry (currently test-only) is:
+The only additional admitted entry is the exact runtime-resource source:
+
+```python
+DiagnosticEntry(
+    repository="dj-oyu/cardputer-adv-pocketjs",
+    commit="d6609bbf153c261f8d2e682793035e00f72e6ccc",
+    contract="derby-dma-diagnostic-v1",
+    modes=("ON", "OFF"),
+    dma_modes=("ON", "OFF"),
+)
+```
+
+Its entry digest is `774d8a7b018e1c825c38f28959e61068c0d10a6315b50d81d1958dd1d4fa3deb`.
+The original J1 entry and its digest remain unchanged. This accepts neither branches,
+abbreviated SHAs nor other commits: the same-tree integration merge
+`d0ba90919647ba99a8677bbe758094b3c3216551` is not admitted. The four supported
+build combinations are structural proof support, not authority to execute all four.
+Existing source, owner, registered project/device, immutable plan, linked image,
+recovery and durable receipt checks still apply. This code change performs no
+deployment, device operation or recovery-data modification; local source/project
+registration and each physical action remain separately scoped operator steps.
+
+The earlier comparison fixture below remains test-only and unadmitted:
 
 ```python
 DiagnosticEntry(
@@ -491,8 +512,8 @@ DiagnosticEntry(
 )
 ```
 
-The proposed entry digest is `e40c3f8972225ae25b3a4765e54650a7d2876bfdd4690989ca4383e0cf6ed5d8`.
-The FW source tree is `f14367d2c73e5531823b209117a470f8df64db49`.
+That fixture entry digest is `e40c3f8972225ae25b3a4765e54650a7d2876bfdd4690989ca4383e0cf6ed5d8`.
+Its historical FW source tree is `f14367d2c73e5531823b209117a470f8df64db49`.
 [Producer PR33](https://github.com/dj-oyu/cardputer-adv-pocketjs/pull/33) has four
 successful workflows / twelve jobs at that exact head:
 [fixed](https://github.com/dj-oyu/cardputer-adv-pocketjs/actions/runs/39393775102),
