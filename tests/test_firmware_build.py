@@ -273,6 +273,7 @@ class FirmwareVerticalTests(unittest.TestCase):
         mutate_during_diagnostics=False,
         node_mode=None,
         source_mode=False,
+        cache_mode=None,
     ):
         try:
             import filelock
@@ -304,6 +305,8 @@ class FirmwareVerticalTests(unittest.TestCase):
             python.write_bytes(b"python")
             compiler = root / "xtensa-esp32s3-elf-gcc.exe"
             compiler.write_bytes(b"gcc")
+            cache = root / "ccache.exe"
+            cache.write_bytes(b"cache")
             settings = SimpleNamespace(
                 state_dir=root / "state",
                 build_projects={
@@ -361,11 +364,13 @@ class FirmwareVerticalTests(unittest.TestCase):
             plan = builder.prepare("cardputer", "alice", source_receipt) | {"job_id": "job"}
             calls = []
             environments = []
+            statistics_reads = 0
 
             class FakeProcess:
                 stop_requested = threading.Event()
 
                 def run(self, args, env, cwd, emit, timeout=1800):
+                    nonlocal statistics_reads
                     calls.append(args)
                     environments.append(dict(env))
                     self_test.assertEqual("AMD64", env["PROCESSOR_ARCHITECTURE"])
@@ -380,9 +385,24 @@ class FirmwareVerticalTests(unittest.TestCase):
                             f"IDF_PYTHON_ENV_PATH={python_env}",
                             f"PATH={root}",
                             "UNTRUSTED_TOKEN=secret",
+                            *(("IDF_CCACHE_ENABLE=1",) if cache_mode else ()),
                         ):
                             emit(line, "stdout")
+                    elif args[-1] == "--print-stats":
+                        for name, value in (
+                            ("direct_cache_hit", 2),
+                            ("preprocessed_cache_hit", 1),
+                            ("cache_miss", 3),
+                        ):
+                            emit(f"{name}\t{value if statistics_reads else 0}", "stdout")
+                        statistics_reads += 1
                     elif args[-1] == "--version":
+                        if args[0] == str(cache):
+                            emit(
+                                "ccache version " + ("4.0" if cache_mode == "old" else "4.12.1"),
+                                "stdout",
+                            )
+                            return 1 if cache_mode == "broken" else 0
                         if idf_failed and args[1] == str(idf_py):
                             emit("error: Windows- unsupported token=hidden", "stderr")
                             emit("Bearer synthetic-secret-value", "stdout")
@@ -400,6 +420,8 @@ class FirmwareVerticalTests(unittest.TestCase):
                                 "ESP-IDF v6.0.1" if args[1] == str(idf_py) else "version", "stdout"
                             )
                     else:
+                        if cache_mode == "compile_failed":
+                            return 1
                         directory = Path(args[args.index("-B") + 1])
                         directory.mkdir(parents=True, exist_ok=True)
                         (directory / "project_description.json").write_text('{"target":"esp32s3"}')
@@ -441,6 +463,8 @@ class FirmwareVerticalTests(unittest.TestCase):
                     return str(compiler)
                 if name == "node.exe" and node_mode:
                     return str(compiler if node_mode == "ambiguous" else node)
+                if name == "ccache.exe" and cache_mode != "missing":
+                    return str(cache)
                 return None
 
             with (
@@ -461,6 +485,20 @@ class FirmwareVerticalTests(unittest.TestCase):
                 patch.object(builder, "prepare", side_effect=prepare_hook),
                 patch.object(module, "hash_file", side_effect=hash_hook),
             ):
+                if cache_mode in ("broken", "compile_failed"):
+                    code = (
+                        "compiler_cache_diagnostic_failed"
+                        if cache_mode == "broken"
+                        else "idf_build_failed_needs_review"
+                    )
+                    with self.assertRaisesRegex(ValueError, code):
+                        builder._execute(plan, lambda _: None)
+                    self.assertFalse(builder.manifests)
+                    self.assertEqual(
+                        sum(args[-1] == "build" for args in calls),
+                        1 if cache_mode == "compile_failed" else 0,
+                    )
+                    return
                 if node_mode in ("wrong_version", "ambiguous", "unregistered"):
                     code = {
                         "wrong_version": "registered_tool_version_mismatch",
@@ -527,17 +565,38 @@ class FirmwareVerticalTests(unittest.TestCase):
                 self.assertEqual(
                     calls[0][1:5], ["-NoProfile", "-ExecutionPolicy", "RemoteSigned", "-File"]
                 )
-            self.assertEqual(calls[-1][-1], "build")
-            self.assertEqual(len(calls), 6 if node_mode else 5)
+            build_call = next(args for args in calls if args[-1] == "build")
+            build_env = next(
+                env for args, env in zip(calls, environments, strict=True) if args[-1] == "build"
+            )
+            self.assertEqual(
+                len(calls),
+                (6 if node_mode else 5)
+                + (3 if cache_mode == "on" else 1 if cache_mode == "old" else 0),
+            )
             report = builder.read_logs(SimpleNamespace(job_id="job", **vars(request())), "alice")
             self.assertFalse(report["manifest"]["flash_authorized"])
+            receipt = report["manifest"]["compiler_cache"]
+            self.assertEqual(receipt["enabled"], cache_mode == "on")
+            self.assertIn("--ccache" if receipt["enabled"] else "--no-ccache", build_call)
+            if cache_mode == "on":
+                self.assertEqual(
+                    receipt["counter_delta"],
+                    {"direct_cache_hit": 2, "preprocessed_cache_hit": 1, "cache_miss": 3},
+                )
+                self.assertTrue(Path(build_env["CCACHE_CONFIGPATH"]).is_file())
+                self.assertIn("/broker-build", build_env["CFLAGS"])
+                self.assertIn("CMAKE_C_FLAGS=" + build_env["CFLAGS"], build_call)
+                self.assertIn("CMAKE_CXX_FLAGS=" + build_env["CXXFLAGS"], build_call)
+            else:
+                self.assertFalse(any(arg.startswith("CMAKE_C_FLAGS=") for arg in build_call))
             if source_mode:
                 self.assertEqual(
                     report["manifest"]["source_provenance"]["source_receipt"], source_receipt
                 )
                 self.assertEqual(report["manifest"]["source_provenance"]["commit"], fixture.COMMIT)
-                self.assertEqual(environments[-1]["IDF_COMPONENT_MANAGER"], "0")
-                config_arg = next(arg for arg in calls[-1] if arg.startswith("SDKCONFIG="))
+                self.assertEqual(build_env["IDF_COMPONENT_MANAGER"], "0")
+                config_arg = next(arg for arg in build_call if arg.startswith("SDKCONFIG="))
                 self.assertEqual(Path(config_arg.split("=", 1)[1]).name, "sdkconfig")
                 self.assertEqual((project / "CMakeLists.txt").read_text(), "source")
             self.assertEqual(report["manifest"]["idf_version"], "6.0.1")
@@ -547,11 +606,24 @@ class FirmwareVerticalTests(unittest.TestCase):
                 self.assertEqual(
                     report["manifest"]["registered_tool_versions"]["node"]["version"], "v22.0.0"
                 )
-                self.assertEqual(environments[-1]["PATH"].split(";")[0], str(node.parent))
+                self.assertEqual(build_env["PATH"].split(";")[0], str(node.parent))
                 self.assertNotIn("SYSTEM_PATH", environments[-1])
             self.assertNotIn("hidden", str(report))
             with self.assertRaises(ValueError):
                 builder.read_logs(SimpleNamespace(job_id="job", **vars(request())), "bob")
+
+    def test_compiler_cache_preserves_source_artifact_and_config_identity(self):
+        self._exercise_build(cache_mode="on", source_mode=True)
+
+    def test_missing_and_old_cache_use_explicit_uncached_build(self):
+        for mode in ("missing", "old"):
+            with self.subTest(mode=mode):
+                self._exercise_build(cache_mode=mode)
+
+    def test_cache_probe_or_compile_failure_never_retries_uncached(self):
+        for mode in ("broken", "compile_failed"):
+            with self.subTest(mode=mode):
+                self._exercise_build(cache_mode=mode)
 
     def test_source_receipt_build_records_provenance_and_keeps_config_out_of_source(self):
         self._exercise_build(source_mode=True)

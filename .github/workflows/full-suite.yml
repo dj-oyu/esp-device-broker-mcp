@@ -44,6 +44,14 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --no-deps uv==0.12.19
           uv sync --frozen --python python
+      - name: Install Linux compiler-cache contract fixture
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ccache
+          ccache --version
+          gcc --version
+          cmake --version
       - name: Lint and format
         run: |
           uv run --frozen ruff check src tests packaging/full_suite.py packaging/ci_process_tree.py
