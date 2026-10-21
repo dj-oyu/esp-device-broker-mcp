@@ -196,7 +196,7 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         self.assertNotIn(first[1]["source_receipt"], policy["protected"])
         self.assertIn(first[2]["source_receipt"], policy["protected"])
 
-    def test_recovery_history_current_lkg_and_unfinished_flash_protect_source(self):
+    def test_history_provenance_current_lkg_and_unfinished_flash_are_distinct(self):
         first = self.fill(2)
         for index in range(2):
             self.add(
@@ -229,7 +229,10 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         policy = self.evidence()
         self.assertTrue(policy["complete"])
         self.assertIn("current_lkg_evidence", policy["protected"][first[0]["source_receipt"]])
-        self.assertIn("recovery_history_evidence", policy["protected"][first[0]["source_receipt"]])
+        self.assertNotIn(
+            "recovery_history_evidence", policy["protected"][first[0]["source_receipt"]]
+        )
+        self.assertIn("recovery_history_evidence", policy["provenance"][first[0]["source_receipt"]])
         self.assertIn(
             "executable_firmware_operation", policy["protected"][first[1]["source_receipt"]]
         )

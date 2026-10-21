@@ -122,8 +122,12 @@ publication is never reusable. Duplicate fetch jobs do not duplicate payloads.
 
 If new bytes need space, the explicit fetch reclaims the oldest eligible payloads
 under an OS cache lock. Current executable source-build plans, unfinished jobs,
-executable/unfinished firmware operations and every current/history LKG source
-association protect their payloads. New source-build plans have a visible
+executable/unfinished firmware operations and the current LKG source association
+protect their payloads. Historical LKG associations retain provenance, receipts
+and firmware binaries without permanently reserving their old source payloads.
+Their original flash/build lineage is still validated; it also resolves the
+current LKG's source when a later operation selected an existing binary.
+New source-build plans have a visible
 30-minute lease bound to the broker epoch and monotonic clock; wall-clock
 changes cannot expire or revive it. `source_plan_expires_at` is display-only.
 Expired unexecuted plans cannot execute and must be prepared again. Preparing unchanged inputs during a live lease does not renew it. Once a
@@ -156,7 +160,9 @@ full payload verification; they never grant build authority. Publication intent
 is committed on the resident SQLite loop before the filesystem rename. Intent
 alone never grants success or build authorization. Legacy uncertain publications
 without this binding remain unknown and are preserved. The ledger is limited by
-the existing 10,000-job history bound, with at most one receipt per fetch job.
+the existing 10,000-reference scan bound, with at most one receipt per fetch job.
+That bound limits complete reference inspection, not history storage or retention;
+exceeding it disables reclamation rather than deleting history.
 
 The root OS lock is released by process death and rejects concurrent threads or
 processes without waiting. Its owner digest binds the cache to one state-store
@@ -168,8 +174,12 @@ checked before reclamation. Source download failure can leave an old payload
 retired, but never removes its receipt or recovery evidence.
 
 `read_source_resources` performs one fresh bounded traversal and returns owned
-resident/receipt-only entries, counts/bytes, executable/unfinished/recovery
-protection reasons and eligibility. Other principals and unknown names stay
+resident/receipt-only entries, counts/bytes and eligibility. The additive
+`payload_protection_reasons` field lists reclamation blockers;
+`provenance_reasons` separately reports immutable receipts and historical LKG
+associations. The existing `protection_reasons` field retains its receipt-evidence
+reason and current blockers. History-only provenance is not a payload blocker.
+Other principals and unknown names stay
 private and consume capacity. This read never reclaims or grants cleanup.
 Truncated, corrupt or unresolved reference evidence disables reclamation with
 `source_cache_references_incomplete`. If no eligible payload can free enough space,
