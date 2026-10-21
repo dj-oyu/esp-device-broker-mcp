@@ -160,6 +160,7 @@ def _lifecycle_report(
             continue
         proof = min(proofs, key=lambda item: item["finished"])
         reasons = policy["protected"].get(record["name"], [])
+        blockers = [*reasons, *([] if policy["complete"] else ["references_incomplete"])]
         present = record.get("payload_present", True)
         candidate = bool(present and policy["complete"] and not reasons)
         for reason in reasons:
@@ -177,8 +178,12 @@ def _lifecycle_report(
                 "cleanup_eligible": False,  # A reference read is not full content validation.
                 "protection_reasons": [
                     "immutable_receipt_evidence_retained",
-                    *reasons,
-                    *([] if policy["complete"] else ["references_incomplete"]),
+                    *blockers,
+                ],
+                "payload_protection_reasons": blockers,
+                "provenance_reasons": [
+                    "immutable_receipt_evidence_retained",
+                    *policy["provenance"].get(record["name"], []),
                 ],
                 "retained_until": "payload_while_referenced_receipt_within_fixed_evidence_bounds",
             }

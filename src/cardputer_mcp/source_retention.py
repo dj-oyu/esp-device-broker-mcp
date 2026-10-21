@@ -19,9 +19,11 @@ def retention_evidence(
     *,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Protect executable plans, unfinished jobs and every recovery association.
+    """Protect executable plans, unfinished jobs and the current LKG source.
 
-    Completed build plans are provenance, not permanent payload reservations.
+    Completed build plans and historical LKG sources are provenance, not payload
+    reservations. Keep validating their lineage, including the original flash
+    association needed to resolve the current LKG after a later operation.
     The immutable source receipt is retained even when its payload is reclaimed.
     Unknown/truncated evidence disables all reclamation, including orphan cleanup.
     """
@@ -47,6 +49,7 @@ def retention_evidence(
     plans: dict[str, Any] = {}
     executable: list[dict[str, Any]] = []
     protected: dict[str, list[str]] = {}
+    provenance: dict[str, list[str]] = {}
     now = time.monotonic() if now is None else now
 
     def protect(receipt: str, reason: str) -> None:
@@ -139,9 +142,9 @@ def retention_evidence(
         build = plans.get(plan.get("build_job_id", ""), {})
         if build.get("project_id") == project and build.get("source_receipt") is not None:
             protect(build["source_receipt"], "executable_firmware_operation")
-    for targets, reason in (
-        (current, "current_lkg_evidence"),
-        (history, "recovery_history_evidence"),
+    for targets, reason, reservations in (
+        (current, "current_lkg_evidence", protected),
+        (history, "recovery_history_evidence", provenance),
     ):
         for target in targets[:REFERENCE_LIMIT]:
             if target["kind"] == "full_backup":
@@ -159,7 +162,9 @@ def retention_evidence(
                 complete = False
                 continue
             if build.get("project_id") == project and build.get("source_receipt") is not None:
-                protect(build["source_receipt"], reason)
+                reasons = reservations.setdefault(build["source_receipt"], [])
+                if reason not in reasons:
+                    reasons.append(reason)
     publications = store.db.execute(
         "SELECT * FROM source_publications LIMIT ?", (REFERENCE_LIMIT + 1,)
     ).fetchall()
@@ -174,6 +179,7 @@ def retention_evidence(
         "complete": complete,
         "sources": sources,
         "protected": protected,
+        "provenance": provenance,
         "jobs": jobs,
         "publications": owned_publications,
     }
