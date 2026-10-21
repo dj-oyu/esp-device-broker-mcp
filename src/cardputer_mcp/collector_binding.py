@@ -18,6 +18,12 @@ from .diagnostic_registry import (
     validate_diagnostic_selection,
     validate_entry_binding,
 )
+from .fixed_diagnostic import (
+    DiagnosticContext,
+    prepare_fixed_diagnostic,
+    verify_build_chain,
+    verify_owned_flash,
+)
 from .manifest_export import validate_plan_export
 from .models import Digest, Identifier, StrictModel
 
@@ -80,23 +86,10 @@ def _digest(value: Any) -> str:
 
 
 def _owned_flash(broker: "Broker", flash_job_id: str, principal: str) -> tuple[Any, Any]:
-    from .broker import digest_plan
-
     store = broker._store()
     job = store.job(flash_job_id)
     plan = store.plan(job["plan_hash"]) if job else None
-    if (
-        not principal
-        or job is None
-        or job["state"] != "succeeded"
-        or plan is None
-        or digest_plan(plan) != job["plan_hash"]
-        or plan.get("job_id") != flash_job_id
-        or plan.get("test") != "firmware_flash"
-        or plan.get("flash_operation") != "flash"
-        or plan.get("flash_principal") != principal
-    ):
-        raise ValueError("collector_successful_owned_flash_required")
+    plan = verify_owned_flash(DiagnosticContext(principal), flash_job_id, job, plan)
     summary = store.firmware_summary(flash_job_id, principal)
     current = store.firmware_current(plan["device_id"], principal)
     if (
@@ -152,24 +145,9 @@ def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
     store = broker._store()
     build_job = store.job(flash["build_job_id"])
     build = store.plan(build_job["plan_hash"]) if build_job else None
-    provenance = manifest.get("source_provenance")
-    if (
-        build_job is None
-        or build_job["state"] != "succeeded"
-        or build is None
-        or digest_plan(build) != build_job["plan_hash"]
-        or build.get("test") != "firmware_build"
-        or build.get("job_id") != flash["build_job_id"]
-        or build.get("build_principal") != principal
-        or build.get("project_id") != registration.project_id
-        or manifest.get("build_job_id") != flash["build_job_id"]
-        or manifest.get("build_plan_hash") != build_job["plan_hash"]
-        or not isinstance(provenance, dict)
-        or build.get("source_provenance") != provenance
-        or build.get("source_receipt") != provenance.get("source_receipt")
-        or build.get("derby_detail_mode") != manifest.get("derby_detail_mode")
-    ):
-        raise ValueError("collector_build_source_binding_invalid")
+    provenance, build_job, build = verify_build_chain(
+        DiagnosticContext(principal), registration.project_id, flash, build_job, build, manifest
+    )
     entry_hash = validate_entry_binding(provenance, manifest)
     validate_entry_binding(provenance, build)
     _validate_selection_record(provenance, build)
@@ -224,11 +202,24 @@ def prepare_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
 
     if not isinstance(broker.backend, SerialBackend):
         raise ValueError("collector_serial_backend_required")
-    binding = resolve_collector(broker, flash_job_id, principal)
-    details = broker.backend.prepare_fixed_receipt(binding["expected_elf_sha256"])
-    if details["device_fingerprint"] != binding["device_fingerprint"]:
-        raise ValueError("collector_device_binding_invalid")
-    return {**details, "flash_job_id": flash_job_id, "collector_binding": binding}
+    lease = getattr(broker, "session", None)
+    context = DiagnosticContext(
+        principal,
+        origin=lease.owner if lease is not None else None,
+        epoch=getattr(broker, "epoch", None),
+        lease_id=lease.id if lease is not None else None,
+    )
+    return prepare_fixed_diagnostic(context, flash_job_id, _BrokerEvidence(broker), broker.backend)
+
+
+class _BrokerEvidence:
+    """Outer adapter; the inner use case never imports Broker or SQLite."""
+
+    def __init__(self, broker: "Broker") -> None:
+        self.broker = broker
+
+    def resolve(self, flash_job_id: str, context: DiagnosticContext) -> dict[str, Any]:
+        return resolve_collector(self.broker, flash_job_id, context.principal_id)
 
 
 def collector_live(broker: "Broker", plan: dict[str, Any], principal: str) -> bool:
