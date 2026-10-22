@@ -85,6 +85,19 @@ class BuildPreflightFailure(ValueError):
     """Base for fixed preflight diagnostics, without native output."""
 
     code: str
+    subprocess: dict[str, Any] | None = None
+
+    def public_diagnostic(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"code": self.code}
+        statuses = self.subprocess or {}
+        bounded = {
+            name: statuses[name]
+            for name in ("profile_export", "build_diagnostic", "idf_build")
+            if type(statuses.get(name)) is int and -(2**31) <= statuses[name] <= 2**32 - 1
+        }
+        if bounded:
+            result["subprocess_exit_codes"] = bounded
+        return result
 
 
 class FixedDiagnosticFailure(BuildPreflightFailure):
@@ -102,6 +115,12 @@ class FixedDiagnosticFailure(BuildPreflightFailure):
             "external_toolchain_resolution_changed",
             "node_requires_explicit_local_registration",
             "build_inputs_changed",
+            "idf_build_failed_needs_review",
+            "build_target_mismatch",
+            "build_artifacts_missing",
+            "artifact_count_limit",
+            "trusted_powershell_missing",
+            "external_idf_environment_invalid",
             "compiler_cache_setting_invalid",
             "compiler_cache_diagnostic_failed",
         }:
@@ -572,6 +591,42 @@ class FirmwareBuild:
                     raise
 
     def _execute_inner(self, plan: dict[str, Any], stage: Any, defer_publish: bool = False) -> str:
+        # Per-invocation state: never carry a previous job's subprocess result.
+        subprocess_result: dict[str, Any] = {}
+        try:
+            return self._execute_steps(plan, stage, defer_publish, subprocess_result)
+        except Exception as failure:
+            diagnostic = failure
+            # Exact, broker-authored literals only; never reflect native exception text.
+            if (
+                type(failure) is ValueError
+                and len(failure.args) == 1
+                and isinstance(failure.args[0], str)
+                and failure.args[0]
+                in {
+                    "build_inputs_changed",
+                    "idf_build_failed_needs_review",
+                    "build_target_mismatch",
+                    "build_artifacts_missing",
+                    "artifact_count_limit",
+                    "trusted_powershell_missing",
+                    "external_idf_environment_invalid",
+                }
+            ):
+                diagnostic = FixedDiagnosticFailure(failure.args[0])
+            if isinstance(diagnostic, BuildPreflightFailure):
+                diagnostic.subprocess = dict(subprocess_result) or None
+            if diagnostic is not failure:
+                raise diagnostic from None
+            raise
+
+    def _execute_steps(
+        self,
+        plan: dict[str, Any],
+        stage: Any,
+        defer_publish: bool,
+        subprocess_result: dict[str, Any],
+    ) -> str:
         self._check_cancelled()
         if os.name != "nt":
             raise ValueError("external_windows_idf_required")
@@ -610,11 +665,34 @@ class FirmwareBuild:
         if not system.is_absolute() or not powershell.is_file():
             raise ValueError("trusted_powershell_missing")
         stage("idf_profile")
-        run = (
+        process_run = (
             partial(self.process.run, monitor=self._authority_monitor)
             if self._authority_monitor is not None
             else self.process.run
         )
+
+        def run(
+            args: list[str],
+            environment: dict[str, str],
+            cwd: Path,
+            emit: Callable[[str, str], None],
+            timeout: float = 1800,
+        ) -> int:
+            operation = (
+                "idf_build"
+                if args[-1] == "build"
+                else "profile_export"
+                if "-e" in args
+                else "build_diagnostic"
+            )
+            subprocess_result.pop(operation, None)
+            code = process_run(args, environment, cwd, emit, timeout=timeout)
+            # Windows DWORD and signed POSIX return codes; no arbitrary objects/text.
+            if type(code) is int and -(2**31) <= code <= 2**32 - 1:
+                subprocess_result[operation] = code
+                logs.append(f"-- Broker subprocess: {operation}; exit_code={code}")
+            return code
+
         output: list[str] = []
         output_bytes = 0
         stderr_seen = False

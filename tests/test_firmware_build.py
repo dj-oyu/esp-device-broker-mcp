@@ -19,6 +19,56 @@ def request(cursor=None, levels=("error", "warning"), context=2, limit=40):
 
 
 class BuildTests(unittest.TestCase):
+    def test_failure_diagnostics_keep_only_fixed_codes_and_completed_status(self):
+        from unittest.mock import patch
+
+        from cardputer_mcp.firmware_build import FixedDiagnosticFailure
+
+        builder = FirmwareBuild(SimpleNamespace())
+        for code in (
+            "build_inputs_changed",
+            "idf_build_failed_needs_review",
+            "build_target_mismatch",
+            "build_artifacts_missing",
+            "artifact_count_limit",
+        ):
+
+            def fail(plan, stage, defer_publish, statuses, code=code):
+                statuses.update(profile_export=0, build_diagnostic=0, idf_build=17)
+                raise ValueError(code)
+
+            with patch.object(builder, "_execute_steps", side_effect=fail):
+                with self.assertRaises(FixedDiagnosticFailure) as caught:
+                    builder._execute_inner({}, lambda _: None)
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(caught.exception.subprocess["idf_build"], 17)
+        # Neither unknown text nor arbitrary ValueError argument objects are interpreted.
+        for error in (ValueError("token=synthetic-secret"), ValueError(["private-path"])):
+            with patch.object(builder, "_execute_steps", side_effect=error):
+                with self.assertRaises(ValueError) as caught:
+                    builder._execute_inner({}, lambda _: None)
+                self.assertIs(caught.exception, error)
+        with patch.object(
+            builder, "_execute_steps", side_effect=ValueError("build_inputs_changed")
+        ):
+            with self.assertRaises(FixedDiagnosticFailure) as caught:
+                builder._execute_inner({}, lambda _: None)
+            self.assertIsNone(caught.exception.subprocess)
+
+    def test_public_failure_status_has_fixed_keys_and_numeric_bounds(self):
+        from cardputer_mcp.firmware_build import FixedDiagnosticFailure
+
+        failure = FixedDiagnosticFailure("idf_build_failed_needs_review")
+        for value in (-(2**31), -1, 0, 17, 2**32 - 1):
+            failure.subprocess = {"idf_build": value, "private-path": "token=synthetic-secret"}
+            self.assertEqual(
+                failure.public_diagnostic(),
+                {"code": failure.code, "subprocess_exit_codes": {"idf_build": value}},
+            )
+        for value in (True, "token=synthetic-secret", -(2**31) - 1, 2**32, None):
+            failure.subprocess = {"idf_build": value}
+            self.assertEqual(failure.public_diagnostic(), {"code": failure.code})
+
     def test_profile_strict_filter(self):
         env = parse_profile(
             "IDF_PATH=C:/idf\nIDF_PYTHON_ENV_PATH=C:/python\nPATH=C:/tools\nTOKEN=private\n"
@@ -263,6 +313,9 @@ class WindowsOwnedBuildTests(unittest.TestCase):
 
 
 class FirmwareVerticalTests(unittest.TestCase):
+    def test_successful_idf_exit_then_source_mutation_is_not_published(self):
+        self._exercise_build(mutate_during_build=True)
+
     def _exercise_build(
         self,
         cancel_at=None,
@@ -274,6 +327,7 @@ class FirmwareVerticalTests(unittest.TestCase):
         node_mode=None,
         source_mode=False,
         cache_mode=None,
+        mutate_during_build=False,
     ):
         try:
             import filelock
@@ -435,6 +489,8 @@ class FirmwareVerticalTests(unittest.TestCase):
                             '{"extra_esptool_args":{"chip":"esp32s3"},'
                             '"flash_files":{"0x10000":"firmware.bin"}}'
                         )
+                        if mutate_during_build:
+                            (project / "sdkconfig").write_text("generated configuration")
                         emit("warning: synthetic token=hidden", "stderr")
                     return 0
 
@@ -491,13 +547,23 @@ class FirmwareVerticalTests(unittest.TestCase):
                         if cache_mode == "broken"
                         else "idf_build_failed_needs_review"
                     )
-                    with self.assertRaisesRegex(ValueError, code):
+                    with self.assertRaisesRegex(ValueError, code) as failure:
                         builder._execute(plan, lambda _: None)
+                    if cache_mode == "compile_failed":
+                        self.assertEqual(failure.exception.subprocess["idf_build"], 1)
                     self.assertFalse(builder.manifests)
                     self.assertEqual(
                         sum(args[-1] == "build" for args in calls),
                         1 if cache_mode == "compile_failed" else 0,
                     )
+                    return
+                if mutate_during_build:
+                    with self.assertRaisesRegex(ValueError, "build_inputs_changed") as failure:
+                        builder._execute(plan, lambda _: None)
+                    self.assertEqual(failure.exception.subprocess["idf_build"], 0)
+                    self.assertFalse(builder.manifests)
+                    self.assertEqual([], list(root.rglob("broker-manifest*.json")))
+                    self.assertTrue(any(command[-1] == "build" for command in calls))
                     return
                 if node_mode in ("wrong_version", "ambiguous", "unregistered"):
                     code = {

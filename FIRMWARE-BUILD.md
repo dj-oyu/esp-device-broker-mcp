@@ -638,3 +638,29 @@ frozen dependencies. All images and durable records in these tests are synthetic
 no production registry, deployment, device session or hardware action is involved.
 It adds no source admission, authorization scope, credential, device operation,
 deployment or automatic replay.
+
+
+## Failure diagnostics
+
+Known broker-authored failures retain fixed result codes such as
+`build_inputs_changed`, `idf_build_failed_needs_review`, `build_target_mismatch`
+and `build_artifacts_missing`. Unknown exceptions remain `firmware_build_failed`;
+native exception text, command arguments, environment values and paths are never
+copied into persisted diagnostics.
+
+For recognized build failures, `job_status.diagnostic.subprocess_exit_codes`
+contains at most three numeric entries: `profile_export`, `build_diagnostic`
+(the latest completed diagnostic command), and `idf_build`. Entries appear only
+when that subprocess returned a status; a missing entry does not imply zero.
+The private bounded build log also records a fixed-label exit-status line after
+each completed subprocess. Existing log redaction, retention and gap semantics
+still apply. No raw profile output or new persistent log stream is added.
+
+An IDF exit code of zero is not a successful build receipt. Input fingerprint,
+target, artifacts, flash layout/security, cancellation and final publication
+checks must also pass. For example, a live project's first `sdkconfig` generation
+can change the source fingerprint after preparation. These diagnostics identify
+the observed guard failure; they do not establish the cause of historical jobs.
+Cancellation, authority loss and uncertain cleanup retain their existing terminal
+outcomes rather than being replaced by subprocess status. No automatic retry or
+input-guard relaxation is introduced. Existing history is not backfilled.
