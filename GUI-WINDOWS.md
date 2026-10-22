@@ -170,3 +170,16 @@ review. An empty waiting queue uses a compact empty state. MCP info and HTTP
 diagnostics have independent collapsible result panels, explicit Refresh/Copy and
 actual received timestamps; opening a panel does not issue a request. Table
 columns adapt to available space and horizontal bars appear only for overflow.
+
+
+## Standard key registry
+
+Authenticated broker startup automatically reads `%LOCALAPPDATA%\DeviceBroker\keys.sqlite3`
+(Unix: `$XDG_STATE_HOME/DeviceBroker/keys.sqlite3`, otherwise
+`~/.local/state/DeviceBroker/keys.sqlite3`). `cardputer.exe keys` uses the same default.
+It does not depend on cwd or an executable version directory. No registry flag,
+Downloads helper, credential regeneration or broker restart is needed for committed
+key additions/revocations. Existing GUI local tokens, stdio's explicit private
+`--env-file`, Tunnel credentials and scope/principal isolation remain unchanged.
+No key is issued at startup; no existing registry is moved or merged. See [KEYS.md](KEYS.md)
+for failure behavior and explicit compatibility overrides.

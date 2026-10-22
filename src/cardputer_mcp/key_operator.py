@@ -24,6 +24,11 @@ from .key_registry import (
     KeyRegistryError,
 )
 from .models import Origin
+from .registry_defaults import (
+    default_key_registry_path,
+    prepare_default_key_directory,
+    validate_default_key_path,
+)
 
 KeyCommand = Literal["issue", "list", "revoke", "rotate", "verify"]
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._@()\-]{0,63}\Z")
@@ -157,7 +162,7 @@ def _read_secret(callback: Callable[[str], str] | None, output_stream: TextIO) -
 
 def run(
     command: KeyCommand,
-    path: Path,
+    path: Path | None = None,
     *,
     label: str | None = None,
     origin: Origin = Origin.REMOTE,
@@ -176,6 +181,25 @@ def run(
     confirmed issue; all other commands require an existing registry. No command
     supports a noninteractive bypass for confirmation or secret input/output.
     """
+    automatic_path = path is None
+    path = default_key_registry_path() if path is None else path
+    if automatic_path:
+        original_factory = registry_factory
+
+        def checked_registry(path: Path, *, create: bool = True) -> KeyRegistry:
+            if create:
+                prepare_default_key_directory(path)
+            else:
+                validate_default_key_path(path)
+            registry = original_factory(path, create=create)
+            try:
+                validate_default_key_path(path)
+            except Exception:
+                registry.close()
+                raise
+            return registry
+
+        registry_factory = checked_registry
     incoming = sys.stdin if input_stream is None else input_stream
     outgoing = sys.stdout if output_stream is None else output_stream
     if command not in ("issue", "list", "revoke", "rotate", "verify"):

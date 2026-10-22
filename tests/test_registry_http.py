@@ -37,7 +37,7 @@ class RegistryService:
 
 @pytest.fixture
 async def registry_service(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> AsyncIterator[RegistryService]:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -46,6 +46,10 @@ async def registry_service(
     monkeypatch.setattr(server_module, "time", lambda: now[0])
     sequence = itertools.count(1)
     path = tmp_path / "keys.sqlite3"
+    if getattr(request, "param", None) == "automatic":
+        from test_registry_defaults import private_directory
+
+        private_directory(tmp_path)
     registry = KeyRegistry(
         path, clock=lambda: now[0], random_bytes=lambda size: bytes([next(sequence)]) * size
     )
@@ -66,7 +70,15 @@ async def registry_service(
     resident = Broker(settings, backend=backend, lock_path=tmp_path / "device.lockfile")
     auth = AuthState({Origin.LOCAL: LOCAL, Origin.REMOTE: REMOTE})
     # Registry presence alone requires auth, even without --require-auth.
-    app = create_app(settings, resident, auth=auth, key_registry_path=path)
+    if getattr(request, "param", None) == "automatic":
+        monkeypatch.setattr(server_module, "default_key_registry_path", lambda: path)
+        monkeypatch.setattr(
+            "cardputer_mcp.registry_defaults.KeyRegistry",
+            lambda path, *, create: KeyRegistry(path, clock=lambda: now[0], create=create),
+        )
+        app = create_app(settings, resident, auth=auth, require_auth=True)
+    else:
+        app = create_app(settings, resident, auth=auth, key_registry_path=path)
     server = uvicorn.Server(
         uvicorn.Config(
             app,

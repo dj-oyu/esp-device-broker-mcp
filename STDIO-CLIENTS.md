@@ -126,3 +126,16 @@ annotations、schema、metadata、pagination、本文、画像 content、structu
 
 ソフトウェアテストは synthetic key と mock broker で行います。利用者の Windows、実際の
 Claude Code/Codex 登録、実キー保存/ACL、実機の動作確認が完了したとは扱いません。
+
+
+## Standard key registry
+
+Authenticated broker startup automatically reads `%LOCALAPPDATA%\DeviceBroker\keys.sqlite3`
+(Unix: `$XDG_STATE_HOME/DeviceBroker/keys.sqlite3`, otherwise
+`~/.local/state/DeviceBroker/keys.sqlite3`). `cardputer.exe keys` uses the same default.
+It does not depend on cwd or an executable version directory. No registry flag,
+Downloads helper, credential regeneration or broker restart is needed for committed
+key additions/revocations. Existing GUI local tokens, stdio's explicit private
+`--env-file`, Tunnel credentials and scope/principal isolation remain unchanged.
+No key is issued at startup; no existing registry is moved or merged. See [KEYS.md](KEYS.md)
+for failure behavior and explicit compatibility overrides.

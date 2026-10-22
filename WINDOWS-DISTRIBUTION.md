@@ -102,3 +102,16 @@ and correct independent review labels. Record Windows/Tk version and the actual
 font/fallback appearance, and capture screenshots. Metric assertions cannot prove
 glyph appearance or color support. This cloud-only change does not deploy or
 claim that native Windows rendering has been accepted.
+
+
+## Standard key registry
+
+Authenticated broker startup automatically reads `%LOCALAPPDATA%\DeviceBroker\keys.sqlite3`
+(Unix: `$XDG_STATE_HOME/DeviceBroker/keys.sqlite3`, otherwise
+`~/.local/state/DeviceBroker/keys.sqlite3`). `cardputer.exe keys` uses the same default.
+It does not depend on cwd or an executable version directory. No registry flag,
+Downloads helper, credential regeneration or broker restart is needed for committed
+key additions/revocations. Existing GUI local tokens, stdio's explicit private
+`--env-file`, Tunnel credentials and scope/principal isolation remain unchanged.
+No key is issued at startup; no existing registry is moved or merged. See [KEYS.md](KEYS.md)
+for failure behavior and explicit compatibility overrides.

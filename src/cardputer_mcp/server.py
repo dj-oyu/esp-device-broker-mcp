@@ -40,6 +40,7 @@ from .http_diagnostics import (
 from .input_diagnostics import invalid_arguments, validate_arguments
 from .key_registry import KeyRegistry, KeyRegistryError
 from .key_registry import Scope as KeyScope
+from .registry_defaults import LiveKeyRegistry, default_key_registry_path
 from .models import (
     FLASH_TESTS,
     AcquireRequest,
@@ -82,7 +83,7 @@ class RequestAuth:
     """Resolve each request independently; registry revocation is never cached."""
 
     def __init__(
-        self, ephemeral: list[AuthState | None], registry: list[KeyRegistry | None]
+        self, ephemeral: list[AuthState | None], registry: list[KeyRegistry | LiveKeyRegistry | None]
     ) -> None:
         self.ephemeral = ephemeral
         self.registry = registry
@@ -460,7 +461,7 @@ def create_server(
     auth_source: str = "environment",
     auth_holder: list[AuthState | None] | None = None,
     key_registry_path: Path | None = None,
-    key_registry_holder: list[KeyRegistry | None] | None = None,
+    key_registry_holder: list[KeyRegistry | LiveKeyRegistry | None] | None = None,
 ) -> MCPServer[Any]:
     if settings.backend == "serial" and not serial_enabled:
         raise BrokerError("serial_runtime_opt_in_required")
@@ -468,7 +469,7 @@ def create_server(
         raise BrokerError("unsupported_auth_source")
     auth_required = settings.backend == "serial" or require_auth or key_registry_path is not None
     holder: list[AuthState | None] = auth_holder if auth_holder is not None else [None]
-    registry_holder: list[KeyRegistry | None] = (
+    registry_holder: list[KeyRegistry | LiveKeyRegistry | None] = (
         key_registry_holder if key_registry_holder is not None else [None]
     )
     authenticator = RequestAuth(holder, registry_holder)
@@ -534,6 +535,8 @@ def create_server(
         try:
             if key_registry_path is not None:
                 registry_holder[0] = KeyRegistry(key_registry_path, create=False)
+            elif auth_required:
+                registry_holder[0] = LiveKeyRegistry(default_key_registry_path())
             if auth_required:
                 if holder[0] is None:
                     holder[0] = (
@@ -1270,7 +1273,7 @@ def create_app(
     if ingress_enabled and not auth_required:
         raise ValueError("tunnel_ingress_requires_authenticated_broker")
     holder: list[AuthState | None] = [auth]
-    registry_holder: list[KeyRegistry | None] = [None]
+    registry_holder: list[KeyRegistry | LiveKeyRegistry | None] = [None]
     resident = broker or Broker(settings, serial_enabled=serial_enabled)
     server = create_server(
         settings,

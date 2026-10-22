@@ -145,10 +145,11 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
             f'state_dir = {json.dumps(str(folder / "state"))}\n'
             'allow_mock_execution = false\n', encoding="utf-8",
         )
+        env["LOCALAPPDATA"] = str(folder / "private-app-state")
         env["CARDPUTER_LOCAL_TOKEN"] = secrets.token_hex(32)
         env["CARDPUTER_REMOTE_TOKEN"] = secrets.token_hex(32)
         process = subprocess.Popen(
-            [str(exe), "--auth-source", "environment", "serve", "--require-auth",
+            [str(exe), "--auth-source", "environment", "serve",
              "--config", str(config)], cwd=folder, env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -167,6 +168,7 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
                         raise RuntimeError("packaged_mock_readiness_timeout") from None
                     time.sleep(0.2)
             assert status["ok"] is True
+            assert not (folder / "private-app-state/DeviceBroker/keys.sqlite3").exists()
             assert status["backend"] == "mock"
             assert status["hardware_connected"] is False
             assert status["active_job"] is None
