@@ -8,12 +8,14 @@ import re
 import threading
 from collections.abc import Callable
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .build_logs import BuildLogs
 from .flash_backup import BackupStore
-from .flash_driver import NativeFlashDriver, esptool_fingerprint
+from .device_observation import DeviceObservation
+from .flash_driver import BootAttempt, NativeFlashDriver, boot_verification_reason, esptool_fingerprint
 from .flash_lifecycle import FlashFailure, FlashLifecycle, Operation, OperationPlan
 from .flash_lkg_bundle import (
     baseline_layout,
@@ -637,6 +639,7 @@ class FirmwareFlash:
                 log.append("-- " + name)
             stage(name)
 
+        failure_code: str | None = "flash_operation_failed"
         try:
             op = operation_from_plan(plan)
             receipt, data, summary = self.engine.run(
@@ -663,10 +666,6 @@ class FirmwareFlash:
                 summary["backup_receipt"] = {
                     key: value for key, value in asdict(retained).items() if key != "principal"
                 }
-            observation = getattr(driver, "last_observation", None)
-            if observation is not None:
-                for line in observation.logs:
-                    log.append(line)
             if plan["flash_operation"] != "backup":
                 if metadata is None:
                     metadata = dict(
@@ -699,12 +698,59 @@ class FirmwareFlash:
                 )
             self.results[self.job_id] = summary
             log.append("-- Flash operation completed; verified receipt/observations recorded")
+            failure_code = None
             return f"firmware_{plan['flash_operation']}_completed"
-        except Exception:
-            log.append("error: flash operation failed; needs review; no retry or automatic restore")
+        except Exception as failure:
+            if isinstance(failure, FlashFailure) and failure.code in {
+                "flash_boot_unverified_needs_review", "flash_boot_observation_missing",
+                "flash_boot_device_changed", "flash_timeout_needs_review",
+                "flash_failed_needs_review", "flash_shutdown_uncertain_needs_review",
+            }:
+                failure_code = failure.code
+            try:
+                log.append("error: flash operation failed; needs review; no retry or automatic restore")
+            except Exception:
+                pass
             raise
         finally:
-            driver.last_observation = None
+            try:
+                self._retain_boot_evidence(log, driver, plan["expected_elf_sha256"], failure_code)
+            except Exception:
+                # Diagnostic delivery must never replace the operation/close failure.
+                pass
+            finally:
+                driver.last_observation = None
+                driver.last_boot_attempt = None
+
+    @staticmethod
+    def _retain_boot_evidence(
+        log: BuildLogs, driver: Any, expected: str | None, failure_code: str | None
+    ) -> None:
+        observation = getattr(driver, "last_observation", None)
+        attempt = getattr(driver, "last_boot_attempt", None)
+        if not isinstance(observation, DeviceObservation):
+            observation = None
+        if not isinstance(attempt, BootAttempt):
+            attempt = None
+        if observation is None and attempt is None:
+            return
+        if observation is not None:
+            for line in observation.logs:
+                log.append(line, "boot_observation", console_output=False)
+        diagnostic = {
+            "schema_version": 1,
+            "recorded_utc": datetime.now(UTC).isoformat(timespec="milliseconds"),
+            "operation_failure_code": failure_code,
+            "attempt": attempt.metadata() if attempt is not None else None,
+            "verification_reason": boot_verification_reason(observation, expected),
+            "observation": observation.metadata() if observation is not None else None,
+        }
+        # No private boot text or metadata may escape to the broker stderr sink.
+        prefix = "error: " if failure_code is not None else "info: "
+        log.append(
+            prefix + "boot_diagnostic " + json.dumps(diagnostic, sort_keys=True),
+            "boot_observation", console_output=False,
+        )
 
     def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
         with self._lock:

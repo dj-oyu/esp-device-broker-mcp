@@ -51,11 +51,11 @@ class BuildLogs:
         self.job_id = job_id
         self._console_progress_at = float("-inf")
 
-    def append(self, line: str, stream: str = "stdout") -> None:
+    def append(self, line: str, stream: str = "stdout", *, console_output: bool = True) -> None:
         with self._lock:
-            self._append(line, stream)
+            self._append(line, stream, console_output)
 
-    def _append(self, line: str, stream: str) -> None:
+    def _append(self, line: str, stream: str, console_output: bool) -> None:
         # Bound the original line too; never retain raw output or stream buffers.
         text = redact_log_text(line, self.redactions)
         level = "unknown"
@@ -81,7 +81,7 @@ class BuildLogs:
             self.bytes -= len(self.entries.popleft()["text"].encode("utf-8"))
         now = time.monotonic()
         self.deadline = now + self.retention
-        if self.job_id is not None and (
+        if console_output and self.job_id is not None and (
             level in ("warning", "error") or (progress and now - self._console_progress_at >= 2)
         ):
             if progress:

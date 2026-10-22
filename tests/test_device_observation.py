@@ -216,12 +216,27 @@ def test_invalid_fields_produce_partial_identity(original: bytes, invalid: bytes
 
 
 @pytest.mark.parametrize(
-    "version", [b"1", b"v1.2.3-4-gabc1234-dirty", b"abcdefa", b"abcdefa-dirty"]
+    "version", [
+        b"1", b"v1.2.3-4-gabc1234-dirty", b"abcdefa", b"abcdefa-dirty",
+        b"archive/20261021/ci/full-contra",
+    ]
 )
 def test_plausible_version_and_git_description_values(version: bytes) -> None:
     report = collect(startup().replace(b"v1.2.3", version))
     assert report.firmware.status == "observed"
     assert report.firmware.app_version == version.decode()
+
+
+@pytest.mark.parametrize("version", [
+    b"archive/20261021/ci/full-contrax", b"/archive/20261021", b"arbitrary/word",
+    b"v1/test extra", b"v1/test\t", b"v1/test\x00suffix", b"v1/test\x7f",
+    b"v1/test\xff", b"v1/token=SYNTHETIC_SECRET", b"v1/test\rmore",
+])
+def test_slash_version_keeps_length_grammar_and_secret_boundaries(version: bytes) -> None:
+    report = collect(startup().replace(b"v1.2.3", version))
+    assert report.firmware.status != "observed"
+    assert report.firmware.app_version is None
+    assert "SYNTHETIC_SECRET" not in json.dumps(report.payload())
 
 
 def test_missing_or_out_of_order_fields_do_not_claim_complete_identity() -> None:

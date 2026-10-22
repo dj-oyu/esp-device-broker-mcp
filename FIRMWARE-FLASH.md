@@ -148,3 +148,29 @@ The tools/list descriptions and prepare schema change. After a separately
 coordinated deployment, refresh the ChatGPT connection metadata and verify it in a
 new conversation as documented in AGENTS.md. A server-side catalog test does not
 prove that an existing host conversation refreshed its imported tool definitions.
+
+## Failed boot observation evidence
+
+`read_build_logs` retains bounded, redacted boot lines and a `boot_diagnostic`
+entry after a failed flash/restore, including when serial transport or close
+fails. The entry records the fixed operation/primary failure categories, startup
+parse or ELF/IDF mismatch reason, actual UTC attempt times, attempt duration,
+observation-window duration, inspected bytes/lines, and gap/truncation markers.
+Observation time excludes final close; attempt time includes it. Discarded bytes
+outside the collection window are not counted as inspected bytes. Console text
+is not copied to broker stderr or the durable job/firmware summary.
+
+These private logs use the existing requesting-principal read boundary and RAM
+cache: at most eight jobs, 256 KiB/2,048 entries per job, expiring 300 seconds
+after the last appended entry. The collector remains limited to 64 KiB input,
+1,024 bytes per line, 256 lines and 32 KiB rendered text. Recognizable credentials,
+PEM blocks and configured process secrets are redacted; unknown/obfuscated secrets
+remain subject to the collector's documented best-effort limitations. Boot text
+is still unverified device-reported evidence, not cryptographic identity proof.
+
+Restart, eviction or expiry loses this diagnostic text; reads then report
+`expired`/`gap`. No post-restart durability or automatic replay/recovery is added.
+Failure still requires review and never promotes LKG. ESP-IDF 6.0.1, expected ELF
+prefix, full readback, final authority and confirmed close checks remain required.
+A slash in a plausible app version is accepted within the existing 31-byte ASCII
+field bound; arbitrary controls, overlength or malformed values remain rejected.

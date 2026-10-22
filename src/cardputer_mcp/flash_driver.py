@@ -7,11 +7,15 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .backend import BackendResult
+from .backend import BackendResult, DeviceOperationFailure
+from .device_observation import DeviceObservation
 from .build_process import BuildProcess, ProcessDeadlineExpired
 from .firmware_build import OS_ENV, hash_file
 from .flash_lifecycle import (
@@ -23,7 +27,51 @@ from .flash_lifecycle import (
 from .flash_read_progress import ReadProgress, read_deadline_seconds
 from .models import TestName
 from .ports import resolve_port
-from .serial_backend import SerialBackend, fingerprint
+from .serial_backend import SerialBackend, SerialFailure, fingerprint
+
+
+def boot_verification_reason(observation: DeviceObservation | None, expected: str | None) -> str:
+    if observation is None:
+        return "observation_unavailable"
+    metadata = observation.firmware.metadata()
+    prefix = metadata.get("elf_sha256_prefix")
+    if metadata.get("status") != "observed":
+        return "startup_identity_unverified"
+    if (metadata.get("idf_version") or "").removeprefix("v") != "6.0.1":
+        return "idf_version_mismatch"
+    if (
+        not isinstance(prefix, str) or not 8 <= len(prefix) <= 16
+        or any(c not in "0123456789abcdef" for c in prefix)
+    ):
+        return "elf_prefix_invalid"
+    if expected is None:
+        return "expected_elf_missing"
+    return "elf_idf_match" if expected.startswith(prefix) else "elf_sha256_mismatch"
+
+
+@dataclass(frozen=True)
+class BootAttempt:
+    started_utc: datetime
+    finished_utc: datetime
+    attempt_elapsed_ms: int
+    observation_elapsed_ms: int | None
+    reason: str
+    primary_failure_code: str | None
+
+    def metadata(self) -> dict[str, Any]:
+        safe = DeviceOperationFailure.CODES | {
+            "boot_failed", "boot_observation_completed", "flash_boot_device_changed",
+            "flash_boot_observation_missing", "flash_boot_unverified_needs_review",
+        }
+        return {
+            "started_utc": self.started_utc.isoformat(timespec="milliseconds"),
+            "finished_utc": self.finished_utc.isoformat(timespec="milliseconds"),
+            "attempt_elapsed_ms": self.attempt_elapsed_ms,
+            "observation_elapsed_ms": self.observation_elapsed_ms,
+            "reason": self.reason if self.reason in safe else "boot_failed",
+            "primary_failure_code": self.primary_failure_code
+            if self.primary_failure_code in DeviceOperationFailure.CODES else None,
+        }
 
 
 def _worker_read_failure(line: str) -> dict[str, str] | None:
@@ -126,6 +174,7 @@ class NativeFlashDriver:
         self.device_sha256: str | None = None
         self._stop = threading.Event()
         self.last_observation: Any = None
+        self.last_boot_attempt: BootAttempt | None = None
         self.expected_app_bin_sha256 = expected_app_bin_sha256
         self.expected_elf_sha256 = expected_elf_sha256
         self.live = live
@@ -380,6 +429,34 @@ class NativeFlashDriver:
         self._invoke("write", segments=segments)
 
     def boot(self) -> dict[str, Any]:
+        self.last_observation = None
+        self.last_boot_attempt = None
+        if self._observation_backend is not None:
+            self._observation_backend.restart_observation_elapsed_ms = None
+        started_utc, started = datetime.now(UTC), time.monotonic()
+        reason = "boot_failed"
+        primary: str | None = None
+        try:
+            result = self._boot()
+            reason = "boot_observation_completed"
+            return result
+        except SerialFailure as failure:
+            self.last_observation = failure.observation
+            failure.observation = None
+            reason, primary = failure.code, failure.primary_failure_code
+            raise
+        except FlashFailure as failure:
+            reason = failure.code
+            raise
+        finally:
+            elapsed = getattr(self._observation_backend, "restart_observation_elapsed_ms", None)
+            self.last_boot_attempt = BootAttempt(
+                started_utc, datetime.now(UTC),
+                max(0, min(86400000, int((time.monotonic() - started) * 1000))),
+                elapsed, reason, primary,
+            )
+
+    def _boot(self) -> dict[str, Any]:
         self._verified_port()
         plan = {"test": TestName.RESTART.value, **self.backend.prepare(TestName.RESTART)}
         if plan["device_fingerprint"] != self.expected_usb:
@@ -396,16 +473,7 @@ class NativeFlashDriver:
             raise FlashFailure("flash_boot_observation_missing")
         self.last_observation = result.observation
         metadata = result.observation.firmware.metadata()
-        prefix = metadata.get("elf_sha256_prefix")
-        if (
-            metadata.get("status") != "observed"
-            or (metadata.get("idf_version") or "").removeprefix("v") != "6.0.1"
-            or not isinstance(prefix, str)
-            or not 8 <= len(prefix) <= 16
-            or any(c not in "0123456789abcdef" for c in prefix)
-            or self.expected_elf_sha256 is None
-            or not self.expected_elf_sha256.startswith(prefix)
-        ):
+        if boot_verification_reason(result.observation, self.expected_elf_sha256) != "elf_idf_match":
             raise FlashFailure("flash_boot_unverified_needs_review")
         self._authority()
         return {
