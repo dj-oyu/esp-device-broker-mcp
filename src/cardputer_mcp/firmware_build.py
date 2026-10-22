@@ -602,7 +602,8 @@ class FirmwareBuild:
                 type(failure) is ValueError
                 and len(failure.args) == 1
                 and isinstance(failure.args[0], str)
-                and failure.args[0] in {
+                and failure.args[0]
+                in {
                     "build_inputs_changed",
                     "idf_build_failed_needs_review",
                     "build_target_mismatch",

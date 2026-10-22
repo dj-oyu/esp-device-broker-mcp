@@ -48,7 +48,9 @@ class BuildTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     builder._execute_inner({}, lambda _: None)
                 self.assertIs(caught.exception, error)
-        with patch.object(builder, "_execute_steps", side_effect=ValueError("build_inputs_changed")):
+        with patch.object(
+            builder, "_execute_steps", side_effect=ValueError("build_inputs_changed")
+        ):
             with self.assertRaises(FixedDiagnosticFailure) as caught:
                 builder._execute_inner({}, lambda _: None)
             self.assertIsNone(caught.exception.subprocess)
