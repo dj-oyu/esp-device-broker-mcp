@@ -601,6 +601,7 @@ def test_selected_result_viewer_states_copy_cancel_and_mock_screenshots(monkeypa
 
 def test_both_connection_panels_are_reachable_at_minimum_high_dpi(monkeypatch):
     import tkinter as tk
+
     from gui_screenshot import save_mock_window
 
     try:

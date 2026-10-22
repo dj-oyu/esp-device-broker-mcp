@@ -794,7 +794,8 @@ class LiveWindow:
                 f"Broker updates: {'Live' if live else 'Paused'} | Backend: {snapshot.backend}\n"
                 f"Owner: {owner.owner if owner else 'none'} | Active job: {operation}\n"
                 f"Current execution uncertainty: {execution_uncertainty} | "
-                f"Current ownership uncertainty: {'yes' if snapshot.ownership_uncertain else 'no'}\n"
+                f"Current ownership uncertainty: "
+                f"{'yes' if snapshot.ownership_uncertain else 'no'}\n"
                 f"Historical review: {'pending' if snapshot.needs_review else 'none'}"
             )
             if hasattr(self, "wait_box"):

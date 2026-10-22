@@ -11,8 +11,8 @@ import pytest
 from test_gui_live_state import card, delta, ready, snapshot
 
 from cardputer_mcp.gui import Outcome, QueueController
-from cardputer_mcp.gui_live import LiveWindow
 from cardputer_mcp.gui_connection_panels import DiagnosticOutcome
+from cardputer_mcp.gui_live import LiveWindow
 from cardputer_mcp.gui_live_presentation import (
     MAX_LOG_BYTES,
     MAX_LOG_LINES,
@@ -819,6 +819,7 @@ def test_whole_text_copy_requires_deliberate_action_and_preserves_unicode():
         "log_context": "Logs | Retained",
         "log_text": "日本語 output",
         "log_status": "Some output is missing",
+        "image_context": "Captured image | No retained image",
         "preview_status": "No retained image",
     }.items():
         widget = Mock()
