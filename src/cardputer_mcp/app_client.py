@@ -39,9 +39,7 @@ class AppSessionClient:
         self.uncertain = False
         self.recent_logs: deque[dict[str, Any]] = deque(maxlen=256)
 
-    async def _request(
-        self, tool: str, request: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+    async def _request(self, tool: str, request: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
             result = await call(self.client, tool, request)
         except Exception:
@@ -102,9 +100,7 @@ class AppSessionClient:
         )
         await self._request("execute_test", {"session": session, "plan_hash": plan["plan_hash"]})
         started = await self._wait(lambda e: e.get("kind") == "started", timeout)
-        self.identity = {
-            name: started[name] for name in ("boot_id", "run_id", "control_session")
-        }
+        self.identity = {name: started[name] for name in ("boot_id", "run_id", "control_session")}
         self.next_seq = started.get("next_seq", 2)
         return started
 
@@ -145,9 +141,11 @@ class AppSessionClient:
         self.next_command += 1
         try:
             event = await self._wait(
-                lambda e: e.get("kind") == "ack"
-                and e.get("command_id") == command_id
-                and self._result(e) not in ("sent", "accepted", "queued"),
+                lambda e: (
+                    e.get("kind") == "ack"
+                    and e.get("command_id") == command_id
+                    and self._result(e) not in ("sent", "accepted", "queued")
+                ),
                 timeout,
             )
         except AppClientError:

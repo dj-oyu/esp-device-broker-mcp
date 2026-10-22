@@ -97,6 +97,13 @@ class BuildLogs:
             except Exception:
                 pass
 
+    def expire(self) -> None:
+        """Clear expired private text even when no reader asks for it."""
+        with self._lock:
+            if time.monotonic() >= self.deadline:
+                self.entries.clear()
+                self.bytes = 0
+
     def read(self, principal: str, request: Any) -> dict[str, Any]:
         with self._lock:
             return self._read(principal, request)

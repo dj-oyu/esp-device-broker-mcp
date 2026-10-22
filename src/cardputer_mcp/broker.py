@@ -583,6 +583,8 @@ class Broker:
         """Single-event-loop transition point. No awaits or hardware opens here."""
         self._prune_captures()
         self._prune_device_observations()
+        for app_run in self.app_sessions.jobs.values():
+            app_run.events.expire()
         self._prune_local_home_diagnostic()
         if self.store is None:
             return
@@ -1146,8 +1148,11 @@ class Broker:
         if self._execution_uncertain():
             raise BrokerError("recovery_review_required")
         storage = None
-        if (request.test == TestName.APP_SESSION
-                and request.app is not None and request.app.start == "resume"):
+        if (
+            request.test == TestName.APP_SESSION
+            and request.app is not None
+            and request.app.start == "resume"
+        ):
             raise BrokerError("unsupported")
         try:
             if request.test == TestName.APP_SESSION:
@@ -1258,9 +1263,11 @@ class Broker:
             raise BrokerError("plan_session_mismatch")
         if payload["backend"] != self.backend.name or payload["device"] != self.backend.device:
             raise BrokerError("plan_backend_mismatch")
-        if (payload["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value,
-                                TestName.APP_SESSION.value)
-                and payload.get("log_delivery") != self._log_delivery(session)):
+        if payload["test"] in (
+            TestName.FIRMWARE.value,
+            TestName.RESTART.value,
+            TestName.APP_SESSION.value,
+        ) and payload.get("log_delivery") != self._log_delivery(session):
             raise BrokerError("plan_session_mismatch")
         job_id = str(payload["job_id"])
         intent = ExecutionIntent(
@@ -1615,16 +1622,22 @@ class Broker:
         run = self.app_sessions.jobs.get(request.job_id)
         job = self._store().job(request.job_id)
         plan = self._store().plan(job["plan_hash"]) if job else None
-        if (run is None or plan is None or plan.get("test") != TestName.APP_SESSION.value
-                or plan.get("broker_epoch") != self.epoch or plan.get("session_id") != lease.id
-                or run.principal != lease.principal_id
-                or (request.operation != "status" and self.active_job != request.job_id)):
+        if (
+            run is None
+            or plan is None
+            or plan.get("test") != TestName.APP_SESSION.value
+            or plan.get("broker_epoch") != self.epoch
+            or plan.get("session_id") != lease.id
+            or run.principal != lease.principal_id
+            or (request.operation != "status" and self.active_job != request.job_id)
+        ):
             raise BrokerError("app_session_not_available")
         valid = self.principal_valid
         try:
-            authorized = valid is not None and valid(
-                run.principal, lease.owner, frozenset({"read", "control"})
-            ) is True
+            authorized = (
+                valid is not None
+                and valid(run.principal, lease.owner, frozenset({"read", "control"})) is True
+            )
         except Exception:
             authorized = False
         if not authorized:
@@ -1966,7 +1979,11 @@ class Broker:
 
                     if plan["test"] == TestName.APP_SESSION.value:
                         result = await self.app_sessions.execute(
-                            self.backend, plan, capture_principal or "", on_stage, running_authorized
+                            self.backend,
+                            plan,
+                            capture_principal or "",
+                            on_stage,
+                            running_authorized,
                         )
                     elif plan["test"] in {t.value for t in FLASH_TESTS}:
                         if capture_principal != plan.get("flash_principal"):
@@ -2223,8 +2240,13 @@ class Broker:
                     try:
                         completed = result.code if isinstance(result, BackendResult) else result
                         if plan["test"] == TestName.APP_SESSION.value:
-                            terminal = ("cancelled" if completed == "app_session_cancelled" else
-                                        "failed" if completed == "app_session_timeout" else "succeeded")
+                            terminal = (
+                                "cancelled"
+                                if completed == "app_session_cancelled"
+                                else "failed"
+                                if completed == "app_session_timeout"
+                                else "succeeded"
+                            )
                             store.set_job(job_id, terminal, completed)
                         elif plan["test"] in {item.value for item in FLASH_TESTS}:
                             self.firmware_flash.commit_success(

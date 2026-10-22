@@ -348,12 +348,50 @@ def test_changed_catalog_fails_old_plan_without_launch_then_allows_new_explicit_
             assert all(item["title"].endswith(" v2") for item in manager.list_apps()["apps"])
             new_plan = manager.prepare(backend, options)
             assert (
-                new_plan["catalog_binding"]["expected"]
-                != stale_plan["catalog_binding"]["expected"]
+                new_plan["catalog_binding"]["expected"] != stale_plan["catalog_binding"]["expected"]
             )
             second, second_task = await started(manager, backend, job="new-explicit-plan")
             second.command(request(second, operation="stop"))
             await asyncio.wait_for(second_task, 2)
             assert second.run != first.run
+
+    asyncio.run(scenario())
+
+
+def test_device_pre_admission_refusal_preserves_sequence_for_explicit_new_command():
+    from cardputer_mcp.app_wire import Reply, Result
+
+    class FullOnce(MockLink):
+        refused = False
+
+        def send(self, op, session, command_id, **fields):
+            if op == Op.TAP and not self.refused:
+                self.refused = True
+                return Reply(
+                    session,
+                    command_id,
+                    self.boot,
+                    self.run,
+                    fields["seq"],
+                    self.fence,
+                    Result.QUEUE_FULL,
+                    self.state,
+                    op,
+                    next_seq=self.seq,
+                )
+            return super().send(op, session, command_id, **fields)
+
+    async def scenario():
+        manager, backend = AppSessions(), MockBackend()
+        with patch("cardputer_mcp.app_sessions.MockLink", FullOnce):
+            run, task = await started(manager, backend)
+            run.command(request(run))
+            assert (await await_ack(run, 2))["state"] == "queue_full"
+            assert run.next_seq == run.submitted_seq == 2
+            await asyncio.sleep(0.11)
+            run.command(request(run, command=3, seq=2))
+            assert (await await_ack(run, 3))["state"] == "consumed"
+            run.command(request(run, command=4, seq=3, operation="stop"))
+            assert await asyncio.wait_for(task, 2) == "app_session_stopped"
 
     asyncio.run(scenario())

@@ -247,13 +247,19 @@ class PlanApprovals:
 
             AppSessionOptions.model_validate(plan.get("app"))
             expected_keys = _BASE_KEYS | {
-                "app", "app_protocol", "effects", "catalog_binding", "log_delivery"
+                "app",
+                "app_protocol",
+                "effects",
+                "catalog_binding",
+                "log_delivery",
             }
             if backend == "serial":
                 expected_keys |= {"port", "device_fingerprint", "expected_firmware_sha256"}
-            if (backend not in ("mock", "serial")
-                    or plan.get("app_protocol") != "app-control-v1"
-                    or plan.get("effects") != EFFECTS):
+            if (
+                backend not in ("mock", "serial")
+                or plan.get("app_protocol") != "app-control-v1"
+                or plan.get("effects") != EFFECTS
+            ):
                 raise ValueError
             binding = plan.get("catalog_binding")
             if type(binding) is not dict or binding.get("source") not in ("cached", "unobserved"):
@@ -261,14 +267,23 @@ class PlanApprovals:
             if binding["source"] == "unobserved":
                 if binding != {"source": "unobserved", "expected": None}:
                     raise ValueError
-            elif (set(binding) != {"source", "expected", "observed_at", "boot_id",
-                                   "firmware_sha256", "firmware_version"}
-                  or not _hex(binding["expected"], 64)
-                  or not _hex(binding["firmware_sha256"], 64)
-                  or type(binding["firmware_version"]) is not str
-                  or len(binding["firmware_version"]) > 47
-                  or type(binding["observed_at"]) not in (float, int)
-                  or type(binding["boot_id"]) is not int):
+            elif (
+                set(binding)
+                != {
+                    "source",
+                    "expected",
+                    "observed_at",
+                    "boot_id",
+                    "firmware_sha256",
+                    "firmware_version",
+                }
+                or not _hex(binding["expected"], 64)
+                or not _hex(binding["firmware_sha256"], 64)
+                or type(binding["firmware_version"]) is not str
+                or len(binding["firmware_version"]) > 47
+                or type(binding["observed_at"]) not in (float, int)
+                or type(binding["boot_id"]) is not int
+            ):
                 raise ValueError
         elif backend == "mock":
             from .backend import MockBackend
@@ -544,8 +559,11 @@ class PlanApprovals:
             except Exception:
                 raise BrokerError("backend_preflight_failed") from None
             expected = {key: plan[key] for key in _BASE_KEYS - {"stages"}} | details
-            if plan["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value,
-                                TestName.APP_SESSION.value):
+            if plan["test"] in (
+                TestName.FIRMWARE.value,
+                TestName.RESTART.value,
+                TestName.APP_SESSION.value,
+            ):
                 expected["log_delivery"] = self.broker._log_delivery(lease)
             if digest_plan(expected) != plan_hash:
                 raise BrokerError("plan_backend_mismatch")

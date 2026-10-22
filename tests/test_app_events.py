@@ -97,3 +97,14 @@ def test_partial_credentials_at_transport_and_output_boundaries_are_redacted():
     assert len(report["logs"]) == 2
     assert all("cpk_" not in entry["text"] for entry in report["logs"])
     assert all(len(entry["text"].encode()) <= 1024 for entry in report["logs"])
+
+
+def test_expired_private_text_is_cleared_without_a_reader():
+    events = AppEvents("owner", 262144)
+    events.log("private synthetic text")
+    events.emit("ack", command_id=1)
+    events.deadline = events.logs.deadline = 0
+    events.expire()
+    assert not events.control and not events.logs.entries and events.logs.bytes == 0
+    report = events.read("owner", AppEventsRequest(job_id="expiry"))
+    assert report["expired"] and report["gap"]

@@ -24,9 +24,9 @@ def test_app_plan_is_immutable_and_resident_worker_deduplicates_execution(tmp_pa
         )
         await broker.start()
         try:
-            token = broker.acquire(
-                AcquireRequest(owner=Origin.LOCAL), principal_id="owner"
-            )["session"]
+            token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")[
+                "session"
+            ]
             options = AppSessionOptions(app_id="local.hello", duration_ms=1000)
             prepared = broker.prepare(
                 PrepareRequest(

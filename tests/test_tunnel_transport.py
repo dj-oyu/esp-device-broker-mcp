@@ -65,6 +65,9 @@ EXPECTED_TOOLS = {
     "request_device",
     "cancel_device_request",
     "close_work_session",
+    "list_apps",
+    "app_command",
+    "read_app_events",
 }
 
 

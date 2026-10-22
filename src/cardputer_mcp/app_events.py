@@ -32,6 +32,12 @@ class AppEvents:
         bounded = safe.encode("utf-8")[:1024].decode("utf-8", errors="ignore")
         self.logs.append(bounded, "observed_during_run")
 
+    def expire(self) -> None:
+        with self.lock:
+            if time.monotonic() >= self.deadline:
+                self.control.clear()
+        self.logs.expire()
+
     def read(self, principal: str, request: AppEventsRequest) -> dict[str, Any]:
         if principal != self.principal:
             raise ValueError("app_events_not_available")
