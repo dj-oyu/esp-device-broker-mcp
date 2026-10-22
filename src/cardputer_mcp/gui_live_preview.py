@@ -6,9 +6,10 @@ from typing import Any
 
 from .gui_images import SOURCES, ImagePreview, ImageRow
 
-UNAVAILABLE = "No retained image is available for this selected job. Preview never recaptures."
-EXPIRED = "Retained image expired. Preview pixels were cleared; no recapture was requested."
-FAILED = "Preview unavailable. No retry or capture was requested."
+UNAVAILABLE = "No retained image."
+EXPIRED = "Retained image expired."
+FAILED = "Image unavailable."
+DENIED = "Image access denied."
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class PreviewState:
     request_id: int = 0
     preview: ImagePreview | None = field(default=None, repr=False)
     message: str = UNAVAILABLE
+    attempted: bool = False
 
     @property
     def pending(self) -> bool:
@@ -40,7 +42,7 @@ class PreviewState:
                 generation,
                 epoch,
                 row,
-                message="Retained image available. Select Preview to read it.",
+                message="Retained image available for automatic read.",
             )
         else:
             bounded = replace(row, expires_at=min(row.expires_at, self.row.expires_at))
@@ -63,7 +65,11 @@ class PreviewState:
 
     def started(self, request_id: int) -> "PreviewState":
         return replace(
-            self, request_id=request_id, preview=None, message="Reading retained image..."
+            self,
+            request_id=request_id,
+            preview=None,
+            message="Reading retained image...",
+            attempted=True,
         )
 
     def accept(
@@ -85,6 +91,16 @@ class PreviewState:
             return self
         if not math.isfinite(now) or now >= self.row.expires_at:
             return replace(self, request_id=0, preview=None, message=EXPIRED)
+        if type(response) is dict and response.get("ok") is False:
+            code = response.get("error")
+            message = (
+                DENIED
+                if code in ("not_authorized", "authentication_required", "local_operator_required")
+                else EXPIRED
+                if code == "expired"
+                else FAILED
+            )
+            return replace(self, request_id=0, preview=None, message=message)
         try:
             if (
                 not math.isfinite(started_at)

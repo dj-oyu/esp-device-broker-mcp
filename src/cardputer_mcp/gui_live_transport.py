@@ -13,13 +13,14 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import httpx2
 
 from .gui_live_retry import RETRYABLE_CODES, RETRYABLE_HTTP, SAFE_CODES, diagnostic
 from .models import BuildLogRequest, JobRequest
-from .operator_client import OperatorClient, OperatorClientError
+from .operator_client import OperatorClient, OperatorClientError, safe_refusal
 
 MAX_RESPONSE_BYTES = 512 * 1024
 MAX_DELIVERIES = 32
@@ -40,6 +41,7 @@ class TransportEvent:
     payload: dict[str, Any]
     started_at: float
     diagnostic: dict[str, Any] | None = None
+    received_utc: str | None = None
 
 
 class _TransportFailure(Exception):
@@ -367,9 +369,20 @@ class LiveRunner:
             raise _TransportFailure(IMAGE_EXPIRED)
         try:
             response = await client.send(request, stream=True, follow_redirects=False)
+            refusal_received = False
             try:
                 client.cookies.clear()
                 if response.status_code in (401, 403):
+                    if read_once:
+                        refusal_received = True
+                        return safe_refusal(
+                            {
+                                "ok": False,
+                                "error": "authentication_required"
+                                if response.status_code == 401
+                                else "local_operator_required",
+                            }
+                        )
                     raise _TransportFailure(
                         AUTH_FAILED, reason="authentication_failed", status=response.status_code
                     )
@@ -398,6 +411,9 @@ class LiveRunner:
                     raise _TransportFailure(INVALID_RESPONSE, status=200) from None
                 if not isinstance(data, dict) or type(data.get("ok")) is not bool:
                     raise _TransportFailure(INVALID_RESPONSE, status=200)
+                if read_once and data["ok"] is False:
+                    refusal_received = True
+                    return safe_refusal(data)
                 if not read_once and data["ok"] is not True:
                     code = data.get("error")
                     safe_code = code if type(code) is str and code in SAFE_CODES else None
@@ -416,7 +432,7 @@ class LiveRunner:
                 except httpx2.HTTPError:
                     # Cleanup must not turn a known auth/permanent rejection
                     # into a retryable network error. Cancellation still wins.
-                    if primary_failure is None:
+                    if primary_failure is None and not refusal_received:
                         raise
         except httpx2.HTTPError as error:
             reasons = {
@@ -495,9 +511,11 @@ class LiveRunner:
 
     async def _read_logs(self, generation: int, serial: int, request: dict[str, Any]) -> None:
         started_at = time.monotonic()
+        received_utc = None
         payload: dict[str, Any] = {"job_id": request["job_id"], "request_id": serial}
         try:
             payload["response"] = await self._request("/operator/job-logs", request, read_once=True)
+            received_utc = datetime.now(UTC).isoformat(timespec="seconds")
         except _TransportFailure as error:
             payload["error"] = str(error)
         except asyncio.CancelledError:
@@ -507,7 +525,9 @@ class LiveRunner:
         with self._lock:
             current = serial == self._log_serial
         if current:
-            self._emit(TransportEvent("logs", generation, payload, started_at))
+            self._emit(
+                TransportEvent("logs", generation, payload, started_at, received_utc=received_utc)
+            )
 
     async def _read_image(
         self,

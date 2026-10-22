@@ -17,7 +17,7 @@ from cardputer_mcp.backend import MockBackend
 from cardputer_mcp.broker import RetainedCapture, digest_plan
 from cardputer_mcp.capture import LegacyCaptureDecoder, mock_image
 from cardputer_mcp.derby_smoke import SMOKE
-from cardputer_mcp.gui_live_preview import FAILED, PreviewState
+from cardputer_mcp.gui_live_preview import DENIED, FAILED, PreviewState
 from cardputer_mcp.gui_live_state import LiveState, apply, begin
 from cardputer_mcp.gui_live_transport import AUTH_FAILED, LiveRunner
 from cardputer_mcp.models import TestName as Action
@@ -182,11 +182,12 @@ async def test_preview_read_rechecks_current_operator_authentication(
         permitted[0] = False
         request_id = runner.read_image(1, job_id, expires_at=preview.row.expires_at)
         event = await next_event(runner, "image", expected_disconnect_error=AUTH_FAILED)
-        assert event.payload["error"] == AUTH_FAILED and "response" not in event.payload
+        assert event.payload["response"] == {"ok": False, "error": "authentication_required"}
+        assert "image_base64" not in repr(event.payload)
         rejected = preview.started(request_id).accept(
-            1, job_id, request_id, None, event.started_at, time.monotonic()
+            1, job_id, request_id, event.payload["response"], event.started_at, time.monotonic()
         )
-        assert rejected.preview is None and rejected.message == FAILED
+        assert rejected.preview is None and rejected.message == DENIED
         assert broker.captures[job_id] is retained and broker.backend.calls == 0
     finally:
         permitted[0] = True

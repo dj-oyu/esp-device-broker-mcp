@@ -16,6 +16,25 @@ class OperatorClientError(ValueError):
     """A safe, fixed diagnostic suitable for an operator-facing window."""
 
 
+def safe_refusal(data: Any) -> dict[str, Any]:
+    """Retain only a fixed refusal reason, never arbitrary response fields."""
+    result: dict[str, Any] = {"ok": False}
+    if type(data) is dict and data.get("ok") is False:
+        code = data.get("error")
+        if type(code) is str and code in {
+            "not_authorized",
+            "capture_not_available",
+            "unavailable",
+            "expired",
+            "unsupported",
+            "authentication_required",
+            "local_operator_required",
+            "invalid_request",
+        }:
+            result["error"] = code
+    return result
+
+
 def parse_http_diagnostics(data: dict[str, Any]) -> dict[str, Any]:
     """Keep only the fixed diagnostics schema; never echo extra server content."""
 
@@ -210,6 +229,15 @@ class OperatorClient:
                 "Cannot reach the local broker. Check that it is running, then refresh."
             ) from None
         if response.status_code in (401, 403):
+            if allow_refusal:
+                return safe_refusal(
+                    {
+                        "ok": False,
+                        "error": "authentication_required"
+                        if response.status_code == 401
+                        else "local_operator_required",
+                    }
+                )
             raise OperatorClientError(
                 "Local operator authentication failed. Check CARDPUTER_LOCAL_TOKEN."
             )
@@ -225,7 +253,7 @@ class OperatorClient:
             raise OperatorClientError("The broker returned an invalid operator response.")
         if not data["ok"]:
             if allow_refusal:
-                return {"ok": False}
+                return safe_refusal(data)
             # Never display server-controlled strings, response bodies, URLs, or
             # exception text. The next state refresh supplies the current facts.
             raise OperatorClientError(

@@ -11,6 +11,7 @@ import pytest
 from test_gui_live_state import card, delta, ready, snapshot
 
 from cardputer_mcp.gui import Outcome, QueueController
+from cardputer_mcp.gui_connection_panels import DiagnosticOutcome
 from cardputer_mcp.gui_live import LiveWindow
 from cardputer_mcp.gui_live_presentation import (
     MAX_LOG_BYTES,
@@ -208,7 +209,7 @@ def test_log_epoch_gap_duplicates_and_expiry_are_independent():
     assert restarted.lines == ("new",) and restarted.gap
     expired = read_log_result(first, response([], expired=True, gap=True, sequence=2))
     assert expired.phase == "expired" and expired.lines == ()
-    assert "receipt" in expired.message
+    assert "expired" in expired.message
 
 
 def test_log_body_is_removed_on_denial_and_never_echoes_error_or_manifest():
@@ -475,13 +476,16 @@ def test_cancel_uses_existing_identity_validation_and_starts_deadline_after_conf
 
 def test_diagnostic_completion_clears_pending_message_without_losing_detail():
     window = live_window()
-    window.connection_detail = Text()
+    window.connection_panels = Mock()
     window.action_pending = True
-    window.action_results.put(("diagnostic", "HTTP diagnostics loaded"))
+    window.action_results.put(("diagnostic_http", DiagnosticOutcome("HTTP diagnostics loaded")))
     drain(window)
     assert not window.action_pending
-    assert window.connection_detail.text == "HTTP diagnostics loaded"
-    window.action_status.set.assert_called_with("Diagnostic request completed. See Connection.")
+    assert window.connection_panels.show_result.call_args.args[:2] == (
+        "http",
+        "HTTP diagnostics loaded",
+    )
+    window.action_status.set.assert_called_with("")
 
 
 def test_queue_failure_clears_busy_and_result_message_survives_reconnect():
@@ -639,6 +643,7 @@ def test_native_tk_append_keeps_visible_line_when_a_desktop_is_available():
         ("firmware_backup", True),
         ("firmware_flash", True),
         ("firmware_restore", True),
+        ("app_session", True),
         ("capture_home", False),
         ("derby_smoke", False),
         ("diagnostics", False),
@@ -771,3 +776,116 @@ def test_auth_failure_records_diagnostic_and_never_schedules_retry():
     assert window.live_diagnostics == [details]
     assert window.state.connection == "disconnected"
     window.runner.reconnect.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "phase", ["idle", "empty", "denied", "expired", "unavailable", "not_applicable"]
+)
+def test_result_state_is_inside_the_copyable_content_not_below_an_empty_pane(phase):
+    window = live_window()
+    window.logs = LogView(phase)
+    window.log_text = Text(text="old output")
+    window.log_status = Mock()
+    window.log_context = Mock()
+    LiveWindow._render_logs(window)
+    assert window.log_text.text == window.logs.message
+    assert window.log_context.set.call_args.args[0].startswith("Logs | firmware_build")
+    assert window.api.mock_calls == []
+    window.root.clipboard_clear.assert_not_called()
+
+
+def test_loading_is_visible_inside_empty_content_and_received_time_is_not_emission_time():
+    window = live_window()
+    window.logs = LogView()
+    window.log_requests = window.log_requests.started(5)
+    window.log_text = Text(text="")
+    window.log_status, window.log_context = Mock(), Mock()
+    LiveWindow._render_logs(window)
+    assert window.log_text.text == "Reading permitted output..."
+    window.logs = LogView(
+        "available", lines=("observed output",), received_utc="2026-10-22T10:00:00+00:00"
+    )
+    window.log_requests = window.log_requests.completed(5)
+    LiveWindow._render_logs(window)
+    assert "Read 2026-10-22T10:00:00+00:00" in window.log_context.set.call_args.args[0]
+    assert window.log_text.text == "observed output"
+
+
+def test_whole_text_copy_requires_deliberate_action_and_preserves_unicode():
+    window = live_window()
+    for name, value in {
+        "detail_heading": "a | Running",
+        "detail_text": "Selected status",
+        "log_context": "Logs | Retained",
+        "log_text": "日本語 output",
+        "log_status": "Some output is missing",
+        "image_context": "Captured image | No retained image",
+        "preview_status": "No retained image",
+    }.items():
+        widget = Mock()
+        widget.get.return_value = value
+        setattr(window, name, widget)
+    window.root.clipboard_clear.assert_not_called()
+    window._copy_result()
+    window.root.clipboard_clear.assert_called_once()
+    copied = window.root.clipboard_append.call_args.args[0]
+    assert "日本語 output" in copied and "Logs | Retained" in copied
+    assert "Some output is missing" in copied and "Selected status" in copied
+    window.state = select(window.state, "")
+    window._copy_result()
+    assert window.root.clipboard_append.call_count == 1
+
+
+def test_cancel_visibility_uses_capability_predicate_and_rechecks_after_state_change():
+    window = live_window()
+    for name in (
+        "job_cancel",
+        "release_button",
+        "wait_cancel",
+        "up_button",
+        "down_button",
+        "cancel_context",
+    ):
+        setattr(window, name, Mock())
+    for available in (False, True, False):
+        window.state = select(ready(snapshot([card("a", cancel_available=available)])), "a")
+        LiveWindow._controls(window)
+        (window.job_cancel.grid if available else window.job_cancel.grid_remove).assert_called()
+        assert window.job_cancel.configure.call_args.kwargs["state"] == (
+            "normal" if available else "disabled"
+        )
+    window.state = select(
+        ready(snapshot([card("a", test="firmware_flash", cancel_available=False)])), "a"
+    )
+    LiveWindow._controls(window)
+    assert window.cancel_context.set.call_args.args[0] == "Cancel via the owning client session"
+
+
+def test_failed_diagnostic_is_not_presented_as_a_received_success():
+    window = live_window()
+    window.connection_panels = Mock()
+    window.action_pending = True
+    window.action_results.put(("diagnostic_mcp", DiagnosticOutcome(None)))
+    drain(window)
+    window.connection_panels.show_error.assert_called_once_with("mcp")
+    window.connection_panels.show_result.assert_not_called()
+    assert not window.action_pending
+
+
+def test_raised_diagnostic_client_error_traverses_real_worker_and_drain_without_receipt():
+    from cardputer_mcp.operator_client import OperatorClientError
+
+    window = live_window()
+    window.connection_panels = Mock()
+    window.api.catalog.side_effect = OperatorClientError("private synthetic exception")
+    window._diagnostic(True)
+    deadline = time.monotonic() + 2
+    while window.action_results.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not window.action_results.empty()
+    drain(window)
+    window.connection_panels.show_loading.assert_called_once_with("mcp")
+    window.connection_panels.show_error.assert_called_once_with("mcp")
+    window.connection_panels.show_result.assert_not_called()
+    assert "private synthetic" not in repr(window.action_status.mock_calls)
+    assert not window.action_pending

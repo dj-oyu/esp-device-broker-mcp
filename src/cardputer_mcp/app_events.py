@@ -3,6 +3,7 @@
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -12,10 +13,18 @@ from .models import BuildLogRequest, LogCursor
 
 
 class AppEvents:
-    def __init__(self, principal: str, log_bytes: int) -> None:
+    def __init__(
+        self,
+        principal: str,
+        log_bytes: int,
+        *,
+        on_logs_change: Callable[[], None] | None = None,
+    ) -> None:
         self.principal = principal
         self.epoch = uuid4().hex
-        self.logs = BuildLogs(principal, max_bytes=log_bytes, max_lines=256)
+        self.logs = BuildLogs(
+            principal, max_bytes=log_bytes, max_lines=256, on_change=on_logs_change
+        )
         self.control: deque[dict[str, Any]] = deque(maxlen=128)
         self.sequence = 0
         self.deadline = time.monotonic() + 300
