@@ -65,7 +65,8 @@ def private_directory(path):
             token.Close()
         acl = security.ACL()
         acl.AddAccessAllowedAceEx(2, 3, 0x1F01FF, sid)
-        security.SetNamedSecurityInfo(str(path), 1, 4 | 0x80000000, None, None, acl, None)
+        information = security.DACL_SECURITY_INFORMATION | security.PROTECTED_DACL_SECURITY_INFORMATION
+        security.SetNamedSecurityInfo(str(path), 1, information, None, None, acl, None)
 
 
 @pytest.fixture
