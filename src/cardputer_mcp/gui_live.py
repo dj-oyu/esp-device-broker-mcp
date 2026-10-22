@@ -148,10 +148,6 @@ class LiveWindow:
             detail_header, textvariable=self.detail_heading, style="Section.TLabel", wraplength=300
         )
         self.detail_heading_label.grid(row=0, column=0, sticky="ew")
-        self.back_button = ttk.Button(
-            detail_header, text="Back to list", command=self._back_to_list
-        )
-        self.back_button.grid(row=0, column=1, sticky="ne", padx=(8, 0))
         detail_box, self.detail_text = self._text(detail, height=6, wrap="word")
         detail_box.grid(row=1, sticky="nsew", pady=(8, 12))
         controls = ttk.Frame(detail)
@@ -271,9 +267,7 @@ class LiveWindow:
         self.log_marker.configure(
             wraplength=max(1, event.width - self.copy_button.winfo_reqwidth() - 24)
         )
-        self.detail_heading_label.configure(
-            wraplength=max(1, event.width - self.back_button.winfo_reqwidth() - 16)
-        )
+        self.detail_heading_label.configure(wraplength=max(1, event.width))
 
     def _reveal_preview(self) -> None:
         canvas = getattr(self, "_detail_canvas", None)
