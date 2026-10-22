@@ -14,8 +14,10 @@ Cardputer の機能だけが利用可能です。Stackchan 対応や実機画像
 2. ローカル開発用の **発行済み client key** を1個用意し、Claude Code と Codex で共有します。
    `remote_mcp` の `read` が必須です。操作にも使う場合だけ `control` を明示的に付けます。
    キーの実際の発行は利用者が [KEYS.md](KEYS.md) の対話コマンドで確認して行います。
-3. broker の起動時に、そのキーを発行した既存の registry を `-KeyRegistry` で指定します。
-   起動済み broker の registry を切り替える場合は、先に安全に idle であることを確認します。
+3. 通常起動では、キー発行時と同じ標準台帳
+   `%LOCALAPPDATA%\DeviceBroker\keys.sqlite3` が自動選択されます。起動オプションは不要です。
+   標準外の既存台帳を使う場合だけ `serve --key-registry` で明示します。
+   起動済み broker の台帳を切り替える場合は、先に安全に idle であることを確認します。
 4. リポジトリと adapter フォルダーの両方の外に、OS 上で自分用の private ファイルを用意します。
    以下の例は `C:\Users\YOUR_NAME\AppData\Local\DeviceBroker\local-client.env` です。
 
@@ -25,7 +27,8 @@ GUI の `CARDPUTER_LOCAL_TOKEN`、起動時の一時的な remote token、OpenAI
 
 Windows では private フォルダーのプロパティ → セキュリティでアクセス権を利用者が確認します。
 自分以外の一般ユーザーに読み取り・書き込みを許可しない場所を使ってください。
-このコードは Windows ACL を検証・変更しません。POSIX では現在の所有者と `0400` / `0600` の
+adapter の env ファイル読込は Windows ACL を検証・変更しません。broker の標準台帳は
+所有者と private ACL を検証し、変更は行いません。POSIX では現在の所有者と `0400` / `0600` の
 ファイル権限を要求します。リンク・reparse point・複数 hard link は拒否します。
 
 ## private env ファイル
