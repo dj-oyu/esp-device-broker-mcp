@@ -487,12 +487,24 @@ async def test_unconfirmed_output_release_retains_lock_reference_and_review(
 
 @pytest.mark.parametrize(
     "code",
-    ["build_output_insufficient_space", "build_output_in_use", "build_output_identity_mismatch"],
+    [
+        "build_output_insufficient_space",
+        "build_output_in_use",
+        "build_output_identity_mismatch",
+        "build_inputs_changed",
+        "idf_build_failed_needs_review",
+        "build_target_mismatch",
+        "build_artifacts_missing",
+        "artifact_count_limit",
+        "trusted_powershell_missing",
+        "external_idf_environment_invalid",
+    ],
 )
 async def test_build_failure_result_survives_execution_timeline_and_gui(
     registry_service, tmp_path, monkeypatch, code
 ):
     from cardputer_mcp.build_locations import BuildLocationError
+    from cardputer_mcp.firmware_build import FixedDiagnosticFailure
     from cardputer_mcp.gui_timeline import TimelineSnapshot
     from cardputer_mcp.operator_timeline import OperatorTimeline
     from cardputer_mcp.plan_approval import PlanApprovals
@@ -504,7 +516,9 @@ async def test_build_failure_result_survives_execution_timeline_and_gui(
 
     async def fail_build(plan, stage, *, defer_publish):
         stage("idf_build")
-        raise BuildLocationError(code)
+        if code.startswith("build_output_"):
+            raise BuildLocationError(code)
+        raise FixedDiagnosticFailure(code)
 
     monkeypatch.setattr(broker.firmware_build, "execute", fail_build)
     prepared = prepare(service, "failure-display")
@@ -627,3 +641,45 @@ async def test_registered_profile_forwards_explicit_source_mode(
     assert seen == [("c" * 64, mode)]
     assert broker.session is None
     assert service.backend.calls == 0
+
+
+@pytest.mark.parametrize("known", [True, False])
+async def test_build_diagnostic_persists_bounded_status_without_exception_text(
+    registry_service, tmp_path, monkeypatch, known
+):
+    from cardputer_mcp.firmware_build import FixedDiagnosticFailure
+
+    service = registry_service
+    register(service, tmp_path)
+    broker = service.resident
+    key = service.keys["second"].metadata
+
+    async def fail_build(plan, stage, *, defer_publish):
+        stage("idf_build")
+        if known:
+            failure = FixedDiagnosticFailure("build_inputs_changed")
+            failure.subprocess = {"profile_export": 0, "build_diagnostic": 0, "idf_build": 0}
+            raise failure
+        raise ValueError("token=synthetic-secret " + "private-path" * 10000)
+
+    monkeypatch.setattr(broker.firmware_build, "execute", fail_build)
+    prepared = prepare(service, "bounded-diagnostic")
+    broker.profile_jobs.execute(
+        ExecuteRequest(plan_hash=prepared["plan_hash"]), key.principal_id, key.origin.value
+    )
+    await broker.profile_jobs.queue.join()
+    job = broker.job("bounded-diagnostic")
+    assert job["state"] == "failed"
+    expected = {"code": "firmware_build_failed"}
+    if known:
+        expected = {
+            "code": "build_inputs_changed",
+            "subprocess_exit_codes": {"profile_export": 0, "build_diagnostic": 0, "idf_build": 0},
+        }
+    assert job["diagnostic"] == expected
+    assert job["result"] == expected["code"]
+    assert len(json.dumps(job["diagnostic"])) < 256
+    assert "synthetic-secret" not in json.dumps(job)
+    assert "private-path" not in json.dumps(job)
+    assert not broker.firmware_build.manifests
+    assert not broker._store().needs_review()
