@@ -42,7 +42,9 @@ def test_owner_rights_requires_trusted_actual_owner(monkeypatch, owner, foreign,
     api = SimpleNamespace(GetCurrentProcess=lambda: 0)
     monkeypatch.setattr(registry_defaults, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(
-        registry_defaults, "import_module", lambda name: security if name == "win32security" else api
+        registry_defaults,
+        "import_module",
+        lambda name: security if name == "win32security" else api,
     )
     if allowed:
         registry_defaults._windows_private(Path("synthetic"))
