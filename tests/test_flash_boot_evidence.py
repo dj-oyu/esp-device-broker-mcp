@@ -19,10 +19,20 @@ from cardputer_mcp.flash_models import FlashDevice
 from cardputer_mcp.serial_backend import fingerprint
 
 
-@pytest.mark.parametrize("scenario", [
-    "elf_mismatch", "idf_mismatch", "invalid_version", "timeout", "transport",
-    "transport_and_close", "invalid_and_close", "line_limit", "late_chunk",
-])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "elf_mismatch",
+        "idf_mismatch",
+        "invalid_version",
+        "timeout",
+        "transport",
+        "transport_and_close",
+        "invalid_and_close",
+        "line_limit",
+        "late_chunk",
+    ],
+)
 async def test_terminal_boot_failure_retains_owned_redacted_evidence(
     registry_service, tmp_path, monkeypatch, scenario
 ):
@@ -31,14 +41,24 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
     elf = "abcdef0123456789" + "0" * 48
     registration = FlashDevice(
         selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
-        flash_bytes=2097152, project_id="fixture",
-        python_tool={"executable": tmp_path / "python.exe", "sha256": "a" * 64,
-                     "version": "Python 3.13.16"},
-        esptool_directory=tmp_path / "tools", esptool_sha256="b" * 64,
-        backup_directory=tmp_path / "backup", private_backup_acl_confirmed=True,
-        original_elf_sha256=elf, allow_backup=True, allow_restore=True,
+        flash_bytes=2097152,
+        project_id="fixture",
+        python_tool={
+            "executable": tmp_path / "python.exe",
+            "sha256": "a" * 64,
+            "version": "Python 3.13.16",
+        },
+        esptool_directory=tmp_path / "tools",
+        esptool_sha256="b" * 64,
+        backup_directory=tmp_path / "backup",
+        private_backup_acl_confirmed=True,
+        original_elf_sha256=elf,
+        allow_backup=True,
+        allow_restore=True,
     )
-    broker.settings = broker.settings.model_copy(update={"flash_devices": {"fixture": registration}})
+    broker.settings = broker.settings.model_copy(
+        update={"flash_devices": {"fixture": registration}}
+    )
     broker.firmware_flash.settings = broker.settings
     rom = FakeDriver()
     rom.data = bytearray(b"x" * registration.flash_bytes)
@@ -52,14 +72,26 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
         lease = await call(owner, "acquire_session", {"owner": "remote_mcp"})
 
         async def execute(job, action, **fields):
-            prepared = await call(owner, "prepare_test", {
-                "session": lease["session"], "job_id": job, "test": action,
-                "device_id": "fixture", **fields,
-            })
+            prepared = await call(
+                owner,
+                "prepare_test",
+                {
+                    "session": lease["session"],
+                    "job_id": job,
+                    "test": action,
+                    "device_id": "fixture",
+                    **fields,
+                },
+            )
             assert prepared["ok"], prepared
-            result = await call(owner, "execute_test", {
-                "session": lease["session"], "plan_hash": prepared["plan_hash"],
-            })
+            result = await call(
+                owner,
+                "execute_test",
+                {
+                    "session": lease["session"],
+                    "plan_hash": prepared["plan_hash"],
+                },
+            )
             assert result["ok"], result
             await broker.queue.join()
 
@@ -69,14 +101,23 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
             b"v0.0.7-test", b"archive/20261021/ci/full-contra"
         )
         note = b"error: SYNTHETIC_BOOT_NOTE ENV_SECRET_WITHOUT_LABEL\n"
-        sensitive = b"token=SYNTHETIC_PRIVATE_BOOT\n-----BEGIN PRIVATE KEY-----\nPRIVATE_PEM_BODY\n-----END PRIVATE KEY-----\n"
+        sensitive = (
+            b"token=SYNTHETIC_PRIVATE_BOOT\n-----BEGIN PRIVATE KEY-----\n"
+            b"PRIVATE_PEM_BODY\n-----END PRIVATE KEY-----\n"
+        )
         if scenario == "elf_mismatch":
             startup = startup.replace(b"abcdef0123456789", b"1111111111111111")
         elif scenario == "idf_mismatch":
             startup = startup.replace(b"v6.0.1", b"v6.0.2")
         elif scenario in {"invalid_version", "invalid_and_close"}:
             startup = startup.replace(b"archive/20261021/ci/full-contra", b"v1/test extra")
-        elif scenario in {"timeout", "transport", "transport_and_close", "line_limit", "late_chunk"}:
+        elif scenario in {
+            "timeout",
+            "transport",
+            "transport_and_close",
+            "line_limit",
+            "late_chunk",
+        }:
             startup = b""
         data = note + sensitive + startup
         if scenario == "line_limit":
@@ -92,8 +133,9 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
 
         def factory(reg, backend, usb, work, app_hash, expected_elf, live):
             assert expected_elf == elf
-            driver = NativeFlashDriver(reg, serial, fingerprint(inventory[0]), work,
-                                       app_hash, expected_elf, live)
+            driver = NativeFlashDriver(
+                reg, serial, fingerprint(inventory[0]), work, app_hash, expected_elf, live
+            )
             driver._verified_port = lambda: inventory[0].port
             driver.probe, driver.read, driver.write = rom.probe, rom.read, rom.write
             drivers.append(driver)
@@ -101,25 +143,39 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
 
         broker.firmware_flash.driver_factory = factory
         await execute("boot-failed", "firmware_restore", backup_job_id="boot-backup")
-        assert (await call(owner, "job_status", {"job_id": "boot-failed"}))["state"] == "needs_review"
+        assert (await call(owner, "job_status", {"job_id": "boot-failed"}))[
+            "state"
+        ] == "needs_review"
         assert rom.writes == 1  # No retry or automatic restore after the explicit operation.
         assert len(created) == 1 and all(not port.writes for port in ports)
         assert ports[0].closes == 1 and ports[1].opens == 0
         assert drivers[0].last_observation is drivers[0].last_boot_attempt is None
         assert broker._store().firmware_current("fixture", owner_key.metadata.principal_id) is None
         assert "SYNTHETIC_BOOT_NOTE" not in "\n".join(broker._store().db.iterdump())
-        request = {"job_id": "boot-failed", "limit": 200,
-                   "levels": ["error", "warning", "info", "debug", "unknown"]}
+        request = {
+            "job_id": "boot-failed",
+            "limit": 100,
+            "levels": ["error", "warning", "info", "debug", "unknown"],
+        }
         result = await call(owner, "read_build_logs", request)
         assert result["ok"] and not result["expired"]
         texts = [entry["text"] for entry in result["entries"]]
-        evidence_text = next(line.split("boot_diagnostic ", 1)[1] for line in texts
-                             if "boot_diagnostic " in line)
+        evidence_text = next(
+            line.split("boot_diagnostic ", 1)[1] for line in texts if "boot_diagnostic " in line
+        )
         assert len(evidence_text) < 4096
         evidence = json.loads(evidence_text)
         observation = evidence["observation"]
-        assert observation["bytes_received"] > 0 if scenario != "late_chunk" else observation["bytes_received"] == 0
-        assert observation["complete_lines"] > 0 if scenario != "late_chunk" else observation["capture_gap"]
+        assert (
+            observation["bytes_received"] > 0
+            if scenario != "late_chunk"
+            else observation["bytes_received"] == 0
+        )
+        assert (
+            observation["complete_lines"] > 0
+            if scenario != "late_chunk"
+            else observation["capture_gap"]
+        )
         assert "SYNTHETIC_BOOT_NOTE" in "\n".join(texts) if scenario != "late_chunk" else True
         assert "SYNTHETIC_PRIVATE" not in json.dumps(result)
         assert "PRIVATE_PEM_BODY" not in json.dumps(result)
@@ -127,10 +183,14 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
         assert "SYNTHETIC_BOOT_NOTE" not in repr(console)
         assert "boot_diagnostic" not in repr(console)
         attempt = evidence["attempt"]
-        assert datetime.fromisoformat(attempt["finished_utc"]) >= datetime.fromisoformat(attempt["started_utc"])
+        assert datetime.fromisoformat(attempt["finished_utc"]) >= datetime.fromisoformat(
+            attempt["started_utc"]
+        )
         assert attempt["attempt_elapsed_ms"] >= 0 and attempt["observation_elapsed_ms"] >= 0
         if scenario in {"transport", "transport_and_close"}:
-            assert attempt["reason"] == ("serial_read_failed" if scenario == "transport" else "serial_close_unconfirmed")
+            assert attempt["reason"] == (
+                "serial_read_failed" if scenario == "transport" else "serial_close_unconfirmed"
+            )
         if scenario == "transport_and_close":
             assert attempt["primary_failure_code"] == "serial_read_failed"
         if scenario in {"invalid_version", "invalid_and_close"}:
@@ -138,7 +198,9 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
         if scenario in {"timeout", "late_chunk"}:
             assert observation["firmware"]["reason"] == "no_startup_block"
         if scenario in {"elf_mismatch", "idf_mismatch"}:
-            assert evidence["verification_reason"] == ("elf_sha256_mismatch" if scenario == "elf_mismatch" else "idf_version_mismatch")
+            assert evidence["verification_reason"] == (
+                "elf_sha256_mismatch" if scenario == "elf_mismatch" else "idf_version_mismatch"
+            )
         if scenario == "line_limit":
             assert observation["truncated"] and observation["omitted_lines"] > 0
         async with connect(service.url, service.keys["reader"].token) as foreign:

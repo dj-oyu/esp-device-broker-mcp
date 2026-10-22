@@ -61,8 +61,8 @@ class SerialFailure(DeviceOperationFailure):
     """Fixed-category failure; unknown device outcome always requires review."""
 
     fixed_trial: FixedTrial | None = None
-    observation: DeviceObservation | None = None
-    primary_failure_code: str | None = None
+    observation: DeviceObservation | None
+    primary_failure_code: str | None
 
 
 def make_serial() -> SerialPort:
@@ -1121,7 +1121,8 @@ class SerialBackend:
             try:
                 sealed = collector.finish()
                 observation = replace(
-                    sealed, reset_sequence_issued=True,
+                    sealed,
+                    reset_sequence_issued=True,
                     capture_gap=sealed.capture_gap or reopened or discarded_at_deadline,
                 )
             except Exception:
@@ -1147,7 +1148,8 @@ class SerialBackend:
                 try:
                     sealed = collector.finish()
                     retained_observation = replace(
-                        sealed, reset_sequence_issued=True,
+                        sealed,
+                        reset_sequence_issued=True,
                         capture_gap=sealed.capture_gap or reopened or discarded_at_deadline,
                     )
                     if observation_started is not None:
@@ -1177,9 +1179,9 @@ class SerialBackend:
                         raise
                 emit("serial_close")
             if cleanup_failed and not self.ownership_uncertain:
-                failure = SerialFailure("serial_operation_uncertain", step="restart_observe")
-                failure.observation = retained_observation
-                failure.primary_failure_code = (
+                cleanup_failure = SerialFailure("serial_operation_uncertain", step="restart_observe")
+                cleanup_failure.observation = retained_observation
+                cleanup_failure.primary_failure_code = (
                     operation_failure.code if operation_failure is not None else None
                 )
-                raise failure from None
+                raise cleanup_failure from None

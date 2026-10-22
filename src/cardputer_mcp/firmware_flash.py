@@ -13,9 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from .build_logs import BuildLogs
-from .flash_backup import BackupStore
 from .device_observation import DeviceObservation
-from .flash_driver import BootAttempt, NativeFlashDriver, boot_verification_reason, esptool_fingerprint
+from .flash_backup import BackupStore
+from .flash_driver import (
+    BootAttempt,
+    NativeFlashDriver,
+    boot_verification_reason,
+    esptool_fingerprint,
+)
 from .flash_lifecycle import FlashFailure, FlashLifecycle, Operation, OperationPlan
 from .flash_lkg_bundle import (
     baseline_layout,
@@ -702,13 +707,18 @@ class FirmwareFlash:
             return f"firmware_{plan['flash_operation']}_completed"
         except Exception as failure:
             if isinstance(failure, FlashFailure) and failure.code in {
-                "flash_boot_unverified_needs_review", "flash_boot_observation_missing",
-                "flash_boot_device_changed", "flash_timeout_needs_review",
-                "flash_failed_needs_review", "flash_shutdown_uncertain_needs_review",
+                "flash_boot_unverified_needs_review",
+                "flash_boot_observation_missing",
+                "flash_boot_device_changed",
+                "flash_timeout_needs_review",
+                "flash_failed_needs_review",
+                "flash_shutdown_uncertain_needs_review",
             }:
                 failure_code = failure.code
             try:
-                log.append("error: flash operation failed; needs review; no retry or automatic restore")
+                log.append(
+                    "error: flash operation failed; needs review; no retry or automatic restore"
+                )
             except Exception:
                 pass
             raise
@@ -749,7 +759,8 @@ class FirmwareFlash:
         prefix = "error: " if failure_code is not None else "info: "
         log.append(
             prefix + "boot_diagnostic " + json.dumps(diagnostic, sort_keys=True),
-            "boot_observation", console_output=False,
+            "boot_observation",
+            console_output=False,
         )
 
     def read_logs(self, request: Any, principal: str) -> dict[str, Any]:

@@ -205,9 +205,13 @@ class DriverBootTests(unittest.TestCase):
             (b"archive/20261021/ci/full-contra", b"v6.0.1", b"1111111111111111", False),
         ):
             driver, _, ports, _ = self.make_driver()
-            ports[0].chunks = deque([STARTUP.replace(b"v0.0.7-test", version)
-                                    .replace(b"v5.5-test", idf)
-                                    .replace(b"abcdef0123456789", elf)])
+            ports[0].chunks = deque(
+                [
+                    STARTUP.replace(b"v0.0.7-test", version)
+                    .replace(b"v5.5-test", idf)
+                    .replace(b"abcdef0123456789", elf)
+                ]
+            )
             if accepted:
                 self.assertTrue(driver.boot()["boot_observed"])
             else:
@@ -230,10 +234,14 @@ class DriverBootTests(unittest.TestCase):
             self.assertEqual(report.bytes_received, len(partial))
             self.assertEqual(report.complete_lines, 2)
             self.assertNotIn("SYNTHETIC_PRIVATE", str(report.payload()))
-            self.assertEqual(driver.last_boot_attempt.reason,
-                             "serial_close_unconfirmed" if close_failure else "serial_read_failed")
-            self.assertEqual(driver.last_boot_attempt.primary_failure_code,
-                             "serial_read_failed" if close_failure else None)
+            self.assertEqual(
+                driver.last_boot_attempt.reason,
+                "serial_close_unconfirmed" if close_failure else "serial_read_failed",
+            )
+            self.assertEqual(
+                driver.last_boot_attempt.primary_failure_code,
+                "serial_read_failed" if close_failure else None,
+            )
             self.assertIsNotNone(driver.last_boot_attempt.observation_elapsed_ms)
             self.assertEqual(ports[0].writes, [])
             self.assertEqual(driver.uncertain, close_failure)

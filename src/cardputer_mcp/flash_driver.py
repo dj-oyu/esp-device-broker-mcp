@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from .backend import BackendResult, DeviceOperationFailure
-from .device_observation import DeviceObservation
 from .build_process import BuildProcess, ProcessDeadlineExpired
+from .device_observation import DeviceObservation
 from .firmware_build import OS_ENV, hash_file
 from .flash_lifecycle import (
     _SAFE_ROM_EXCEPTION_TYPES,
@@ -40,7 +40,8 @@ def boot_verification_reason(observation: DeviceObservation | None, expected: st
     if (metadata.get("idf_version") or "").removeprefix("v") != "6.0.1":
         return "idf_version_mismatch"
     if (
-        not isinstance(prefix, str) or not 8 <= len(prefix) <= 16
+        not isinstance(prefix, str)
+        or not 8 <= len(prefix) <= 16
         or any(c not in "0123456789abcdef" for c in prefix)
     ):
         return "elf_prefix_invalid"
@@ -60,8 +61,11 @@ class BootAttempt:
 
     def metadata(self) -> dict[str, Any]:
         safe = DeviceOperationFailure.CODES | {
-            "boot_failed", "boot_observation_completed", "flash_boot_device_changed",
-            "flash_boot_observation_missing", "flash_boot_unverified_needs_review",
+            "boot_failed",
+            "boot_observation_completed",
+            "flash_boot_device_changed",
+            "flash_boot_observation_missing",
+            "flash_boot_unverified_needs_review",
         }
         return {
             "started_utc": self.started_utc.isoformat(timespec="milliseconds"),
@@ -70,7 +74,8 @@ class BootAttempt:
             "observation_elapsed_ms": self.observation_elapsed_ms,
             "reason": self.reason if self.reason in safe else "boot_failed",
             "primary_failure_code": self.primary_failure_code
-            if self.primary_failure_code in DeviceOperationFailure.CODES else None,
+            if self.primary_failure_code in DeviceOperationFailure.CODES
+            else None,
         }
 
 
@@ -441,9 +446,9 @@ class NativeFlashDriver:
             reason = "boot_observation_completed"
             return result
         except SerialFailure as failure:
-            self.last_observation = failure.observation
+            self.last_observation = getattr(failure, "observation", None)
             failure.observation = None
-            reason, primary = failure.code, failure.primary_failure_code
+            reason, primary = failure.code, getattr(failure, "primary_failure_code", None)
             raise
         except FlashFailure as failure:
             reason = failure.code
@@ -451,9 +456,12 @@ class NativeFlashDriver:
         finally:
             elapsed = getattr(self._observation_backend, "restart_observation_elapsed_ms", None)
             self.last_boot_attempt = BootAttempt(
-                started_utc, datetime.now(UTC),
+                started_utc,
+                datetime.now(UTC),
                 max(0, min(86400000, int((time.monotonic() - started) * 1000))),
-                elapsed, reason, primary,
+                elapsed,
+                reason,
+                primary,
             )
 
     def _boot(self) -> dict[str, Any]:
@@ -473,7 +481,10 @@ class NativeFlashDriver:
             raise FlashFailure("flash_boot_observation_missing")
         self.last_observation = result.observation
         metadata = result.observation.firmware.metadata()
-        if boot_verification_reason(result.observation, self.expected_elf_sha256) != "elf_idf_match":
+        if (
+            boot_verification_reason(result.observation, self.expected_elf_sha256)
+            != "elf_idf_match"
+        ):
             raise FlashFailure("flash_boot_unverified_needs_review")
         self._authority()
         return {
