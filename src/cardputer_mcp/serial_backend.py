@@ -1179,7 +1179,9 @@ class SerialBackend:
                         raise
                 emit("serial_close")
             if cleanup_failed and not self.ownership_uncertain:
-                cleanup_failure = SerialFailure("serial_operation_uncertain", step="restart_observe")
+                cleanup_failure = SerialFailure(
+                    "serial_operation_uncertain", step="restart_observe"
+                )
                 cleanup_failure.observation = retained_observation
                 cleanup_failure.primary_failure_code = (
                     operation_failure.code if operation_failure is not None else None
