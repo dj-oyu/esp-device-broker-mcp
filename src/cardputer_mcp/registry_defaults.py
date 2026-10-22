@@ -51,8 +51,10 @@ def _windows_private(path: Path, *, private: bool = True) -> None:
             if kind not in (0, 5):
                 raise KeyRegistryError("unsafe_key_registry_permissions")
             sid = security.ConvertSidToStringSid(ace[-1])
-            # CREATOR OWNER only grants inherited access to the child's trusted owner.
-            if sid in trusted or (flags & 8 and sid == "S-1-3-0"):
+            # OWNER RIGHTS refers to the actual owner verified above (also used
+            # by Python's Windows mkdir(0o700)); never trust it as an owner SID.
+            # CREATOR OWNER only grants inherited access to the child's owner.
+            if sid in trusted or sid == "S-1-3-4" or (flags & 8 and sid == "S-1-3-0"):
                 continue
             forbidden = ace[1] if private else ace[1] & 0x100D0040
             if forbidden:

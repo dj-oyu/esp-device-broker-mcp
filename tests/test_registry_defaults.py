@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,38 @@ from cardputer_mcp.registry_defaults import (
     default_key_registry_path,
     prepare_default_key_directory,
 )
+
+
+@pytest.mark.parametrize(
+    ("owner", "foreign", "allowed"),
+    [("current", False, True), ("other", False, False), ("current", True, False)],
+)
+def test_owner_rights_requires_trusted_actual_owner(monkeypatch, owner, foreign, allowed):
+    from cardputer_mcp import registry_defaults
+
+    grants = [((0, 3), 0x1F01FF, "S-1-3-4")]
+    if foreign:
+        grants.append(((0, 0), 0x120089, "other"))
+    acl = SimpleNamespace(GetAceCount=lambda: len(grants), GetAce=lambda i: grants[i])
+    descriptor = SimpleNamespace(
+        GetSecurityDescriptorOwner=lambda: owner, GetSecurityDescriptorDacl=lambda: acl
+    )
+    security = SimpleNamespace(
+        OpenProcessToken=lambda *_: SimpleNamespace(Close=lambda: None),
+        GetTokenInformation=lambda *_: ("current", 0),
+        ConvertSidToStringSid=lambda sid: sid,
+        GetNamedSecurityInfo=lambda *_: descriptor,
+    )
+    api = SimpleNamespace(GetCurrentProcess=lambda: 0)
+    monkeypatch.setattr(registry_defaults, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        registry_defaults, "import_module", lambda name: security if name == "win32security" else api
+    )
+    if allowed:
+        registry_defaults._windows_private(Path("synthetic"))
+    else:
+        with pytest.raises(KeyRegistryError, match="unsafe_key_registry_permissions"):
+            registry_defaults._windows_private(Path("synthetic"))
 
 
 def private_directory(path):
@@ -152,3 +185,20 @@ def test_foreign_inherit_only_grant_cannot_create_default_database(automatic_pat
     with pytest.raises(KeyRegistryError, match="unsafe_key_registry_permissions"):
         prepare_default_key_directory(automatic_path)
     assert not automatic_path.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows OWNER RIGHTS ACL")
+def test_python_private_directory_owner_rights_supports_default_registry(automatic_path):
+    # Python 3.13 uses SYSTEM/Administrators/OWNER RIGHTS, rather than a literal
+    # user SID, for mkdir(0o700). All actual owners must still be trusted.
+    prepare_default_key_directory(automatic_path)
+    registry = KeyRegistry(automatic_path, random_bytes=lambda n: b"\x06" * n)
+    try:
+        issued = registry.issue("private directory", Origin.REMOTE)
+        source = LiveKeyRegistry(automatic_path)
+        try:
+            assert source.authenticate("Bearer " + issued.token) is not None
+        finally:
+            source.close()
+    finally:
+        registry.close()
