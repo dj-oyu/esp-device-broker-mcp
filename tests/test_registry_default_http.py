@@ -41,9 +41,7 @@ async def test_auto_registry_live_mutations_and_independent_tokens(registry_serv
     removed = path.with_name("retained-old.sqlite3")
     os.replace(path, removed)
     async with httpx2.AsyncClient(trust_env=False) as http:
-        response = await http.get(
-            service.url, headers={"Authorization": "Bearer " + issued.token}
-        )
+        response = await http.get(service.url, headers={"Authorization": "Bearer " + issued.token})
         assert response.status_code == 401
     replacement = KeyRegistry(
         path, clock=lambda: service.now[0], random_bytes=lambda n: b"\x63" * n

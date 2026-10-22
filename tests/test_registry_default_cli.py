@@ -3,12 +3,12 @@
 from unittest.mock import Mock
 
 import pytest
+from test_key_operator import Factory, confirmed, parameters
 
 from cardputer_mcp import cli
 from cardputer_mcp.config import Settings
 from cardputer_mcp.key_operator import KeyOperatorError, run
 from cardputer_mcp.key_registry import KeyRegistryError
-from test_key_operator import Factory, confirmed, parameters
 
 
 def test_keys_no_longer_requires_registry_override():

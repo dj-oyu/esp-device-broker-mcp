@@ -56,7 +56,9 @@ def parser() -> argparse.ArgumentParser:
     sub = root.add_subparsers(dest="command", required=True)
     serve = sub.add_parser("serve", help="Start ONE resident broker; never opens USB")
     serve.add_argument("--config", type=Path)
-    serve.add_argument("--key-registry", type=Path, help="Override the standard private app-state key database")
+    serve.add_argument(
+        "--key-registry", type=Path, help="Override the standard private app-state key database"
+    )
     serve.add_argument(
         "--enable-serial",
         action="store_true",

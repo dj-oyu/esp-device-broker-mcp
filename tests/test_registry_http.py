@@ -2,7 +2,10 @@
 
 import asyncio
 import itertools
+import os
+import shutil
 import socket
+import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,10 +49,14 @@ async def registry_service(
     monkeypatch.setattr(server_module, "time", lambda: now[0])
     sequence = itertools.count(1)
     path = tmp_path / "keys.sqlite3"
+    if os.name == "nt" and getattr(request, "param", None) == "automatic":
+        directory = tempfile.mkdtemp(prefix="broker-registry-http-", dir=os.environ["LOCALAPPDATA"])
+        request.addfinalizer(lambda: shutil.rmtree(directory))
+        path = Path(directory) / "keys.sqlite3"
     if getattr(request, "param", None) == "automatic":
         from test_registry_defaults import private_directory
 
-        private_directory(tmp_path)
+        private_directory(path.parent)
     registry = KeyRegistry(
         path, clock=lambda: now[0], random_bytes=lambda size: bytes([next(sequence)]) * size
     )

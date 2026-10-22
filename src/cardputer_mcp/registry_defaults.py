@@ -14,8 +14,8 @@ def default_key_registry_path() -> Path:
             raise KeyRegistryError("private_app_state_unavailable")
         root = Path(base)
     else:
-        base = os.environ.get("XDG_STATE_HOME")
-        root = Path(base) if base else Path.home() / ".local" / "state"
+        xdg_state = os.environ.get("XDG_STATE_HOME")
+        root = Path(xdg_state) if xdg_state else Path.home() / ".local" / "state"
         if not root.is_absolute():
             raise KeyRegistryError("private_app_state_unavailable")
     if ".." in root.parts:
@@ -102,8 +102,11 @@ class LiveKeyRegistry:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.closed = False
-        if path.exists() or path.is_symlink():
-            self._open().close()
+        try:
+            if path.exists() or path.is_symlink():
+                self._open().close()
+        except OSError:
+            raise KeyRegistryError("key_registry_unavailable") from None
 
     def _open(self) -> KeyRegistry:
         if self.closed:

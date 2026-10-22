@@ -40,7 +40,6 @@ from .http_diagnostics import (
 from .input_diagnostics import invalid_arguments, validate_arguments
 from .key_registry import KeyRegistry, KeyRegistryError
 from .key_registry import Scope as KeyScope
-from .registry_defaults import LiveKeyRegistry, default_key_registry_path
 from .models import (
     FLASH_TESTS,
     AcquireRequest,
@@ -63,6 +62,7 @@ from .models import (
     TestName,
 )
 from .operator_api import OperatorAPI
+from .registry_defaults import LiveKeyRegistry, default_key_registry_path
 from .source_preflight import settings_identity, source_inventory, source_usage
 from .source_resources import resource_report
 from .source_snapshot import SourceError
@@ -83,7 +83,9 @@ class RequestAuth:
     """Resolve each request independently; registry revocation is never cached."""
 
     def __init__(
-        self, ephemeral: list[AuthState | None], registry: list[KeyRegistry | LiveKeyRegistry | None]
+        self,
+        ephemeral: list[AuthState | None],
+        registry: list[KeyRegistry | LiveKeyRegistry | None],
     ) -> None:
         self.ephemeral = ephemeral
         self.registry = registry
