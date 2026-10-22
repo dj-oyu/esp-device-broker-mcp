@@ -61,6 +61,8 @@ class SerialFailure(DeviceOperationFailure):
     """Fixed-category failure; unknown device outcome always requires review."""
 
     fixed_trial: FixedTrial | None = None
+    observation: DeviceObservation | None
+    primary_failure_code: str | None
 
 
 def make_serial() -> SerialPort:
@@ -986,6 +988,10 @@ class SerialBackend:
         collector: DeviceLogCollector | None = None
         incoming: bytes = b""
         reopened = False
+        observation_started: float | None = None
+        self.restart_observation_elapsed_ms: int | None = None
+        operation_failure: SerialFailure | None = None
+        discarded_at_deadline = False
         try:
             owned = self.factory()
             owned.dtr = False
@@ -1032,6 +1038,7 @@ class SerialBackend:
             emit("serial_restart_complete")
             reconnect_deadline = min(self.clock() + RECONNECT_SECONDS, deadline)
             collector = DeviceLogCollector()
+            observation_started = self.clock()
             received = 0
             emit("firmware_observe")
             while self.clock() < deadline and received < MAX_RECEIVE_BYTES:
@@ -1050,6 +1057,9 @@ class SerialBackend:
                             raise SerialFailure("serial_read_failed", step="restart_observe")
                         received += len(incoming)
                         if self.clock() >= deadline:
+                            # The inspected-byte count cannot include this discarded chunk.
+                            if incoming:
+                                discarded_at_deadline = True
                             break
                         if incoming:
                             try:
@@ -1109,8 +1119,11 @@ class SerialBackend:
                 emit("firmware_observe")
             incoming = b""
             try:
+                sealed = collector.finish()
                 observation = replace(
-                    collector.finish(), reset_sequence_issued=True, capture_gap=reopened
+                    sealed,
+                    reset_sequence_issued=True,
+                    capture_gap=sealed.capture_gap or reopened or discarded_at_deadline,
                 )
             except Exception:
                 raise SerialFailure("serial_operation_uncertain", step="restart_observe") from None
@@ -1119,32 +1132,58 @@ class SerialBackend:
                 "restart_observation_completed_unverified", observation=observation
             )
         except SerialFailure as failure:
+            operation_failure = failure
             failure.__traceback__ = None
             failure.__context__ = None
             failure.__cause__ = None
             raise failure from None
         except Exception:
-            raise SerialFailure("serial_operation_uncertain", step="restart_observe") from None
+            operation_failure = SerialFailure("serial_operation_uncertain", step="restart_observe")
+            raise operation_failure from None
         finally:
             incoming = b""
             cleanup_failed = False
+            retained_observation: DeviceObservation | None = None
             if collector is not None:
                 try:
+                    sealed = collector.finish()
+                    retained_observation = replace(
+                        sealed,
+                        reset_sequence_issued=True,
+                        capture_gap=sealed.capture_gap or reopened or discarded_at_deadline,
+                    )
+                    if observation_started is not None:
+                        self.restart_observation_elapsed_ms = max(
+                            0, min(86400000, int((self.clock() - observation_started) * 1000))
+                        )
                     collector.clear_transient()
                 except Exception:
                     # Parser cleanup must never prevent the sole owner closing
                     # the port, including after an unexpected parser failure.
                     cleanup_failed = True
                 collector = None
+            if operation_failure is not None:
+                operation_failure.observation = retained_observation
             if self.ownership_uncertain:
                 emit("serial_close_unconfirmed")
             else:
                 if owned is not None:
                     try:
                         self._close_restart_port(owned)
-                    except SerialFailure:
+                    except SerialFailure as close_failure:
+                        close_failure.observation = retained_observation
+                        close_failure.primary_failure_code = (
+                            operation_failure.code if operation_failure is not None else None
+                        )
                         emit("serial_close_unconfirmed")
                         raise
                 emit("serial_close")
             if cleanup_failed and not self.ownership_uncertain:
-                raise SerialFailure("serial_operation_uncertain", step="restart_observe") from None
+                cleanup_failure = SerialFailure(
+                    "serial_operation_uncertain", step="restart_observe"
+                )
+                cleanup_failure.observation = retained_observation
+                cleanup_failure.primary_failure_code = (
+                    operation_failure.code if operation_failure is not None else None
+                )
+                raise cleanup_failure from None

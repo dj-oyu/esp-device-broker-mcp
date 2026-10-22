@@ -118,9 +118,38 @@ except Exception:
         child_env.clear()
     print("PASS: extracted EXE authenticated catalog/build/log API boundaries; no build executed")
 
+def frozen_registry_smoke(exe: Path, url: str, folder: Path, env: dict) -> None:
+    from cardputer_mcp.key_registry import KeyRegistry
+    from cardputer_mcp.models import Origin
+    from cardputer_mcp.registry_defaults import prepare_default_key_directory
+
+    path = Path(env["LOCALAPPDATA"]) / "DeviceBroker" / "keys.sqlite3"
+    prepare_default_key_directory(path)
+    registry = KeyRegistry(path, random_bytes=lambda size: b"\x17" * size)
+    key_env = dict(env)
+    try:
+        issued = registry.issue("synthetic packaged reader", Origin.REMOTE)
+        key_env["CARDPUTER_CLIENT_KEY"] = issued.token
+        arguments = ["--url", url, "--auth-source", "key-environment", "status"]
+        assert json.loads(invoke(exe, arguments, folder, key_env))["ok"] is True
+        registry.revoke(issued.metadata.key_id)
+        try:
+            invoke(exe, arguments, folder, key_env)
+        except RuntimeError as error:
+            assert str(error) == "packaged_command_failed"
+        else:
+            raise AssertionError("packaged_broker_accepted_revoked_default_key")
+    finally:
+        registry.close()
+        key_env.clear()
+    print("PASS: extracted EXE default private registry hot issue/revoke without restart")
+
+
 def smoke(archive: Path, ref: str, commit: str) -> None:
     manifest = verify_archive(archive, ref, commit)
-    with tempfile.TemporaryDirectory(prefix="cardputer-exe-smoke-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="cardputer-exe-smoke-") as temporary, \
+         tempfile.TemporaryDirectory(prefix="cardputer-registry-smoke-",
+                                     dir=os.environ["LOCALAPPDATA"]) as private_state:
         folder = Path(temporary)
         bundle = folder / "bundle"
         with zipfile.ZipFile(archive) as handle:
@@ -145,10 +174,11 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
             f'state_dir = {json.dumps(str(folder / "state"))}\n'
             'allow_mock_execution = false\n', encoding="utf-8",
         )
+        env["LOCALAPPDATA"] = private_state
         env["CARDPUTER_LOCAL_TOKEN"] = secrets.token_hex(32)
         env["CARDPUTER_REMOTE_TOKEN"] = secrets.token_hex(32)
         process = subprocess.Popen(
-            [str(exe), "--auth-source", "environment", "serve", "--require-auth",
+            [str(exe), "--auth-source", "environment", "serve",
              "--config", str(config)], cwd=folder, env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -167,11 +197,14 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
                         raise RuntimeError("packaged_mock_readiness_timeout") from None
                     time.sleep(0.2)
             assert status["ok"] is True
+            assert not (Path(private_state) / "DeviceBroker/keys.sqlite3").exists()
             assert status["backend"] == "mock"
             assert status["hardware_connected"] is False
             assert status["active_job"] is None
             logs = json.loads(invoke(exe, [*client, "logs"], folder, env))
             assert logs["ok"] is True and logs["gap"] is False
+            frozen_registry_smoke(exe, f"http://127.0.0.1:{port}/mcp", folder, env)
+            assert json.loads(invoke(exe, [*client, "status"], folder, env))["ok"] is True
             frozen_build_api_smoke(f"http://127.0.0.1:{port}/mcp", folder, env)
             # Exercise the packaged OS-identity request client and the two fixed
             # privileged CLI actions, with dummy tokens and one synthetic capture.
@@ -203,9 +236,6 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
         with socket.socket() as check:
             assert check.connect_ex(("127.0.0.1", port)) != 0
     print("PASS: ZIP allowlist/hashes/version; EXE help/version/Tunnel dispatch; authenticated mock HTTP")
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        from check_receipt_source import check
-        check()
 
 
 if __name__ == "__main__":

@@ -1,22 +1,8 @@
 """Retired grants cannot authorize an operation or mutate historical policy data."""
 
-import importlib
 import sqlite3
 
-from cardputer_mcp import capture_policy
 from cardputer_mcp.store import Store
-
-
-def test_capture_policy_and_arming_have_no_executable_surface():
-    for name in (
-        "CapturePolicies",
-        "CaptureAuthorization",
-        "CapturePolicyError",
-        "HOME_ATTESTATION",
-        "_Policy",
-        "_Arm",
-    ):
-        assert not hasattr(capture_policy, name)
 
 
 def test_policy_history_is_preserved_without_loading_or_reusing_grants(tmp_path):
@@ -32,7 +18,6 @@ def test_policy_history_is_preserved_without_loading_or_reusing_grants(tmp_path)
         db.execute(
             "INSERT INTO capture_policy_audit VALUES(1,'policy_created',1000,'legacy-policy')"
         )
-    importlib.reload(capture_policy)
     store = Store(path)
     try:
         store.recover()

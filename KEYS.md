@@ -1,6 +1,6 @@
 # Local Cardputer key management
 
-This optional mechanism is separate from the OpenAI Tunnel API key. It is not an
+This mechanism is separate from the OpenAI Tunnel API key. It is not an
 MCP issuance endpoint. Existing process-only local/remote tokens keep working.
 No persistent user key is created merely by installing, starting or updating the broker.
 
@@ -30,14 +30,14 @@ its integrity controls authorization. Do not copy private configs/state into an 
 In an interactive terminal in the project directory (not a pipe, transcript or recording):
 
 ```powershell
-uv run cardputer keys issue --registry '.state\keys.sqlite3' --label 'remote-reader'
+.\cardputer.exe keys issue --label 'remote-reader'
 ```
 
 Review the stated origin, scope and lifetime and type the exact confirmation.
 The token is shown once. Terminal scrollback/recording may retain it; protect it.
 The program does not write the secret to a file, environment, clipboard or command
 line. Failed or interrupted token display revokes the newly issued key.
-No parent directory is silently created. Existing broker setup normally provides `.state`.
+Only confirmed default-path ISSUE may create the private registry directory. Startup never creates a key or database. Explicit override paths still require an existing private parent.
 
 Use `--control` only when intentionally granting mutation capability. `--ttl-seconds`
 sets the requested lifetime. `--origin local_cli` is a separate explicit origin choice;
@@ -46,25 +46,47 @@ never give a local-operator key to a remote connector.
 ## List, verify, revoke, rotate
 
 ```powershell
-uv run cardputer keys list --registry '.state\keys.sqlite3'
-uv run cardputer keys verify --registry '.state\keys.sqlite3'
-uv run cardputer keys revoke --registry '.state\keys.sqlite3' --key-id cpk_REPLACE_WITH_PUBLIC_ID
-uv run cardputer keys rotate --registry '.state\keys.sqlite3' --key-id cpk_REPLACE_WITH_PUBLIC_ID
+.\cardputer.exe keys list
+.\cardputer.exe keys verify
+.\cardputer.exe keys revoke --key-id cpk_REPLACE_WITH_PUBLIC_ID
+.\cardputer.exe keys rotate --key-id cpk_REPLACE_WITH_PUBLIC_ID
 ```
 
 Verification takes hidden interactive input; no key argument is accepted. Revoke
 and rotate require an exact local confirmation. Rotate preserves origin/scope/label
 and uses the requested/default new lifetime. Never paste the full token into shell arguments.
 
-## Enable verification on a broker
+## Automatic verification on a broker
+
+The single default is `%LOCALAPPDATA%\DeviceBroker\keys.sqlite3` on Windows;
+on POSIX it is `$XDG_STATE_HOME/DeviceBroker/keys.sqlite3`, falling back to
+`~/.local/state/DeviceBroker/keys.sqlite3`. It is independent of cwd, executable
+version and installation folder. The CLI and authenticated broker use this same
+path. Existing DeviceBroker registries stay in place; no migration, path search,
+implicit merge or permission repair is performed. An old nonstandard registry
+can be explicitly selected with `serve --key-registry` and `keys --registry`.
+
+Use the installed executable or existing installed launcher, not an old Downloads
+script. With the launcher's existing process-only local/remote tokens:
 
 ```powershell
-& .\Start-Cardputer.ps1 -Mock -KeyRegistry '.state\keys.sqlite3'
+.\cardputer.exe --auth-source environment serve --config '<private-config>'
 ```
 
-The existing registry is explicitly selected; no implicit migration occurs.
-The launcher still provides process-only local and remote credentials. The Tunnel
-launcher can request an issued client key privately; see [TUNNEL-WINDOWS.md](TUNNEL-WINDOWS.md).
+No `--key-registry` flag is needed. Do not regenerate existing launcher credentials
+just to enable the registry. Authentication remains required; GUI uses its existing
+local token and Tunnel retains its existing credential source. Every request reads
+the current registry, so committed additions/revocations take effect without broker
+restart. Missing stores deny issued keys while existing process tokens still work;
+malformed/unsafe existing default stores reject startup. Runtime failures deny issued
+keys without caching old grants. In-progress SQLite transactions expose committed
+state only; busy/incomplete/corrupt stores never authorize a fallback principal.
+Default and explicit registries use the same existing OS-user/private-store trust
+boundary and KeyRegistry path checks. Windows ACL privacy remains an operator
+prerequisite; the broker does not scan or rewrite Windows ACLs. Existing link,
+reparse, file-size and POSIX ownership/mode guards remain enforced.
+The Tunnel launcher can request an issued client key privately; see
+[TUNNEL-WINDOWS.md](TUNNEL-WINDOWS.md).
 For custom local clients, `--auth-source key-environment` reads CARDPUTER_CLIENT_KEY
 from that process environment. Do not use persistent user/system environment settings.
 

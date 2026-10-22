@@ -572,7 +572,8 @@ async def test_read_returning_after_deadline_is_omitted_without_reopen():
     backend, ports, _, created = device(chunks=[STARTUP])
     ports[0].read_seconds = 30
     result = await backend.execute(prepared(backend), lambda _: None)
-    assert result.observation.metadata() == observed(b"").metadata()
+    # Late bytes were discarded, so the bounded capture explicitly reports a gap.
+    assert result.observation.metadata() == observed(b"", gap=True).metadata()
     assert len(ports[0].read_starts) == len(created) == 1
 
 

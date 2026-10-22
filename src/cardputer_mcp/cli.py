@@ -56,7 +56,9 @@ def parser() -> argparse.ArgumentParser:
     sub = root.add_subparsers(dest="command", required=True)
     serve = sub.add_parser("serve", help="Start ONE resident broker; never opens USB")
     serve.add_argument("--config", type=Path)
-    serve.add_argument("--key-registry", type=Path, help="Existing opt-in hash-only key database")
+    serve.add_argument(
+        "--key-registry", type=Path, help="Override the standard private app-state key database"
+    )
     serve.add_argument(
         "--enable-serial",
         action="store_true",
@@ -69,7 +71,7 @@ def parser() -> argparse.ArgumentParser:
     )
     keys = sub.add_parser("keys", help="Local-only key management; never an MCP tool")
     keys.add_argument("key_command", choices=("issue", "list", "verify", "revoke", "rotate"))
-    keys.add_argument("--registry", type=Path, required=True)
+    keys.add_argument("--registry", type=Path, help="Override the standard private key database")
     keys.add_argument("--label")
     keys.add_argument("--origin", choices=list(Origin), default=Origin.REMOTE.value)
     keys.add_argument("--control", action="store_true", help="Explicitly grant read + control")
@@ -318,7 +320,7 @@ def main() -> None:
                 create_app(
                     settings,
                     serial_enabled=args.enable_serial,
-                    require_auth=args.require_auth,
+                    require_auth=args.require_auth or args.auth_source != "none",
                     key_registry_path=args.key_registry,
                     auth_source=args.auth_source if args.auth_source != "none" else "environment",
                 ),

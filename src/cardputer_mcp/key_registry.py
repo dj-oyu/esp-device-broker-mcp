@@ -182,6 +182,7 @@ class KeyRegistry:
         self._random_bytes = random_bytes
         self._max_entries = max_entries
         self._closed = False
+        self._initializing = True
         try:
             _safe_directory(self._path.parent)
             if create and not self._path.exists() and not self._path.is_symlink():
@@ -231,6 +232,8 @@ class KeyRegistry:
                 """)
         except (OSError, sqlite3.Error):
             raise KeyRegistryError("key_registry_unavailable") from None
+        finally:
+            self._initializing = False
 
     def __repr__(self) -> str:
         return "KeyRegistry(<local hash-only registry>)"
@@ -254,6 +257,8 @@ class KeyRegistry:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA trusted_schema=OFF")
             db.execute("PRAGMA synchronous=FULL")
+            if not self._initializing and db.execute("PRAGMA user_version").fetchone()[0] != 1:
+                raise KeyRegistryError("unsupported_key_registry_version")
             yield db
         except (OSError, sqlite3.Error):
             raise KeyRegistryError("key_registry_unavailable") from None
