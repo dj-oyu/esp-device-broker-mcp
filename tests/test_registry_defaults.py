@@ -4,6 +4,7 @@ import itertools
 import os
 import sqlite3
 import tempfile
+from contextlib import closing
 from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
@@ -141,7 +142,7 @@ def test_uncommitted_revocation_and_rollback_do_not_cache_grants(automatic_path)
     registry = KeyRegistry(automatic_path, random_bytes=lambda n: b"\x03" * n)
     key = registry.issue("synthetic", Origin.REMOTE)
     source = LiveKeyRegistry(automatic_path)
-    with sqlite3.connect(automatic_path) as writer:
+    with closing(sqlite3.connect(automatic_path)) as writer, writer:
         writer.execute("BEGIN IMMEDIATE")
         writer.execute("UPDATE api_keys SET revoked_at=issued_at")
         assert source.authenticate("Bearer " + key.token) is not None
@@ -154,7 +155,7 @@ def test_replaced_schema_version_is_rejected_by_existing_reader(automatic_path):
     private_directory(automatic_path.parent)
     registry = KeyRegistry(automatic_path, random_bytes=lambda n: b"\x04" * n)
     key = registry.issue("synthetic", Origin.REMOTE)
-    with sqlite3.connect(automatic_path) as writer:
+    with closing(sqlite3.connect(automatic_path)) as writer, writer:
         writer.execute("PRAGMA user_version=99")
     assert registry.authenticate("Bearer " + key.token) is None
     registry.close()
