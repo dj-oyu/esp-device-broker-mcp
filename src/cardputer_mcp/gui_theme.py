@@ -29,12 +29,18 @@ def apply_theme(root: Any) -> None:
     default = font.nametofont("TkDefaultFont", root=root)
     heading = default.copy()
     heading.configure(weight="bold")
+    title = default.copy()
+    size = int(default.actual("size"))
+    title.configure(weight="bold", size=size + 3 if size > 0 else size - 4)
     root._cardputer_heading_font = heading
+    root._cardputer_title_font = title
     style = ttk.Style(root)
-    style.configure("App.TLabel", font=default)
+    style.configure("App.TLabel", font=title)
     style.configure("Section.TLabel", font=heading)
-    style.configure("Treeview", rowheight=max(24, default.metrics("linespace") + 10))
-    style.configure("TNotebook.Tab", padding=(14, 7))
+    style.configure("TButton", padding=(10, 5))
+    style.configure("Treeview", rowheight=max(28, default.metrics("linespace") + 12))
+    style.configure("Treeview.Heading", font=heading, padding=(8, 6))
+    style.configure("TNotebook.Tab", padding=(16, 8))
 
     style.map(
         "Danger.TButton",
