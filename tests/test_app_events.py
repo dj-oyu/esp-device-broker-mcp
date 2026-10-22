@@ -81,3 +81,19 @@ def test_unicode_log_line_is_bounded_in_bytes_and_reads_do_not_extend_expiry():
     result = events.read("owner", AppEventsRequest(job_id="job"))
     assert len(result["logs"][0]["text"].encode()) <= 1024
     assert events.logs.deadline == deadline
+
+
+def test_partial_credentials_at_transport_and_output_boundaries_are_redacted():
+    from cardputer_mcp.app_wire import Decoder
+
+    token = "cpk_" + "a" * 32 + "." + "b" * 64
+    events = AppEvents("owner", 262144)
+    events.log("x" * 1000 + token)
+    decoder = Decoder()
+    _, lines = decoder.feed(("y" * 980 + token + "\n").encode())
+    for line in lines:
+        events.log(line)
+    report = events.read("owner", AppEventsRequest(job_id="redaction"))
+    assert len(report["logs"]) == 2
+    assert all("cpk_" not in entry["text"] for entry in report["logs"])
+    assert all(len(entry["text"].encode()) <= 1024 for entry in report["logs"])

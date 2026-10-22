@@ -24,6 +24,7 @@ from mcp.types import (
 from pydantic import TypeAdapter, ValidationError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .app_models import AppCommandRequest, AppEventsRequest
 from .auth import AuthState
 from .broker import Broker, BrokerError
 from .config import Settings
@@ -39,7 +40,6 @@ from .http_diagnostics import (
 from .input_diagnostics import invalid_arguments, validate_arguments
 from .key_registry import KeyRegistry, KeyRegistryError
 from .key_registry import Scope as KeyScope
-from .app_models import AppCommandRequest, AppEventsRequest
 from .models import (
     FLASH_TESTS,
     AcquireRequest,
@@ -1078,9 +1078,11 @@ def create_server(
 
         An unobserved catalog is explicit. Device-reported identity is unattested.
         """
+
         def read_catalog() -> dict[str, Any]:
             principal(ctx, "read")
             return resident.app_sessions.list_apps()
+
         return _result(read_catalog)
 
     @server.tool(annotations=mutating)
@@ -1090,10 +1092,14 @@ def create_server(
         queued/sent/accepted/consumed differ. consumed is delivery to the owner
         action path, not JavaScript, rendering, saving or benchmark completion.
         """
+
         def command() -> dict[str, Any]:
             owner = principal(ctx, "control")
-            resident.require_owner(request.session, owner.origin.value, principal_id=owner.principal_id)
+            resident.require_owner(
+                request.session, owner.origin.value, principal_id=owner.principal_id
+            )
             return resident.app_command(request)
+
         return _result(command)
 
     @server.tool(annotations=read_only)
@@ -1102,9 +1108,11 @@ def create_server(
 
         Independent cursors expose gaps/drops/expiry. Never opens another reader.
         """
+
         def events() -> dict[str, Any]:
             owner = principal(ctx, "read")
             return resident.read_app_events(request, owner.principal_id)
+
         return _result(events)
 
     @server.tool(annotations=read_only)

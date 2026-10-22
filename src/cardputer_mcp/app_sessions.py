@@ -30,7 +30,8 @@ EFFECTS = [
 
 
 def catalog_hash(descriptors: list[dict[str, Any]]) -> str:
-    return hashlib.sha256(json.dumps(descriptors, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    encoded = json.dumps(descriptors, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class Link(Protocol):
@@ -86,17 +87,21 @@ class RunningApp:
             if request.operation == "status":
                 if request.command_id == 0:
                     return self.snapshot()
-                entry = self.commands.get(request.command_id)
-                return dict(entry[1]) if entry else dict(command_id=request.command_id, state="outcome_unknown")
+                status_entry = self.commands.get(request.command_id)
+                if status_entry:
+                    return dict(status_entry[1])
+                return dict(command_id=request.command_id, state="outcome_unknown")
             content = request.model_dump_json(exclude={"session"})
             old = self.commands.get(request.command_id)
             if old is not None:
                 if old[0] != content:
                     raise ValueError("conflict")
                 return {**old[1], "duplicate": True}
-            if not self.running or self.cancelled.is_set() or self.state not in ("running", "suspended"):
+            if (not self.running or self.cancelled.is_set()
+                    or self.state not in ("running", "suspended")):
                 raise ValueError("app_input_stopped")
-            if request.operation == "action.tap" and request.action not in self.options.allowed_actions:
+            if (request.operation == "action.tap"
+                    and request.action not in self.options.allowed_actions):
                 raise ValueError("action_not_in_plan")
             if request.seq != self.submitted_seq or request.command_id == 1:
                 raise ValueError("out_of_order")
@@ -105,7 +110,8 @@ class RunningApp:
                 raise ValueError("limit")
             if self.pending.full() or (not cleanup and self.pending.qsize() >= 4):
                 raise ValueError("queue_full")
-            if not cleanup and time.monotonic() - self.last_input < 1 / self.options.rate_per_second:
+            if (not cleanup
+                    and time.monotonic() - self.last_input < 1 / self.options.rate_per_second):
                 raise ValueError("rate_limit")
             entry = dict(command_id=request.command_id, state="queued", sent=False, duplicate=False)
             self.pending.put_nowait(request)
@@ -123,8 +129,9 @@ class RunningApp:
         with self.lock:
             if reply.command_id in self.commands:
                 old, _ = self.commands[reply.command_id]
-                self.commands[reply.command_id] = (old, dict(command_id=reply.command_id, state=result,
-                                                            sent=True, duplicate=False, next_seq=reply.next_seq,
+                self.commands[reply.command_id] = (old, dict(
+                    command_id=reply.command_id, state=result,
+                    sent=True, duplicate=False, next_seq=reply.next_seq,
                                                             result=result))
 
 
@@ -146,7 +153,8 @@ class MockLink:
         return [Reply(self.offer, 0, self.boot, self.run, 0, 0, Result.OK, self.state,
                       Op.CATALOG, catalog_index=i, catalog_count=3, flags=7 if i < 2 else 0,
                       app_id=app, title=title)
-                for i, (app, title) in enumerate([("local.hello", "HELLO"), ("local.stress", "STRESS TEST"),
+                for i, (app, title) in enumerate([
+                    ("local.hello", "HELLO"), ("local.stress", "STRESS TEST"),
                                                  ("local.vmprobe", "VM PROBE")])]
 
     def send(self, op: Op, session: int, command_id: int, **fields: Any) -> Reply:
@@ -154,7 +162,8 @@ class MockLink:
         result = Result.OK
         if op == Op.CATALOG:
             return Reply(self.offer, 0, self.boot, self.run, 0, 0, Result.OK, self.state, op,
-                         catalog_index=65535, catalog_count=3, app_id="00" * 32, title="synthetic-not-device")
+                         catalog_index=65535, catalog_count=3, app_id="00" * 32,
+                         title="synthetic-not-device")
         if boot != self.boot:
             result = Result.STALE_BOOT
         elif session != self.offer:
@@ -165,19 +174,22 @@ class MockLink:
             result = Result.STALE_LEASE
         elif op == Op.STATUS:
             if command_id:
-                return self.ledger.get(command_id, Reply(session, command_id, self.boot, self.run, seq,
+                return self.ledger.get(command_id, Reply(
+                    session, command_id, self.boot, self.run, seq,
                     fence, Result.OUTCOME_UNKNOWN, self.state, op, next_seq=self.seq))
         elif seq != self.seq:
             result = Result.OUT_OF_ORDER
         elif op == Op.START:
             if fields.get("arg") == 1:
-                if self.state != State.SUSPENDED or run != self.run or fields.get("app_id") != self.app:
+                if (self.state != State.SUSPENDED or run != self.run
+                        or fields.get("app_id") != self.app):
                     result = Result.STALE_RUN
                 else:
                     self.state = State.RUNNING
             else:
                 self.generation += 1
-                self.run, self.app, self.state = self.generation, fields.get("app_id", ""), State.RUNNING
+                self.run = self.generation
+                self.app, self.state = fields.get("app_id", ""), State.RUNNING
         elif run != self.run:
             result = Result.STALE_RUN
         elif op == Op.TAP:
@@ -218,7 +230,8 @@ class AppSessions:
         if self.catalog_cache is None:
             return dict(apps=[], source="unobserved", fresh=False, observed_at=None,
                         firmware_verification="unverified", protocol="app-control-v1")
-        return {**self.catalog_cache, "fresh": time.time() - self.catalog_cache["observed_at"] <= 300}
+        fresh = time.time() - self.catalog_cache["observed_at"] <= 300
+        return {**self.catalog_cache, "fresh": fresh}
 
     def prepare(self, backend: Backend, options: AppSessionOptions) -> dict[str, Any]:
         if options.start == "resume":
@@ -226,17 +239,19 @@ class AppSessions:
         binding: dict[str, Any] = {"source": "unobserved", "expected": None}
         if self.catalog_cache is not None:
             binding = dict(source="cached", expected=self.catalog_cache["catalog_sha256"],
-                           observed_at=self.catalog_cache["observed_at"], boot_id=self.catalog_cache["boot_id"],
+                           observed_at=self.catalog_cache["observed_at"],
+                           boot_id=self.catalog_cache["boot_id"],
                            firmware_sha256=self.catalog_cache["firmware_sha256"],
                            firmware_version=self.catalog_cache["firmware_version"])
         details: dict[str, Any] = dict(
-            stages=["app_open", "app_handshake", "app_launch", "app_running", "app_stopping", "app_closing"],
+            stages=["app_open", "app_handshake", "app_launch", "app_running",
+                    "app_stopping", "app_closing"],
             app=options.model_dump(mode="json"), app_protocol="app-control-v1", effects=EFFECTS,
             catalog_binding=binding,
         )
         if backend.name == "serial":
-            from .serial_backend import SerialBackend, fingerprint
             from .ports import resolve_port
+            from .serial_backend import SerialBackend, fingerprint
             if not isinstance(backend, SerialBackend):
                 raise ValueError("backend_not_available")
             port = resolve_port(backend.config.selector, backend.inventory())
@@ -271,8 +286,12 @@ class AppSessions:
         backend.active += 1
         backend.calls += 1  # type: ignore[attr-defined]
         backend.max_active = max(backend.max_active, backend.active)
-        worker = loop.run_in_executor(None, self._execute_sync, backend, plan, run,
-                                      lambda name: loop.call_soon_threadsafe(stage, name), authority)
+        def emit(name: str) -> None:
+            loop.call_soon_threadsafe(stage, name)
+
+        worker = loop.run_in_executor(
+            None, self._execute_sync, backend, plan, run, emit, authority
+        )
         try:
             while not worker.done():
                 try:
@@ -287,8 +306,8 @@ class AppSessions:
 
     def _execute_sync(self, backend: Backend, plan: dict[str, Any], run: RunningApp,
                       stage: Callable[[str], None], live: Callable[[], bool]) -> str:
-        from .serial_backend import SerialBackend, fingerprint
         from .ports import resolve_port
+        from .serial_backend import SerialBackend, fingerprint
         port = None
         stopped = False
         open_attempted = False
@@ -321,7 +340,8 @@ class AppSessions:
                 raise AppFailure("outcome_unknown")
             first = catalog[0]
             descriptors = [dict(app_id=r.app_id, title=r.title, available=bool(r.flags & 1),
-                                suspend=bool(r.flags & 2), action_tap=bool(r.flags & 4)) for r in catalog]
+                                suspend=bool(r.flags & 2), action_tap=bool(r.flags & 4))
+                           for r in catalog]
             digest = catalog_hash(descriptors)
             binding = plan["catalog_binding"]
             metadata = link.send(Op.CATALOG, 0, 0, seq=65535)
@@ -332,7 +352,8 @@ class AppSessions:
                     or any(c not in "0123456789abcdef" for c in metadata.app_id)):
                 raise AppFailure("outcome_unknown")
             self.catalog_cache = dict(apps=descriptors, catalog_sha256=digest, boot_id=first.boot,
-                observed_at=time.time(), source="synthetic_fixture" if backend.name == "mock" else "device",
+                observed_at=time.time(),
+                source="synthetic_fixture" if backend.name == "mock" else "device",
                 firmware_verification="device_reported_unattested", firmware_sha256=metadata.app_id,
                 firmware_version=metadata.title, protocol="app-control-v1")
             if binding["expected"] is not None and (
@@ -394,7 +415,8 @@ class AppSessions:
                     break
                 with run.lock:
                     old, entry = run.commands[request.command_id]
-                    run.commands[request.command_id] = (old, {**entry, "state": "sent", "sent": True})
+                    run.commands[request.command_id] = (
+                        old, {**entry, "state": "sent", "sent": True})
                 run.events.emit("sent", command_id=request.command_id, seq=request.seq)
                 operation = {"action.tap": Op.TAP, "suspend": Op.SUSPEND,
                              "resume": Op.START, "stop": Op.STOP}[request.operation]
@@ -408,7 +430,8 @@ class AppSessions:
                 if reply.result in (Result.OUTCOME_UNKNOWN, Result.STALE_BOOT, Result.STALE_SESSION,
                                     Result.STALE_LEASE, Result.STALE_RUN, Result.EXPIRED):
                     raise AppFailure("outcome_unknown")
-                if operation == Op.STOP and reply.result == Result.OK and reply.state == State.STOPPED:
+                if (operation == Op.STOP and reply.result == Result.OK
+                        and reply.state == State.STOPPED):
                     stopped = True
                     break
             stage("app_stopping")

@@ -1146,7 +1146,8 @@ class Broker:
         if self._execution_uncertain():
             raise BrokerError("recovery_review_required")
         storage = None
-        if request.test == TestName.APP_SESSION and request.app is not None and request.app.start == "resume":
+        if (request.test == TestName.APP_SESSION
+                and request.app is not None and request.app.start == "resume"):
             raise BrokerError("unsupported")
         try:
             if request.test == TestName.APP_SESSION:
@@ -1257,9 +1258,9 @@ class Broker:
             raise BrokerError("plan_session_mismatch")
         if payload["backend"] != self.backend.name or payload["device"] != self.backend.device:
             raise BrokerError("plan_backend_mismatch")
-        if payload["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value, TestName.APP_SESSION.value) and payload.get(
-            "log_delivery"
-        ) != self._log_delivery(session):
+        if (payload["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value,
+                                TestName.APP_SESSION.value)
+                and payload.get("log_delivery") != self._log_delivery(session)):
             raise BrokerError("plan_session_mismatch")
         job_id = str(payload["job_id"])
         intent = ExecutionIntent(

@@ -76,7 +76,7 @@ class AppSessionClient:
             batch = await self.events()
             for event in batch.get("entries", []):
                 if predicate(event):
-                    return event
+                    return dict(event)
             await asyncio.sleep(0.05)
         raise AppClientError("outcome_unknown")
 

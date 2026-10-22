@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from .app_models import AppEventsRequest
-from .build_logs import BuildLogs
+from .build_logs import BuildLogs, redact_log_text
 from .models import BuildLogRequest, LogCursor
 
 
@@ -28,7 +28,9 @@ class AppEvents:
             self.deadline = time.monotonic() + 300
 
     def log(self, text: str) -> None:
-        self.logs.append(text.encode("utf-8")[:1024].decode("utf-8", errors="ignore"), "observed_during_run")
+        safe = redact_log_text(text, self.logs.redactions)
+        bounded = safe.encode("utf-8")[:1024].decode("utf-8", errors="ignore")
+        self.logs.append(bounded, "observed_during_run")
 
     def read(self, principal: str, request: AppEventsRequest) -> dict[str, Any]:
         if principal != self.principal:

@@ -14,12 +14,16 @@ class AppModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+def _default_actions() -> list[Action]:
+    return ["accept", "back"]
+
+
 class AppSessionOptions(AppModel):
     app_id: AppId
     start: Literal["fresh", "resume"] = "fresh"
     expected_boot: U64 | None = None
     expected_run: U32 | None = None
-    allowed_actions: list[Action] = Field(default_factory=lambda: ["accept", "back"], max_length=6)
+    allowed_actions: list[Action] = Field(default_factory=_default_actions, max_length=6)
     max_commands: int = Field(default=32, strict=True, ge=1, le=59)
     rate_per_second: int = Field(default=10, strict=True, ge=1, le=10)
     duration_ms: int = Field(default=30000, strict=True, ge=1000, le=90000)

@@ -24,7 +24,8 @@ async def run(url: str, app_id: str) -> None:
         session = lease["session"]
         client = AppSessionClient(connection)
         catalog = await client.list_apps()
-        print("Catalog freshness:", catalog.get("freshness", "unobserved"))
+        print("Catalog freshness:", catalog.get("fresh", False),
+              "source:", catalog.get("source", "unobserved"))
         await client.start(
             session,
             "app-example-" + uuid4().hex[:12],

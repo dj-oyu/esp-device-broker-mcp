@@ -16,6 +16,15 @@ _SECRETS = re.compile(
 )
 
 
+def redact_log_text(line: str, redactions: tuple[str, ...] = ()) -> str:
+    """Redact bounded input, including credential prefixes cut by transport limits."""
+    text = line[:4096]
+    for secret in redactions:
+        text = text.replace(secret, "[REDACTED]")
+    text = _SECRETS.sub("[REDACTED]", text)
+    return re.sub(r"(?i)cpk_[a-f0-9.]*", "[REDACTED]", text)[:4096]
+
+
 class BuildLogs:
     def __init__(
         self,
@@ -48,10 +57,7 @@ class BuildLogs:
 
     def _append(self, line: str, stream: str) -> None:
         # Bound the original line too; never retain raw output or stream buffers.
-        text = line[:4096]
-        for secret in self.redactions:
-            text = text.replace(secret, "[REDACTED]")
-        text = _SECRETS.sub("[REDACTED]", text)[:4096]
+        text = redact_log_text(line, self.redactions)
         level = "unknown"
         for candidate in ("error", "warning", "debug", "info"):
             if re.search(r"\b" + candidate + r"\b", text, re.I):
