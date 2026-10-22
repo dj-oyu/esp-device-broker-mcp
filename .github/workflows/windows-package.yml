@@ -77,7 +77,7 @@ jobs:
         run: |
           $archive = Get-ChildItem dist/cardputer-v*-windows-x64.zip
           if (@($archive).Count -ne 1) { throw 'Expected exactly one distribution ZIP' }
-          python packaging/smoke_windows.py --archive $archive.FullName --ref $env:SOURCE_REF --commit $env:SOURCE_SHA
+          .venv/Scripts/python.exe packaging/smoke_windows.py --archive $archive.FullName --ref $env:SOURCE_REF --commit $env:SOURCE_SHA
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Save verified distribution
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
