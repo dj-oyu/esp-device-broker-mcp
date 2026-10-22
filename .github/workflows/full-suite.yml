@@ -31,6 +31,7 @@ jobs:
         shell: bash
     env:
       PYTHONUTF8: '1'
+      CARDPUTER_GUI_SCREENSHOTS: test-diagnostics/gui
       UV_PYTHON_DOWNLOADS: never
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -79,5 +80,6 @@ jobs:
             test-diagnostics/timeout.json
             test-diagnostics/result.json
             test-diagnostics/junit.xml
+            test-diagnostics/gui
           if-no-files-found: error
           retention-days: 7

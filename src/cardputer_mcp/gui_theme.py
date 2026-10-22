@@ -35,3 +35,8 @@ def apply_theme(root: Any) -> None:
     style.configure("Section.TLabel", font=heading)
     style.configure("Treeview", rowheight=max(24, default.metrics("linespace") + 10))
     style.configure("TNotebook.Tab", padding=(14, 7))
+
+    style.map(
+        "Danger.TButton",
+        foreground=[("disabled", "#808080"), ("!disabled", "#b42318")],
+    )

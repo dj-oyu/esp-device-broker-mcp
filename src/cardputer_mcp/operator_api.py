@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .broker import Broker, BrokerError
+from .build_logs import BuildLogs
 from .models import FLASH_TESTS, BuildLogRequest, Digest, Identifier, Origin, TestName
 from .operator_live import LiveRequest, OperatorLive
 from .operator_timeline import OperatorTimeline
@@ -139,7 +140,9 @@ class OperatorAPI:
         if plan is None:
             raise BrokerError("unavailable")
         service: Any
-        if plan.get("test") == TestName.SOURCE.value:
+        if plan.get("test") == TestName.APP_SESSION.value:
+            logs = self._app_job_logs(request.job_id, job, plan, principal)
+        elif plan.get("test") == TestName.SOURCE.value:
             owner, service = plan.get("source_principal"), self.broker.firmware_source
         elif plan.get("test") == TestName.BUILD.value:
             owner, service = plan.get("build_principal"), self.broker.firmware_build
@@ -147,12 +150,13 @@ class OperatorAPI:
             owner, service = plan.get("flash_principal"), self.broker.firmware_flash
         else:
             raise BrokerError("unavailable")
-        if owner != principal.principal_id:
-            raise BrokerError("not_authorized")
-        # RAM only: do not invoke receipt/manifest readers or hash retained artifacts.
-        logs = service.logs.get(request.job_id)
-        if logs is None:
-            raise BrokerError("unavailable")
+        if plan.get("test") != TestName.APP_SESSION.value:
+            if owner != principal.principal_id:
+                raise BrokerError("not_authorized")
+            # RAM only: do not invoke receipt/manifest readers or hash retained artifacts.
+            logs = service.logs.get(request.job_id)
+            if logs is None:
+                raise BrokerError("unavailable")
         # 16 * 4096 characters, even JSON control escapes, fits the 512 KiB
         # client transport bound. BuildLogs preserves cursor/has_more on this cap.
         bounded = request.model_copy(update={"limit": min(request.limit, 16)})
@@ -161,6 +165,59 @@ class OperatorAPI:
         except ValueError:
             raise BrokerError("unavailable") from None
         return {"status": "expired" if result["expired"] else "available", **result}
+
+    def _app_job_logs(
+        self,
+        job_id: str,
+        job: dict[str, Any] | None,
+        plan: dict[str, Any],
+        principal: OperatorPrincipal,
+    ) -> BuildLogs:
+        """Adapt only this principal's current-epoch app RAM log cache."""
+        if principal.origin != Origin.LOCAL or not {"read", "control"} <= principal.scopes:
+            raise BrokerError("not_authorized")
+        delivery = plan.get("log_delivery")
+        if (
+            type(delivery) is not dict
+            or delivery.get("principal_id") != principal.principal_id
+            or delivery.get("origin") != principal.origin.value
+        ):
+            raise BrokerError("not_authorized")
+        run = self.broker.app_sessions.jobs.get(job_id)
+        if run is None or job is None:
+            raise BrokerError("unavailable")
+        if (
+            run.principal != principal.principal_id
+            or run.events.principal != principal.principal_id
+            or run.events.logs.principal != principal.principal_id
+        ):
+            raise BrokerError("not_authorized")
+        # Validate bounded durable JSON/digest/schema only, never current device
+        # preflight or artifact/receipt readers. A read grants no execution authority.
+        if (
+            self.broker.closing
+            or plan.get("job_id") != job_id
+            or plan.get("broker_epoch") != self.broker.epoch
+            or self.plans._plan(job["plan_hash"]) != plan
+            or run.options.model_dump(mode="json") != plan.get("app")
+            or job.get("state")
+            not in {
+                "running",
+                "succeeded",
+                "failed",
+                "cancelled",
+                "needs_review",
+            }
+        ):
+            raise BrokerError("unavailable")
+        binding = self.broker._store().db.execute(
+            "SELECT 1 FROM execution_requests "
+            "WHERE job_id=? AND plan_hash=? AND principal_id=?",
+            (job_id, job["plan_hash"], principal.principal_id),
+        ).fetchone()
+        if binding is None:
+            raise BrokerError("unavailable")
+        return run.events.logs
 
     @staticmethod
     async def _respond(send: Send, status: int, payload: dict[str, Any]) -> None:

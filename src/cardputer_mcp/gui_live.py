@@ -5,10 +5,14 @@ import queue
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .gui import Outcome, QueueController, http_diagnostics_summary, mcp_catalog_summary, perform
 from .gui_job_status import LABELS, configure_job_status_tags
+from .gui_connection_panels import DiagnosticPanels
+from .gui_images import SOURCES
 from .gui_live_presentation import (
     LogRequestState,
     LogView,
@@ -31,6 +35,7 @@ from .gui_live_transport import (
 from .gui_theme import apply_theme
 from .gui_timeline import TimelineOperation, perform_timeline
 from .job_failure_reason import REASON_LABELS
+from .models import FLASH_TESTS, TestName
 from .operator_client import OperatorClient
 
 
@@ -82,59 +87,25 @@ class LiveWindow:
         self._detail_page: Any = None
         self.open_selected_button: Any = None
         self._suppress_next_detail_focus = False
-        if float(root.tk.call("tk", "scaling")) >= 1.5:
-            jobs.columnconfigure(0, weight=1)
-            jobs.rowconfigure(0, weight=1)
-            self._job_pages = ttk.Notebook(jobs)
-            self._job_pages.grid(row=0, column=0, sticky="nsew")
-            list_parent = ttk.Frame(self._job_pages, padding=8)
-            self._detail_page = ttk.Frame(self._job_pages, padding=8)
-            self._job_pages.add(list_parent, text="Recent jobs")
-            self._job_pages.add(self._detail_page, text="Selected job")
-            list_parent.columnconfigure(0, weight=1)
-            list_parent.rowconfigure(1, weight=1)
-            self.open_selected_button = ttk.Button(
-                list_parent, text="Open selected", command=self._show_selected
-            )
-            self.open_selected_button.grid(row=0, column=1, sticky="e", pady=(0, 8))
-            self._detail_page.columnconfigure(0, weight=1)
-            self._detail_page.rowconfigure(0, weight=1)
-            canvas = tk.Canvas(
-                self._detail_page,
-                borderwidth=0,
-                highlightthickness=0,
-                background=root.cget("background"),
-            )
-            self._detail_canvas = canvas
-            canvas.grid(row=0, column=0, sticky="nsew")
-            detail_scroll = ttk.Scrollbar(
-                self._detail_page, orient="vertical", command=canvas.yview
-            )
-            detail_scroll.grid(row=0, column=1, sticky="ns")
-            canvas.configure(yscrollcommand=detail_scroll.set)
-            detail = ttk.Frame(canvas)
-            detail_window = canvas.create_window((0, 0), window=detail, anchor="nw")
-            detail.bind(
-                "<Configure>",
-                lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
-            )
-            self._detail_canvas.bind(
-                "<Configure>",
-                lambda event: canvas.itemconfigure(detail_window, width=event.width),
-            )
-        else:
-            jobs.columnconfigure(0, weight=3)
-            jobs.columnconfigure(1, weight=2, minsize=260)
-            jobs.rowconfigure(1, weight=1)
-            list_parent = jobs
-            detail = ttk.Frame(jobs)
-            detail.grid(row=0, column=1, rowspan=3, sticky="nsew")
+        jobs.columnconfigure(0, weight=1)
+        jobs.rowconfigure(0, weight=1)
+        self.job_panes = ttk.Panedwindow(jobs, orient="horizontal")
+        self.job_panes.grid(row=0, column=0, sticky="nsew")
+        list_parent = ttk.Frame(self.job_panes)
+        detail_host = ttk.Frame(self.job_panes, padding=(12, 0, 0, 0))
+        self.job_panes.add(list_parent, weight=3)
+        self.job_panes.add(detail_host, weight=2)
+        self._panes_initialized = False
+        self.job_panes.bind("<Configure>", self._initialize_panes)
+        list_parent.columnconfigure(0, weight=1)
+        list_parent.rowconfigure(1, weight=1)
+        detail = self._scrollable_detail(detail_host)
         ttk.Label(list_parent, text="Recent jobs", style="Section.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, 8)
         )
         self.history_status = tk.StringVar(value="Waiting for a consistent snapshot")
         ttk.Label(list_parent, textvariable=self.history_status).grid(
-            row=2, column=0, columnspan=2 if self._job_pages is not None else 1, sticky="w", pady=8
+            row=2, column=0, sticky="w", pady=8
         )
         job_box, self.job_tree = self._table(
             list_parent, ("request", "state", "confirmation", "stage"), (160, 140, 100, 200)
@@ -162,36 +133,41 @@ class LiveWindow:
             "<<ThemeChanged>>", lambda _event: configure_job_status_tags(self.job_tree), add="+"
         )
         self.job_tree.bind("<<TreeviewSelect>>", self._select)
-        if self._job_pages is not None:
-            self.job_tree.bind("<Return>", lambda _event: self._show_selected())
-            self.job_tree.bind("<Double-1>", lambda _event: self._show_selected())
+        self.job_tree.bind("<Configure>", self._resize_job_list, add="+")
+        self.job_tree.bind("<Return>", lambda _event: self._show_selected())
+        self.job_tree.bind("<Double-1>", lambda _event: self._show_selected())
         detail.columnconfigure(0, weight=1)
         if self._detail_canvas is None:
             detail.rowconfigure(3, weight=1)
         self.detail_heading = tk.StringVar(value="Selected job")
+        detail_header = ttk.Frame(detail)
+        detail_header.grid(row=0, sticky="ew")
+        detail_header.columnconfigure(0, weight=1)
         self.detail_heading_label = ttk.Label(
-            detail, textvariable=self.detail_heading, style="Section.TLabel", wraplength=420
+            detail_header, textvariable=self.detail_heading, style="Section.TLabel", wraplength=300
         )
-        self.detail_heading_label.grid(row=0, sticky="ew")
+        self.detail_heading_label.grid(row=0, column=0, sticky="ew")
+        self.back_button = ttk.Button(detail_header, text="Back to list", command=self._back_to_list)
+        self.back_button.grid(row=0, column=1, sticky="ne", padx=(8, 0))
         detail_box, self.detail_text = self._text(detail, height=6, wrap="word")
         detail_box.grid(row=1, sticky="nsew", pady=(8, 12))
         controls = ttk.Frame(detail)
         controls.grid(row=2, sticky="ew", pady=(0, 8))
-        self.log_button = ttk.Button(controls, text="Read permitted logs", command=self._read_logs)
         controls.columnconfigure(0, weight=1)
-        controls.columnconfigure(1, weight=1)
-        self.log_button.grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.preview_button = ttk.Button(
-            controls, text="Preview retained image", command=self._preview
-        )
-        self.preview_button.grid(row=1, column=0, columnspan=2, sticky="w")
-        self.job_cancel = ttk.Button(controls, text="Cancel job...", command=self._cancel_job)
-        self.job_cancel.grid(row=0, column=1, sticky="e", padx=(8, 0), pady=(0, 6))
-        log_box, self.log_text = self._text(detail, height=10, wrap="none")
+        self.log_context = tk.StringVar(value="Logs | No job selected")
+        self.log_marker = ttk.Label(controls, textvariable=self.log_context, wraplength=340)
+        self.log_marker.grid(row=0, column=0, sticky="w")
+        self.copy_button = ttk.Button(controls, text="Copy text", command=self._copy_result)
+        self.copy_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        log_box, self.log_text = self._text(detail, height=10, wrap="word")
+        self.log_text.configure(font="TkFixedFont")
         log_box.grid(row=3, sticky="nsew")
         self.log_status = tk.StringVar(value=self.logs.message)
         self.log_status_label = ttk.Label(detail, textvariable=self.log_status, wraplength=420)
         self.log_status_label.grid(row=4, sticky="ew", pady=(6, 0))
+        self.image_context = tk.StringVar(value="Captured image | No job selected")
+        self.image_marker = ttk.Label(detail, textvariable=self.image_context, wraplength=420)
+        self.image_marker.grid(row=5, sticky="ew", pady=(12, 0))
         self.preview_area = ttk.Frame(detail, width=240, height=135)
         self.preview_area.grid_propagate(False)
         self.preview_image = tk.Label(self.preview_area, borderwidth=0)
@@ -200,14 +176,20 @@ class LiveWindow:
         self.preview_status_label = ttk.Label(
             detail, textvariable=self.preview_status, wraplength=420
         )
-        self.preview_status_label.grid(row=6, sticky="ew", pady=(6, 0))
+        self.preview_status_label.grid(row=7, sticky="ew", pady=(6, 0))
+        self.cancel_context = tk.StringVar(value="")
+        self.cancel_context_label = ttk.Label(detail, textvariable=self.cancel_context, wraplength=420)
+        self.cancel_context_label.grid(row=8, sticky="ew", pady=(8, 0))
+        self.job_cancel = ttk.Button(
+            detail, text="Cancel job...", command=self._cancel_job, style="Danger.TButton"
+        )
+        self.job_cancel.grid(row=9, sticky="e", pady=(16, 0))
         detail.bind("<Configure>", self._resize_details, add="+")
         if self._detail_canvas is not None:
             for widget in (
                 self.detail_text,
                 self.log_text,
-                self.log_button,
-                self.preview_button,
+                self.copy_button,
                 self.job_cancel,
             ):
                 widget.bind("<FocusIn>", self._reveal_detail_focus, add="+")
@@ -224,24 +206,62 @@ class LiveWindow:
         )
         event_box, self.event_text = self._text(events, height=12, wrap="word")
         event_box.grid(row=1, sticky="nsew")
-        ttk.Label(
-            events, text="Safe job state and stage events. Private output stays in Jobs."
-        ).grid(row=2, sticky="w", pady=8)
         self._connection_view(connection)
         root.bind("<Control-r>", lambda _event: self._reconnect())
+        root.bind("<Alt-Left>", lambda _event: self._back_to_list())
         root.bind("<Escape>", lambda _event: self._close())
         self.runner = LiveRunner(api)
         self.runner.start(self.state.generation)
         self._render()
         self.timer = root.after(50, self._drain)
 
+    def _initialize_panes(self, event: Any) -> None:
+        if not self._panes_initialized and event.width > 1:
+            self._panes_initialized = True
+            self.job_panes.sashpos(0, int(event.width * 0.52))
+
+    def _resize_job_list(self, event: Any) -> None:
+        columns = (
+            ("request", "state", "confirmation", "stage") if event.width >= 850
+            else ("request", "state", "stage") if event.width >= 650 else ("state",)
+        )
+        if tuple(self.job_tree.cget("displaycolumns")) != columns:
+            self.job_tree.configure(displaycolumns=columns)
+
+    def _scrollable_detail(self, parent: Any) -> Any:
+        import tkinter as tk
+        from tkinter import ttk
+
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        canvas = tk.Canvas(
+            parent, borderwidth=0, highlightthickness=0, background=self.root.cget("background")
+        )
+        self._detail_canvas = canvas
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        detail = ttk.Frame(canvas)
+        item = canvas.create_window((0, 0), window=detail, anchor="nw")
+        detail.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(item, width=event.width))
+        return detail
+
     def _resize_details(self, event: Any) -> None:
         for label in (
-            self.detail_heading_label,
             self.log_status_label,
             self.preview_status_label,
+            self.image_marker,
+            self.cancel_context_label,
         ):
             label.configure(wraplength=max(1, event.width))
+        self.log_marker.configure(
+            wraplength=max(1, event.width - self.copy_button.winfo_reqwidth() - 24)
+        )
+        self.detail_heading_label.configure(
+            wraplength=max(1, event.width - self.back_button.winfo_reqwidth() - 16)
+        )
 
     def _reveal_preview(self) -> None:
         canvas = getattr(self, "_detail_canvas", None)
@@ -313,7 +333,14 @@ class LiveWindow:
             tree.column(name, width=width, minwidth=75, stretch=True)
         vertical = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
         horizontal = ttk.Scrollbar(box, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        def scroll_x(first: str, last: str) -> None:
+            horizontal.set(first, last)
+            if float(first) <= 0 and float(last) >= 1:
+                horizontal.grid_remove()
+            else:
+                horizontal.grid(row=1, column=0, sticky="ew")
+
+        tree.configure(yscrollcommand=vertical.set, xscrollcommand=scroll_x)
         tree.grid(row=0, column=0, sticky="nsew")
         vertical.grid(row=0, column=1, sticky="ns")
         horizontal.grid(row=1, column=0, sticky="ew")
@@ -358,7 +385,7 @@ class LiveWindow:
         from tkinter import ttk
 
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(3, weight=1)
+        parent.rowconfigure(3, weight=0)
         self.connection_status = tk.StringVar(value="Waiting for broker state")
         ttk.Label(parent, text="Broker and device ownership", style="Section.TLabel").grid(
             row=0, sticky="w"
@@ -367,8 +394,8 @@ class LiveWindow:
             row=1, sticky="ew", pady=8
         )
         self.live_diagnostic_text = tk.StringVar(value="No live subscription failure recorded")
-        ttk.Label(parent, textvariable=self.live_diagnostic_text, wraplength=900).grid(
-            row=6, sticky="ew", pady=8
+        self.live_diagnostic_label = ttk.Label(
+            parent, textvariable=self.live_diagnostic_text, wraplength=900
         )
         controls = ttk.Frame(parent)
         controls.grid(row=2, sticky="ew", pady=(0, 12))
@@ -376,12 +403,6 @@ class LiveWindow:
             controls, text="Release idle owner...", command=self._release
         )
         self.release_button.pack(side="left")
-        ttk.Button(controls, text="HTTP diagnostics", command=lambda: self._diagnostic(False)).pack(
-            side="left", padx=8
-        )
-        ttk.Button(controls, text="MCP info", command=lambda: self._diagnostic(True)).pack(
-            side="left"
-        )
         if self.tunnel_panel is not None:
             ttk.Button(controls, text="Tunnel...", command=self.tunnel_panel.show).pack(
                 side="right"
@@ -389,9 +410,13 @@ class LiveWindow:
         wait_box, self.wait_tree = self._table(
             parent, ("position", "state", "session"), (90, 120, 220)
         )
-        wait_box.grid(row=3, sticky="nsew")
+        self.wait_box = wait_box
+        wait_box.grid(row=3, sticky="ew")
+        self.wait_empty = ttk.Label(parent, text="Waiting for queue state")
+        self.wait_empty.grid(row=3, sticky="w", pady=8)
         self.wait_tree.bind("<<TreeviewSelect>>", self._select_wait)
         actions = ttk.Frame(parent)
+        self.wait_actions = actions
         actions.grid(row=4, sticky="ew", pady=10)
         self.wait_cancel = ttk.Button(
             actions, text="Cancel waiting request", command=self._cancel_wait
@@ -401,8 +426,10 @@ class LiveWindow:
         self.up_button.pack(side="left", padx=8)
         self.down_button = ttk.Button(actions, text="Move down", command=lambda: self._move(1))
         self.down_button.pack(side="left")
-        connection_box, self.connection_detail = self._text(parent, height=8, wrap="word")
-        connection_box.grid(row=5, sticky="ew")
+        self.connection_panels = DiagnosticPanels(
+            parent, lambda kind: self._diagnostic(kind == "mcp")
+        )
+        self.connection_panels.frame.grid(row=5, sticky="nsew", pady=(8, 0))
 
     def _select(self, _event: Any = None) -> None:
         chosen = self.job_tree.selection()
@@ -417,17 +444,19 @@ class LiveWindow:
         self._render()
         if selected:
             self._read_logs()
+            self._auto_preview()
 
     def _show_selected(self) -> None:
-        pages = getattr(self, "_job_pages", None)
-        detail_page = getattr(self, "_detail_page", None)
-        if pages is not None and detail_page is not None and self.state.selected_job_id:
-            pages.select(detail_page)
-            self.root.update_idletasks()
-            self._detail_canvas.configure(scrollregion=self._detail_canvas.bbox("all"))
-            self._detail_canvas.yview_moveto(0.0)
-            self._suppress_next_detail_focus = True
-            self.detail_text.focus_set()
+        if not self.state.selected_job_id:
+            return
+        self.root.update_idletasks()
+        self._detail_canvas.configure(scrollregion=self._detail_canvas.bbox("all"))
+        self._detail_canvas.yview_moveto(0.0)
+        self._suppress_next_detail_focus = True
+        self.detail_text.focus_set()
+
+    def _back_to_list(self) -> None:
+        self.job_tree.focus_set()
 
     def _select_wait(self, _event: Any = None) -> None:
         selected = self.wait_tree.selection()
@@ -485,6 +514,11 @@ class LiveWindow:
             lines = [f"Last validated live response UTC: {last}"]
             lines.extend(str(item) for item in self.live_diagnostics[-4:])
             self.live_diagnostic_text.set("\n".join(lines))
+            if hasattr(self, "live_diagnostic_label"):
+                if self.live_diagnostics:
+                    self.live_diagnostic_label.grid(row=6, sticky="ew", pady=8)
+                else:
+                    self.live_diagnostic_label.grid_remove()
 
     def _drain(self) -> None:
         self.timer = None
@@ -563,6 +597,10 @@ class LiveWindow:
             ):
                 self.log_requests = self.log_requests.completed(event.payload["request_id"])
                 self.logs = read_log_result(self.logs, event.payload.get("response"))
+                if self.logs.phase in {"available", "empty", "expired"}:
+                    self.logs = replace(
+                        self.logs, received_utc=datetime.now(UTC).isoformat(timespec="seconds")
+                    )
                 if self.logs.phase == "denied":
                     self.log_requests = self.log_requests.settled()
                 self._render_logs()
@@ -574,9 +612,11 @@ class LiveWindow:
             while True:
                 kind, value = self.action_results.get_nowait()
                 self.action_pending = False
-                if kind == "diagnostic":
-                    replace_text(self.connection_detail, value)
-                    self.action_status.set("Diagnostic request completed. See Connection.")
+                if kind.startswith("diagnostic_"):
+                    self.connection_panels.show_result(
+                        kind.removeprefix("diagnostic_"), value, datetime.now(UTC)
+                    )
+                    self.action_status.set("")
                 else:
                     if kind == "queue":
                         if isinstance(value, Outcome):
@@ -602,6 +642,7 @@ class LiveWindow:
             elif retry.stopped:
                 self.status.set(self.state.message + " Automatic reconnect paused; see Connection")
         self._render_preview()
+        self._auto_preview()
         self._controls()
         self.timer = self.root.after(50, self._drain)
 
@@ -630,7 +671,10 @@ class LiveWindow:
 
     def _render(self) -> None:
         live = self.state.connection == "live"
-        self.status.set(self.state.message)
+        received = self._retry_state().last_received_utc
+        self.status.set(
+            self.state.message + (f" {received[11:19]} UTC" if live and received else "")
+        )
         cards = self.state.timeline.cards if self.state.timeline else ()
         sync_rows(
             self.job_tree,
@@ -657,11 +701,7 @@ class LiveWindow:
                 self.job_tree.selection_set(selected)
         elif not selected and self.job_tree.selection():
             self.job_tree.selection_set(())
-        self.history_status.set(
-            "Older jobs are outside this bounded view."
-            if self.state.timeline and self.state.timeline.has_more
-            else ("Live updates" if live else "Showing the last verified snapshot")
-        )
+        self.history_status.set("" if live else "Updates paused")
         card = self.state.selected_card
         detail = "Select a job to inspect its status and permitted logs."
         heading = "Selected job"
@@ -680,7 +720,7 @@ class LiveWindow:
                 fields.append(f"Stage  {card.stage}")
             if card.result:
                 fields.append(f"Diagnostic code  {card.result}")
-            dates = ["Registration order: status updates do not move jobs"]
+            dates = []
             if card.created_utc:
                 dates.append(f"Registered  {card.created_utc}")
             else:
@@ -705,14 +745,28 @@ class LiveWindow:
             execution_uncertainty = "not reported"
             if snapshot.execution_uncertain is not None:
                 execution_uncertainty = "yes" if snapshot.execution_uncertain else "no"
+            active = next((row for row in cards if row.job_id == snapshot.active_job), None)
+            operation = snapshot.active_job or "none"
+            if active and active.stage:
+                operation += f" / {active.stage}"
             self.connection_status.set(
-                f"{snapshot.backend} | Owner: {owner.owner if owner else 'none'} | "
-                f"Active job: {snapshot.active_job or 'none'}\n"
-                "Pending historical acknowledgement: "
-                f"{'present' if snapshot.needs_review else 'none'} | "
+                f"Broker updates: {'Live' if live else 'Paused'} | Backend: {snapshot.backend}\n"
+                f"Owner: {owner.owner if owner else 'none'} | Active job: {operation}\n"
                 f"Current execution uncertainty: {execution_uncertainty} | "
-                f"Current ownership uncertainty: {'yes' if snapshot.ownership_uncertain else 'no'}"
+                f"Current ownership uncertainty: {'yes' if snapshot.ownership_uncertain else 'no'}\n"
+                f"Historical review: {'pending' if snapshot.needs_review else 'none'}"
             )
+            if hasattr(self, "wait_box"):
+                if snapshot.waiters:
+                    self.wait_empty.grid_remove()
+                    self.wait_box.grid()
+                    self.wait_actions.grid()
+                    self.wait_tree.configure(height=min(8, len(snapshot.waiters)))
+                else:
+                    self.wait_box.grid_remove()
+                    self.wait_actions.grid_remove()
+                    self.wait_empty.configure(text="No waiting requests")
+                    self.wait_empty.grid()
             sync_rows(
                 self.wait_tree,
                 [
@@ -738,8 +792,20 @@ class LiveWindow:
             message = "Reading permitted output..."
         if self.logs.gap:
             message += " Some output is missing or was omitted."
-        self.log_status.set(message)
-        replace_text(self.log_text, "\n".join(self.logs.lines), follow=True)
+        self.log_status.set(
+            "Some output is missing or was omitted." if self.logs.gap
+            else "Reading permitted output..." if self.log_requests.pending and self.logs.lines
+            else ""
+        )
+        if hasattr(self, "log_context"):
+            source = f"{card.test or 'Unknown'} / {card.backend}" if card else "No job selected"
+            mode = (
+                "Live updates" if card and card.state in {"queued", "running"}
+                and self.state.connection == "live" else "Retained output"
+            )
+            received = f" | Read {self.logs.received_utc}" if self.logs.received_utc else ""
+            self.log_context.set(f"Logs | {source} | {mode}{received}")
+        replace_text(self.log_text, "\n".join(self.logs.lines) or message, follow=True)
 
     def _controls(self) -> None:
         ready = self._actions_ready()
@@ -747,19 +813,27 @@ class LiveWindow:
         open_selected = getattr(self, "open_selected_button", None)
         if open_selected is not None:
             open_selected.configure(state="normal" if self.state.selected_job_id else "disabled")
-        self.log_button.configure(
-            state="normal"
-            if ready and card and logs_applicable(card.test) and not self.log_requests.pending
-            else "disabled"
-        )
-        self.preview_button.configure(
-            state="normal"
-            if ready and self.preview_state.can_read(time.monotonic())
-            else "disabled"
-        )
-        self.job_cancel.configure(
-            state="normal" if ready and card and card.cancel_available else "disabled"
-        )
+        if hasattr(self, "copy_button"):
+            self.copy_button.configure(state="normal" if card else "disabled")
+        can_cancel = bool(ready and card and card.cancel_available)
+        self.job_cancel.configure(state="normal" if can_cancel else "disabled")
+        if can_cancel:
+            self.job_cancel.grid()
+        else:
+            self.job_cancel.grid_remove()
+        if hasattr(self, "cancel_context"):
+            reason = ""
+            if card and card.state in {"queued", "running"} and not card.cancel_available:
+                reason = (
+                    "Cancel via the owning client session"
+                    if card.test in {*FLASH_TESTS, TestName.APP_SESSION}
+                    else "Cancellation unavailable for this operator"
+                )
+            elif card and card.cancel_available and not ready:
+                reason = "Cancellation currently unavailable"
+            self.cancel_context.set(reason)
+        if hasattr(self, "connection_panels"):
+            self.connection_panels.set_enabled(not self.action_pending and not self._is_closing())
         self.release_button.configure(
             state="normal" if ready and self.queue_controller.can_release() else "disabled"
         )
@@ -817,15 +891,14 @@ class LiveWindow:
                     self.preview_photo = photo
                     self.displayed_preview = preview
                     self.preview_image.configure(image=photo)
-                    self.preview_area.grid(row=5, sticky="w", pady=(8, 0))
-                    if getattr(self, "_detail_canvas", None) is not None:
-                        self.root.after_idle(self._reveal_preview)
+                    self.preview_area.grid(row=6, sticky="w", pady=(8, 0))
             except Exception:
                 self.preview_state = PreviewState(
                     self.preview_state.generation,
                     self.preview_state.epoch,
                     self.preview_state.row,
                     message=FAILED,
+                    attempted=True,
                 )
         if self.preview_state.preview is None:
             self.preview_image.configure(image="")
@@ -833,9 +906,36 @@ class LiveWindow:
             self.preview_photo = None
             self.displayed_preview = None
         self.preview_status.set(self.preview_state.message)
+        if hasattr(self, "image_context"):
+            row = self.preview_state.row
+            self.image_context.set(
+                f"Captured image | {SOURCES[row.source]} | Captured {row.born_utc} | Retained"
+                if row else "Captured image | No retained image metadata"
+            )
+
+    def _auto_preview(self) -> None:
+        self._reconcile_preview()
+        if not self.preview_state.attempted and self.preview_state.can_read(time.monotonic()):
+            self._preview()
+
+    def _copy_result(self) -> None:
+        if self.state.selected_card is None:
+            return
+        text = "\n\n".join((
+            self.detail_heading.get(), self.detail_text.get("1.0", "end-1c"),
+            self.log_context.get(), self.log_text.get("1.0", "end-1c"),
+            self.log_status.get(), self.image_context.get(), self.preview_status.get(),
+        ))
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.action_status.set("Selected job text copied.")
+        except Exception:
+            self.action_status.set("Could not copy selected job text.")
 
     def _run_action(
-        self, action: Any, *, diagnostic: bool = False, queue_operation: bool = False
+        self, action: Any, *, queue_operation: bool = False,
+        diagnostic_kind: str | None = None,
     ) -> None:
         if self.action_pending or self._is_closing() or self.state.connection == "closed":
             return
@@ -848,7 +948,10 @@ class LiveWindow:
                 value = action()
             except Exception:
                 value = "Request outcome unknown. Reconnect before any explicit retry."
-            kind = "diagnostic" if diagnostic else "queue" if queue_operation else "action"
+            kind = (
+                "diagnostic_" + diagnostic_kind if diagnostic_kind else
+                "queue" if queue_operation else "action"
+            )
             self.action_results.put((kind, value))
 
         threading.Thread(target=worker, name="gui-explicit-action", daemon=True).start()
@@ -925,13 +1028,17 @@ class LiveWindow:
                 self._queue_action(self.queue_controller.release(confirmed))
 
     def _diagnostic(self, catalog: bool) -> None:
+        if self.action_pending or self._is_closing() or self.state.connection == "closed":
+            return
+        kind = "mcp" if catalog else "http"
+        self.connection_panels.show_loading(kind)
         self._run_action(
             lambda: (
                 mcp_catalog_summary(self.api.catalog())
                 if catalog
                 else http_diagnostics_summary(self.api.diagnostics())
             ),
-            diagnostic=True,
+            diagnostic_kind=kind,
         )
 
     def _is_closing(self) -> bool:

@@ -114,7 +114,7 @@ def test_native_job_selection_delta_log_navigation_and_close(monkeypatch):
 
 
 @pytest.mark.parametrize("job_id", ["job_image_1", "capture_" + "long_context_" * 4])
-def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(monkeypatch, job_id):
+def test_native_selection_displays_validated_synthetic_pixels_and_expires(monkeypatch, job_id):
     import tkinter as tk
 
     from test_gui_images import detail, row
@@ -145,8 +145,7 @@ def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(m
         window.job_tree.selection_set(job_id)
         window._select()
         root.update_idletasks()
-        assert window.preview_button.instate(["!disabled"])
-        window.preview_button.invoke()
+        assert window.image_marker.winfo_class() == "TLabel"
         assert window.runner.images == [(generation, job_id)]
         assert window.preview_state.pending and not window.action_pending
         window.runner.events.append(
@@ -163,6 +162,8 @@ def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(m
         )
         window._drain()
         root.update()
+        window._scroll_detail_key("End")
+        root.update()
         assert (root.winfo_width(), root.winfo_height()) == (860, 600)
         assert window.preview_photo is not None
         assert (window.preview_photo.width(), window.preview_photo.height()) == (240, 135)
@@ -178,7 +179,7 @@ def test_native_preview_button_displays_validated_synthetic_pixels_and_expires(m
             window.preview_area,
             window.preview_status_label,
             window.log_status_label,
-            window.preview_button,
+            window.image_marker,
             window.job_cancel,
         ):
             assert widget.winfo_rootx() + widget.winfo_width() <= root.winfo_rootx() + 860
@@ -231,9 +232,7 @@ def test_native_preview_and_controls_reachable_at_168_dpi_minimum(monkeypatch):
         window._drain()
         window.job_tree.selection_set(job_id)
         window._select()
-        assert window.open_selected_button is not None
-        window.open_selected_button.invoke()
-        window.preview_button.invoke()
+        window._show_selected()
         window.runner.events.append(
             TransportEvent(
                 "image",
@@ -249,25 +248,29 @@ def test_native_preview_and_controls_reachable_at_168_dpi_minimum(monkeypatch):
         window._drain()
         root.update()
         assert (root.winfo_width(), root.winfo_height()) == (860, 600)
-        assert window._job_pages is not None and window._detail_canvas is not None
+        assert window._job_pages is None and window._detail_canvas is not None
+        assert str(window.job_panes.cget("orient")) == "horizontal"
         assert window.job_cancel.winfo_width() >= window.job_cancel.winfo_reqwidth()
         assert window.job_cancel.winfo_rootx() + window.job_cancel.winfo_width() <= (
             root.winfo_rootx() + 860
         )
         assert window.preview_photo is not None
+        assert window._detail_canvas.yview()[0] == 0.0
+        window._scroll_detail_key("End")
+        root.update()
         assert window._detail_canvas.yview()[1] == 1.0
         for widget in (window.preview_area, window.preview_status_label):
             assert widget.winfo_rooty() >= root.winfo_rooty()
             assert widget.winfo_rooty() + widget.winfo_height() <= root.winfo_rooty() + 600
-        window._job_pages.select(0)
+        window.back_button.invoke()
         root.update()
         assert window.job_tree.winfo_width() > 1
         assert window.job_tree.winfo_rootx() + window.job_tree.winfo_width() <= (
             root.winfo_rootx() + 860
         )
-        # The preview leaves the *outer* detail canvas at the bottom. Reopen
+        # Explicit scrolling leaves the detail canvas at the bottom. Reopen
         # through the list affordance and check the actual canvas viewport.
-        window.open_selected_button.invoke()
+        window._show_selected()
         root.update()
         canvas = window._detail_canvas
         assert canvas.yview()[0] == 0.0
@@ -300,12 +303,13 @@ def test_native_preview_and_controls_reachable_at_168_dpi_minimum(monkeypatch):
         assert window.log_text.winfo_rooty() + window.log_text.winfo_height() <= (
             canvas.winfo_rooty() + canvas.winfo_height()
         )
-        window._job_pages.select(0)
+        window.back_button.invoke()
         root.update()
         assert window.job_tree.bind("<Return>")
         window._show_selected()
         root.update()
-        assert window._job_pages.select() == str(window._detail_page)
+        assert window.job_tree.selection() == (job_id,)
+        assert window.job_tree.winfo_ismapped()
         assert window.detail_text.winfo_rooty() >= canvas.winfo_rooty()
         assert window.detail_text.winfo_rooty() + window.detail_text.winfo_height() <= (
             canvas.winfo_rooty() + canvas.winfo_height()
@@ -355,18 +359,16 @@ def test_native_job_heading_ascii_controls_and_nonlog_empty_loading_states(monke
         assert "Stage  " not in body and "Result  " not in body and "Finished  " not in body
         assert "Registered  " in body and "Historical acknowledgement  " in body
         assert window.logs.phase == "not_applicable"
-        assert window.log_button.instate(["disabled"]) and window.runner.reads == []
-        assert window.preview_button.cget("text") == "Preview retained image"
+        assert window.log_marker.winfo_class() == "TLabel" and window.runner.reads == []
+        assert window.image_context.get().startswith("Captured image |")
         assert window.job_cancel.cget("text") == "Cancel job..."
-        assert window.preview_button.winfo_width() >= window.preview_button.winfo_reqwidth()
-        assert (
-            window.preview_button.winfo_x() + window.preview_button.winfo_width()
-            <= window.preview_button.master.winfo_width()
-        )
+        assert window.copy_button.winfo_width() >= window.copy_button.winfo_reqwidth()
+        assert window.job_cancel.winfo_manager() == ""
         window.job_tree.selection_set("build")
         window._select()
         assert window.runner.reads[-1][1] == "build"
-        assert window.log_status.get() == "Reading permitted output..."
+        assert window.job_cancel.grid_info()["row"] > window.preview_status_label.grid_info()["row"]
+        assert "Reading permitted output..." in window.log_text.get("1.0", "end-1c")
         assert window.detail_heading.get() == "build | ⏳ Running"
         window.runner.events.append(
             TransportEvent(
@@ -388,10 +390,11 @@ def test_native_job_heading_ascii_controls_and_nonlog_empty_loading_states(monke
             )
         )
         window._drain()
-        assert window.logs.phase == "empty" and window.log_status.get().startswith("No output")
-        assert window.log_button.instate(["!disabled"])
+        assert window.logs.phase == "empty"
+        assert window.log_text.get("1.0", "end-1c").startswith("No output")
+        assert window.copy_button.instate(["!disabled"])
         fixed_text = [
-            window.preview_button.cget("text"),
+            window.image_context.get(),
             window.job_cancel.cget("text"),
             window.log_status.get(),
             window.preview_status.get(),
@@ -483,3 +486,82 @@ def test_native_status_backgrounds_and_review_labels_preserve_selection(monkeypa
             if window.timer is not None:
                 root.after_cancel(window.timer)
         root.destroy()
+
+
+@pytest.mark.parametrize("phase", ["empty", "running", "completed", "denied", "expired", "image"])
+def test_selected_result_viewer_states_copy_cancel_and_mock_screenshots(monkeypatch, phase):
+    import tkinter as tk
+    from tkinter import ttk
+
+    from gui_screenshot import save_mock_window
+    from test_gui_images import detail, row
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Native Tk requires a desktop display")
+    monkeypatch.setattr(gui_live, "LiveRunner", Runner)
+    now = [time.monotonic()]
+    monkeypatch.setattr(gui_live.time, "monotonic", lambda: now[0])
+    window = None
+    try:
+        window = gui_live.LiveWindow(root, OperatorClient("http://127.0.0.1:8765", "synthetic"))
+        generation = window.state.generation
+        data = detail(remaining_seconds=5)
+        selected = card("job_image_1", state="succeeded" if phase == "completed" else "running",
+                        cancel_available=phase == "running",
+                        test="firmware_flash" if phase == "denied" else "firmware_build")
+        if phase in {"expired", "image"}:
+            selected["image"] = row(data)
+        window.runner.events.append(TransportEvent("message", generation,
+            snapshot([] if phase == "empty" else [selected]), now[0]))
+        window._drain()
+        if phase != "empty":
+            window.job_tree.selection_set("job_image_1")
+            window._select()
+            window._show_selected()
+            reply = {
+                "ok": True, "entries": [{"sequence": 1, "text": "日本語 synthetic output"}],
+                "next_cursor": {"epoch": "a" * 32, "sequence": 1},
+                "gap": False, "expired": False, "has_more": False,
+            }
+            if phase == "denied":
+                reply = {"ok": False, "error": "not_authorized"}
+            window.runner.events.append(TransportEvent("logs", generation,
+                {"job_id": "job_image_1", "request_id": 1, "response": reply}, now[0]))
+            if phase in {"expired", "image"}:
+                window.runner.events.append(TransportEvent("image", generation,
+                    {"job_id": "job_image_1", "request_id": 1,
+                     "response": {**data, "broker_epoch": "e" * 32}}, now[0]))
+            if phase == "expired":
+                now[0] += 5
+            window._drain()
+        root.update()
+        assert window.log_marker.winfo_class() == "TLabel"
+        assert window.image_marker.winfo_class() == "TLabel"
+        if phase == "denied":
+            assert "access denied" in window.log_text.get("1.0", "end-1c")
+            assert "owning client" in window.cancel_context.get()
+        if phase == "expired":
+            assert window.preview_photo is None and "expired" in window.preview_status.get()
+        if phase == "image":
+            assert "Captured " in window.image_context.get()
+            assert window.preview_photo is not None and len(window.runner.images) == 1
+        if phase != "empty":
+            window.copy_button.invoke()
+            assert "Logs |" in root.clipboard_get()
+        assert window.job_cancel.winfo_manager() == ("grid" if phase == "running" else "")
+        assert ttk.Style(root).lookup("Danger.TButton", "foreground", ("!disabled",)) == "#b42318"
+        save_mock_window(root, phase + "-top")
+        window._scroll_detail_key("End")
+        root.update()
+        save_mock_window(root, phase + "-result")
+        if window._job_pages is not None:
+            recent = window.job_tree.master.master
+            assert not any(w.winfo_class() == "TLabel" and w.cget("text") == "Recent jobs"
+                           for w in recent.winfo_children())
+    finally:
+        if window is not None:
+            window._finish_close()
+        else:
+            root.destroy()

@@ -8,7 +8,7 @@ from .models import FLASH_TESTS, TestName
 
 MAX_LOG_LINES = 256
 MAX_LOG_BYTES = 128 * 1024
-LOG_TESTS = frozenset({TestName.SOURCE, TestName.BUILD, *FLASH_TESTS})
+LOG_TESTS = frozenset({TestName.SOURCE, TestName.BUILD, TestName.APP_SESSION, *FLASH_TESTS})
 
 
 def logs_applicable(test: str | None) -> bool:
@@ -140,6 +140,7 @@ class LogView:
     lines: tuple[str, ...] = ()
     gap: bool = False
     has_more: bool = False
+    received_utc: str = ""
 
     @property
     def cursor(self) -> dict[str, Any] | None:
@@ -152,10 +153,10 @@ class LogView:
             "loading": "Reading permitted output...",
             "available": "Output received for the requesting principal",
             "empty": "No output is retained for this job yet.",
-            "not_applicable": "Private output does not apply to this job type.",
-            "expired": "Output expired or not retained. Build receipts have independent retention.",
-            "denied": "Private output belongs to another principal. Job status remains visible.",
-            "unavailable": "Output unavailable. No job or device operation was requested.",
+            "not_applicable": "Logs unsupported for this job type.",
+            "expired": "Logs expired or not retained.",
+            "denied": "Log access denied for this principal.",
+            "unavailable": "Logs unavailable.",
         }[self.phase]
 
 
@@ -164,7 +165,14 @@ def read_log_result(view: LogView, response: Any) -> LogView:
     if type(response) is not dict:
         return LogView("unavailable")
     if response.get("ok") is not True:
-        return LogView("denied" if response.get("error") == "not_authorized" else "unavailable")
+        code = response.get("error")
+        phase = (
+            "denied" if code in ("not_authorized", "authentication_required", "local_operator_required")
+            else "expired" if code == "expired"
+            else "not_applicable" if code == "unsupported"
+            else "unavailable"
+        )
+        return LogView(phase)
     try:
         cursor, entries = response["next_cursor"], response["entries"]
         if type(cursor) is not dict or type(entries) is not list or len(entries) > 100:

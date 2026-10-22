@@ -119,8 +119,8 @@ GUI の operator API は local_cli + control の認証だけを受け付け、Tu
 
 ## Cancel a registered-project job
 
-A queued/running source or build card can show **Cancel job <exact job ID>** in
-its header. An authenticated local operator with control can stop a registered
+A queued/running source or build card shows **Cancel job...** at the bottom of
+its selected details only when cancellation is available to this operator. An authenticated local operator with control can stop a registered
 project's source/build job regardless of its requesting principal/origin. This is
 a dedicated local stop authority; the plan owner remains unchanged. Cancellation
 uses the existing profile worker/process cleanup path. A first operator stop records
@@ -141,3 +141,32 @@ the GUI displays the completed result without rollback. Cleanup uncertainty stay
 **Review required**, and device release is never inferred from a cancel response.
 Rejected/unknown requests use fixed messages and fresh status; raw errors are not
 shown. Closing the GUI does not cancel another job or stop the broker.
+
+
+## Selected results
+
+Jobs uses a resizable master-detail view. The selected row stays visible while
+Enter opens its detail; Back to list or Alt+Left returns keyboard focus to the
+list. Permitted supported logs and retained images load automatically. Context
+labels identify the source, live/retained state and actual read/capture times;
+log read time is not an inferred emission time. Empty, loading, denied, unsupported,
+expired and unavailable output appears in the viewer itself. Gap/truncation
+warnings remain visible. No selection, refresh or image read launches device work.
+
+Text stays selectable and Copy text copies the selected job's displayed text only
+on explicit click. Images use the existing validation, recipient/approval and
+expiry checks; one automatic read per selected image identity never recaptures or
+retries a failed read. Cancel remains a confirmed exact job/plan/epoch operation;
+unsupported job types do not gain cancellation authority.
+
+App-session logs use the same authenticated principal's bounded RAM log cache only.
+A local operator does not acquire another principal's private output, including
+remote-client app logs. Existing LOCAL/control/read checks, immutable plan/runtime
+ownership and current-epoch execution records must agree. Control events are not
+exposed through this log viewer. No MCP tool/schema or config migration is needed.
+
+Connection keeps current broker updates/owner/active job separate from historical
+review. An empty waiting queue uses a compact empty state. MCP info and HTTP
+diagnostics have independent collapsible result panels, explicit Refresh/Copy and
+actual received timestamps; opening a panel does not issue a request. Table
+columns adapt to available space and horizontal bars appear only for overflow.

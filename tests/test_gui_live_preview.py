@@ -1,4 +1,4 @@
-"""Explicit retained-image preview integrity, deadline and view-ownership regressions."""
+"""Automatic retained-image integrity, deadline and view-ownership regressions."""
 
 import base64
 from dataclasses import FrozenInstanceError, replace
@@ -153,11 +153,13 @@ def show(window):
     return request_id
 
 
-def test_button_is_explicit_and_only_validated_png_reaches_tk(window):
+def test_selection_loads_once_and_only_validated_png_reaches_tk(window):
     window, clock, photo = window
     drain(window)
-    window.runner.read_image.assert_not_called()
-    show(window)
+    window.runner.read_image.assert_called_once_with(1, "job_image_1", expires_at=1200)
+    request_id = window.preview_state.request_id
+    drain(window, image_event(window, request_id))
+    drain(window)
     window.runner.read_image.assert_called_once_with(1, "job_image_1", expires_at=1200)
     assert window.preview_photo is photo.return_value
     assert window.preview_state.preview is not None
@@ -279,3 +281,20 @@ def test_preview_pending_keeps_mutation_axis_ready_and_close_does_not_wait(windo
     assert window.state.connection == "closed" and not window.preview_state.pending
     window.runner.close.assert_called_once()
     assert window.api.mock_calls == []
+
+
+def test_failed_automatic_image_is_not_retried_until_selection_changes(window):
+    window, clock, photo = window
+    drain(window)
+    request_id = window.preview_state.request_id
+    drain(window, image_event(window, request_id, {"ok": False, "error": "not_authorized"}))
+    assert "denied" in window.preview_state.message
+    for _ in range(5):
+        drain(window)
+    assert window.runner.read_image.call_count == 1
+    photo.assert_not_called()
+    window.job_tree.selection.return_value = ("other",)
+    window._select()
+    window.job_tree.selection.return_value = ("job_image_1",)
+    window._select()
+    assert window.runner.read_image.call_count == 2
