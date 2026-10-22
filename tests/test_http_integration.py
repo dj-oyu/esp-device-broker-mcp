@@ -107,7 +107,62 @@ async def test_real_mcp_http_disconnect_retry_handover(authenticated_service):
             "request_device",
             "cancel_device_request",
             "close_work_session",
+            "list_apps",
+            "app_command",
+            "read_app_events",
         }
+        app_tools = {tool.name: tool for tool in advertised.tools}
+        catalog = app_tools["list_apps"]
+        assert catalog.annotations.read_only_hint is True
+        assert catalog.annotations.destructive_hint is False
+        assert catalog.annotations.open_world_hint is False
+        assert catalog.input_schema["type"] == "object"
+        assert catalog.input_schema.get("properties", {}) == {}
+        for name, model, read_only, fields in (
+            (
+                "app_command",
+                "AppCommandRequest",
+                False,
+                {
+                    "session",
+                    "job_id",
+                    "boot_id",
+                    "run_id",
+                    "control_session",
+                    "command_id",
+                    "seq",
+                    "operation",
+                    "action",
+                },
+            ),
+            ("read_app_events", "AppEventsRequest", True, {"job_id", "cursor", "limit"}),
+        ):
+            app_tool = app_tools[name]
+            assert app_tool.annotations.read_only_hint is read_only
+            assert app_tool.annotations.destructive_hint is False
+            assert app_tool.annotations.open_world_hint is False
+            app_schema = app_tool.input_schema["$defs"][model]
+            assert set(app_schema["properties"]) == fields
+            assert app_schema["additionalProperties"] is False
+        command_schema = app_tools["app_command"].input_schema["$defs"]["AppCommandRequest"]
+        assert set(command_schema["required"]) == {
+            "session",
+            "job_id",
+            "boot_id",
+            "run_id",
+            "control_session",
+            "operation",
+        }
+        assert set(command_schema["properties"]["operation"]["enum"]) == {
+            "action.tap",
+            "status",
+            "suspend",
+            "resume",
+            "stop",
+        }
+        event_schema = app_tools["read_app_events"].input_schema["$defs"]["AppEventsRequest"]
+        assert event_schema["properties"]["limit"]["maximum"] == 100
+        assert set(event_schema["required"]) == {"job_id"}
         build_logs = next(tool for tool in advertised.tools if tool.name == "read_build_logs")
         assert build_logs.annotations.read_only_hint is True
         tool_data = build_logs.model_dump()

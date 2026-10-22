@@ -591,10 +591,15 @@ async def test_legacy_initialize_and_discovery_through_ingress(ingress_service, 
     assert acknowledged.status_code == 202
     listed = await service.post("/tunnel/mcp", *wire_request("tools/list", version=version))
     assert listed.status_code == 200
-    assert len(listed.json()["result"]["tools"]) == 22
+    assert len(listed.json()["result"]["tools"]) == 25
     assert "list_registered_targets" in {tool["name"] for tool in listed.json()["result"]["tools"]}
     assert "read_build_logs" in {tool["name"] for tool in listed.json()["result"]["tools"]}
     assert "read_capture" in {tool["name"] for tool in listed.json()["result"]["tools"]}
+    app_tools = {tool["name"]: tool for tool in listed.json()["result"]["tools"]}
+    for name, read_only in (("list_apps", True), ("read_app_events", True), ("app_command", False)):
+        assert app_tools[name]["annotations"]["readOnlyHint"] is read_only
+        assert app_tools[name]["annotations"]["destructiveHint"] is False
+        assert app_tools[name]["annotations"]["openWorldHint"] is False
 
 
 async def test_official_sdk_client_can_discover_through_ingress(ingress_service):

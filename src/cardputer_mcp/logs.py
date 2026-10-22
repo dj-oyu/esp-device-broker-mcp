@@ -18,6 +18,7 @@ class Event(StrEnum):
     QUEUED = "job_queued"
     STAGE = "stage_started"
     PASSED = "job_passed"
+    FAILED = "job_failed"
     REVIEW = "job_needs_review"
     CANCELLED = "job_cancelled"
     STOPPED = "broker_stopped"

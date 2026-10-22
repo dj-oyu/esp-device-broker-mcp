@@ -3,6 +3,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .app_models import AppSessionOptions
+
 Identifier = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
 Capability = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -32,6 +34,7 @@ class TestName(StrEnum):
     CAPTURE = "capture_home"
     DERBY = "derby_smoke"
     DERBY_FIXED = "derby_fixed_workload"
+    APP_SESSION = "app_session"
 
 
 FLASH_TESTS = frozenset({TestName.BACKUP, TestName.FLASH, TestName.RESTORE})
@@ -147,9 +150,12 @@ class PrepareRequest(StrictModel):
         default=None, exclude_if=lambda value: value is None
     )
     flash_job_id: Identifier | None = None
+    app: AppSessionOptions | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def flash_references(self) -> "PrepareRequest":
+        if (self.test == TestName.APP_SESSION) != (self.app is not None):
+            raise ValueError("app_options_required_only_for_app_session")
         if "derby_dma_mode" in self.model_fields_set and (
             self.derby_dma_mode is None
             or self.derby_detail_mode is None

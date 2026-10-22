@@ -24,6 +24,7 @@ from mcp.types import (
 from pydantic import TypeAdapter, ValidationError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .app_models import AppCommandRequest, AppEventsRequest
 from .auth import AuthState
 from .broker import Broker, BrokerError
 from .config import Settings
@@ -724,6 +725,13 @@ def create_server(
     async def prepare_test(request: PrepareRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Prepare an immutable plan; serial preflight enumerates without opening USB.
 
+        app_session fixes registered app/start, typed allowed actions, command/rate/
+        duration/log limits and stop/teardown effects in request.app. Fresh is default.
+        list_apps only reads cached catalog. execute handshakes actual boot/catalog/
+        reported firmware identity; observed identity is not attestation. app_command
+        never accepts source text, paths, held keys or raw serial. Device TTL and
+        bounded STOP/CLOSE cleanup are agreed by the immutable app_session plan.
+
         Source fetch is an explicit registered-project/full-commit operation.
         It returns a principal-bound receipt; build can select it without worktree sync.
         Registered source/build plans require current control authorization and
@@ -1063,6 +1071,49 @@ def create_server(
             return {"ok": False, **exc.public()}
         except ValueError:
             return {"ok": False, "error": "invalid_request"}
+
+    @server.tool(annotations=read_only)
+    async def list_apps(ctx: Context[Any, Any]) -> dict[str, Any]:
+        """Read the cached app-control catalog and freshness; never opens USB.
+
+        An unobserved catalog is explicit. Device-reported identity is unattested.
+        """
+
+        def read_catalog() -> dict[str, Any]:
+            principal(ctx, "read")
+            return resident.app_sessions.list_apps()
+
+        return _result(read_catalog)
+
+    @server.tool(annotations=mutating)
+    async def app_command(request: AppCommandRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
+        """Queue typed input inside one exact app_session plan; status never replays.
+
+        queued/sent/accepted/consumed differ. consumed is delivery to the owner
+        action path, not JavaScript, rendering, saving or benchmark completion.
+        """
+
+        def command() -> dict[str, Any]:
+            owner = principal(ctx, "control")
+            resident.require_owner(
+                request.session, owner.origin.value, principal_id=owner.principal_id
+            )
+            return resident.app_command(request)
+
+        return _result(command)
+
+    @server.tool(annotations=read_only)
+    async def read_app_events(request: AppEventsRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
+        """Read private bounded control ACKs and redacted observed_during_run logs.
+
+        Independent cursors expose gaps/drops/expiry. Never opens another reader.
+        """
+
+        def events() -> dict[str, Any]:
+            owner = principal(ctx, "read")
+            return resident.read_app_events(request, owner.principal_id)
+
+        return _result(events)
 
     @server.tool(annotations=read_only)
     async def read_device_logs(request: JobRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
