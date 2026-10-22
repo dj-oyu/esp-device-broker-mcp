@@ -241,6 +241,30 @@ class PlanApprovals:
                 ]
             ):
                 raise ValueError
+        elif test == TestName.APP_SESSION.value:
+            from .app_models import AppSessionOptions
+            from .app_sessions import EFFECTS
+
+            AppSessionOptions.model_validate(plan.get("app"))
+            expected_keys = _BASE_KEYS | {"app", "app_protocol", "effects", "catalog_binding", "log_delivery"}
+            if backend == "serial":
+                expected_keys |= {"port", "device_fingerprint", "expected_firmware_sha256"}
+            if backend not in ("mock", "serial") or plan.get("app_protocol") != "app-control-v1" or plan.get("effects") != EFFECTS:
+                raise ValueError
+            binding = plan.get("catalog_binding")
+            if type(binding) is not dict or binding.get("source") not in ("cached", "unobserved"):
+                raise ValueError
+            if binding["source"] == "unobserved":
+                if binding != {"source": "unobserved", "expected": None}:
+                    raise ValueError
+            elif (set(binding) != {"source", "expected", "observed_at", "boot_id", "firmware_sha256", "firmware_version"}
+                  or not _hex(binding["expected"], 64)
+                  or not _hex(binding["firmware_sha256"], 64)
+                  or type(binding["firmware_version"]) is not str
+                  or len(binding["firmware_version"]) > 47
+                  or type(binding["observed_at"]) not in (float, int)
+                  or type(binding["boot_id"]) is not int):
+                raise ValueError
         elif backend == "mock":
             from .backend import MockBackend
 
@@ -422,6 +446,9 @@ class PlanApprovals:
         elif plan["test"] == TestName.SOURCE.value:
             if plan["source_principal"] != lease.principal_id:
                 raise BrokerError("plan_session_mismatch")
+        elif plan["test"] == TestName.APP_SESSION.value:
+            if plan.get("log_delivery") != self.broker._log_delivery(lease):
+                raise BrokerError("plan_session_mismatch")
         elif plan["backend"] == "serial":
             config = self.broker.settings.serial
             receipt_bound = plan["test"] == TestName.DERBY_FIXED.value and "flash_job_id" in plan
@@ -464,7 +491,15 @@ class PlanApprovals:
         with _fixed_errors():
             plan = self._validate(plan_hash, lease)
             try:
-                if plan["test"] in {t.value for t in FLASH_TESTS}:
+                if plan["test"] == TestName.APP_SESSION.value:
+                    from .app_models import AppSessionOptions
+
+                    details = self.broker.app_sessions.prepare(
+                        self.broker.backend, AppSessionOptions.model_validate(plan["app"])
+                    )
+                    # Snapshot stays fixed; handshake rechecks it against the actual device.
+                    details["catalog_binding"] = plan["catalog_binding"]
+                elif plan["test"] in {t.value for t in FLASH_TESTS}:
                     details = self.broker.firmware_flash.prepare_plan(plan)
                 elif plan["test"] == TestName.SOURCE.value:
                     from .models import PrepareRequest
@@ -504,7 +539,7 @@ class PlanApprovals:
             except Exception:
                 raise BrokerError("backend_preflight_failed") from None
             expected = {key: plan[key] for key in _BASE_KEYS - {"stages"}} | details
-            if plan["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value):
+            if plan["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value, TestName.APP_SESSION.value):
                 expected["log_delivery"] = self.broker._log_delivery(lease)
             if digest_plan(expected) != plan_hash:
                 raise BrokerError("plan_backend_mismatch")
