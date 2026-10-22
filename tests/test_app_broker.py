@@ -11,11 +11,19 @@ from cardputer_mcp.app_models import AppEventsRequest, AppSessionOptions
 from cardputer_mcp.broker import Broker, BrokerError
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import Settings
-from cardputer_mcp.models import AcquireRequest, ExecuteRequest, Origin, PrepareRequest
+from cardputer_mcp.models import (
+    AcquireRequest,
+    CancelRequest,
+    ExecuteRequest,
+    LogRequest,
+    Origin,
+    PrepareRequest,
+)
 from cardputer_mcp.models import TestName as Workflow
 
 
-def test_app_plan_is_immutable_and_resident_worker_deduplicates_execution(tmp_path):
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_app_plan_is_immutable_and_resident_worker_deduplicates_execution(tmp_path, cancelled):
     async def scenario():
         broker = Broker(
             Settings(state_dir=tmp_path / "state"),
@@ -40,10 +48,24 @@ def test_app_plan_is_immutable_and_resident_worker_deduplicates_execution(tmp_pa
             execute = ExecuteRequest(session=token, plan_hash=prepared["plan_hash"])
             broker.execute(execute)
             assert broker.execute(execute)["deduplicated"]
+            if cancelled:
+                deadline = asyncio.get_running_loop().time() + 2
+                while True:
+                    run = broker.app_sessions.jobs.get("app-one")
+                    if run is not None and run.state == "running":
+                        break
+                    assert asyncio.get_running_loop().time() < deadline
+                    await asyncio.sleep(0.005)
+                broker.cancel(CancelRequest(session=token, job_id="app-one"))
             await asyncio.wait_for(broker.queue.join(), 3)
             assert broker.backend.calls == 1
-            assert broker.job("app-one")["state"] == "failed"
-            assert broker.job("app-one")["result"] == "app_session_timeout"
+            expected_state = "cancelled" if cancelled else "failed"
+            expected_result = "app_session_cancelled" if cancelled else "app_session_timeout"
+            assert broker.job("app-one")["state"] == expected_state
+            assert broker.job("app-one")["result"] == expected_result
+            events = [entry["event"] for entry in broker.read_logs(LogRequest())["entries"]]
+            assert ("job_cancelled" if cancelled else "job_failed") in events
+            assert "job_passed" not in events
             report = broker.read_app_events(AppEventsRequest(job_id="app-one"), "owner")
             assert any(event["kind"] == "started" for event in report["entries"])
             with pytest.raises(BrokerError, match="app_events_not_available"):

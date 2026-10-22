@@ -2237,6 +2237,7 @@ class Broker:
                     self._cancel_queued("recovery_review_required")
                 else:
                     fixed_review = False
+                    terminal_event = Event.PASSED
                     try:
                         completed = result.code if isinstance(result, BackendResult) else result
                         if plan["test"] == TestName.APP_SESSION.value:
@@ -2248,6 +2249,11 @@ class Broker:
                                 else "succeeded"
                             )
                             store.set_job(job_id, terminal, completed)
+                            terminal_event = {
+                                "succeeded": Event.PASSED,
+                                "failed": Event.FAILED,
+                                "cancelled": Event.CANCELLED,
+                            }[terminal]
                         elif plan["test"] in {item.value for item in FLASH_TESTS}:
                             self.firmware_flash.commit_success(
                                 plan, completed, partial(flash_live, committing=True)
@@ -2317,7 +2323,7 @@ class Broker:
                         self.logs.append(Event.REVIEW)
                         self._cancel_queued("recovery_review_required")
                     else:
-                        self.logs.append(Event.REVIEW if fixed_review else Event.PASSED)
+                        self.logs.append(Event.REVIEW if fixed_review else terminal_event)
                         if fixed_review:
                             self._cancel_queued("recovery_review_required")
                 finally:

@@ -79,12 +79,8 @@ class FramedSyntheticSerial:
 
 
 def backend_for(port):
-    inventory = [
-        PortInfo(port="SYNTHETIC_PORT", vid=1, pid=2, serial_number="SYNTHETIC_DEVICE")
-    ]
-    config = SerialSettings(
-        selector=DeviceSelector(vid=1, pid=2, serial_number="SYNTHETIC_DEVICE")
-    )
+    inventory = [PortInfo(port="SYNTHETIC_PORT", vid=1, pid=2, serial_number="SYNTHETIC_DEVICE")]
+    config = SerialSettings(selector=DeviceSelector(vid=1, pid=2, serial_number="SYNTHETIC_DEVICE"))
     return SerialBackend(config, inventory=lambda: inventory, factory=lambda: port)
 
 

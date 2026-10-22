@@ -67,9 +67,9 @@ class AppSessionClient:
         return result
 
     async def _wait(
-        self, predicate: Callable[[dict[str, Any]], bool], timeout: float
+        self, predicate: Callable[[dict[str, Any]], bool], wait_seconds: float
     ) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:
             batch = await self.events()
             for event in batch.get("entries", []):
@@ -84,9 +84,9 @@ class AppSessionClient:
         job_id: str,
         options: AppSessionOptions,
         *,
-        timeout: float = 5,
+        wait_seconds: float = 5,
     ) -> dict[str, Any]:
-        if self.job_id is not None or not 0 < timeout <= 90:
+        if self.job_id is not None or not 0 < wait_seconds <= 90:
             raise AppClientError("invalid_client_state")
         self.session, self.job_id = session, job_id
         plan = await self._request(
@@ -99,7 +99,7 @@ class AppSessionClient:
             },
         )
         await self._request("execute_test", {"session": session, "plan_hash": plan["plan_hash"]})
-        started = await self._wait(lambda e: e.get("kind") == "started", timeout)
+        started = await self._wait(lambda e: e.get("kind") == "started", wait_seconds)
         self.identity = {name: started[name] for name in ("boot_id", "run_id", "control_session")}
         self.next_seq = started.get("next_seq", 2)
         return started
@@ -110,14 +110,14 @@ class AppSessionClient:
         return _RESULTS.get(result, str(result)) if isinstance(result, int) else str(result)
 
     async def command(
-        self, operation: str, action: Action | None = None, *, timeout: float = 3
+        self, operation: str, action: Action | None = None, *, wait_seconds: float = 3
     ) -> dict[str, Any]:
         if (
             not self.identity
             or self.session is None
             or self.job_id is None
             or self.uncertain
-            or not 0 < timeout <= 90
+            or not 0 < wait_seconds <= 90
         ):
             raise AppClientError("invalid_client_state")
         command_id, seq = self.next_command, self.next_seq
@@ -146,7 +146,7 @@ class AppSessionClient:
                     and e.get("command_id") == command_id
                     and self._result(e) not in ("sent", "accepted", "queued")
                 ),
-                timeout,
+                wait_seconds,
             )
         except AppClientError:
             # One read-only status query can establish a lost ACK. It cannot
@@ -171,18 +171,18 @@ class AppSessionClient:
             self.identity["run_id"] = event["run_id"]
         return event
 
-    async def tap(self, action: Action, *, timeout: float = 3) -> dict[str, Any]:
-        return await self.command("action.tap", action, timeout=timeout)
+    async def tap(self, action: Action, *, wait_seconds: float = 3) -> dict[str, Any]:
+        return await self.command("action.tap", action, wait_seconds=wait_seconds)
 
-    async def suspend(self, *, timeout: float = 3) -> dict[str, Any]:
-        return await self.command("suspend", timeout=timeout)
+    async def suspend(self, *, wait_seconds: float = 3) -> dict[str, Any]:
+        return await self.command("suspend", wait_seconds=wait_seconds)
 
-    async def resume(self, *, timeout: float = 3) -> dict[str, Any]:
-        return await self.command("resume", timeout=timeout)
+    async def resume(self, *, wait_seconds: float = 3) -> dict[str, Any]:
+        return await self.command("resume", wait_seconds=wait_seconds)
 
-    async def stop(self, *, timeout: float = 5) -> dict[str, Any]:
-        await self.command("stop", timeout=timeout)
-        deadline = time.monotonic() + timeout
+    async def stop(self, *, wait_seconds: float = 5) -> dict[str, Any]:
+        await self.command("stop", wait_seconds=wait_seconds)
+        deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:
             job = await self._request("job_status", {"job_id": self.job_id})
             if job.get("state") in ("succeeded", "failed", "cancelled", "needs_review"):
