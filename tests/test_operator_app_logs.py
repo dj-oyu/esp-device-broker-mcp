@@ -175,12 +175,46 @@ async def test_authentication_is_rechecked_after_receiving_request_body(app_outp
     assert len(calls) == 2 and "SYNTHETIC_OWNED_TEXT" not in json.dumps(result)
 
 
+def selected_app_view(initial, logs=None):
+    from test_gui_live_presentation import live_window
+    from test_gui_live_state import ready
+
+    from cardputer_mcp.gui_live_presentation import LogView, read_log_result
+    from cardputer_mcp.gui_live_state import select
+
+    window = live_window()
+    window.state = select(ready(initial), "app-logs")
+    window.logs = read_log_result(LogView(), logs) if logs else LogView()
+    window.log_requests = window.log_requests.settled()
+    return window
+
+
+def deliver_app_delta(window, update, logs):
+    from test_gui_live_presentation import drain
+
+    from cardputer_mcp.gui_live_transport import TransportEvent
+
+    generation = window.state.generation
+    drain(window, TransportEvent("message", generation, update, time.monotonic()))
+    window.runner.read_logs.assert_called_once_with(generation, "app-logs", window.logs.cursor)
+    assert window.log_requests.pending
+    response = {
+        "job_id": "app-logs",
+        "request_id": window.log_requests.request_id,
+        "response": logs,
+    }
+    drain(window, TransportEvent("logs", generation, response, time.monotonic()))
+    assert not window.log_requests.pending
+    assert window.state.connection == "live"
+
+
 async def test_app_log_append_wakes_live_reader_without_publishing_private_text(app_output):
     api, broker, current, run, _ = app_output
     before = broker.operator_changes.revision()
     run.events.emit("ack", control_only="SYNTHETIC_CONTROL_NOT_LOG")
     assert broker.operator_changes.revision() == before
     _, initial = await answer(api, {"cursor": None})
+    window = selected_app_view(initial)
     held, output, _ = request(api, {"cursor": initial["cursor"]})
     await waiting(api)
     await asyncio.to_thread(run.events.log, "info: SYNTHETIC_OWNER_OUTPUT token=PRIVATE_TOKEN")
@@ -191,6 +225,10 @@ async def test_app_log_append_wakes_live_reader_without_publishing_private_text(
     _, logs = await answer(api, payload(), "job-logs")
     assert logs["ok"] and "SYNTHETIC_OWNER_OUTPUT" in logs["entries"][0]["text"]
     assert "PRIVATE_TOKEN" not in json.dumps(logs)
+    deliver_app_delta(window, delta, logs)
+    assert window.logs.phase == "available"
+    assert "SYNTHETIC_OWNER_OUTPUT" in "\n".join(window.logs.lines)
+    assert "PRIVATE_TOKEN" not in "\n".join(window.logs.lines)
     current[0] = actor("other")
     assert (await answer(api, payload(), "job-logs"))[1] == {
         "ok": False,
@@ -210,11 +248,14 @@ async def test_app_log_retention_deadline_wakes_live_reader_and_clears_output(ap
     assert logs["entries"]
     run.events.logs.deadline = time.monotonic() + 0.05
     _, initial = await answer(api, {"cursor": None})
+    window = selected_app_view(initial, logs)
     _, expired_delta = await answer(api, {"cursor": initial["cursor"]})
     assert expired_delta["kind"] == "delta" and expired_delta["logs_changed"]
     assert "SYNTHETIC_EXPIRING_OUTPUT" not in json.dumps(expired_delta)
     _, expired = await answer(api, payload(cursor=logs["next_cursor"]), "job-logs")
     assert expired["ok"] and expired["status"] == "expired"
     assert expired["entries"] == [] and expired["gap"] and not expired["has_more"]
+    deliver_app_delta(window, expired_delta, expired)
+    assert window.logs.phase == "expired" and not window.logs.lines
     assert not run.events.logs.entries and run.events.logs.bytes == 0
     assert api.live.waiters == 0 and broker.backend.calls == 0

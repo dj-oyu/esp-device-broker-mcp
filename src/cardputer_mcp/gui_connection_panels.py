@@ -140,6 +140,7 @@ class DiagnosticPanels:
     def _resize_event(self, kind: str) -> Callable[[Any], None]:
         def callback(event: Any) -> None:
             self._resize(kind, event.width)
+
         return callback
 
     def _panel(self, kind: str) -> PanelWidgets:

@@ -345,6 +345,7 @@ class LiveWindow:
             tree.column(name, width=width, minwidth=75, stretch=True)
         vertical = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
         horizontal = ttk.Scrollbar(box, orient="horizontal", command=tree.xview)
+
         def scroll_x(first: float, last: float) -> None:
             horizontal.set(first, last)
             if float(first) <= 0 and float(last) >= 1:
@@ -462,9 +463,11 @@ class LiveWindow:
         if not region or region[3] <= region[1]:
             return
         offset = (
-            widget_top - top if widget_top < top else
-            widget_bottom - top - canvas.winfo_height()
-            if widget_bottom > top + canvas.winfo_height() else 0
+            widget_top - top
+            if widget_top < top
+            else widget_bottom - top - canvas.winfo_height()
+            if widget_bottom > top + canvas.winfo_height()
+            else 0
         )
         if offset:
             canvas.yview_moveto(canvas.yview()[0] + offset / (region[3] - region[1]))
@@ -636,9 +639,7 @@ class LiveWindow:
                 self.log_requests = self.log_requests.completed(event.payload["request_id"])
                 self.logs = read_log_result(self.logs, event.payload.get("response"))
                 if self.logs.phase in {"available", "empty", "expired"}:
-                    self.logs = replace(
-                        self.logs, received_utc=event.received_utc or ""
-                    )
+                    self.logs = replace(self.logs, received_utc=event.received_utc or "")
                 if self.logs.phase == "denied":
                     self.log_requests = self.log_requests.settled()
                 self._render_logs()
@@ -1004,16 +1005,20 @@ class LiveWindow:
                     received = datetime.now(UTC)
             except Exception:
                 value = (
-                    None if diagnostic_kind
+                    None
+                    if diagnostic_kind
                     else "Request outcome unknown. Reconnect before any explicit retry."
                 )
             kind = (
-                "diagnostic_" + diagnostic_kind if diagnostic_kind else
-                "queue" if queue_operation else "action"
+                "diagnostic_" + diagnostic_kind
+                if diagnostic_kind
+                else "queue"
+                if queue_operation
+                else "action"
             )
-            self.action_results.put((
-                kind, DiagnosticOutcome(value, received) if diagnostic_kind else value
-            ))
+            self.action_results.put(
+                (kind, DiagnosticOutcome(value, received) if diagnostic_kind else value)
+            )
 
         threading.Thread(target=worker, name="gui-explicit-action", daemon=True).start()
 

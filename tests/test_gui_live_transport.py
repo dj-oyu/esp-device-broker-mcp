@@ -768,8 +768,12 @@ def test_image_failures_are_safe_bounded_and_never_retry_or_disconnect_live(
     assert events[0].kind == "image"
     if status in (401, 403):
         assert events[0].payload == {
-            "job_id": "job_A", "request_id": request_id,
-            "response": {"ok": False, "error": "authentication_required" if status == 401 else "local_operator_required"},
+            "job_id": "job_A",
+            "request_id": request_id,
+            "response": {
+                "ok": False,
+                "error": "authentication_required" if status == 401 else "local_operator_required",
+            },
         }
     else:
         assert events[0].payload == {"job_id": "job_A", "request_id": request_id, "error": expected}

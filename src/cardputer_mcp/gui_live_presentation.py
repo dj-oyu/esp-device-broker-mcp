@@ -167,9 +167,12 @@ def read_log_result(view: LogView, response: Any) -> LogView:
     if response.get("ok") is not True:
         code = response.get("error")
         phase: Literal["denied", "expired", "not_applicable", "unavailable"] = (
-            "denied" if code in ("not_authorized", "authentication_required", "local_operator_required")
-            else "expired" if code == "expired"
-            else "not_applicable" if code == "unsupported"
+            "denied"
+            if code in ("not_authorized", "authentication_required", "local_operator_required")
+            else "expired"
+            if code == "expired"
+            else "not_applicable"
+            if code == "unsupported"
             else "unavailable"
         )
         return LogView(phase)

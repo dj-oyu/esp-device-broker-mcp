@@ -515,7 +515,13 @@ def test_selected_result_viewer_states_copy_cancel_and_mock_screenshots(monkeypa
             test="firmware_flash" if phase == "denied" else "firmware_build",
         )
         if phase in {"expired", "image"}:
-            selected["image"] = row(data)
+            selected.update(
+                test="capture_home",
+                backend="mock",
+                state="succeeded",
+                cancel_available=False,
+                image=row(data),
+            )
         window.runner.events.append(
             TransportEvent(
                 "message", generation, snapshot([] if phase == "empty" else [selected]), now[0]
@@ -610,8 +616,9 @@ def test_both_connection_panels_are_reachable_at_minimum_high_dpi(monkeypatch):
         root.geometry("860x600")
         window.tabs.select(2)
         for kind in ("mcp", "http"):
-            window.connection_panels.show_result(kind, "Synthetic diagnostic\n" * 8,
-                                                "2026-10-22T10:00:00+00:00")
+            window.connection_panels.show_result(
+                kind, "Synthetic diagnostic\n" * 8, "2026-10-22T10:00:00+00:00"
+            )
         root.update()
         canvas = window.connection_canvas
         assert canvas.yview()[1] < 1.0
@@ -619,7 +626,9 @@ def test_both_connection_panels_are_reachable_at_minimum_high_dpi(monkeypatch):
         root.update()
         text = window.connection_panels.panels["http"].text
         assert text.winfo_rooty() >= canvas.winfo_rooty()
-        assert text.winfo_rooty() + text.winfo_height() <= canvas.winfo_rooty() + canvas.winfo_height()
+        assert (
+            text.winfo_rooty() + text.winfo_height() <= canvas.winfo_rooty() + canvas.winfo_height()
+        )
         assert window.connection_panels.panels["mcp"].expanded
         assert window.connection_panels.panels["http"].expanded
         save_mock_window(root, "connection-both-panels-minimum")

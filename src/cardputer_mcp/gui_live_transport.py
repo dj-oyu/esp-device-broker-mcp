@@ -525,9 +525,9 @@ class LiveRunner:
         with self._lock:
             current = serial == self._log_serial
         if current:
-            self._emit(TransportEvent(
-                "logs", generation, payload, started_at, received_utc=received_utc
-            ))
+            self._emit(
+                TransportEvent("logs", generation, payload, started_at, received_utc=received_utc)
+            )
 
     async def _read_image(
         self,

@@ -481,7 +481,10 @@ def test_diagnostic_completion_clears_pending_message_without_losing_detail():
     window.action_results.put(("diagnostic_http", DiagnosticOutcome("HTTP diagnostics loaded")))
     drain(window)
     assert not window.action_pending
-    assert window.connection_panels.show_result.call_args.args[:2] == ("http", "HTTP diagnostics loaded")
+    assert window.connection_panels.show_result.call_args.args[:2] == (
+        "http",
+        "HTTP diagnostics loaded",
+    )
     window.action_status.set.assert_called_with("")
 
 
@@ -834,14 +837,25 @@ def test_whole_text_copy_requires_deliberate_action_and_preserves_unicode():
 
 def test_cancel_visibility_uses_capability_predicate_and_rechecks_after_state_change():
     window = live_window()
-    for name in ("job_cancel", "release_button", "wait_cancel", "up_button", "down_button", "cancel_context"):
+    for name in (
+        "job_cancel",
+        "release_button",
+        "wait_cancel",
+        "up_button",
+        "down_button",
+        "cancel_context",
+    ):
         setattr(window, name, Mock())
     for available in (False, True, False):
         window.state = select(ready(snapshot([card("a", cancel_available=available)])), "a")
         LiveWindow._controls(window)
         (window.job_cancel.grid if available else window.job_cancel.grid_remove).assert_called()
-        assert window.job_cancel.configure.call_args.kwargs["state"] == ("normal" if available else "disabled")
-    window.state = select(ready(snapshot([card("a", test="firmware_flash", cancel_available=False)])), "a")
+        assert window.job_cancel.configure.call_args.kwargs["state"] == (
+            "normal" if available else "disabled"
+        )
+    window.state = select(
+        ready(snapshot([card("a", test="firmware_flash", cancel_available=False)])), "a"
+    )
     LiveWindow._controls(window)
     assert window.cancel_context.set.call_args.args[0] == "Cancel via the owning client session"
 
