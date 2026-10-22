@@ -13,6 +13,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import httpx2
@@ -40,6 +41,7 @@ class TransportEvent:
     payload: dict[str, Any]
     started_at: float
     diagnostic: dict[str, Any] | None = None
+    received_utc: str | None = None
 
 
 class _TransportFailure(Exception):
@@ -509,9 +511,11 @@ class LiveRunner:
 
     async def _read_logs(self, generation: int, serial: int, request: dict[str, Any]) -> None:
         started_at = time.monotonic()
+        received_utc = None
         payload: dict[str, Any] = {"job_id": request["job_id"], "request_id": serial}
         try:
             payload["response"] = await self._request("/operator/job-logs", request, read_once=True)
+            received_utc = datetime.now(UTC).isoformat(timespec="seconds")
         except _TransportFailure as error:
             payload["error"] = str(error)
         except asyncio.CancelledError:
@@ -521,7 +525,9 @@ class LiveRunner:
         with self._lock:
             current = serial == self._log_serial
         if current:
-            self._emit(TransportEvent("logs", generation, payload, started_at))
+            self._emit(TransportEvent(
+                "logs", generation, payload, started_at, received_utc=received_utc
+            ))
 
     async def _read_image(
         self,

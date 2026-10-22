@@ -10,9 +10,9 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .gui import Outcome, QueueController, http_diagnostics_summary, mcp_catalog_summary, perform
-from .gui_job_status import LABELS, configure_job_status_tags
-from .gui_connection_panels import DiagnosticPanels
+from .gui_connection_panels import DiagnosticOutcome, DiagnosticPanels
 from .gui_images import SOURCES
+from .gui_job_status import LABELS, configure_job_status_tags
 from .gui_live_presentation import (
     LogRequestState,
     LogView,
@@ -75,6 +75,7 @@ class LiveWindow:
         ttk.Label(header, textvariable=self.status).grid(row=0, column=1, sticky="e", padx=12)
         ttk.Button(header, text="Reconnect", command=self._reconnect).grid(row=0, column=2)
         notebook = ttk.Notebook(root)
+        self.tabs = notebook
         notebook.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
         ttk.Label(root, textvariable=self.action_status, wraplength=1000).grid(
             row=2, column=0, sticky="ew", padx=16, pady=(0, 8)
@@ -147,7 +148,9 @@ class LiveWindow:
             detail_header, textvariable=self.detail_heading, style="Section.TLabel", wraplength=300
         )
         self.detail_heading_label.grid(row=0, column=0, sticky="ew")
-        self.back_button = ttk.Button(detail_header, text="Back to list", command=self._back_to_list)
+        self.back_button = ttk.Button(
+            detail_header, text="Back to list", command=self._back_to_list
+        )
         self.back_button.grid(row=0, column=1, sticky="ne", padx=(8, 0))
         detail_box, self.detail_text = self._text(detail, height=6, wrap="word")
         detail_box.grid(row=1, sticky="nsew", pady=(8, 12))
@@ -178,7 +181,9 @@ class LiveWindow:
         )
         self.preview_status_label.grid(row=7, sticky="ew", pady=(6, 0))
         self.cancel_context = tk.StringVar(value="")
-        self.cancel_context_label = ttk.Label(detail, textvariable=self.cancel_context, wraplength=420)
+        self.cancel_context_label = ttk.Label(
+            detail, textvariable=self.cancel_context, wraplength=420
+        )
         self.cancel_context_label.grid(row=8, sticky="ew", pady=(8, 0))
         self.job_cancel = ttk.Button(
             detail, text="Cancel job...", command=self._cancel_job, style="Danger.TButton"
@@ -206,7 +211,8 @@ class LiveWindow:
         )
         event_box, self.event_text = self._text(events, height=12, wrap="word")
         event_box.grid(row=1, sticky="nsew")
-        self._connection_view(connection)
+        connection_body, self.connection_canvas = self._scrollable_body(connection)
+        self._connection_view(connection_body)
         root.bind("<Control-r>", lambda _event: self._reconnect())
         root.bind("<Alt-Left>", lambda _event: self._back_to_list())
         root.bind("<Escape>", lambda _event: self._close())
@@ -218,17 +224,24 @@ class LiveWindow:
     def _initialize_panes(self, event: Any) -> None:
         if not self._panes_initialized and event.width > 1:
             self._panes_initialized = True
-            self.job_panes.sashpos(0, int(event.width * 0.52))
+            self.root.tk.call(str(self.job_panes), "sashpos", 0, int(event.width * 0.52))
 
     def _resize_job_list(self, event: Any) -> None:
         columns = (
-            ("request", "state", "confirmation", "stage") if event.width >= 850
-            else ("request", "state", "stage") if event.width >= 650 else ("state",)
+            ("request", "state", "confirmation", "stage")
+            if event.width >= 850
+            else ("request", "state", "stage")
+            if event.width >= 650
+            else ("state",)
         )
         if tuple(self.job_tree.cget("displaycolumns")) != columns:
             self.job_tree.configure(displaycolumns=columns)
 
     def _scrollable_detail(self, parent: Any) -> Any:
+        detail, self._detail_canvas = self._scrollable_body(parent)
+        return detail
+
+    def _scrollable_body(self, parent: Any) -> tuple[Any, Any]:
         import tkinter as tk
         from tkinter import ttk
 
@@ -237,7 +250,6 @@ class LiveWindow:
         canvas = tk.Canvas(
             parent, borderwidth=0, highlightthickness=0, background=self.root.cget("background")
         )
-        self._detail_canvas = canvas
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
@@ -246,7 +258,7 @@ class LiveWindow:
         item = canvas.create_window((0, 0), window=detail, anchor="nw")
         detail.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(item, width=event.width))
-        return detail
+        return detail, canvas
 
     def _resize_details(self, event: Any) -> None:
         for label in (
@@ -333,7 +345,7 @@ class LiveWindow:
             tree.column(name, width=width, minwidth=75, stretch=True)
         vertical = ttk.Scrollbar(box, orient="vertical", command=tree.yview)
         horizontal = ttk.Scrollbar(box, orient="horizontal", command=tree.xview)
-        def scroll_x(first: str, last: str) -> None:
+        def scroll_x(first: float, last: float) -> None:
             horizontal.set(first, last)
             if float(first) <= 0 and float(last) >= 1:
                 horizontal.grid_remove()
@@ -390,9 +402,10 @@ class LiveWindow:
         ttk.Label(parent, text="Broker and device ownership", style="Section.TLabel").grid(
             row=0, sticky="w"
         )
-        ttk.Label(parent, textvariable=self.connection_status, wraplength=900).grid(
-            row=1, sticky="ew", pady=8
+        self.connection_status_label = ttk.Label(
+            parent, textvariable=self.connection_status, wraplength=900
         )
+        self.connection_status_label.grid(row=1, sticky="ew", pady=8)
         self.live_diagnostic_text = tk.StringVar(value="No live subscription failure recorded")
         self.live_diagnostic_label = ttk.Label(
             parent, textvariable=self.live_diagnostic_text, wraplength=900
@@ -430,6 +443,31 @@ class LiveWindow:
             parent, lambda kind: self._diagnostic(kind == "mcp")
         )
         self.connection_panels.frame.grid(row=5, sticky="nsew", pady=(8, 0))
+        parent.bind("<Configure>", self._resize_connection, add="+")
+        for panel in self.connection_panels.panels.values():
+            for widget in (panel.toggle, panel.refresh, panel.copy, panel.text):
+                widget.bind("<FocusIn>", self._reveal_connection_focus, add="+")
+
+    def _resize_connection(self, event: Any) -> None:
+        for label in (self.connection_status_label, self.live_diagnostic_label):
+            label.configure(wraplength=max(1, event.width))
+
+    def _reveal_connection_focus(self, event: Any) -> None:
+        canvas = self.connection_canvas
+        self.root.update_idletasks()
+        top = canvas.winfo_rooty()
+        widget_top = event.widget.winfo_rooty()
+        widget_bottom = widget_top + event.widget.winfo_height()
+        region = canvas.bbox("all")
+        if not region or region[3] <= region[1]:
+            return
+        offset = (
+            widget_top - top if widget_top < top else
+            widget_bottom - top - canvas.winfo_height()
+            if widget_bottom > top + canvas.winfo_height() else 0
+        )
+        if offset:
+            canvas.yview_moveto(canvas.yview()[0] + offset / (region[3] - region[1]))
 
     def _select(self, _event: Any = None) -> None:
         chosen = self.job_tree.selection()
@@ -599,7 +637,7 @@ class LiveWindow:
                 self.logs = read_log_result(self.logs, event.payload.get("response"))
                 if self.logs.phase in {"available", "empty", "expired"}:
                     self.logs = replace(
-                        self.logs, received_utc=datetime.now(UTC).isoformat(timespec="seconds")
+                        self.logs, received_utc=event.received_utc or ""
                     )
                 if self.logs.phase == "denied":
                     self.log_requests = self.log_requests.settled()
@@ -613,9 +651,11 @@ class LiveWindow:
                 kind, value = self.action_results.get_nowait()
                 self.action_pending = False
                 if kind.startswith("diagnostic_"):
-                    self.connection_panels.show_result(
-                        kind.removeprefix("diagnostic_"), value, datetime.now(UTC)
-                    )
+                    panel = kind.removeprefix("diagnostic_")
+                    if not isinstance(value, DiagnosticOutcome) or value.text is None:
+                        self.connection_panels.show_error(panel)
+                    else:
+                        self.connection_panels.show_result(panel, value.text, value.received_utc)
                     self.action_status.set("")
                 else:
                     if kind == "queue":
@@ -793,15 +833,18 @@ class LiveWindow:
         if self.logs.gap:
             message += " Some output is missing or was omitted."
         self.log_status.set(
-            "Some output is missing or was omitted." if self.logs.gap
-            else "Reading permitted output..." if self.log_requests.pending and self.logs.lines
+            "Some output is missing or was omitted."
+            if self.logs.gap
+            else "Reading permitted output..."
+            if self.log_requests.pending and self.logs.lines
             else ""
         )
         if hasattr(self, "log_context"):
             source = f"{card.test or 'Unknown'} / {card.backend}" if card else "No job selected"
             mode = (
-                "Live updates" if card and card.state in {"queued", "running"}
-                and self.state.connection == "live" else "Retained output"
+                "Live updates"
+                if card and card.state in {"queued", "running"} and self.state.connection == "live"
+                else "Retained output"
             )
             received = f" | Read {self.logs.received_utc}" if self.logs.received_utc else ""
             self.log_context.set(f"Logs | {source} | {mode}{received}")
@@ -910,7 +953,8 @@ class LiveWindow:
             row = self.preview_state.row
             self.image_context.set(
                 f"Captured image | {SOURCES[row.source]} | Captured {row.born_utc} | Retained"
-                if row else "Captured image | No retained image metadata"
+                if row
+                else "Captured image | No retained image metadata"
             )
 
     def _auto_preview(self) -> None:
@@ -921,11 +965,17 @@ class LiveWindow:
     def _copy_result(self) -> None:
         if self.state.selected_card is None:
             return
-        text = "\n\n".join((
-            self.detail_heading.get(), self.detail_text.get("1.0", "end-1c"),
-            self.log_context.get(), self.log_text.get("1.0", "end-1c"),
-            self.log_status.get(), self.image_context.get(), self.preview_status.get(),
-        ))
+        text = "\n\n".join(
+            (
+                self.detail_heading.get(),
+                self.detail_text.get("1.0", "end-1c"),
+                self.log_context.get(),
+                self.log_text.get("1.0", "end-1c"),
+                self.log_status.get(),
+                self.image_context.get(),
+                self.preview_status.get(),
+            )
+        )
         try:
             self.root.clipboard_clear()
             self.root.clipboard_append(text)
@@ -934,7 +984,10 @@ class LiveWindow:
             self.action_status.set("Could not copy selected job text.")
 
     def _run_action(
-        self, action: Any, *, queue_operation: bool = False,
+        self,
+        action: Any,
+        *,
+        queue_operation: bool = False,
         diagnostic_kind: str | None = None,
     ) -> None:
         if self.action_pending or self._is_closing() or self.state.connection == "closed":
@@ -944,15 +997,23 @@ class LiveWindow:
         self._controls()
 
         def worker() -> None:
+            received = None
             try:
                 value = action()
+                if diagnostic_kind:
+                    received = datetime.now(UTC)
             except Exception:
-                value = "Request outcome unknown. Reconnect before any explicit retry."
+                value = (
+                    None if diagnostic_kind
+                    else "Request outcome unknown. Reconnect before any explicit retry."
+                )
             kind = (
                 "diagnostic_" + diagnostic_kind if diagnostic_kind else
                 "queue" if queue_operation else "action"
             )
-            self.action_results.put((kind, value))
+            self.action_results.put((
+                kind, DiagnosticOutcome(value, received) if diagnostic_kind else value
+            ))
 
         threading.Thread(target=worker, name="gui-explicit-action", daemon=True).start()
 

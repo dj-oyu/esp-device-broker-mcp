@@ -239,6 +239,7 @@ class Broker:
         self.firmware_build.on_logs_change = self.operator_changes.notify_logs
         self.firmware_source.on_logs_change = self.operator_changes.notify_logs
         self.firmware_flash.on_logs_change = self.operator_changes.notify_logs
+        self.app_sessions.on_logs_change = self.operator_changes.notify_logs
         self.queue: asyncio.Queue[str | None] = asyncio.Queue(settings.max_queue)
         self.worker: asyncio.Task[None] | None = None
         self.store: Store | None = None

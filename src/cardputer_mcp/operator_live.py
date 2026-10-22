@@ -133,6 +133,10 @@ class OperatorLive:
         log_now = time.monotonic()
         for service in (broker.firmware_source, broker.firmware_build, broker.firmware_flash):
             deadlines.extend(now + log.deadline - log_now for log in tuple(service.logs.values()))
+        deadlines.extend(
+            now + run.events.logs.deadline - log_now
+            for run in tuple(broker.app_sessions.jobs.values())
+        )
         future = [deadline for deadline in deadlines if math.isfinite(deadline) and deadline > now]
         return min(future) if future else None
 

@@ -330,6 +330,7 @@ class MockLink:
 class AppSessions:
     def __init__(self) -> None:
         self.jobs: dict[str, RunningApp] = {}
+        self.on_logs_change: Callable[[], None] | None = None
         self.catalog_cache: dict[str, Any] | None = None
         self.mock_link: MockLink | None = None
 
@@ -402,7 +403,11 @@ class AppSessions:
                 del self.jobs[key]
         if len(self.jobs) >= 8:
             raise AppFailure("outcome_unknown")
-        run = RunningApp(principal, options, AppEvents(principal, options.log_bytes))
+        run = RunningApp(
+            principal,
+            options,
+            AppEvents(principal, options.log_bytes, on_logs_change=self.on_logs_change),
+        )
         self.jobs[plan["job_id"]] = run
         loop = asyncio.get_running_loop()
 

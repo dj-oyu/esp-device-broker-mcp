@@ -24,6 +24,12 @@ def received_timestamp(value: datetime | str | None) -> str:
 
 
 @dataclass(frozen=True)
+class DiagnosticOutcome:
+    text: str | None
+    received_utc: datetime | None = None
+
+
+@dataclass(frozen=True)
 class PanelState:
     phase: Literal["idle", "loading", "available", "empty", "error"] = "idle"
     text: str = ""
@@ -72,13 +78,11 @@ class DiagnosticPanels:
             header = ttk.Frame(frame)
             header.grid(row=0, column=0, sticky="ew")
             header.columnconfigure(0, weight=1)
-            toggle = ttk.Button(header, command=lambda kind=kind: self.toggle(kind))
+            toggle = ttk.Button(header, command=self._command(kind, self.toggle))
             toggle.grid(row=0, column=0, sticky="w")
-            refresh = ttk.Button(
-                header, text="Refresh", command=lambda kind=kind: self.refresh(kind)
-            )
+            refresh = ttk.Button(header, text="Refresh", command=self._command(kind, self.refresh))
             refresh.grid(row=0, column=1, sticky="e", padx=(8, 4))
-            copy = ttk.Button(header, text="Copy", command=lambda kind=kind: self.copy(kind))
+            copy = ttk.Button(header, text="Copy", command=self._command(kind, self.copy))
             copy.grid(row=0, column=2, sticky="e")
             body = ttk.Frame(frame)
             body.grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -110,16 +114,33 @@ class DiagnosticPanels:
                 select_events.append("<Command-a>")
                 copy_events.append("<Command-c>")
             for event in select_events:
-                text.bind(event, lambda _event, kind=kind: self.select_all(kind))
+                text.bind(event, self._event(kind, self.select_all))
             for event in copy_events:
-                text.bind(event, lambda _event, kind=kind: self.copy(kind))
-            frame.bind(
-                "<Configure>", lambda event, kind=kind: self._resize(kind, event.width), add="+"
-            )
+                text.bind(event, self._event(kind, self.copy))
+            frame.bind("<Configure>", self._resize_event(kind), add="+")
             self.panels[kind] = PanelWidgets(
                 frame, body, toggle, refresh, copy, text, status, timestamp
             )
             self._render(kind)
+
+    @staticmethod
+    def _command(kind: str, action: Callable[[str], object]) -> Callable[[], object]:
+        def callback() -> object:
+            return action(kind)
+
+        return callback
+
+    @staticmethod
+    def _event(kind: str, action: Callable[[str], str]) -> Callable[[Any], str]:
+        def callback(_event: Any) -> str:
+            return action(kind)
+
+        return callback
+
+    def _resize_event(self, kind: str) -> Callable[[Any], None]:
+        def callback(event: Any) -> None:
+            self._resize(kind, event.width)
+        return callback
 
     def _panel(self, kind: str) -> PanelWidgets:
         if kind not in self.panels:

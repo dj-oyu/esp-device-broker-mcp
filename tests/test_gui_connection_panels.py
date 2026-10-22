@@ -64,9 +64,7 @@ def panels(request=None):
     value = DiagnosticPanels.__new__(DiagnosticPanels)
     value.request = request or (lambda _: None)
     value.enabled = True
-    value.panels = {
-        kind: PanelWidgets(*(Widget() for _ in range(8))) for kind in TITLES
-    }
+    value.panels = {kind: PanelWidgets(*(Widget() for _ in range(8))) for kind in TITLES}
     value.widgets = value.panels
     for kind in value.panels:
         value._render(kind)

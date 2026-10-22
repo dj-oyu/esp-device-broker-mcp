@@ -210,11 +210,15 @@ class OperatorAPI:
             }
         ):
             raise BrokerError("unavailable")
-        binding = self.broker._store().db.execute(
-            "SELECT 1 FROM execution_requests "
-            "WHERE job_id=? AND plan_hash=? AND principal_id=?",
-            (job_id, job["plan_hash"], principal.principal_id),
-        ).fetchone()
+        binding = (
+            self.broker._store()
+            .db.execute(
+                "SELECT 1 FROM execution_requests "
+                "WHERE job_id=? AND plan_hash=? AND principal_id=?",
+                (job_id, job["plan_hash"], principal.principal_id),
+            )
+            .fetchone()
+        )
         if binding is None:
             raise BrokerError("unavailable")
         return run.events.logs

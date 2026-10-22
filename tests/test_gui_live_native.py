@@ -40,6 +40,9 @@ class Runner:
         self.images.append((generation, job_id))
         return len(self.images)
 
+    def pause(self, generation):
+        self.generation = generation
+
     def close(self):
         self.closed = True
 
@@ -250,10 +253,7 @@ def test_native_preview_and_controls_reachable_at_168_dpi_minimum(monkeypatch):
         assert (root.winfo_width(), root.winfo_height()) == (860, 600)
         assert window._job_pages is None and window._detail_canvas is not None
         assert str(window.job_panes.cget("orient")) == "horizontal"
-        assert window.job_cancel.winfo_width() >= window.job_cancel.winfo_reqwidth()
-        assert window.job_cancel.winfo_rootx() + window.job_cancel.winfo_width() <= (
-            root.winfo_rootx() + 860
-        )
+        assert window.job_cancel.winfo_manager() == ""
         assert window.preview_photo is not None
         assert window._detail_canvas.yview()[0] == 0.0
         window._scroll_detail_key("End")
@@ -508,31 +508,55 @@ def test_selected_result_viewer_states_copy_cancel_and_mock_screenshots(monkeypa
         window = gui_live.LiveWindow(root, OperatorClient("http://127.0.0.1:8765", "synthetic"))
         generation = window.state.generation
         data = detail(remaining_seconds=5)
-        selected = card("job_image_1", state="succeeded" if phase == "completed" else "running",
-                        cancel_available=phase == "running",
-                        test="firmware_flash" if phase == "denied" else "firmware_build")
+        selected = card(
+            "job_image_1",
+            state="succeeded" if phase == "completed" else "running",
+            cancel_available=phase == "running",
+            test="firmware_flash" if phase == "denied" else "firmware_build",
+        )
         if phase in {"expired", "image"}:
             selected["image"] = row(data)
-        window.runner.events.append(TransportEvent("message", generation,
-            snapshot([] if phase == "empty" else [selected]), now[0]))
+        window.runner.events.append(
+            TransportEvent(
+                "message", generation, snapshot([] if phase == "empty" else [selected]), now[0]
+            )
+        )
         window._drain()
         if phase != "empty":
             window.job_tree.selection_set("job_image_1")
             window._select()
             window._show_selected()
             reply = {
-                "ok": True, "entries": [{"sequence": 1, "text": "日本語 synthetic output"}],
+                "ok": True,
+                "entries": [{"sequence": 1, "text": "日本語 synthetic output"}],
                 "next_cursor": {"epoch": "a" * 32, "sequence": 1},
-                "gap": False, "expired": False, "has_more": False,
+                "gap": False,
+                "expired": False,
+                "has_more": False,
             }
             if phase == "denied":
                 reply = {"ok": False, "error": "not_authorized"}
-            window.runner.events.append(TransportEvent("logs", generation,
-                {"job_id": "job_image_1", "request_id": 1, "response": reply}, now[0]))
+            window.runner.events.append(
+                TransportEvent(
+                    "logs",
+                    generation,
+                    {"job_id": "job_image_1", "request_id": 1, "response": reply},
+                    now[0],
+                )
+            )
             if phase in {"expired", "image"}:
-                window.runner.events.append(TransportEvent("image", generation,
-                    {"job_id": "job_image_1", "request_id": 1,
-                     "response": {**data, "broker_epoch": "e" * 32}}, now[0]))
+                window.runner.events.append(
+                    TransportEvent(
+                        "image",
+                        generation,
+                        {
+                            "job_id": "job_image_1",
+                            "request_id": 1,
+                            "response": {**data, "broker_epoch": "e" * 32},
+                        },
+                        now[0],
+                    )
+                )
             if phase == "expired":
                 now[0] += 5
             window._drain()
@@ -558,9 +582,49 @@ def test_selected_result_viewer_states_copy_cancel_and_mock_screenshots(monkeypa
         save_mock_window(root, phase + "-result")
         if window._job_pages is not None:
             recent = window.job_tree.master.master
-            assert not any(w.winfo_class() == "TLabel" and w.cget("text") == "Recent jobs"
-                           for w in recent.winfo_children())
+            assert not any(
+                w.winfo_class() == "TLabel" and w.cget("text") == "Recent jobs"
+                for w in recent.winfo_children()
+            )
     finally:
+        if window is not None:
+            window._finish_close()
+        else:
+            root.destroy()
+
+
+def test_both_connection_panels_are_reachable_at_minimum_high_dpi(monkeypatch):
+    import tkinter as tk
+    from gui_screenshot import save_mock_window
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Native Tk requires a desktop display")
+    original = root.tk.call("tk", "scaling")
+    root.tk.call("tk", "scaling", 168 / 72)
+    monkeypatch.setattr(gui_live, "LiveRunner", Runner)
+    window = None
+    try:
+        window = gui_live.LiveWindow(root, OperatorClient("http://127.0.0.1:8765", "synthetic"))
+        root.geometry("860x600")
+        window.tabs.select(2)
+        for kind in ("mcp", "http"):
+            window.connection_panels.show_result(kind, "Synthetic diagnostic\n" * 8,
+                                                "2026-10-22T10:00:00+00:00")
+        root.update()
+        canvas = window.connection_canvas
+        assert canvas.yview()[1] < 1.0
+        canvas.yview_moveto(1.0)
+        root.update()
+        text = window.connection_panels.panels["http"].text
+        assert text.winfo_rooty() >= canvas.winfo_rooty()
+        assert text.winfo_rooty() + text.winfo_height() <= canvas.winfo_rooty() + canvas.winfo_height()
+        assert window.connection_panels.panels["mcp"].expanded
+        assert window.connection_panels.panels["http"].expanded
+        save_mock_window(root, "connection-both-panels-minimum")
+    finally:
+        root.tk.call("tk", "scaling", original)
         if window is not None:
             window._finish_close()
         else:

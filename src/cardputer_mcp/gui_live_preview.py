@@ -65,7 +65,11 @@ class PreviewState:
 
     def started(self, request_id: int) -> "PreviewState":
         return replace(
-            self, request_id=request_id, preview=None, message="Reading retained image...", attempted=True
+            self,
+            request_id=request_id,
+            preview=None,
+            message="Reading retained image...",
+            attempted=True,
         )
 
     def accept(
@@ -90,8 +94,11 @@ class PreviewState:
         if type(response) is dict and response.get("ok") is False:
             code = response.get("error")
             message = (
-                DENIED if code in ("not_authorized", "authentication_required", "local_operator_required")
-                else EXPIRED if code == "expired" else FAILED
+                DENIED
+                if code in ("not_authorized", "authentication_required", "local_operator_required")
+                else EXPIRED
+                if code == "expired"
+                else FAILED
             )
             return replace(self, request_id=0, preview=None, message=message)
         try:

@@ -766,7 +766,13 @@ def test_image_failures_are_safe_bounded_and_never_retry_or_disconnect_live(
     events = wait_until(runner.drain)
     assert len(events) == len(images) == 1
     assert events[0].kind == "image"
-    assert events[0].payload == {"job_id": "job_A", "request_id": request_id, "error": expected}
+    if status in (401, 403):
+        assert events[0].payload == {
+            "job_id": "job_A", "request_id": request_id,
+            "response": {"ok": False, "error": "authentication_required" if status == 401 else "local_operator_required"},
+        }
+    else:
+        assert events[0].payload == {"job_id": "job_A", "request_id": request_id, "error": expected}
     assert "private body" not in repr(events) and TOKEN not in repr(events)
     assert not runner._live_task.done()
 

@@ -23,6 +23,7 @@ def safe_refusal(data: Any) -> dict[str, Any]:
         code = data.get("error")
         if type(code) is str and code in {
             "not_authorized",
+            "capture_not_available",
             "unavailable",
             "expired",
             "unsupported",

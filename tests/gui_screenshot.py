@@ -25,8 +25,19 @@ def save_mock_window(root, name):
         (gdi.SelectObject, [wintypes.HDC, wintypes.HANDLE], wintypes.HANDLE),
         (gdi.DeleteObject, [wintypes.HANDLE], wintypes.BOOL),
         (gdi.DeleteDC, [wintypes.HDC], wintypes.BOOL),
-        (gdi.GetDIBits, [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT,
-                        ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT], ctypes.c_int),
+        (
+            gdi.GetDIBits,
+            [
+                wintypes.HDC,
+                wintypes.HBITMAP,
+                wintypes.UINT,
+                wintypes.UINT,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                wintypes.UINT,
+            ],
+            ctypes.c_int,
+        ),
     ):
         api.argtypes, api.restype = args, result
     hwnd = int(root.frame(), 0)
