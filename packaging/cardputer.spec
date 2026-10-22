@@ -19,8 +19,6 @@ analysis = Analysis(
         # Our application supplies its own CLI and never uses that extra.
         *collect_submodules("mcp", filter=lambda name: not name.startswith("mcp.cli")),
         *collect_submodules("uvicorn"),
-        "win32security",
-        "win32api",
         "tkinter",
         "tkinter.ttk",
     ],

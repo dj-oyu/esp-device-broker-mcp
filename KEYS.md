@@ -81,9 +81,10 @@ restart. Missing stores deny issued keys while existing process tokens still wor
 malformed/unsafe existing default stores reject startup. Runtime failures deny issued
 keys without caching old grants. In-progress SQLite transactions expose committed
 state only; busy/incomplete/corrupt stores never authorize a fallback principal.
-Windows default stores require owner/private ACLs limited to the current user,
-SYSTEM and Administrators; unsafe permissions fail closed and are not rewritten.
-Legacy explicit paths retain their documented operator-private-ACL prerequisite.
+Default and explicit registries use the same existing OS-user/private-store trust
+boundary and KeyRegistry path checks. Windows ACL privacy remains an operator
+prerequisite; the broker does not scan or rewrite Windows ACLs. Existing link,
+reparse, file-size and POSIX ownership/mode guards remain enforced.
 The Tunnel launcher can request an issued client key privately; see
 [TUNNEL-WINDOWS.md](TUNNEL-WINDOWS.md).
 For custom local clients, `--auth-source key-environment` reads CARDPUTER_CLIENT_KEY

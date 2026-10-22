@@ -5,9 +5,7 @@ import os
 import sqlite3
 import tempfile
 from contextlib import closing
-from importlib import import_module
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -20,56 +18,8 @@ from cardputer_mcp.registry_defaults import (
 )
 
 
-@pytest.mark.parametrize(
-    ("owner", "foreign", "allowed"),
-    [("current", False, True), ("other", False, False), ("current", True, False)],
-)
-def test_owner_rights_requires_trusted_actual_owner(monkeypatch, owner, foreign, allowed):
-    from cardputer_mcp import registry_defaults
-
-    grants = [((0, 3), 0x1F01FF, "S-1-3-4")]
-    if foreign:
-        grants.append(((0, 0), 0x120089, "other"))
-    acl = SimpleNamespace(GetAceCount=lambda: len(grants), GetAce=lambda i: grants[i])
-    descriptor = SimpleNamespace(
-        GetSecurityDescriptorOwner=lambda: owner, GetSecurityDescriptorDacl=lambda: acl
-    )
-    security = SimpleNamespace(
-        OpenProcessToken=lambda *_: SimpleNamespace(Close=lambda: None),
-        GetTokenInformation=lambda *_: ("current", 0),
-        ConvertSidToStringSid=lambda sid: sid,
-        GetNamedSecurityInfo=lambda *_: descriptor,
-    )
-    api = SimpleNamespace(GetCurrentProcess=lambda: 0)
-    monkeypatch.setattr(registry_defaults, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(
-        registry_defaults,
-        "import_module",
-        lambda name: security if name == "win32security" else api,
-    )
-    if allowed:
-        registry_defaults._windows_private(Path("synthetic"))
-    else:
-        with pytest.raises(KeyRegistryError, match="unsafe_key_registry_permissions"):
-            registry_defaults._windows_private(Path("synthetic"))
-
-
 def private_directory(path):
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if os.name == "nt":
-        security = import_module("win32security")
-        api = import_module("win32api")
-        token = security.OpenProcessToken(api.GetCurrentProcess(), 8)
-        try:
-            sid = security.GetTokenInformation(token, 1)[0]
-        finally:
-            token.Close()
-        acl = security.ACL()
-        acl.AddAccessAllowedAceEx(2, 3, 0x1F01FF, sid)
-        information = (
-            security.DACL_SECURITY_INFORMATION | security.PROTECTED_DACL_SECURITY_INFORMATION
-        )
-        security.SetNamedSecurityInfo(str(path), 1, information, None, None, acl, None)
 
 
 @pytest.fixture
@@ -161,42 +111,21 @@ def test_replaced_schema_version_is_rejected_by_existing_reader(automatic_path):
     registry.close()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Existing POSIX permission guard")
 def test_default_registry_permissions_fail_closed(automatic_path):
     private_directory(automatic_path.parent)
     registry = KeyRegistry(automatic_path, random_bytes=lambda n: b"\x05" * n)
     key = registry.issue("synthetic", Origin.REMOTE)
     source = LiveKeyRegistry(automatic_path)
-    if os.name == "nt":
-        security = import_module("win32security")
-        descriptor = security.GetNamedSecurityInfo(str(automatic_path), 1, 4)
-        acl = descriptor.GetSecurityDescriptorDacl()
-        acl.AddAccessAllowedAceEx(2, 0, 0x120089, security.CreateWellKnownSid(1, None))
-        security.SetNamedSecurityInfo(str(automatic_path), 1, 4, None, None, acl, None)
-    else:
-        automatic_path.chmod(0o644)
+    automatic_path.chmod(0o644)
     assert source.authenticate("Bearer " + key.token) is None
     with pytest.raises(KeyRegistryError, match="unsafe_key_registry_permissions"):
         LiveKeyRegistry(automatic_path)
     registry.close()
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Native Windows inheritable ACL")
-def test_foreign_inherit_only_grant_cannot_create_default_database(automatic_path):
-    private_directory(automatic_path.parent)
-    security = import_module("win32security")
-    descriptor = security.GetNamedSecurityInfo(str(automatic_path.parent), 1, 4)
-    acl = descriptor.GetSecurityDescriptorDacl()
-    acl.AddAccessAllowedAceEx(2, 1 | 2 | 8, 0x1F01FF, security.CreateWellKnownSid(1, None))
-    security.SetNamedSecurityInfo(str(automatic_path.parent), 1, 4, None, None, acl, None)
-    with pytest.raises(KeyRegistryError, match="unsafe_key_registry_permissions"):
-        prepare_default_key_directory(automatic_path)
-    assert not automatic_path.exists()
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Native Windows OWNER RIGHTS ACL")
-def test_python_private_directory_owner_rights_supports_default_registry(automatic_path):
-    # Python 3.13 uses SYSTEM/Administrators/OWNER RIGHTS, rather than a literal
-    # user SID, for mkdir(0o700). All actual owners must still be trusted.
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows private directory")
+def test_windows_private_directory_supports_default_registry(automatic_path):
     prepare_default_key_directory(automatic_path)
     registry = KeyRegistry(automatic_path, random_bytes=lambda n: b"\x06" * n)
     try:

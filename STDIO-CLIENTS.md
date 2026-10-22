@@ -27,8 +27,8 @@ GUI の `CARDPUTER_LOCAL_TOKEN`、起動時の一時的な remote token、OpenAI
 
 Windows では private フォルダーのプロパティ → セキュリティでアクセス権を利用者が確認します。
 自分以外の一般ユーザーに読み取り・書き込みを許可しない場所を使ってください。
-adapter の env ファイル読込は Windows ACL を検証・変更しません。broker の標準台帳は
-所有者と private ACL を検証し、変更は行いません。POSIX では現在の所有者と `0400` / `0600` の
+adapter と broker は Windows ACL を検証・変更しません。標準台帳と明示台帳は同じ
+OS-user/private-store の信頼モデルを使います。POSIX では現在の所有者と `0400` / `0600` の
 ファイル権限を要求します。リンク・reparse point・複数 hard link は拒否します。
 
 ## private env ファイル

@@ -8,7 +8,6 @@ from test_key_operator import Factory, confirmed, parameters
 from cardputer_mcp import cli
 from cardputer_mcp.config import Settings
 from cardputer_mcp.key_operator import KeyOperatorError, run
-from cardputer_mcp.key_registry import KeyRegistryError
 
 
 def test_keys_no_longer_requires_registry_override():
@@ -36,18 +35,3 @@ def test_default_issue_denial_does_not_create_state(tmp_path, monkeypatch):
     with pytest.raises(KeyOperatorError, match="key_action_cancelled"):
         run("issue", label="synthetic", confirm=confirmed("no"), **parameters(factory))
     assert not path.parent.exists() and not factory.calls
-
-
-@pytest.mark.parametrize("command", ["list", "verify", "revoke", "rotate"])
-def test_all_default_operator_reads_validate_permissions(tmp_path, monkeypatch, command):
-    path = tmp_path / "DeviceBroker" / "keys.sqlite3"
-    monkeypatch.setattr("cardputer_mcp.key_operator.default_key_registry_path", lambda: path)
-
-    def unsafe(_):
-        raise KeyRegistryError("unsafe_key_registry_permissions")
-
-    monkeypatch.setattr("cardputer_mcp.key_operator.validate_default_key_path", unsafe)
-    factory = Factory()
-    with pytest.raises(KeyRegistryError, match="unsafe_key_registry_permissions"):
-        run(command, key_id="cpk_" + "a" * 32, **parameters(factory))
-    assert not factory.calls

@@ -27,7 +27,6 @@ from .models import Origin
 from .registry_defaults import (
     default_key_registry_path,
     prepare_default_key_directory,
-    validate_default_key_path,
 )
 
 KeyCommand = Literal["issue", "list", "revoke", "rotate", "verify"]
@@ -186,20 +185,12 @@ def run(
     if automatic_path:
         original_factory = registry_factory
 
-        def checked_registry(path: Path, *, create: bool = True) -> KeyRegistry:
+        def prepared_registry(path: Path, *, create: bool = True) -> KeyRegistry:
             if create:
                 prepare_default_key_directory(path)
-            else:
-                validate_default_key_path(path)
-            registry = original_factory(path, create=create)
-            try:
-                validate_default_key_path(path)
-            except Exception:
-                registry.close()
-                raise
-            return registry
+            return original_factory(path, create=create)
 
-        registry_factory = checked_registry
+        registry_factory = prepared_registry
     incoming = sys.stdin if input_stream is None else input_stream
     outgoing = sys.stdout if output_stream is None else output_stream
     if command not in ("issue", "list", "revoke", "rotate", "verify"):
