@@ -262,8 +262,15 @@ def test_native_preview_and_controls_reachable_at_168_dpi_minimum(monkeypatch):
         for widget in (window.preview_area, window.preview_status_label):
             assert widget.winfo_rooty() >= root.winfo_rooty()
             assert widget.winfo_rooty() + widget.winfo_height() <= root.winfo_rooty() + 600
-        window.back_button.invoke()
+        assert root.bind("<Alt-Left>")
+        root.focus_force()
+        window.detail_text.focus_set()
         root.update()
+        assert root.focus_get() == window.detail_text
+        root.event_generate("<Alt-Left>")
+        root.update()
+        assert root.focus_get() == window.job_tree
+        assert window.job_tree.selection() == (job_id,)
         assert window.job_tree.winfo_width() > 1
         assert window.job_tree.winfo_rootx() + window.job_tree.winfo_width() <= (
             root.winfo_rootx() + 860
@@ -303,7 +310,7 @@ def test_native_preview_and_controls_reachable_at_168_dpi_minimum(monkeypatch):
         assert window.log_text.winfo_rooty() + window.log_text.winfo_height() <= (
             canvas.winfo_rooty() + canvas.winfo_height()
         )
-        window.back_button.invoke()
+        window._back_to_list()
         root.update()
         assert window.job_tree.bind("<Return>")
         window._show_selected()
@@ -569,6 +576,10 @@ def test_selected_result_viewer_states_copy_cancel_and_mock_screenshots(monkeypa
         root.update()
         assert window.log_marker.winfo_class() == "TLabel"
         assert window.image_marker.winfo_class() == "TLabel"
+        assert not any(
+            child.winfo_class() == "TButton" and child.cget("text") == "Back to list"
+            for child in window.detail_heading_label.master.winfo_children()
+        )
         if phase == "denied":
             assert "access denied" in window.log_text.get("1.0", "end-1c")
             assert "owning client" in window.cancel_context.get()

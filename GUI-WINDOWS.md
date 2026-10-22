@@ -146,8 +146,8 @@ shown. Closing the GUI does not cancel another job or stop the broker.
 ## Selected results
 
 Jobs uses a resizable master-detail view. The selected row stays visible while
-Enter opens its detail; Back to list or Alt+Left returns keyboard focus to the
-list. Permitted supported logs and retained images load automatically. Context
+Enter focuses its detail; Alt+Left returns keyboard focus to the list. Both panes
+remain visible. Permitted supported logs and retained images load automatically. Context
 labels identify the source, live/retained state and actual read/capture times;
 log read time is not an inferred emission time. Empty, loading, denied, unsupported,
 expired and unavailable output appears in the viewer itself. Gap/truncation
