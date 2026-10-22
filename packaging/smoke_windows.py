@@ -124,7 +124,26 @@ def frozen_registry_smoke(exe: Path, url: str, folder: Path, env: dict) -> None:
     from cardputer_mcp.registry_defaults import prepare_default_key_directory
 
     path = Path(env["LOCALAPPDATA"]) / "DeviceBroker" / "keys.sqlite3"
-    prepare_default_key_directory(path)
+    try:
+        prepare_default_key_directory(path)
+    except Exception:
+        # Synthetic CI fixture only: numeric ACL shape, never paths, account SIDs,
+        # key material, descriptors, or OS exception text.
+        import win32security
+        from cardputer_mcp.registry_defaults import _windows_private
+
+        for depth, directory in enumerate(reversed(path.parent.parents)):
+            try:
+                _windows_private(directory, private=False)
+            except Exception:
+                descriptor = win32security.GetNamedSecurityInfo(str(directory), 1, 1 | 4)
+                acl = descriptor.GetSecurityDescriptorDacl()
+                shape = [] if acl is None else [
+                    (acl.GetAce(i)[0], hex(acl.GetAce(i)[1]))
+                    for i in range(acl.GetAceCount())
+                ]
+                print(f"Synthetic registry ACL rejected: ancestor_depth={depth}; grants={shape}")
+        raise
     registry = KeyRegistry(path, random_bytes=lambda size: b"\x17" * size)
     key_env = dict(env)
     try:
