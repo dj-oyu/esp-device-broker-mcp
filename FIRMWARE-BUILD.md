@@ -374,7 +374,9 @@ adopted or deleted. Old manifests remain readable via the original resolver.
 Flash integrations call
 `resolve_build_manifest(state_dir, registered_build_root, manifest) -> Path`
 from `cardputer_mcp.build_locations`. The resolver verifies the persisted
-manifest and identities, rejects links/reparse points, and never silently falls
+manifest and identities, rejects links/reparse points below the pinned build root
+(a registered `build_root` is resolved once per call; the operator may deliberately point
+it through a symlink/junction, while state-derived output directories stay strict), and never silently falls
 back from a compact location to a legacy root. It grants no flash permission;
 consumer artifact hashes, security checks, successful job/plan checks and a separate explicit
 execution request are still mandatory. Older manifests lacking flash/security receipts

@@ -24,6 +24,22 @@ permissions, Git credentials or user worktrees. Choose a short root outside the
 project, broker state, and build output roots. Paths/origin are registered locally;
 MCP accepts only the project ID, full lowercase 40-hex commit, or an opaque receipt.
 
+### Pinned root boundary
+
+The registered `cache_root` may itself be (or sit behind) a symlink or junction that
+the operator deliberately created. Each operation resolves the root once to its
+concrete directory (the pinned root) and uses only that resolved path. The boundary is
+the pinned root: it must not be a filesystem root and must not overlap the project,
+state or build roots (compared on resolved paths). Everything below it keeps the strict
+no-follow rules (links, reparse points, hardlinked payload files, unknown entries), and
+reclamation or cleanup never follows a link or leaves the pinned root. The ancestors of
+the resolved path are rechecked, and the pinned root is re-resolved on each access: if the
+link is retargeted while an operation holds the cache guard it fails closed with
+`source_cache_root_retargeted`. Two paths that resolve to the same directory share one
+process guard and one owner lock. Same-account processes remain trusted (see KEYS.md);
+this is containment under the registered root, not protection against a same-account
+process that can already rewrite the cache or the broker state.
+
 ## Explicit cloud MCP requests
 
 1. With a current authenticated control principal, prepare firmware_fetch_source
@@ -257,9 +273,10 @@ does not refresh or deploy the running connection.
 Execute performs fresh capacity traversals before admission and after reclamation under the cache guard;
 it does not reuse prepare's counts. This check remains mandatory even when a
 previous prepare succeeded and no receipt was published by a failed execution.
-On Windows, ancestor link/reparse checks query GetFileAttributesW instead of
-requesting full stat structures. This API reports the link's own attributes;
-every ancestor is still queried on every check and every reparse point is rejected.
+On Windows, link/reparse checks below the pinned root (and on the ancestors of its
+resolved path) query GetFileAttributesW instead of requesting full stat structures. This
+API reports the link's own attributes; every such component is still queried on every
+check and every reparse point is rejected.
 Only the native function binding is cached, never file metadata. Unsupported or
 failed attribute queries fall back to the original no-follow lstat, preserving
 missing/denied/UNC root semantics. Per-entry no-follow metadata, complete traversal,

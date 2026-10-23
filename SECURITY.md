@@ -139,6 +139,11 @@ remote/read principal. Local operator credentials are refused. Two local clients
 sharing this key share a security principal; work sessions remain explicit and
 have separate resume capabilities. Use a separate cloud connector key.
 
+Registered storage roots (source `cache_root`, build `build_root`) are pinned to their
+resolved directory so an operator-made symlink/junction is allowed; containment is enforced
+below the pinned root and a retargeted root fails closed. Executable/tool identity checks
+remain strict about links.
+
 POSIX file privacy is checked. Windows regular-file/reparse/identity checks do not
 prove private ACLs; the operator must establish and verify those permissions.
 The adapter does not change ACLs or issue actual credentials. Same-account and

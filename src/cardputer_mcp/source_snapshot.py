@@ -26,6 +26,21 @@ from .registration_digest import source_digest, source_digests
 from .source_cache_lock import LOCK_NAME, CacheLock
 
 
+def pin_root(path: Path) -> Path:
+    """Resolve a registered storage root once to its concrete directory.
+
+    The boundary is the resolved root: an operator may deliberately make the
+    registered root (or a parent) a symlink/junction, and every later access
+    uses the resolved path. Everything below it stays strictly no-follow, and
+    the ancestors of the resolved path are still rechecked, so a link planted or
+    retargeted afterwards fails closed instead of redirecting a read or delete.
+    """
+    resolved = path.resolve()
+    if resolved == Path(resolved.anchor) or resolved.parent == resolved:
+        raise SourceError("source_cache_root_conflict")
+    return resolved
+
+
 def _not_link(path: Path) -> None:
     # Keep every no-follow ancestor check, but avoid constructing a full tuple
     # of Path objects for each visited directory (and for every resolved file).
@@ -110,6 +125,7 @@ SOURCE_ERROR_CODES = frozenset(
         "source_cache_full",
         "source_cache_limit",
         "source_cache_root_conflict",
+        "source_cache_root_retargeted",
         "source_cache_scan_limit",
         "source_cache_unknown_entry",
         "source_cache_owner_conflict",
@@ -731,6 +747,15 @@ class SourceSnapshots:
         self.retention: Callable[[], dict[str, Any]] | None = None
         self.publication: Callable[[str], None] | None = None
         self.restore_source: dict[str, Any] | None = None
+        self._pins = threading.local()
+
+    def cache_root(self, registration: Any) -> Path:
+        """Return the pinned root; fail closed if it moved during a guarded operation."""
+        root = pin_root(registration.cache_root)
+        active = getattr(self._pins, "roots", {}).get(str(registration.cache_root))
+        if active is not None and active != root:
+            raise SourceError("source_cache_root_retargeted")
+        return root
 
     @contextmanager
     def cache_guard(self, project_id: str, *, write: bool = False) -> Iterator[None]:
@@ -743,27 +768,39 @@ class SourceSnapshots:
         registration = getattr(project, "source_repository", None)
         if registration is None:
             raise SourceError("registered_source_repository_required")
-        key = os.path.normcase(str(registration.cache_root.resolve()))
+        root = pin_root(registration.cache_root)
+        key = os.path.normcase(str(root))
         self.registration(project_id)
         with _CACHE_LOCKS_GUARD:
             lock = _CACHE_LOCKS.get(key)
             if lock is None:
                 lock = CacheLock()
                 _CACHE_LOCKS[key] = lock
+        active = getattr(self._pins, "roots", None)
+        if active is None:
+            active = self._pins.roots = {}
+        configured = str(registration.cache_root)
+        nested = configured in active
+        if nested and active[configured] != root:
+            raise SourceError("source_cache_root_retargeted")
+        active.setdefault(configured, root)
         try:
-            with lock.hold(registration.cache_root, self.settings.state_dir, write=write):
+            with lock.hold(root, self.settings.state_dir, write=write):
                 yield
         except SourceError:
             raise
         except ValueError as exc:
             raise SourceError(str(exc)) from None
+        finally:
+            if not nested:
+                active.pop(configured, None)
 
     def registration(self, project_id: str) -> tuple[Any, Any]:
         project = self.settings.build_projects.get(project_id)
         registration = getattr(project, "source_repository", None)
         if project is None or registration is None:
             raise SourceError("registered_source_repository_required")
-        root = registration.cache_root.resolve()
+        root = pin_root(registration.cache_root)
         work = project.project_dir.resolve()
         if (
             root.is_relative_to(work)
@@ -775,9 +812,9 @@ class SourceSnapshots:
             output = project.build_root.resolve()
             if root.is_relative_to(output) or output.is_relative_to(root):
                 raise SourceError("source_cache_root_conflict")
-        _not_link(registration.cache_root)
-        if registration.cache_root.exists() and os.name == "posix":
-            info = registration.cache_root.stat()
+        _not_link(root)
+        if root.exists() and os.name == "posix":
+            info = root.stat()
             if info.st_uid != int(vars(os)["geteuid"]()) or stat.S_IMODE(info.st_mode) != 0o700:
                 raise SourceError("source_private_cache_required")
         if os.name == "nt" and registration.private_acl_confirmed is not True:
@@ -802,7 +839,7 @@ class SourceSnapshots:
         records: list[dict[str, Any]] | None = None,
     ) -> dict[str, int]:
         _, registration = self.registration(project_id)
-        root = registration.cache_root
+        root = self.cache_root(registration)
         size = count = pending_count = evidence_count = evidence_bytes = retired_count = 0
         entries = 0
         started = time.monotonic()
@@ -942,7 +979,7 @@ class SourceSnapshots:
     ) -> dict[str, Any]:
         _, registration = self.registration(plan["project_id"])
         BackupStore(
-            registration.cache_root,
+            self.cache_root(registration),
             windows_private_acl_confirmed=registration.private_acl_confirmed,
         )
         with self.cache_guard(plan["project_id"], write=True):
@@ -980,7 +1017,7 @@ class SourceSnapshots:
         ):
             raise SourceError("source_cache_evidence_full")
         root = BackupStore(
-            registration.cache_root,
+            self.cache_root(registration),
             windows_private_acl_confirmed=registration.private_acl_confirmed,
         ).directory
         if shutil.disk_usage(root).free < LIMITS["expanded_bytes"] + 512 * 1048576:
@@ -1112,7 +1149,7 @@ class SourceSnapshots:
         _, registration = self.registration(project_id)
         if re.fullmatch(r"[a-f0-9]{64}", receipt) is None:
             raise SourceError("source_receipt_invalid")
-        root = registration.cache_root / receipt
+        root = self.cache_root(registration) / receipt
         try:
             path = root / "receipt.json"
             _not_link(path)

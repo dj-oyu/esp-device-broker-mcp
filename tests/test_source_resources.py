@@ -20,7 +20,8 @@ class ResourceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.base = Path(self.tmp.name)
+        # Registered roots are pinned to their resolved path (Windows temp may use 8.3 names).
+        self.base = Path(self.tmp.name).resolve()
         self.root = self.base / "cache"
         self.root.mkdir(mode=0o700)
         registration = SimpleNamespace(cache_root=self.root, private_acl_confirmed=True)
