@@ -1,7 +1,6 @@
 """Registered source/build jobs: authenticated profile scope, no USB lease."""
 
 import asyncio
-import hashlib
 import json
 import sqlite3
 import time
@@ -17,6 +16,7 @@ from .config import Settings
 from .firmware_build import BuildPreflightFailure, hash_file
 from .logs import Event
 from .models import CancelRequest, ExecuteRequest, Origin, PrepareRequest, TestName
+from .registration_digest import project_digest, project_digests
 from .source_preflight import SourceReadWorker, settings_identity, source_inputs
 from .source_retention import PLAN_LEASE_SECONDS
 from .source_snapshot import SourceError
@@ -94,7 +94,13 @@ class ProfileJobs:
         project = self.broker.settings.build_projects.get(project_id)
         if project is None:
             raise BrokerError("registered_build_project_required")
-        return hashlib.sha256(project.model_dump_json().encode()).hexdigest()
+        return project_digest(project)
+
+    def _registrations(self, project_id: str) -> frozenset[str]:
+        project = self.broker.settings.build_projects.get(project_id)
+        if project is None:
+            raise BrokerError("registered_build_project_required")
+        return project_digests(project)
 
     def _sync_settings(self) -> None:
         self.broker.firmware_source.settings = self.broker.settings
@@ -288,20 +294,20 @@ class ProfileJobs:
     def _binding_live(self, plan: dict[str, Any]) -> bool:
         broker = self.broker
         try:
-            registration = self._registration(plan["project_id"])
+            registrations = self._registrations(plan["project_id"])
             authorized = self._authorized(plan["principal_id"], plan["origin"])
             return bool(
                 authorized
                 and not broker.closing
                 and broker._state_lock.is_locked
                 and plan["broker_epoch"] == broker.epoch
-                and registration == plan["registration_sha256"]
+                and plan["registration_sha256"] in registrations
                 and (
                     "source_plan_deadline" not in plan
                     or self.broker._store().job(plan["job_id"]) is not None
                     or broker.clock() < plan["source_plan_deadline"]
                 )
-                and self._registration(plan["project_id"]) == registration
+                and self._registrations(plan["project_id"]) == registrations
                 and (
                     plan["test"] != TestName.BUILD.value
                     or hash_file(broker.settings.build_projects[plan["project_id"]].trusted_profile)

@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
+from .registration_digest import source_digests
 from .source_snapshot import (
     EVIDENCE_BYTES,
     EVIDENCE_SNAPSHOTS,
@@ -20,7 +21,6 @@ from .source_snapshot import (
     canonical,
     digest,
     file_receipt,
-    registration_digest,
 )
 
 
@@ -71,11 +71,7 @@ def metadata(
         or value.get("commit") != expected.get("source_commit")
         or value.get("registration_sha256") != expected.get("source_registration_sha256")
         or expected.get("source_repository") != registration.github_repository
-        or value.get("registration_sha256")
-        not in {
-            registration_digest(registration),
-            registration_digest(registration, legacy=True),
-        }
+        or value.get("registration_sha256") not in source_digests(registration)
     ):
         return None
     return cast(dict[str, Any], value)
@@ -210,7 +206,7 @@ def _pending(
         if (
             value.get("project_id") != plan["project_id"]
             or not isinstance(value.get("principal"), str)
-            or value.get("registration_sha256") != plan["source_registration_sha256"]
+            or value.get("registration_sha256") not in source_digests(registration)
             or job.get("state") not in {"succeeded", "failed", "cancelled"}
             or job.get("plan", {}).get("source_principal") != value.get("principal")
             or job.get("plan", {}).get("project_id") != plan["project_id"]

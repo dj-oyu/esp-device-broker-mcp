@@ -351,10 +351,10 @@ class SourceHistoryFlashAdapterTests(HistoryFixture, unittest.TestCase):
         registration = SimpleNamespace(
             backup_directory=self.root,
             private_backup_acl_confirmed=True,
-            selector=SimpleNamespace(model_dump_json=lambda: "synthetic selector"),
+            selector=SimpleNamespace(model_dump_json=lambda **_: "synthetic selector"),
             flash_bytes=8192,
             allow_restore=True,
-            model_dump_json=lambda: '{"synthetic":true}',
+            model_dump_json=lambda **_: '{"synthetic":true}',
         )
         # Use the same immutable object store location as the production adapter.
         self.binaries.root.rename(self.root / "lkg")

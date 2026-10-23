@@ -53,6 +53,7 @@ from .models import (
     TestName,
 )
 from .operator_notifications import OperatorNotifications
+from .registration_digest import flash_digests
 from .source_snapshot import SourceError
 from .store import Store
 
@@ -2015,10 +2016,7 @@ class Broker:
                                 registration is None
                                 or getattr(registration, "allow_" + plan["flash_operation"])
                                 is not True
-                                or hashlib.sha256(
-                                    registration.model_dump_json().encode()
-                                ).hexdigest()
-                                != plan["registration_sha256"]
+                                or plan["registration_sha256"] not in flash_digests(registration)
                             ):
                                 return False
                             if not self._device_lock.is_locked or not self._state_lock.is_locked:

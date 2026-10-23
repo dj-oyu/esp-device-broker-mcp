@@ -22,6 +22,7 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from .flash_backup import BackupStore
+from .registration_digest import source_digest, source_digests
 from .source_cache_lock import LOCK_NAME, CacheLock
 
 
@@ -226,11 +227,8 @@ def canonical(value: Any) -> bytes:
 
 
 def registration_digest(registration: Any, *, legacy: bool = False) -> str:
-    # Preserve pre-submodule receipt bindings without rewriting old receipts.
-    excluded = (
-        {"submodule_repositories"} if legacy or not registration.submodule_repositories else set()
-    )
-    return digest(registration.model_dump_json(exclude=excluded).encode())
+    """Path-independent binding for new plans/receipts (see registration_digest.py)."""
+    return source_digest(registration, legacy=legacy)
 
 
 SUBMODULE_LIMITS = {"depth": 3, "count": 16, "gitmodules_bytes": 65536}
@@ -1129,14 +1127,7 @@ class SourceSnapshots:
                 or value["principal"] != principal
                 or value["project_id"] != project_id
                 or value["registration_sha256"]
-                not in (
-                    {
-                        registration_digest(registration),
-                        registration_digest(registration, legacy=True),
-                    }
-                    if value["schema_version"] == 1
-                    else {registration_digest(registration)}
-                )
+                not in source_digests(registration, schema_version=value["schema_version"])
             ):
                 raise SourceError("source_receipt_not_owned")
             source = root / "source"

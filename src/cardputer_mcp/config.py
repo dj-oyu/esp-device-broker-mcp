@@ -62,6 +62,24 @@ class SourceRepository(BaseModel):
     cache_root: Path
     private_acl_confirmed: bool = Field(default=False, strict=True)
     submodule_repositories: list[str] = Field(default_factory=list, max_length=16)
+    # Migration aid: earlier cache locations whose old-style digests stay trusted.
+    # Location only; never part of any digest. Keep this field last.
+    previous_cache_roots: list[Path] = Field(default_factory=list, max_length=8)
+
+    @field_validator("previous_cache_roots")
+    @classmethod
+    def previous_roots(cls, value: list[Path]) -> list[Path]:
+        if len(set(value)) != len(value) or any(
+            not item.is_absolute() or ".." in item.parts for item in value
+        ):
+            raise ValueError("absolute_previous_source_cache_roots_required")
+        return value
+
+    @model_validator(mode="after")
+    def previous_roots_differ(self) -> "SourceRepository":
+        if self.cache_root in self.previous_cache_roots:
+            raise ValueError("previous_source_cache_root_must_differ")
+        return self
 
     @field_validator("submodule_repositories")
     @classmethod
