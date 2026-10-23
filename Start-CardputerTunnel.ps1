@@ -1,100 +1,111 @@
 #requires -Version 5.1
 <#
-Run from your existing PowerShell prompt, not a child powershell -File process.
-Default: authenticated local MOCK preparation only. -Connect explicitly starts
-outbound OpenAI Tunnel polling with an already-provisioned key entered privately.
-No download, installation, account creation, USB job, or firewall change is done.
+Start the broker AND its outbound OpenAI Tunnel from a packaged cardputer.exe and ONE broker
+profile TOML. Run from your existing PowerShell prompt, not a child powershell -File:
+  & 'C:\path\to\Start-CardputerTunnel.ps1' -Exe 'C:\path\to\cardputer.exe' -Profile 'C:\path\to\device.local.toml' [-Url <broker url>] [-NoTunnel] [-NoSerial]
+This script never reads the profile; a profile whose broker is not on the default
+http://127.0.0.1:8765/mcp needs a matching -Url (see Start-Cardputer.ps1). Nothing from [tunnel] is passed as an argument:
+tunnel_id, client_exe, client_archive, health_port and ingress_enabled are read and validated
+by the exe's Tunnel module, which refuses with its own reason (for example
+tunnel_id_placeholder or tunnel_metadata_incomplete). -NoTunnel starts the broker alone.
+--enable-serial is passed by default; -NoSerial omits it (a serial profile is then refused).
+The runtime API key comes from CARDPUTER_TUNNEL_API_KEY (or CONTROL_PLANE_API_KEY) in this
+process, or a private prompt; it is never printed or saved. No download, installation,
+account creation, USB job, or firewall change is done.
 #>
 [CmdletBinding()]
 param(
-    [switch]$Connect,
+    [string]$Exe = '',
+    [string]$Profile = '',
+    [string]$Url = 'http://127.0.0.1:8765/mcp',
+    [switch]$NoTunnel,
+    [switch]$NoSerial,
     [switch]$PromptApiKey,
-    [string]$Config = '',
-    [switch]$EnableSerial,
     [string]$KeyRegistry = '',
-    [switch]$UseClientKey,
-    [switch]$Gui
+    [switch]$UseClientKey
 )
 $ErrorActionPreference = 'Stop'
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'This launcher requires Windows PowerShell 5.1 or PowerShell 7 on Windows.'
 }
-$projectRoot = (Resolve-Path -LiteralPath $PSScriptRoot).ProviderPath
-$pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
-if (!(Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
-    throw 'First run uv sync --frozen in this project. No client was started.'
+if ([string]::IsNullOrWhiteSpace($Exe) -or [string]::IsNullOrWhiteSpace($Profile)) {
+    throw 'Both -Exe (path to cardputer.exe) and -Profile (broker profile TOML) are required.'
 }
-if ($Gui) {
-    # GUI supervises its own client; never start an unmonitored console client beside it.
-    $guiArguments = @{}
-    if ($Config) { $guiArguments.Config = $Config }
-    if ($EnableSerial) { $guiArguments.EnableSerial = $true }
-    if ($KeyRegistry) { $guiArguments.KeyRegistry = $KeyRegistry }
-    Write-Host 'GUI mode: configure [tunnel] in the broker TOML and click Connect in its Tunnel panel.'
-    Write-Host 'No automatic cloud connection or key prompt is performed by this launcher.'
-    & (Join-Path $projectRoot 'Start-CardputerGui.ps1') @guiArguments
-    return
+if (!(Test-Path -LiteralPath $Exe -PathType Leaf)) { throw 'The -Exe file was not found.' }
+$exePath = (Resolve-Path -LiteralPath $Exe).ProviderPath
+if ([IO.Path]::GetExtension($exePath).ToLowerInvariant() -ne '.exe') {
+    throw '-Exe must be the packaged cardputer.exe.'
 }
-if (!$Config) {
-    if (Test-Path -LiteralPath (Join-Path $projectRoot 'device.mock.local.toml')) {
-        $Config = 'device.mock.local.toml'
-    } elseif (Test-Path -LiteralPath (Join-Path $projectRoot 'tunnel.local.toml')) {
-        $Config = 'tunnel.local.toml' # Legacy explicit console mode remains supported.
-    } else { $Config = 'device.mock.local.toml' }
+if (!(Test-Path -LiteralPath $Profile -PathType Leaf)) { throw 'The -Profile file was not found.' }
+$profilePath = (Resolve-Path -LiteralPath $Profile).ProviderPath
+if ([IO.Path]::GetExtension($profilePath).ToLowerInvariant() -ne '.toml') {
+    throw '-Profile must be a broker profile .toml file.'
 }
-if ($EnableSerial -and !$Connect) { throw '-EnableSerial requires the explicit -Connect path.' }
-if ($UseClientKey -and (!$Connect -or [string]::IsNullOrWhiteSpace($KeyRegistry))) {
-    throw '-UseClientKey requires -Connect and an existing -KeyRegistry path.'
+# The Tunnel module resolves relative profile paths against this base folder.
+$profileDirectory = [IO.Path]::GetDirectoryName($profilePath)
+if ($UseClientKey -and [string]::IsNullOrWhiteSpace($KeyRegistry)) {
+    throw '-UseClientKey requires an existing -KeyRegistry path.'
 }
 if ($KeyRegistry) {
-    if (![IO.Path]::IsPathRooted($KeyRegistry)) { $KeyRegistry = Join-Path $projectRoot $KeyRegistry }
+    if (!(Test-Path -LiteralPath $KeyRegistry -PathType Leaf)) { throw 'The -KeyRegistry file was not found.' }
     $KeyRegistry = (Resolve-Path -LiteralPath $KeyRegistry).ProviderPath
-}
-$brokerConfig = Join-Path $projectRoot 'examples\tunnel-mock.toml'
-$url = 'http://127.0.0.1:8765/mcp'
-$backend = 'mock'
-if ($Connect) {
-    if (![IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $projectRoot $Config }
-    $configPath = (Resolve-Path -LiteralPath $Config).ProviderPath
-    $preflightArgs = @('-m', 'cardputer_mcp.tunnel', 'preflight', '--project', $projectRoot,
-        '--config', $configPath)
-    if ($EnableSerial) { $preflightArgs += '--enable-serial' }
-    $resultText = & $pythonPath @preflightArgs
-    $preflightExit = $LASTEXITCODE
-    if ($preflightExit -ne 0) { throw 'Tunnel preflight refused. Check private metadata, official ZIP/exe, or an existing listener/client. Nothing was stopped.' }
-    $check = ConvertFrom-Json -InputObject ($resultText -join "`n")
-    if (!$check.ok) { throw 'Tunnel preflight refused.' }
-    $brokerConfig = $check.broker_config
-    $url = $check.url
-    $backend = $check.backend
-}
-# The shared launcher checks existing brokers BEFORE generating new process tokens.
-$brokerArgs = @{ Config = $brokerConfig }
-if ($backend -eq 'mock') { $brokerArgs.Mock = $true }
-if ($KeyRegistry) { $brokerArgs.KeyRegistry = $KeyRegistry }
-& (Join-Path $projectRoot 'Start-Cardputer.ps1') @brokerArgs
-if (!$Connect) {
-    & $pythonPath -m cardputer_mcp.tunnel check --project $projectRoot --config $brokerConfig --url $url
-    if ($LASTEXITCODE -ne 0) { throw 'Authenticated remote-identity discovery failed. Inspect broker console.' }
-    Write-Host 'Local preparation passed. No cloud client, API key, or USB operation was used.'
-    Write-Host 'For account-backed setup later, read TUNNEL-WINDOWS.md before using -Connect.'
-    if ($Gui) { & $pythonPath -m cardputer_mcp.cli --auth-source environment gui --config $brokerConfig }
-    return
 }
 
 function Quote-TunnelArgument([string]$Value) {
     if ($Value.Contains('"') -or $Value.EndsWith('\')) { throw 'Invalid launcher file argument.' }
     return '"' + $Value + '"'
 }
+# One bounded, read-only helper call that returns the exe's JSON line; secrets are never involved.
+function Invoke-ExeJson([string]$Arguments, [string]$Failure) {
+    $helper = New-Object Diagnostics.ProcessStartInfo
+    $helper.FileName = $exePath
+    $helper.Arguments = $Arguments
+    $helper.WorkingDirectory = $profileDirectory
+    $helper.UseShellExecute = $false
+    $helper.CreateNoWindow = $true
+    $helper.RedirectStandardOutput = $true
+    $helper.RedirectStandardError = $true
+    $run = New-Object Diagnostics.Process
+    $run.StartInfo = $helper
+    try {
+        [void]$run.Start()
+        $out = $run.StandardOutput.ReadToEndAsync()
+        $err = $run.StandardError.ReadToEndAsync()
+        if (!$run.WaitForExit(15000)) { throw "$Failure (timed out; nothing was stopped)." }
+        $text = $out.GetAwaiter().GetResult()
+        [void]$err.GetAwaiter().GetResult()
+        try { $parsed = ConvertFrom-Json -InputObject $text -ErrorAction Stop; if ($null -eq $parsed) { throw "empty" }; return $parsed }
+        catch { throw "$Failure (no result; check -Exe and -Profile)." }
+    } finally { $run.Dispose() }
+}
+
+$serialArgument = if (!$NoSerial) { ' --enable-serial' } else { '' }
+$tunnelSuffix = ' --project ' + (Quote-TunnelArgument $profileDirectory) +
+    ' --config ' + (Quote-TunnelArgument $profilePath)
+if (!$NoTunnel) {
+    $tunnelCheck = Invoke-ExeJson ('-m cardputer_mcp.tunnel preflight' + $tunnelSuffix + $serialArgument) 'Tunnel preflight failed'
+    if ($tunnelCheck.url -and $tunnelCheck.url -ne $Url) {
+        throw "The profile's broker URL ($($tunnelCheck.url)) differs from -Url. Rerun with -Url '$($tunnelCheck.url)'. Nothing was started or stopped."
+    }
+    if (!$tunnelCheck.ok) { throw "Tunnel preflight refused ($($tunnelCheck.error)). Fix the profile's [tunnel] section, the official ZIP/exe, or an existing listener/client; or rerun with -NoTunnel for the broker alone (-NoSerial if --enable-serial was refused). Nothing was started or stopped." }
+}
+# The shared launcher checks for an existing listener BEFORE generating new process tokens.
+$brokerArgs = @{ Exe = $exePath; Profile = $profilePath; Url = $Url }
+if ($NoSerial) { $brokerArgs.NoSerial = $true }
+if ($KeyRegistry) { $brokerArgs.KeyRegistry = $KeyRegistry }
+& (Join-Path $PSScriptRoot 'Start-Cardputer.ps1') @brokerArgs
+if ($NoTunnel) {
+    Write-Host 'Tunnel skipped (-NoTunnel). The broker is running.'
+    return
+}
+
 $shellName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
 $shellPath = Join-Path $PSHOME $shellName
 $info = New-Object Diagnostics.ProcessStartInfo
-$info.FileName = $pythonPath
-$info.Arguments = '-m cardputer_mcp.tunnel launch-console --project ' +
-    (Quote-TunnelArgument $projectRoot) + ' --config ' + (Quote-TunnelArgument $configPath) +
-    ' --shell ' + (Quote-TunnelArgument $shellPath)
-if ($EnableSerial) { $info.Arguments += ' --enable-serial' }
-$info.WorkingDirectory = $projectRoot
+$info.FileName = $exePath
+$info.Arguments = '-m cardputer_mcp.tunnel launch-console' + $tunnelSuffix +
+    ' --shell ' + (Quote-TunnelArgument $shellPath) + $serialArgument
+$info.WorkingDirectory = $profileDirectory
 $info.UseShellExecute = $false
 $info.CreateNoWindow = $true
 $info.RedirectStandardOutput = $true
@@ -159,4 +170,3 @@ try {
     if ($process) { $process.Dispose() }
 }
 
-if ($Gui) { & $pythonPath -m cardputer_mcp.cli --auth-source environment gui --config $brokerConfig }

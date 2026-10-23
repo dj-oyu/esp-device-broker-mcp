@@ -81,8 +81,8 @@ def test_gui_launcher_keeps_one_broker_and_no_raw_tokens():
     source = (Path(__file__).resolve().parents[1] / "Start-CardputerGui.ps1").read_text()
     assert source.isascii()
     assert "Start-Cardputer.ps1" in source
-    assert "if (!$EnableSerial)" in source
-    assert "--auth-source environment gui --config $Config" in source
+    assert "if ($NoSerial)" in source
+    assert "--auth-source environment gui --config $profilePath" in source
     assert "Stop-Process" not in source and "TOKEN" not in source
 
 

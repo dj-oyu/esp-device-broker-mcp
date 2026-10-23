@@ -1,5 +1,10 @@
 # セッションと実機待ち列の管理画面
 
+> **ランチャーの引数が変わりました。** `Start-CardputerGui.ps1` は `-Exe` と `-Profile` を指定します
+> （`-Config` / `-EnableSerial` は廃止、既定で `--enable-serial`、`-NoSerial` で外します。既定の 127.0.0.1:8765 以外なら `-Url` を指定）。
+> [START-WINDOWS.md](START-WINDOWS.md) を参照してください。`uv sync --frozen` は不要です。
+
+
 ## 稼働中のMCPツールを確認する（v0.7.1）
 
 画面上部の **MCP info** を押します。GUIが保持している認証で同じローカルbrokerへ
