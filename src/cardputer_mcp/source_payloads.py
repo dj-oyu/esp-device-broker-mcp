@@ -30,7 +30,7 @@ def metadata(
     if re.fullmatch(r"[a-f0-9]{64}", receipt) is None:
         return None
     _, registration = snapshots.registration(plan["project_id"])
-    path = registration.cache_root / receipt / "receipt.json"
+    path = snapshots.cache_root(registration) / receipt / "receipt.json"
     _not_link(path)
     try:
         info = path.stat()
@@ -133,7 +133,7 @@ def _reclaim(
     dry_run: bool = False,
 ) -> int:
     _, registration = snapshots.registration(plan["project_id"])
-    root = registration.cache_root / receipt
+    root = snapshots.cache_root(registration) / receipt
     source, removing, marker = root / "source", root / "reclaiming", root / "reclaim.json"
     expected = {
         "receipt": receipt,
@@ -191,7 +191,7 @@ def _pending(
     live: Callable[[], bool],
 ) -> None:
     _, registration = snapshots.registration(plan["project_id"])
-    for root in registration.cache_root.iterdir():
+    for root in snapshots.cache_root(registration).iterdir():
         if not re.fullmatch(r"pending-[a-f0-9]{32}", root.name):
             continue
         marker = root / "reservation.json"
@@ -236,7 +236,7 @@ def admit_source(
     _, registration = snapshots.registration(plan["project_id"])
     candidates = []
     # Successful owned receipt evidence is required even for a no-download reuse.
-    for path in registration.cache_root.iterdir():
+    for path in snapshots.cache_root(registration).iterdir():
         if live() is not True:
             raise SourceError("source_fetch_interrupted")
         receipt = path.name
@@ -283,7 +283,10 @@ def admit_source(
     if not evidence["complete"]:
         raise SourceError("source_cache_references_incomplete")
     # Check disk reserve before any removal: a failed preflight must not evict.
-    if shutil.disk_usage(registration.cache_root).free < LIMITS["expanded_bytes"] + 512 * 1048576:
+    if (
+        shutil.disk_usage(snapshots.cache_root(registration)).free
+        < LIMITS["expanded_bytes"] + 512 * 1048576
+    ):
         raise SourceError("source_disk_reserve_required")
     _pending(snapshots, plan, evidence, live)
     usage = snapshots.usage(plan["project_id"])

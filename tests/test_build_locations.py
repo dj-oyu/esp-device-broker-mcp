@@ -104,7 +104,7 @@ class BuildLocationTests(unittest.TestCase):
         with self.assertRaises(BuildLocationError):
             resolve_build_manifest(self.state, self.root / "other", manifest)
 
-    def test_linked_root_and_ancestor_rejected(self):
+    def test_linked_root_is_pinned_to_its_target(self):
         real = self.root / "real"
         real.mkdir()
         linked = self.root / "linked"
@@ -113,9 +113,27 @@ class BuildLocationTests(unittest.TestCase):
         except OSError as error:
             self.skipTest(str(error))
         for output in (linked, linked / "child"):
-            with self.assertRaisesRegex(BuildLocationError, "build_output_linked"):
-                claim_build_directory(self.state, output, self.fp, self.env)
-        self.assertEqual([], list(real.iterdir()))
+            path = claim_build_directory(self.state, output, self.fp, self.env)
+            self.assertTrue(path.is_relative_to(real.resolve()))
+        self.assertEqual(2, len(list(real.rglob("broker-build-identity.json"))))
+
+    def test_link_inside_root_is_still_rejected(self):
+        real = self.root / "real"
+        outside = self.root / "outside"
+        real.mkdir()
+        outside.mkdir()
+        slot = real / build_slot(self.fp, self.env)
+        try:
+            slot.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(str(error))
+        with self.assertRaisesRegex(BuildLocationError, "build_output_linked"):
+            claim_build_directory(self.state, real, self.fp, self.env)
+        self.assertEqual([], list(outside.iterdir()))
+
+    def test_filesystem_root_is_rejected(self):
+        with self.assertRaisesRegex(BuildLocationError, "build_output_root_invalid"):
+            claim_build_directory(self.state, Path(self.root.anchor), self.fp, self.env)
 
     def test_usage_inventory_marks_directory_budget_incomplete(self):
         path = claim_build_directory(self.state, self.output, self.fp, self.env)

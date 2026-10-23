@@ -38,7 +38,15 @@ def build_slot(fingerprint: str, environment_fingerprint: str) -> str:
 
 
 def output_base(state_dir: Path, build_root: Path | None) -> Path:
-    chosen = build_root if build_root is not None else state_dir / "firmware-builds"
+    if build_root is not None:
+        # A registered build root is pinned to its resolved directory: the operator
+        # may deliberately point it through a symlink/junction. Everything below it,
+        # and the ancestors of the resolved path, stay no-follow (rechecked per call).
+        chosen = build_root.resolve()
+        if chosen == Path(chosen.anchor) or chosen.parent == chosen:
+            raise BuildLocationError("build_output_root_invalid")
+    else:
+        chosen = state_dir / "firmware-builds"
     for component in (chosen, *chosen.parents):
         _plain(component)
     if chosen.exists() and not chosen.is_dir():
