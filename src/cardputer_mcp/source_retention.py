@@ -21,6 +21,12 @@ def retention_evidence(
 ) -> dict[str, Any]:
     """Protect executable plans, unfinished jobs and the current LKG source.
 
+    Capacity is shared by every principal of the project: successful fetches are
+    collected for all principals (each entry records its owner) so any unreferenced
+    payload can be reclaimed for whoever needs space. Protection already covers all
+    principals. Receipt ownership/authority is unchanged; ``principal`` is the
+    requester and is kept only for call compatibility.
+
     Completed build plans and historical LKG sources are provenance, not payload
     reservations. Keep validating their lineage, including the original flash
     association needed to resolve the current LKG after a later operation.
@@ -87,7 +93,8 @@ def retention_evidence(
                     continue
                 if row["id"] is not None and row["state"] not in TERMINAL:
                     protect(receipt, "unfinished_job")
-            if plan.get("source_principal") != principal or row["state"] != "succeeded":
+            owner = plan.get("source_principal")
+            if not isinstance(owner, str) or not owner or row["state"] != "succeeded":
                 continue
             diagnostic = json.loads(row["diagnostic"]) if row["diagnostic"] else {}
             summary = diagnostic.get("source", {})
@@ -101,6 +108,7 @@ def retention_evidence(
             sources.setdefault(receipt, []).append(
                 {
                     "job_id": job_id,
+                    "principal": owner,
                     "plan": plan,
                     "summary": summary,
                     "finished": row["finished"] or row["created"],
@@ -173,7 +181,7 @@ def retention_evidence(
     for row in publications[:REFERENCE_LIMIT]:
         if row["job_id"] not in jobs:
             complete = False
-        if row["project_id"] == project and row["principal"] == principal:
+        if row["project_id"] == project:
             owned_publications[row["receipt"]] = row["job_id"]
     return {
         "complete": complete,

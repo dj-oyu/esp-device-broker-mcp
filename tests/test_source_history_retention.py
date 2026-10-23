@@ -243,13 +243,13 @@ class SourceHistoryRetentionTests(HistoryFixture, unittest.TestCase):
             self.fetch(3)
         self.assertFalse(self.payload(old).exists())
 
-    def test_other_owner_history_payload_not_reclaimed(self):
+    def test_other_owner_history_payload_is_reclaimed_but_provenance_is_retained(self):
         old, _, _ = self.publish_generation(1, principal="other")
         self.publish_generation(2)
         with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=2):
-            with self.assertRaisesRegex(SourceError, "source_cache_protected"):
-                self.fetch(3)
-        self.assertTrue(self.payload(old).exists())
+            self.fetch(3)
+        self.assertFalse(self.payload(old).exists())
+        self.assertTrue((self.root / "cache" / old["source_receipt"] / "receipt.json").exists())
 
     def test_prepared_flash_indirectly_protects_historical_build_source(self):
         old, _, _ = self.publish_generation(1)
