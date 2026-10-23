@@ -4,7 +4,7 @@
 
 関連文書: MCP のツール面(5 本への作り直し)は `DESIGN-MCP-SURFACE.md` にある。この文書は、
 その新しいツール面で表現する: 旧 `prepare_test` → `submit`、旧 `execute_test` →
-`execute`(`op=run`)、旧 `request_device` 等のセッション系 → `session`、旧 `job_status` /
+`execute`(flash と restore 以外。`op=run`)または `flash`(flash と restore)、旧 `request_device` 等のセッション系 → `session`、旧 `job_status` /
 `device_status` → `status`(`view=job` / `view=device`)。§2(現状)だけは、現在のコードの
 名前のまま書いている。
 確認の区別: 「確認済み」はこの文書の作成時に該当コードを読んで確かめた事実。
@@ -136,9 +136,13 @@
 12. 利用者への進捗表示(§7)。
 13. 前提として、`ValueError` → `invalid_request` の潰れを、先に直す(§8、段階 1)。
 14. MCP のツールは**増やさない**。ツール面そのものを `DESIGN-MCP-SURFACE.md` で作り直す
-    (5 本)。`continues` と `after`(チケット)は、その `execute`、`submit`、`session` の
-    任意の引数にする。進捗は `status`(`view=job` / `view=device`)の結果の中に入れる。
+    (6 本)。`continues` は `execute` と `flash` の、`after`(チケット)は `submit` の、任意の引数に
+    する。進捗は `status`(`view=job` / `view=device`)の結果の中に入れる。
 15. デバイスのチェーン保持は、ロックとして扱う。成立させる不変条件を §13 に定める。
+16. 方式 A(先積み)を最終形とする。別のチェーンがデバイスを占有している間に、あとから
+    flash/test までを積める。plan とリースの結び付きを見直し(§5)、承認・所有権・
+    キャンセル・秘匿の境界と、開始時のフェンシングを保つ。チケットは、積み込み(`execute` または `flash`)の
+    時点で消費する。
 
 ## 4. 設計
 
@@ -162,22 +166,28 @@
 
 この変更は plan の不変性に関わる。「準備した時点の plan を、そのまま実行する」から、
 「親ジョブを名指しした plan を、親の成果物が決まった時点で解決して実行する」に変わる。
-名指しされた親のバイト列は一つに決まるので、承認(明示的な `execute` 要求)の範囲は
-変わらないと考えるが、要確認(§10)。
+決定として、次の条件がすべて満たされる限り、承認(ジョブごとの明示的な `execute` / `flash` 要求)の範囲は
+変わらないものとして扱う: 親が名指しされている、親が同じ principal の所有で成功している、
+解決された値が `plan_resolutions` に不変に記録されている、開始時の再導出が記録と全項目
+一致する(§5.3)。条件を一つでも欠けば、実行しない。
 
 ### 4.2 チケットの発行と消費
 
-- 新しいツールは足さない(決定事項 14)。発行は `execute`、使用は `submit` の任意の引数で行う。
-- 発行: `execute`(`op=run`)に任意の `continues: true` を足す。受け付けた時点(ジョブを積んだ
+- 新しいツールは足さない(決定事項 14)。発行は `execute` / `flash`、使用は `submit` の任意の引数で行う。
+- 発行: `execute`(`op=run`)と `flash` に、任意の `continues: true` を足す。受け付けた時点(ジョブを積んだ
   時点)で、チケットを 1 枚発行して応答に含める。応答のフィールド名は
   `continuation_ticket`(短い文字列。Crockford base32 で 8 文字程度。発行時に既存と
   衝突しないことを確認する)。
 - 使用: 次のジョブの `submit` に、任意の `after: "<ticket>"` を渡す。準備の時点では
   消費せず、チケットが `issued` であること、同じ principal の親であることだけを確認して、
   plan に `continues` を記録する。
-- 消費: そのジョブの `execute`(積み込み)で、チケットを原子的に `consumed` にする。
+- 消費: そのジョブの積み込み(`execute` または `flash`)で、チケットを原子的に `consumed` にする。
   同じチケットで複数の plan を準備しても、積み込めるのは 1 件。2 件目は
   `ticket_consumed`。
+- ツールをまたぐ: チケットは、どのツールで積んでも同じ(`DESIGN-MCP-SURFACE.md` §9)。親が
+  `flash`(破壊的)で、後続の test を `execute` で積んでよい。後続の plan が flash か restore なら、
+  `flash` で積む(plan の種類で決まる。チケットは、ツールの選択を変えない。間違えたら、
+  `wrong_execute_tool` / `wrong_flash_tool` で、状態を変えずに拒否される)。
 - チェーンの継続: 消費したジョブが `continues: true` を宣言すれば、新しいチケットが返る。
   宣言しなければ、そのジョブでチェーンは終わる。
 - 存在しない・他の principal のチケットは、同じ `ticket_invalid` を返す(存在の有無を
@@ -200,11 +210,12 @@ expires_at)`。後続のジョブは、plan の `continues.parent_job_id` で親
   終了を確定した)時点で、成功した場合に限り、保持を開始する。期限は終了時点から 60 秒。
   失敗・キャンセルなら保持せず、チケットは void。
 - 効果: 保持中は、`maintenance_tick` の付与(先頭の待ちへのリース付与)を行わない。
-  `session(action="open")` の即時取得と、`session(action="request")` の付与も、保持中は、そのチケットの持ち主以外には
-  行わない。
-- 消費: 保持中に、そのチケットを消費した後続のデバイスジョブは、待ち行列の先頭に入る
-  (`operator_reorder_wait` が行っているのと同じ「先頭への挿入」)。通常のリース付与の
-  手順で、新しいリース(新しい capability・generation)が、同じ principal に付与される。
+  `session`(`action=open`)の即時取得と、`session`(`action=request`)の付与も、保持中は、
+  そのチケットの持ち主以外には行わない。
+- 消費(方式 A): 保持中に、そのチケットを積み込み(`execute` または `flash`)で消費した後続のデバイスジョブは、
+  待ち行列の先頭に入る(`operator_reorder_wait` が行っているのと同じ「先頭への挿入」)。
+  番が来たとき、ブローカーが、同じ principal のジョブ専用リース(新しい generation。§5.2)を
+  付与する。保持が切れたあとに消費された後続は、通常の順番(最後尾)で待つ。
 - 失効: 60 秒たつか、チェーンの予算(§4.4)を超えたら、保持を解除する。後続は通常の
   順番(最後尾)で待つ。チケットは `expired`(消費時に `ticket_void` と同じ扱い、理由は
   `hold_expired`)。
@@ -272,35 +283,110 @@ expires_at)`。後続のジョブは、plan の `continues.parent_job_id` で親
   `needs_review`、何も自動では再開しない)と整合させる。
 - 暗黙の再試行・ロールバックはしない。各ジョブの承認は別々のまま。
 
-## 5. 経路ごとの変更の大きさ
+## 5. plan とリースの結び付き(方式 A)
+
+決定: デバイスの手順(flash/test など)を、別のチェーンがデバイスを占有している間に、あらかじめ
+積めるようにする(方式 A)。そのため、plan がリース ID に結び付く現在の作りを、見直す。
+承認・所有権・キャンセル・秘匿の境界は、そのまま保つ。
 
 | 経路 | 変更 | 大きさ |
 |---|---|---|
 | 登録プロジェクト(fetch → build) | 準備時の前提を「親が成功なら解決、未完なら `waiting_parent`」に | 中 |
-| デバイス(flash → test) | plan の `session_id` との結び付き(§5.1) | 大 |
+| デバイス(flash → test) | plan とリースの結び付き(以下) | 大 |
 
-### 5.1 デバイス経路の最大の課題: リースとの結び付き
+### 5.1 現状の結び付き(確認済み)
 
-デバイスの plan は、準備の時点でリース ID(`session_id`)に結び付く(§2.2)。別のチェーンが
-デバイスを占有している間に、あとからビルド → flash → test を積む場合、flash と test の
-plan は、まだ存在しないリースに結び付けられない。次の二つの方式がある。
+デバイスの plan は、準備の時点で、リース ID(`session_id`)に結び付く。次の箇所で使われている。
 
-- 方式 A(完全な先積み): チケットを持つデバイス plan は、`session_id` の代わりに
-  `continues` を持ち、リースへの結び付きは、付与の時点で `plan_bindings(plan_hash,
-  lease_id)` に記録する。`plan["session_id"] == lease.id` を前提にしている箇所
-  (`Broker.execute`、`_work`、`ExecutionIntent`、`_execution_intent_live`、`plan_approval`、
-  flash の `prepare_binding`)を、すべて見直す必要がある。変更が大きく、承認・所有権の
-  境界に触れる。
-- 方式 B(保持と優先のみ): チケットは、デバイスの保持と継続優先だけを担う。後続の
-  デバイスジョブの plan は、チケットの保持中にクライアントが `session(action="request", after=...)`
-  で新しいリースを取った後、そのリースの下で準備する。plan と lease の結び付きの不変条件は
-  変わらない。クライアントは、前のジョブの終了から 60 秒以内に動く必要がある。
-  この方式では、「消費」は積み込み(`execute`)ではなく、チケット付きの
-  `session(action="request")`(リース付与)の時点になる(決定事項 2 からのずれ。§10)。
+| 場所 | 内容 |
+|---|---|
+| `Broker.prepare` | plan に `session_id` を入れる |
+| `Broker.execute` | `payload["session_id"] != session.id` なら `plan_session_mismatch`。`ExecutionIntent` に `lease_id`・`lease_ref`・期限(`session.deadline`)を持たせる |
+| `_execution_lease_binding_live` / `_execution_intent_live` | `lease.id != intent.lease_id`、`plan.get("session_id") == intent.lease_id` |
+| `Broker._work` | `plan["session_id"] != self.session.id` なら `needs_review`(`plan_not_available`) |
+| `Broker.cancel` | `plan["session_id"] != session.id` なら `job_session_mismatch` |
+| `Broker.app_command` | `plan.get("session_id") != lease.id` |
+| `plan_approval.py` | 許可キー(`_BASE_KEYS`)に `session_id`、`_schema` は版が 1 でキー集合が厳密、`_validate` は `plan["session_id"] != lease.id` |
+| `firmware_flash.py` | `operation_from_plan` の指紋(`OperationPlan`)が `session_id` を含む。`prepare(request, principal, epoch, session_id)` |
+| 読み取り側 | `operator_timeline.py`、GUI(`session_id` の表示と照合) |
 
-提案は、段階 3a で方式 B を実装し、段階 3b で方式 A を検討する、という二段階。方式 B だけで、
-「flash と test の間に割り込まれない」ことは実現できる。方式 A がないと、「別のチェーンの
-実行中に、デバイスの手順まで先積みする」ことはできない。
+つまり、リースが存在しない時点では、デバイスの plan を準備できず、あとから積むこともできない。
+
+### 5.2 新しい結び付き
+
+plan を、「意図」と「結び付き」に分ける。
+
+- **意図**(`plan_hash` の対象。明示的な要求の対象): 種類、デバイス、入力(親ジョブへの
+  参照を含む)、principal、origin、`broker_epoch`、`lease_seconds`(新規。先積みの plan は、
+  リースの長さを plan に持つ。上限は今と同じ 300 秒)。
+- **結び付き**(`plan_hash` の対象外): どのリースの下で実行されたか。ジョブの番が来て、
+  リースを付与した時点で、`plan_bindings(plan_hash, job_id, lease_id, lease_generation,
+  bound_at)` に、一度だけ記録する。
+
+plan の形:
+
+- 先積みの plan は、版 3 とし、`session_id` の代わりに `binding = {mode: "deferred",
+  principal_id, origin, lease_seconds}` を持つ。許可キー(`plan_approval.py`)に版 3 を追加する。
+- 従来の plan(版 1、`session_id` あり)は、一切変えない。同じ plan_hash のまま動く。
+
+判定は、一つの関数 `plan_authorizes(plan, lease)` に集める。§5.1 の `session_id` の比較を、
+すべてこの関数に置き換える。
+
+- 従来の plan: `plan["session_id"] == lease.id`(今と同じ)。
+- 先積みの plan: `broker_epoch` が現在と一致し、`lease.principal_id`・`lease.owner` が
+  `binding` の principal・origin と一致し、このリースが**このジョブのために付与された**ことが
+  `plan_bindings` に記録されている。
+
+実行のリース(ジョブ専用リース):
+
+- 先積みのジョブは、デバイスの待ち行列に、**ジョブに結び付く待ちエントリ**として入る
+  (今の `DeviceWait` は、作業セッションに結び付く。ジョブ ID・principal・origin を持たせる)。
+  principal の生存確認(`_principal_live` は作業セッションを見る)は、ジョブのエントリでは、
+  `principal_valid(principal, origin, {"read", "control"})` で行う。
+- 番が来たら(または保持を引き継ぐとき)、ブローカーが、plan の principal・origin・
+  `lease_seconds` で `Session` を作る。この `Session` の capability は、**クライアントに返さない**。
+  ジョブの実行にだけ使う。ジョブが終われば解放する(`continues` なら保持へ)。
+- 同じ一枠(`Broker.session`)に入るので、ロックは一つのまま(§13.1)。
+
+先積みの対象:
+
+- 非対話の種類: `flash`、`restore`、`capture`、`derby`、`derby_fixed`、`restart`、`observe` など。
+- 対象外(従来の結び付きのまま): `app_session`(`execute` の `op=app_input` が、クライアントの
+  リースの capability を要する)。`backup` は、長い読み取り(最大 9660 秒)に明示的な
+  リースの延長を要する、という現在の方針(「ブローカーは自動では延長しない」)と、
+  `lease_seconds` の上限(300 秒)が合わない可能性があるため、対象外とする案。いずれも
+  未決事項(§12)。
+
+### 5.3 各境界の保ち方
+
+| 境界 | 先積み(方式 A)での保ち方 |
+|---|---|
+| **明示的な要求(承認)** | ジョブごとに、自分の `submit`(plan_hash)と、`execute` または `flash`(plan_hash の明示的な要求)を要する。チケットは「順序と保持」だけで、承認の代わりにならない。一回の積み込みで後続をまとめて要求することはない。`PlanApprovals.validate_current` は、積み込み時に実行する(今と同じ)。開始時にも、plan が不変で一致することを確認する。 |
+| **親の成果物に依存する値** | 親が完了したときに、`resolve` で決まる値(`source_receipt`、flash の成果物ハッシュなど)を、`plan_resolutions` に不変に記録する。開始時に、同じ導出をもう一度行い、記録と全項目が一致しなければ実行しない(今の `FirmwareFlash.execute` の、`prepare_plan` との全項目一致と同じ型。`flash_inputs_changed_needs_review`)。記録の digest を `status` の `view=job` に出す。 |
+| **承認の範囲** | plan は親ジョブを名指しする(「ジョブ X の成果物を flash する」)。バイト列は X で一つに決まる。親が(a)同じ principal の所有、(b)成功、(c)解決された digest が記録と一致、のすべてを満たさなければ実行しない。親以外のものには解決しない。 |
+| **所有権** | plan の principal、チケットの親の principal、実行のリースの principal が一致すること(`plan_authorizes`)。他の principal のチケット・ジョブは使えない。ジョブ専用リースの capability は返さないので、他のクライアントが、そのリースを使うことはできない。デバイスの所有は、一つの枠。実行中は手放さない。 |
+| **キャンセル** | `cancel`(`target=job`)で、待ち(`waiting_parent` / デバイスの待ち)でも実行中でも、ジョブ単位で取り消せる。先積みのジョブは `session` の capability を持たないので、principal の所有で検査する(従来の plan は、従来どおり `session` の照合)。待ちの取り消しは、待ち行列から外し、未使用のチケットを void にする。実行中は、停止の要求(今と同じ)。operator は、既存の待ちの取り消しと並べ替えで扱える(待ちエントリが、ジョブに結び付く)。 |
+| **秘匿** | 他の principal には、集計(「前に N 個のチェーン」「保持の残り N 秒」)だけ。`plan_bindings` のリース ID は公開しない。operator のスナップショット(ローカル)には、待ちエントリを出す。 |
+| **フェンシング** | 開始時に必ず確認する(省略不可): (a) 解決の記録との全項目一致、(b) 成果物のバイト列のハッシュ検証(flash は既存の `verify_bundle` と再読込)、(c) チケットを消費するジョブは、ファームウェアのハッシュと、デバイス単位の書き込み連番が、親の終了時点と一致すること(§13.2 の (6))。保持が切れていても、一致すれば実行してよい。一致しなければ `device_state_changed`。 |
+| **暗黙の動作なし** | ブローカーは、ジョブを足さず、再試行せず、ロールバックしない。ジョブ専用リースは plan の `lease_seconds` で固定され、自動では延長されない。実行中のジョブは、リースの期限が来ても所有を保つ(今と同じ)。 |
+
+### 5.4 段階の分け方
+
+方式 A が最終形である。ただし、結び付きの不変条件(§5.1)を変える前に、保持・チケット・
+フェンシング・進捗を、結び付きを変えずに作って検証できる。そのため、方式 B(後続は、
+保持中に `session` の `action=request`、`after` で新しいリースを取り、その下で準備する)を、
+**内部の足場**としてだけ使う。方式 B を、出荷する最終形にはしない。
+
+| マイルストーン | 内容 | 結び付きの不変条件 |
+|---|---|---|
+| M1 | チケット、保持(`HELD`)、継続優先、フェンシング、進捗。後続は、保持中に `session`(`action=request`、`after`)で取得する | 変えない |
+| M2 | `plan_authorizes` を抽出する(動作は変えない)。§5.1 の各箇所を、この関数に置き換える | 変えない(同じ plan_hash) |
+| M3 | 版 3 の plan、`plan_bindings`、`plan_resolutions`(mock バックエンドのみ) | 先積みの plan だけ変わる |
+| M4 | ジョブに結び付く待ちエントリ、ジョブ専用リース、`waiting_parent`(fetch → build を含む) | 同上 |
+| M5 | 先積みを有効にする(`execute` / `flash` が、先積みの plan を受け付ける)。§6 のシナリオを通す | 同上 |
+
+M1 は、方式 A の完成時に、不要になれば取り除く。M1 の `session` の `after` を、A の完成後も
+残すかは、そのときに決める(未決事項に入れない。A の仕様には影響しない)。
 
 ## 6. 必須シナリオ: チェーン A が保持中に、チェーン B を積む
 
@@ -320,9 +406,11 @@ plan は、まだ存在しないリースに結び付けられない。次の二
 | t8 | B の flash がデバイスを得る。開始時にビルド成果物のハッシュを再検証 | B の成果物は、t4〜t8 の間、掃除から保護されている |
 | t9 | B の flash が成功。保持が始まる。B の test が先頭に入る | A の後続はいない |
 
-注記: 方式 B の場合、t2・t3 の flash と test は、あらかじめ積めない。B の build が終わった
-あと、クライアントが `session(action="request")` で順番を待ち、リースを得てから、flash と test を
-準備して積む。A の保持と継続優先は、同じように働く。
+注記: t8 の B の flash は、ジョブ専用リース(§5.2)の下で実行される。B のクライアントは、
+t2・t3 で flash と test をあらかじめ積んでおり、t5〜t8 の間に何かを呼ぶ必要はない。
+(中間段階の方式 B では、t2・t3 は積めない。B の build が終わったあと、クライアントが
+`session` の `action=request` で順番を待ち、リースを得てから、flash と test を準備して積む。
+A の保持と継続優先は、同じように働く。)
 
 ## 7. 利用者への進捗表示
 
@@ -343,7 +431,7 @@ plan は、まだ存在しないリースに結び付けられない。次の二
 | `chain_total`(任意) | 最初のジョブに付ける「全部で m 個」の表示用ヒント |
 
 - `chain_total` は拘束力のない表示用のヒント。ブローカーは、これを検証にも、順序づけにも
-  使わない。最初の `execute` の任意の項目 `chain_total_hint` として受け取り、チケットの
+  使わない。最初の `execute` / `flash` の任意の項目 `chain_total_hint` として受け取り、チケットの
   記録に持たせて、後続のチケットが引き継ぐ。
 - 秘匿の境界: 自分の principal のジョブの詳細だけを返す。他の principal については、
   「N 個のチェーンが前にいる」のような集計のみ。ジョブ ID・内容・principal は返さない。
@@ -380,6 +468,11 @@ plan は、まだ存在しないリースに結び付けられない。次の二
 - §13 の未確認: `self.session` の全参照の網羅、`device_requests` への `holding` 状態の追加可否、
   `needs_review` の終わり方とラッチの対応、デバイス単位の書き込み連番の有無、
   `Store.set_job` が状態変更の唯一の経路か、再起動時の復旧との整合。
+- 方式 A の未確認: `flash_binding.py`(`prepare_binding` / `live_binding` /
+  `validate_binding`)の内部が `session_id` に依存する範囲、`operator_timeline.py` と GUI の
+  読み取り側の `session_id` の使い方、`DeviceWait` をジョブに結び付けたときの、operator の
+  並べ替え・取り消しとの整合、`log_delivery`(リースの principal と origin を plan に入れる)
+  を先積みの plan でどう満たすか、ジョブ専用リースでの長い操作(`backup` の読み取り)の扱い。
 
 ## 10. 実装計画
 
@@ -388,39 +481,44 @@ plan は、まだ存在しないリースに結び付けられない。次の二
 | 0 | ツール面の計測と上限テスト(`DESIGN-MCP-SURFACE.md` の段階 0)。動作は変えない | `tools/list` の件数・文字数が上限を超えないこと | 動作は変えない |
 | 1 | エラーの可視化(§8) | 語彙の網羅テスト。語彙外の `ValueError` は `invalid_request` のまま。パスや例外の文章が出ないこと | 応答の `error` が、既存のコードに置き換わる場合がある。`invalid_request` を判定しているクライアントは、新しい固定コードでも動くか、確認が要る |
 | 2 | ジョブの種類の共通インターフェース: 「実行中か」「不確実か」の判定を、`broker.py` の列挙から、登録されたジョブの種類の一覧に | 既存のテスト一式。種類の追加で判定が漏れないことを確認する専用テスト | 動作は変えない |
-| 3a | チケット(`continues`、`after`)・デバイスの保持・継続優先(方式 B)・`waiting_parent`(fetch → build) | チケットの状態遷移、二重消費、他 principal、親の失敗、再起動、保持の失効・予算、継続優先、シナリオ(方式 B) | `continues` / `after` を使わないクライアントは、plan も応答も同じ |
-| 3b | デバイス手順の先積み(方式 A)。plan の `session_id` の結び付きの見直し | 承認・所有権・リース世代の境界を守るテスト。旧 plan の検証 | 要設計レビュー |
+| 3a | チケット(`continues`、`after`)・デバイスの保持・継続優先・フェンシング・`waiting_parent`(fetch → build)。デバイス側は、方式 B(`session` の `action=request`、`after`)を、内部の足場として使う(§5.4 の M1) | チケットの状態遷移、二重消費、他 principal、親の失敗、再起動、保持の失効・予算、継続優先、§13.3 のチェックリスト | `continues` / `after` を使わないクライアントは、plan も応答も同じ |
+| 3b | `plan_authorizes` の抽出。§5.1 の各箇所の `session_id` の比較を一つの関数に集める(§5.4 の M2) | 既存のテスト一式(変更なしで通ること) | 動作は変えない(同じ plan_hash) |
+| 3c | 先積み(方式 A): plan の版 3、`plan_bindings`、ジョブ専用リース、ジョブに結び付く待ちエントリ(§5.4 の M3〜M5) | 承認・所有権・キャンセル・秘匿・フェンシングの境界のテスト(§5.3)。旧 plan(`session_id` あり)の検証が、変わらないこと。§6 のシナリオ | 旧 plan は、そのまま動く。方式 A を使わないクライアントは影響を受けない |
 | 4 | 進捗フィールドと GUI(§7) | 秘匿の境界(他 principal の情報が出ないこと)、集計値 | 追加のみ |
 
-旧ツール名の扱い(`DESIGN-MCP-SURFACE.md` の切り替え計画)に従う。新しい項目を使わなければ、
-plan_hash も応答も変わらない。段階 3 以降も、各ジョブは別々に承認され、ブローカーは
-自分でジョブを足さず、flash・backup・restore を自動実行しない。
+旧ツール名は、切り替え時に一括で除かれる(`DESIGN-MCP-SURFACE.md` の切り替え計画)。
+新しい項目を使わなければ、plan_hash も応答も変わらない。段階 3 以降も、各ジョブは別々に
+明示的に要求され、ブローカーは自分でジョブを足さず、flash・backup・restore を自動実行しない。
 
 ## 11. `AGENTS.md` の境界との対応
 
 | 境界 | この設計での扱い |
 |---|---|
-| 副作用の明示 | チケットは「順序と保持」だけを表す。ジョブを自動で足さない。後続は、利用者の明示的な `execute` で積まれる |
-| backup/flash/restore は別操作 | 各ジョブは別々に承認・積み込みされる。保持は USB を開かない予約 |
+| 副作用の明示 | チケットは「順序と保持」だけを表す。ジョブを自動で足さない。後続は、利用者の明示的な `execute` / `flash` で積まれる |
+| backup/flash/restore は別操作 | 各ジョブは別々に明示的に要求される(`submit` と、`execute` または `flash`)。チケットも先積みも、一つの要求で複数をまとめない。保持は USB を開かない予約 |
 | 暗黙の rollback・再試行なし | 失敗は `chain_broken`/`ticket_void` で終わる。再試行しない |
-| 所有権・承認・キャンセル | チケットは親と同じ principal だけが使える。キャンセルはジョブ単位。operator は保持を解除できる |
+| 認証・所有権・キャンセル・承認 | チケットは親と同じ principal だけが使える。先積みの plan を実行するリースも、同じ principal(§5.3)。キャンセルはジョブ単位。operator は保持を解除できる。各ジョブの明示的な要求(承認)は、チケットでは代替されない |
 | 秘匿 | 進捗は自分のジョブのみ。他は集計だけ。エラーの語彙は固定 |
 | 実行中は所有を手放さない | 保持は、ジョブ終了後の予約であり、実行中の所有権の扱いは変えない |
 | 暗号的に検証したバイト列を使う | 開始時に再検証する(§4.6)。LKG の原子的な確定は変えない |
 
 ## 12. 未決事項
 
-1. デバイス手順の先積み(方式 A)を、段階 3b で行うか。それとも、方式 B(保持と優先のみ。
-   消費がリース付与の時点)で、まず十分か。方式 B は、決定事項 2(次の積み込みで消費)から
-   ずれる。
-2. plan の解決(§4.1)で、「親ジョブを名指しした plan を、親の完了時に解決して実行する」を、
-   「準備した時点の plan を、そのまま実行する」と同じ承認とみなしてよいか。
-3. チェーンの予算 30 分の定義(§4.4)。「デバイスの占有時間の合計(保持を含む)」でよいか。
-4. 非デバイスの親(fetch・build)のチケットの有効期限。デバイスの保持のような 60 秒では
-   ないはずだが、成果物の再検証が通る間か、plan の期限(1800 秒)に合わせるか。
-5. 保持中の要求の状態 `holding` と、デバイス単位の書き込み連番(§13.2 の (6))は、履歴の
+決定済み(利用者): 方式 A(先積み)を最終形とする。チケットは積み込み(`execute` または `flash`)の時点で消費する。
+方式 B は、方式 A に至る内部の足場としてだけ使う(§5.4)。
+
+1. チェーンの予算 30 分の定義(§4.4)。「デバイスの占有時間の合計(保持を含む)」でよいか。
+2. 非デバイスの親(fetch・build)のチケットの有効期限。デバイスの保持のような 60 秒ではない
+   はずだが、成果物の再検証が通る間か、plan の期限(1800 秒)に合わせるか。
+3. 保持中の要求の状態 `holding` と、デバイス単位の書き込み連番(§13.2 の (6))、
+   `plan_bindings` / `plan_resolutions` / `continuation_tickets` の三つの表は、履歴の
    スキーマ変更を伴う。許容するか。
-6. 方式 A(先積み)を段階 3b で行うか、方式 B(保持と優先のみ)で十分か(§5.1)。
+4. 先積みの対象から、`app_session`(`execute` の `op=app_input` がクライアントのリースの
+   capability を要する)と、長い読み取りを伴う `backup`(最大 9660 秒。`lease_seconds` の
+   上限 300 秒と合わない可能性)を外し、従来の結び付き(`session` の下)のままにしてよいか(§5.2)。
+5. ジョブ専用リースは、クライアントに capability を返さない。そのため、実行中に
+   `session` の `action=renew` で延長することはできない。plan の `lease_seconds` だけで
+   足りるか(§5.2)。
 
 ## 13. mutex としての不変条件
 
@@ -444,7 +542,7 @@ plan_hash も応答も変わらない。段階 3 以降も、各ジョブは別�
 |---|---|
 | FREE → OWNING | 既存の付与(即時取得、FIFO 先頭) |
 | OWNING → HELD | `continues: true` のデバイスジョブが**成功**で終わり、`_physical_busy()` と `_execution_uncertain()` がともに偽 |
-| HELD → OWNING | 同じ principal が、そのチケットを付けて取得(`session` の `action=request`、`after`)。新しい Session(新しい capability・generation)。同じ tick で HELD を解消 |
+| HELD → OWNING | 方式 A: 同じ principal の、そのチケットを消費した先積みのジョブの番が来て、ジョブ専用リース(新しい generation。capability は返さない)を付与する。同じ tick で HELD を解消。(内部の足場 M1 では、同じ principal が `session` の `action=request`、`after` で取得する) |
 | HELD → FREE | 60 秒の期限、チェーンの予算超過、operator の解除、親の void、再起動 |
 
 `reservation = {ticket_id, principal_id, work_session_id, deadline}`。`deadline` は
@@ -465,7 +563,9 @@ plan_hash も応答も変わらない。段階 3 以降も、各ジョブは別�
 - 場所: `request_device`(`self.waiters.append`)と `maintenance_tick`(`self.waiters[0]`)。
   `DeviceWait` に順序キーを持たせ、挿入位置を決める。
 - 確認: 現状は、待ち行列の要素 = クライアントが `request_device` を呼んだもの、という
-  暗黙の前提で、eligible かどうかの概念はない(確認済み)。順序キーの導入は、新規の設計。
+  暗黙の前提で、eligible かどうかの概念はない(確認済み)。順序キーの導入と、ジョブに結び付く
+  待ちエントリ(§5.2)の導入は、新規の設計。ジョブのエントリは、`waiting_parent` のあいだは
+  作らず、親が成功して eligible になった時点で作る。
 
 (2) **hold-and-wait の回避**
 - 問題: デバイスを持ったまま、別の競合する資源を待つ(または取れずに失敗する)。
@@ -610,5 +710,11 @@ plan_hash も応答も変わらない。段階 3 以降も、各ジョブは別�
     ジョブ ID・principal・内容は漏れない。
 16. ジョブが終端状態になる経路のうち、チケットの判定(void または保持の開始)を通らない
     ものはない。
-17. 保持中は、即時取得も、他の principal の `session` の `action=request` も、枠を取れない。
-18. 保持は USB を開かない。保持の開始・終了で、デバイスへのコマンドは送られない。
+17. 保持中は、即時取得も、他の principal の `session` の `action=request` も、他の principal の
+    先積みのジョブのエントリも、枠を取れない。
+18. 先積みのジョブを実行するリースは、そのジョブのために付与され(`plan_bindings`)、plan の
+    principal・origin と一致する。同じリースが、別のジョブの実行に再利用されない。
+19. 先積みのジョブは、開始時に、解決の記録との全項目一致、成果物のハッシュ検証、ファーム
+    ウェアのハッシュ・書き込み連番の確認(チケットを消費した場合)をすべて通る。どれか一つ
+    でも失敗すれば、デバイスの操作は始まらない。
+20. 保持は USB を開かない。保持の開始・終了で、デバイスへのコマンドは送られない。
