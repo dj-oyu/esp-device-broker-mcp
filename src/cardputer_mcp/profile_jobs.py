@@ -294,20 +294,21 @@ class ProfileJobs:
     def _binding_live(self, plan: dict[str, Any]) -> bool:
         broker = self.broker
         try:
-            registrations = self._registrations(plan["project_id"])
+            registration = self._registration(plan["project_id"])
+            accepted = self._registrations(plan["project_id"])
             authorized = self._authorized(plan["principal_id"], plan["origin"])
             return bool(
                 authorized
                 and not broker.closing
                 and broker._state_lock.is_locked
                 and plan["broker_epoch"] == broker.epoch
-                and plan["registration_sha256"] in registrations
+                and plan["registration_sha256"] in accepted
                 and (
                     "source_plan_deadline" not in plan
                     or self.broker._store().job(plan["job_id"]) is not None
                     or broker.clock() < plan["source_plan_deadline"]
                 )
-                and self._registrations(plan["project_id"]) == registrations
+                and self._registration(plan["project_id"]) == registration
                 and (
                     plan["test"] != TestName.BUILD.value
                     or hash_file(broker.settings.build_projects[plan["project_id"]].trusted_profile)

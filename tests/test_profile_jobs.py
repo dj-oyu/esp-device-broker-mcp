@@ -177,6 +177,8 @@ async def test_queue_cancel_read_scope_config_and_old_review_boundaries(
     await broker.profile_jobs.queue.join()
     assert broker.job("queued-cancel")["state"] == "cancelled" and not calls
     prepared = prepare(service, "changed-config")
+    before = broker.profile_jobs._registration("fixture")
+    # A location-only change (output root) keeps prepared plans valid ...
     broker.settings = broker.settings.model_copy(
         update={
             "build_projects": {
@@ -184,10 +186,24 @@ async def test_queue_cancel_read_scope_config_and_old_review_boundaries(
             }
         }
     )
+    assert broker.profile_jobs._registration("fixture") == before
+    location_only = broker.settings
+    # ... while a change to what would execute (the trusted profile) invalidates them.
+    broker.settings = broker.settings.model_copy(
+        update={
+            "build_projects": {
+                "fixture": project.model_copy(
+                    update={"trusted_profile": tmp_path / "other-profile.ps1"}
+                )
+            }
+        }
+    )
+    assert broker.profile_jobs._registration("fixture") != before
     with pytest.raises(BrokerError, match="profile_or_principal_no_longer_valid"):
         broker.profile_jobs.execute(
             ExecuteRequest(plan_hash=prepared["plan_hash"]), key.principal_id, key.origin.value
         )
+    broker.settings = location_only
     async with connect(service.url, service.keys["reader"].token) as reader:
         denied = await call(
             reader,
