@@ -1,5 +1,11 @@
 # Windows: Tunnel の準備
 
+> **ランチャーの引数が変わりました。** `Start-Cardputer*.ps1` は `-Exe`（パッケージ版 cardputer.exe）と
+> `-Profile`（broker プロファイル TOML）だけで起動します。`-Config` / `-Connect` / `-Gui` / `-EnableSerial` を使う
+> 以下の例は旧方式です。現在の使い方は [START-WINDOWS.md](START-WINDOWS.md) を参照してください
+> （既定で `--enable-serial` と Tunnel を起動し、`-NoSerial` / `-NoTunnel` で外せます。broker が既定の 127.0.0.1:8765 以外なら `-Url` が必要です）。
+
+
 まずローカルの認証付き mock で確認します。クラウド Tunnel の作成、API キー発行、
 アプリ登録、実機操作は自動実行しません。PowerShell 5.1/7 向けコードは静的レビュー済みですが、
 この更新の Windows ネイティブ起動と実際のクラウド接続はまだ未検証です。

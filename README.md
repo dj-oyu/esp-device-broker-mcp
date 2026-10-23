@@ -97,7 +97,7 @@ mode. See [GUI-WINDOWS.md](GUI-WINDOWS.md).
 
 ## Windows serial startup
 
-The bundled [Start-Cardputer.ps1](Start-Cardputer.ps1) now handles project location,
+The bundled [Start-Cardputer.ps1](Start-Cardputer.ps1) takes a packaged `cardputer.exe` and a broker profile (`-Exe`, `-Profile`) and handles
 both process-only credentials, a separate visible server console and authenticated
 readiness. See [START-WINDOWS.md](START-WINDOWS.md) for the one-command setup. This
 helper starts no USB operation. Device work requires a separate authenticated execution request.

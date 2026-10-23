@@ -1,108 +1,60 @@
 #requires -Version 5.1
 <#
-Run from your existing PowerShell prompt: & "path\to\MCP\Start-Cardputer.ps1"
-Keep this original prompt for clients. Do not double-click or invoke in another
-powershell -File process: a child cannot update its parent's environment.
-No USB operation is started. Every hardware job still needs local plan approval.
+Start ONE authenticated broker from a packaged cardputer.exe and a broker profile TOML.
+  & 'C:\path\to\Start-Cardputer.ps1' -Exe 'C:\path\to\cardputer.exe' -Profile 'C:\path\to\device.local.toml'
+Run it from your existing PowerShell prompt and keep that prompt for clients. Do not
+double-click or invoke in another powershell -File process: a child cannot update its
+parent's environment. No USB operation is started. Every hardware job still needs local
+plan approval.
+This script never reads the profile; the exe loads and validates it and refuses with its own
+reason (shown in the broker console). Because the script cannot know the profile's host/port,
+the pre-start listener check and the readiness check use -Url (default: the exe's own client
+default http://127.0.0.1:8765/mcp). A profile with another host/port needs a matching -Url.
+--enable-serial is passed by default (a mock profile accepts it); -NoSerial leaves it out and
+a serial profile is then refused with serial_runtime_opt_in_required. Relative paths inside the
+profile resolve against the profile's own folder. The exe's own lock still stops a second
+broker for the same device; this script does not probe lock files.
 #>
 [CmdletBinding()]
-param([string]$Config = '', [ValidateRange(10,60)][int]$ReadyTimeoutSeconds = 20, [switch]$Mock, [string]$KeyRegistry = '')
+param(
+    [string]$Exe = '',
+    [string]$Profile = '',
+    [string]$Url = 'http://127.0.0.1:8765/mcp',
+    [switch]$NoSerial,
+    [ValidateRange(10,60)][int]$ReadyTimeoutSeconds = 20,
+    [string]$KeyRegistry = ''
+)
 
 $ErrorActionPreference = 'Stop'
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'This launcher is for Windows PowerShell 5.1 or PowerShell 7 on Windows.'
 }
-$projectRoot = (Resolve-Path -LiteralPath $PSScriptRoot).ProviderPath
-if (!(Test-Path -LiteralPath (Join-Path $projectRoot 'pyproject.toml') -PathType Leaf)) {
-    throw 'Put Start-Cardputer.ps1 inside your cardputer-device-mcp folder, beside pyproject.toml.'
+if ([string]::IsNullOrWhiteSpace($Exe) -or [string]::IsNullOrWhiteSpace($Profile)) {
+    throw 'Both -Exe (path to cardputer.exe) and -Profile (broker profile TOML) are required.'
 }
-if ([string]::IsNullOrWhiteSpace($Config)) {
-    $Config = if ($Mock) { 'examples/tunnel-mock.toml' } else { 'device.local.toml' }
+if (!(Test-Path -LiteralPath $Exe -PathType Leaf)) { throw 'The -Exe file was not found.' }
+$exePath = (Resolve-Path -LiteralPath $Exe).ProviderPath
+if ([IO.Path]::GetExtension($exePath).ToLowerInvariant() -ne '.exe') {
+    throw '-Exe must be the packaged cardputer.exe.'
 }
-if (![IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $projectRoot $Config }
-$configPath = (Resolve-Path -LiteralPath $Config).ProviderPath
+if (!(Test-Path -LiteralPath $Profile -PathType Leaf)) { throw 'The -Profile file was not found.' }
+$profilePath = (Resolve-Path -LiteralPath $Profile).ProviderPath
+if ([IO.Path]::GetExtension($profilePath).ToLowerInvariant() -ne '.toml') {
+    throw '-Profile must be a broker profile .toml file.'
+}
+$brokerUri = $null
+if (![Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$brokerUri) -or $brokerUri.Scheme -ne 'http' -or
+    @('127.0.0.1', 'localhost') -notcontains $brokerUri.Host -or $brokerUri.Port -lt 1) {
+    throw '-Url must be a loopback http URL such as http://127.0.0.1:8765/mcp.'
+}
+# The broker and the readiness check run from the profile folder, so a relative state_dir resolves there.
+$profileDirectory = [IO.Path]::GetDirectoryName($profilePath)
 if ($KeyRegistry) {
-    if (![IO.Path]::IsPathRooted($KeyRegistry)) { $KeyRegistry = Join-Path $projectRoot $KeyRegistry }
+    if (!(Test-Path -LiteralPath $KeyRegistry -PathType Leaf)) { throw 'The -KeyRegistry file was not found.' }
     $KeyRegistry = (Resolve-Path -LiteralPath $KeyRegistry).ProviderPath
 }
-$pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
-if (!(Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
-    throw "Project environment is missing. First run: uv sync --project '$($projectRoot.Replace("'", "''"))' --frozen"
-}
-$uvMatches = @(Get-Command -Name uv -CommandType Application -All -ErrorAction Stop)
-$uvPath = $uvMatches[0].Path
 $shellName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
 $shellPath = Join-Path $PSHOME $shellName
-
-# This temporary file contains generic probe CODE ONLY, never credentials.
-$probeSource = @'
-import asyncio
-import json
-import socket
-import sys
-import time
-from contextlib import ExitStack
-from pathlib import Path
-from filelock import FileLock, Timeout
-from cardputer_mcp.broker import device_lock_path
-from cardputer_mcp.config import load_settings
-from cardputer_mcp.auth import load_environment_token
-from cardputer_mcp.client import call, connect
-from cardputer_mcp.models import Origin
-
-
-def preflight(settings, mock=False):
-    expected = "mock" if mock else "serial"
-    if settings.backend != expected:
-        return {"ok": False, "reason": "serial_config_required"}
-    with socket.socket() as sock:
-        sock.settimeout(0.3)
-        if sock.connect_ex((settings.host, settings.port)) == 0:
-            return {"ok": False, "reason": "listener_exists"}
-    paths = [device_lock_path(settings.backend)]
-    if settings.state_dir.exists():
-        paths.append(settings.state_dir / "broker.lockfile")
-    try:
-        with ExitStack() as stack:
-            for path in paths:
-                stack.enter_context(FileLock(str(path), timeout=0))
-    except Timeout:
-        return {"ok": False, "reason": "broker_locked"}
-    return {"ok": True, "url": f"http://{settings.host}:{settings.port}/mcp"}
-
-
-async def readiness(settings, seconds):
-    url = f"http://{settings.host}:{settings.port}/mcp"
-    token = load_environment_token(Origin.LOCAL)
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        try:
-            async with asyncio.timeout(1.5):
-                async with connect(url, token) as client:
-                    status = await call(client, "device_status")
-            if not status.get("ok") or status.get("backend") != settings.backend:
-                return {"ok": False, "reason": "unexpected_broker"}
-            if status.get("active_job") or status.get("owner") or status.get("hardware_connected"):
-                return {"ok": False, "reason": "broker_not_idle"}
-            return {"ok": True, "needs_review": bool(status.get("needs_review"))}
-        except Exception:
-            await asyncio.sleep(0.2)
-    return {"ok": False, "reason": "readiness_timeout"}
-
-
-def main():
-    try:
-        settings = load_settings(Path(sys.argv[2]))
-        result = preflight(settings, len(sys.argv) > 4 and sys.argv[4] == "mock") if sys.argv[1] == "preflight" else asyncio.run(
-            readiness(settings, float(sys.argv[3])))
-    except Exception:
-        result = {"ok": False, "reason": "probe_failed_check_config_and_uv_sync"}
-    print(json.dumps(result))
-
-
-if __name__ == "__main__":
-    main()
-'@
 
 function Quote-PowerShellLiteral([string]$Value) { return "'" + $Value.Replace("'", "''") + "'" }
 function Quote-FileArgument([string]$Value) {
@@ -115,12 +67,19 @@ function New-RunToken {
     try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
     return -join ($bytes | ForEach-Object { $_.ToString('x2') })
 }
-function Invoke-Probe([string]$Mode, [int]$TimeoutMilliseconds) {
+function Test-Listener {
+    $client = New-Object Net.Sockets.TcpClient
+    try {
+        $connect = $client.BeginConnect('127.0.0.1', $brokerUri.Port, $null, $null)
+        return ($connect.AsyncWaitHandle.WaitOne(300) -and $client.Connected)
+    } catch { return $false } finally { $client.Close() }
+}
+# One bounded authenticated `status` (the existing device_status call): no lease, USB or device command.
+function Get-BrokerStatus {
     $info = New-Object Diagnostics.ProcessStartInfo
-    $info.FileName = $pythonPath
-    $info.Arguments = (Quote-FileArgument $probeFile) + ' ' + $Mode + ' ' +
-        (Quote-FileArgument $configPath) + ' ' + ($ReadyTimeoutSeconds - 3) + ' ' + $(if ($Mock) { 'mock' } else { 'serial' })
-    $info.WorkingDirectory = $projectRoot
+    $info.FileName = $exePath
+    $info.Arguments = '--url ' + (Quote-FileArgument $Url) + ' --auth-source environment status'
+    $info.WorkingDirectory = $profileDirectory
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
@@ -131,32 +90,28 @@ function Invoke-Probe([string]$Mode, [int]$TimeoutMilliseconds) {
         [void]$probe.Start()
         $stdout = $probe.StandardOutput.ReadToEndAsync()
         $stderr = $probe.StandardError.ReadToEndAsync()
-        if (!$probe.WaitForExit($TimeoutMilliseconds)) {
-            # Only our own read-only probe is stopped; never the broker or another process.
+        if (!$probe.WaitForExit(5000)) {
+            # Only our own read-only status call is stopped; never the broker or another process.
             $probe.Kill()
             [void]$probe.WaitForExit(2000)
-            throw 'Read-only startup probe timed out. Inspect the server console; no broker was stopped.'
+            return $null
         }
         $text = $stdout.GetAwaiter().GetResult()
         [void]$stderr.GetAwaiter().GetResult()
-        if ($probe.ExitCode -ne 0) { throw 'Startup probe failed. Check config and run uv sync --frozen.' }
-        return ConvertFrom-Json -InputObject $text -ErrorAction Stop
+        try { return ConvertFrom-Json -InputObject $text -ErrorAction Stop } catch { return $null }
     } finally { $probe.Dispose() }
 }
 
-$probeFile = [IO.Path]::GetTempFileName()
 $tokensChanged = $false
 $ready = $false
 $serverOpened = $false
 $previousLocal = [Environment]::GetEnvironmentVariable('CARDPUTER_LOCAL_TOKEN', 'Process')
 $previousRemote = [Environment]::GetEnvironmentVariable('CARDPUTER_REMOTE_TOKEN', 'Process')
 try {
-    [IO.File]::WriteAllText($probeFile, $probeSource, (New-Object Text.UTF8Encoding($false)))
-    $check = Invoke-Probe 'preflight' 10000
-    if (!$check.ok) {
-        throw "Startup refused ($($check.reason)). If your own broker is running, check that no job is active, then stop it in its console. No existing broker or credentials were changed."
+    if (Test-Listener) {
+        throw "Startup refused (listener_exists on $($brokerUri.Host):$($brokerUri.Port)). If your own broker is running, check that no job is active, then stop it in its console; if the profile uses another port, pass -Url. No existing broker or credentials were changed."
     }
-    # Both fresh values are made together, only after the existing-broker checks.
+    # Both fresh values are made together, only after the existing-listener check.
     $newLocal = New-RunToken
     do { $newRemote = New-RunToken } while ($newLocal -eq $newRemote)
     $tokensChanged = $true
@@ -166,25 +121,37 @@ try {
     $newRemote = $null
 
     # EncodedCommand contains paths/commands only. Tokens travel only via inherited environment.
+    # --enable-serial only permits the backend; USB opens only on approved device work.
     $serverCommand = '$ErrorActionPreference = ''Stop''; Set-Location -LiteralPath ' +
-        (Quote-PowerShellLiteral $projectRoot) + '; & ' + (Quote-PowerShellLiteral $uvPath) +
-        ' run --project ' + (Quote-PowerShellLiteral $projectRoot) +
-        ' --no-sync cardputer --auth-source environment serve --config ' +
-        (Quote-PowerShellLiteral $configPath) + $(if ($KeyRegistry) { ' --key-registry ' + (Quote-PowerShellLiteral $KeyRegistry) } else { '' }) + $(if ($Mock) { ' --require-auth; ' } else { ' --enable-serial; ' }) +
+        (Quote-PowerShellLiteral $profileDirectory) + '; & ' + (Quote-PowerShellLiteral $exePath) +
+        ' --auth-source environment serve --config ' + (Quote-PowerShellLiteral $profilePath) +
+        $(if ($KeyRegistry) { ' --key-registry ' + (Quote-PowerShellLiteral $KeyRegistry) } else { '' }) +
+        ' --require-auth' + $(if (!$NoSerial) { ' --enable-serial' } else { '' }) + '; ' +
         '$brokerExit = $LASTEXITCODE; Write-Host (''Broker exited (code {0}). Review messages above.'' -f $brokerExit)'
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($serverCommand))
-    [void](Start-Process -FilePath $shellPath -WorkingDirectory $projectRoot -PassThru -ArgumentList (
+    [void](Start-Process -FilePath $shellPath -WorkingDirectory $profileDirectory -PassThru -ArgumentList (
         '-NoLogo -NoProfile -NoExit -EncodedCommand ' + $encoded))
     $serverOpened = $true
-    $status = Invoke-Probe 'ready' ($ReadyTimeoutSeconds * 1000)
-    if (!$status.ok) { throw "Authenticated startup not confirmed ($($status.reason)). Inspect the server console." }
-    $ready = $true
-    Set-Location -LiteralPath $projectRoot
-    Write-Host $(if ($Mock) { 'Ready: authenticated MOCK broker is idle. No USB backend is enabled.' } else { 'Ready: authenticated serial broker is idle. USB is closed; no device command was sent.' })
-    Write-Host "Current project: $projectRoot"
+    $deadline = [DateTime]::UtcNow.AddSeconds($ReadyTimeoutSeconds)
+    $status = $null
+    $lastReason = 'readiness_timeout'
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $status = Get-BrokerStatus
+        if ($null -ne $status -and $status.ok -eq $true -and $status.backend) {
+            if ($status.active_job -or $status.owner -or $status.hardware_connected) {
+                $lastReason = 'broker_not_idle'
+            } else { $ready = $true }
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (!$ready) {
+        throw "Authenticated startup not confirmed ($lastReason). Read the server console for the exe's own refusal (for example serial_runtime_opt_in_required, or a profile error); if --enable-serial was the cause rerun with -NoSerial; if the profile uses another port, pass -Url."
+    }
+    Write-Host "Ready: authenticated $($status.backend) broker is idle. USB is closed; no device command was sent."
+    Write-Host "Profile: $profilePath"
     Write-Host 'Use THIS original PowerShell window for client commands:'
-    Write-Host ('uv run --project ' + (Quote-PowerShellLiteral $projectRoot) +
-        ' --no-sync cardputer --url ' + (Quote-PowerShellLiteral $check.url) +
+    Write-Host ('& ' + (Quote-PowerShellLiteral $exePath) + ' --url ' + (Quote-PowerShellLiteral $Url) +
         ' --auth-source environment status')
     if ($status.needs_review) { Write-Warning 'Earlier work needs offline review before new device jobs can run.' }
 } catch {
@@ -197,5 +164,4 @@ try {
         [Environment]::SetEnvironmentVariable('CARDPUTER_LOCAL_TOKEN', $previousLocal, 'Process')
         [Environment]::SetEnvironmentVariable('CARDPUTER_REMOTE_TOKEN', $previousRemote, 'Process')
     }
-    Remove-Item -LiteralPath $probeFile -ErrorAction SilentlyContinue
 }
