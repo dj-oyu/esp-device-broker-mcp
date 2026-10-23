@@ -62,6 +62,7 @@ from .models import (
     TestName,
 )
 from .operator_api import OperatorAPI
+from .public_reasons import public_reason
 from .registry_defaults import LiveKeyRegistry, default_key_registry_path
 from .source_preflight import settings_identity, source_inventory, source_usage
 from .source_resources import resource_report
@@ -450,8 +451,8 @@ def _result(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
     except SourceError as exc:
         return {"ok": False, **exc.public()}
-    except ValueError:
-        return {"ok": False, "error": "invalid_request"}
+    except ValueError as exc:
+        return {"ok": False, "error": public_reason(exc)}
 
 
 def create_server(
@@ -698,8 +699,8 @@ def create_server(
             return {"ok": False, **exc.public()}
         except BrokerError as exc:
             return {"ok": False, "error": str(exc)}
-        except ValueError:
-            return {"ok": False, "error": "invalid_request"}
+        except ValueError as exc:
+            return {"ok": False, "error": public_reason(exc)}
 
     @server.tool(annotations=read_only)
     async def device_status(ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -813,8 +814,8 @@ def create_server(
                 return {"ok": False, "error": str(exc)}
             except SourceError as exc:
                 return {"ok": False, **exc.public()}
-            except ValueError:
-                return {"ok": False, "error": "invalid_request"}
+            except ValueError as exc:
+                return {"ok": False, "error": public_reason(exc)}
         return _result(prepare)
 
     @server.tool(annotations=execution)
@@ -1074,8 +1075,8 @@ def create_server(
             return {"ok": False, "error": str(exc)}
         except SourceError as exc:
             return {"ok": False, **exc.public()}
-        except ValueError:
-            return {"ok": False, "error": "invalid_request"}
+        except ValueError as exc:
+            return {"ok": False, "error": public_reason(exc)}
 
     @server.tool(annotations=read_only)
     async def list_apps(ctx: Context[Any, Any]) -> dict[str, Any]:
