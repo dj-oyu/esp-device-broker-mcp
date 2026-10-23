@@ -24,7 +24,8 @@ class BuildLocationTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        # Registered roots are pinned to their resolved path (Windows temp may use 8.3 names).
+        self.root = Path(self.temporary.name).resolve()
         self.state = self.root / "state"
         self.output = self.root / "short"
         self.fp = "a" * 64
