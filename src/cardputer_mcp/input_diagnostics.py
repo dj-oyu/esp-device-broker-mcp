@@ -4,42 +4,22 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from .models import (
-    AcquireRequest,
-    BuildLogRequest,
-    CancelDeviceRequest,
-    CancelRequest,
-    CloseWorkSessionRequest,
-    CreateWorkSessionRequest,
-    ExecuteRequest,
-    JobRequest,
-    LeaseRequest,
-    LogRequest,
-    PrepareRequest,
-    RenewRequest,
-    RequestDeviceRequest,
-    ResumeWorkSessionRequest,
-    SourceResourcesRequest,
+from .surface import (
+    CancelToolRequest,
+    ExecuteToolRequest,
+    FlashToolRequest,
+    SessionRequest,
+    StatusRequest,
+    SubmitRequest,
 )
 
 REQUEST_MODELS: dict[str, type[BaseModel]] = {
-    "acquire_session": AcquireRequest,
-    "renew_session": RenewRequest,
-    "release_session": LeaseRequest,
-    "prepare_test": PrepareRequest,
-    "execute_test": ExecuteRequest,
-    "job_status": JobRequest,
-    "read_logs": LogRequest,
-    "read_build_logs": BuildLogRequest,
-    "read_source_resources": SourceResourcesRequest,
-    "read_device_logs": JobRequest,
-    "read_capture": JobRequest,
-    "cancel_job": CancelRequest,
-    "create_work_session": CreateWorkSessionRequest,
-    "resume_work_session": ResumeWorkSessionRequest,
-    "request_device": RequestDeviceRequest,
-    "cancel_device_request": CancelDeviceRequest,
-    "close_work_session": CloseWorkSessionRequest,
+    "status": StatusRequest,
+    "submit": SubmitRequest,
+    "execute": ExecuteToolRequest,
+    "flash": FlashToolRequest,
+    "cancel": CancelToolRequest,
+    "session": SessionRequest,
 }
 
 # These are model-validator constants, not error messages derived from input.
@@ -89,8 +69,6 @@ def invalid_arguments(
 
 
 def validate_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
-    if name == "list_registered_targets" and arguments:
-        return invalid_arguments("unexpected_field")
     model = REQUEST_MODELS.get(name)
     if model is None:
         return None
