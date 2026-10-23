@@ -154,6 +154,7 @@ def _lifecycle_report(
     policy = retention_evidence(store, project, principal, epoch, now=now)
     visible = []
     reason_counts: dict[str, int] = {}
+    shared_candidates = 0
     for record in inventory["records"]:
         proofs = policy["sources"].get(record["name"])
         if not proofs:
@@ -163,8 +164,13 @@ def _lifecycle_report(
         blockers = [*reasons, *([] if policy["complete"] else ["references_incomplete"])]
         present = record.get("payload_present", True)
         candidate = bool(present and policy["complete"] and not reasons)
+        # Capacity is shared project-wide: other principals' entries are counted in
+        # aggregate (no names, jobs or receipts) but only this principal's are listed.
         for reason in reasons:
             reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if proof["principal"] != principal:
+            shared_candidates += candidate
+            continue
         visible.append(
             {
                 "source_receipt": record["name"],
@@ -198,7 +204,9 @@ def _lifecycle_report(
         "protection_reason_counts": reason_counts,
         "reclamation_candidate_payloads": sum(
             row["payload_reclamation_candidate"] for row in visible
-        ),
+        )
+        + shared_candidates,
+        "capacity_scope": "project_shared_all_principals",
         "scan_complete": True,
         "retention_policy": "bounded_unreferenced_payload_reclamation_on_explicit_fetch",
         "cleanup_action": "automatic_on_fetch_preserve_receipts_unknown_and_referenced_entries",

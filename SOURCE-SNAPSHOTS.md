@@ -120,8 +120,13 @@ when all slots are occupied. A new fetch job records that original receipt; its
 original successful job remains the authorization evidence. Failed or uncertain
 publication is never reusable. Duplicate fetch jobs do not duplicate payloads.
 
-If new bytes need space, the explicit fetch reclaims the oldest eligible payloads
-under an OS cache lock. Current executable source-build plans, unfinished jobs,
+The 16-payload / 2 GiB budget is shared by every principal of a project. If new
+bytes need space, the explicit fetch reclaims the oldest eligible payloads, whichever
+principal fetched them, under an OS cache lock. Only the `source` payload of another
+principal's receipt is reclaimed: its immutable receipt, durable job evidence and
+ownership are unchanged, and reuse/build authority still belongs to the receipt's
+own principal (a receipt cannot be borrowed). Issuing a new key therefore no longer
+strands the capacity used by earlier keys. Current executable source-build plans, unfinished jobs,
 executable/unfinished firmware operations and the current LKG source association
 protect their payloads. Historical LKG associations retain provenance, receipts
 and firmware binaries without permanently reserving their old source payloads.
@@ -179,8 +184,11 @@ resident/receipt-only entries, counts/bytes and eligibility. The additive
 `provenance_reasons` separately reports immutable receipts and historical LKG
 associations. The existing `protection_reasons` field retains its receipt-evidence
 reason and current blockers. History-only provenance is not a payload blocker.
-Other principals and unknown names stay
-private and consume capacity. This read never reclaims or grants cleanup.
+Other principals' entries are never listed (no names, jobs or receipts); they are
+counted in aggregate in `other_or_unclassified_snapshots`, in
+`reclamation_candidate_payloads` and in `protection_reason_counts` (capacity scope
+`project_shared_all_principals`). Unknown names stay private and consume capacity.
+This read never reclaims or grants cleanup.
 Truncated, corrupt or unresolved reference evidence disables reclamation with
 `source_cache_references_incomplete`. If no eligible payload can free enough space,
 `source_cache_protected` explains the protected/unknown/unowned capacity blocker;

@@ -237,13 +237,50 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
             "executable_firmware_operation", policy["protected"][first[1]["source_receipt"]]
         )
 
-    def test_no_candidate_explained_and_other_owner_never_reclaimed(self):
+    def test_capacity_is_shared_so_another_principals_unreferenced_payload_is_reclaimed(self):
         first = self.fetch(1, principal="other")
+        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
+            second = self.fetch(2)
+        self.assertFalse(self.payload(first).exists())
+        self.assertTrue((self.root / "cache" / first["source_receipt"] / "receipt.json").exists())
+        self.assertTrue(self.payload(second).exists())
+        self.assertEqual(self.downloads, 2)
+
+    def test_other_principals_referenced_payload_is_still_protected(self):
+        first = self.fetch(1, principal="other")
+        self.add(
+            {
+                "job_id": "build-other",
+                "test": "firmware_build",
+                "broker_epoch": "epoch",
+                "project_id": "fixture",
+                "build_principal": "other",
+                "source_receipt": first["source_receipt"],
+            },
+            "running",
+        )
         with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
             with self.assertRaisesRegex(SourceError, "source_cache_protected"):
                 self.fetch(2)
         self.assertTrue(self.payload(first).exists())
         self.assertEqual(self.downloads, 1)
+
+    def test_same_commit_of_another_principal_is_not_reused_across_owners(self):
+        first = self.fetch(1, principal="other")
+        second = self.fetch(1, job="source-1-owner")
+        self.assertNotEqual(first["source_receipt"], second["source_receipt"])
+        self.assertEqual(self.downloads, 2)
+
+    def test_report_aggregates_other_principals_without_exposing_them(self):
+        self.fetch(1, principal="other")
+        self.fetch(2)
+        report = resource_report(
+            self.store, "fixture", "owner", self.snapshots.inventory("fixture"), epoch="epoch"
+        )
+        self.assertEqual(len(report["owned_snapshots"]), 1)
+        self.assertEqual(report["other_or_unclassified_snapshots"], 1)
+        self.assertEqual(report["reclamation_candidate_payloads"], 2)
+        self.assertEqual(report["capacity_scope"], "project_shared_all_principals")
 
     def test_reference_truncation_unresolved_recovery_fail_closed(self):
         first = self.fetch(1)

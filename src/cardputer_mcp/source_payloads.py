@@ -42,6 +42,7 @@ def metadata(
     if digest(raw) != receipt:
         raise SourceError("source_receipt_changed")
     value = json.loads(raw)
+    owner = value.get("principal")
     proof = next(
         (
             item
@@ -56,7 +57,7 @@ def metadata(
             job.get("state") not in {"failed", "cancelled"}
             or evidence["publications"].get(receipt) != value.get("fetch_job_id")
             or job.get("plan", {}).get("test") != "firmware_fetch_source"
-            or job.get("plan", {}).get("source_principal") != plan["source_principal"]
+            or job.get("plan", {}).get("source_principal") != owner
             or job.get("plan", {}).get("project_id") != plan["project_id"]
         ):
             return None  # Uncertain publication never grants a receipt or removal.
@@ -65,7 +66,7 @@ def metadata(
     if (
         value.get("schema_version") not in (1, 2)
         or value.get("project_id") != plan["project_id"]
-        or value.get("principal") != plan["source_principal"]
+        or value.get("principal") != expected.get("source_principal")
         or value.get("repository") != registration.github_repository
         or value.get("commit") != expected.get("source_commit")
         or value.get("registration_sha256") != expected.get("source_registration_sha256")
@@ -137,7 +138,7 @@ def _reclaim(
     expected = {
         "receipt": receipt,
         "project_id": plan["project_id"],
-        "principal": plan["source_principal"],
+        "principal": value["principal"],
     }
     names = {item.name for item in root.iterdir()}
     payload_bytes = 0
@@ -160,7 +161,7 @@ def _reclaim(
     else:
         if removing.exists():
             raise SourceError("source_cache_unknown_entry")
-        snapshots.resolve(plan["project_id"], receipt, plan["source_principal"])
+        snapshots.resolve(plan["project_id"], receipt, value["principal"])
         payload_bytes = sum(item["bytes"] for item in value["files"].values())
     _fresh(snapshots, receipt, live)
     if dry_run:
@@ -208,10 +209,10 @@ def _pending(
         job = evidence["jobs"].get(value.get("job_id"), {})
         if (
             value.get("project_id") != plan["project_id"]
-            or value.get("principal") != plan["source_principal"]
+            or not isinstance(value.get("principal"), str)
             or value.get("registration_sha256") != plan["source_registration_sha256"]
             or job.get("state") not in {"succeeded", "failed", "cancelled"}
-            or job.get("plan", {}).get("source_principal") != plan["source_principal"]
+            or job.get("plan", {}).get("source_principal") != value.get("principal")
             or job.get("plan", {}).get("project_id") != plan["project_id"]
         ):
             continue
@@ -248,6 +249,7 @@ def admit_source(
         successful_origin = any(item["job_id"] == value["fetch_job_id"] for item in proofs)
         if (
             successful_origin
+            and value["principal"] == plan["source_principal"]
             and value["commit"] == plan["source_commit"]
             and not (path / "reclaim.json").exists()
         ):
