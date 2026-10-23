@@ -29,7 +29,7 @@ def chain(tmp_path):
     registration = SimpleNamespace(
         selector=config().selector,
         project_id="public-project",
-        model_dump_json=lambda: "registered",
+        model_dump_json=lambda **_: "registered",
     )
     build = {
         "test": "firmware_build",

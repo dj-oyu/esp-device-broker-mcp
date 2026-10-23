@@ -26,6 +26,7 @@ from .fixed_diagnostic import (
 )
 from .manifest_export import validate_plan_export
 from .models import Digest, Identifier, StrictModel
+from .registration_digest import flash_digests
 
 if TYPE_CHECKING:
     from .broker import Broker
@@ -131,8 +132,7 @@ def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
         registration is None
         or serial is None
         or serial.selector != registration.selector
-        or hashlib.sha256(registration.model_dump_json().encode()).hexdigest()
-        != flash.get("registration_sha256")
+        or flash.get("registration_sha256") not in flash_digests(registration)
     ):
         raise ValueError("collector_device_binding_invalid")
     broker.firmware_flash.settings = broker.settings

@@ -1,11 +1,11 @@
 """Immutable flash provenance checks; these never grant execution authority."""
 
-import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .diagnostic_registry import same_diagnostic_selection
 from .models import TestName
+from .registration_digest import project_digest
 
 if TYPE_CHECKING:
     from .broker import Broker
@@ -24,7 +24,7 @@ class FlashBinding:
 def _project_hash(broker: "Broker", plan: dict[str, Any]) -> str:
     registration = broker.settings.flash_devices[plan["device_id"]]
     project = broker.settings.build_projects[registration.project_id]
-    return hashlib.sha256(project.model_dump_json().encode()).hexdigest()
+    return project_digest(project)
 
 
 def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:

@@ -54,7 +54,9 @@ The existing free-space checks, artifact and log bounds are not a hard disk quot
 for arbitrary scripts. Do not register untrusted code for this execution mode.
 
 Exact plans, source/profile/tool fingerprints, current principal, receipt ownership
-and integrity are still checked. Repeated execute calls return the durable job
+and integrity are still checked. The registration digest covers what executes (project
+directory, profile, tool paths/hashes, repositories, allow flags) but not output
+locations such as `build_root` or the source `cache_root` (see SOURCE-SNAPSHOTS.md). Repeated execute calls return the durable job
 rather than rebuilding. A connection disconnect does not cancel or replay work.
 The whole build job has an 1800-second execution deadline independent of transport
 or physical lease lifetime. Principal revocation/expiry, registration change,

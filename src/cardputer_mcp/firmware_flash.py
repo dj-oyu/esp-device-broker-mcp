@@ -33,6 +33,7 @@ from .flash_lkg_store import FirmwareSnapshots
 from .flash_manifest import _file, verify_bundle
 from .manifest_export import make_manifest_export, manifest_export_sha256, validate_plan_export
 from .models import TestName
+from .registration_digest import flash_digest
 
 FLASH_ACTIONS: dict[str, Operation] = {
     "firmware_backup": "backup",
@@ -403,7 +404,7 @@ class FirmwareFlash:
                 elf_digest = registration.original_elf_sha256
                 if elf_digest is None or image_digest is None:
                     raise FlashFailure("restore_original_firmware_receipt_required")
-        registration_digest = hashlib.sha256(registration.model_dump_json().encode()).hexdigest()
+        registration_digest = flash_digest(registration)
         op = OperationPlan(
             operation,
             request.job_id,
