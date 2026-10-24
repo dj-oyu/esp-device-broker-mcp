@@ -110,6 +110,26 @@ FLASH_FIELDS = {
 }
 
 
+def flash_readiness(registration: Any, has_lkg: bool) -> dict[str, Any]:
+    """What a registered device allows and what a first flash still needs; no hardware.
+
+    Without a verified LKG, a flash must name a successful full backup of the device
+    (`firmware_backup`, then `backup_job_id`). If backup is not enabled, that first
+    step is unavailable until the local registration allows it.
+    """
+    operations = {
+        name: getattr(registration, "allow_" + name) is True
+        for name in ("backup", "flash", "restore")
+    }
+    if has_lkg:
+        baseline = "verified_lkg"
+    elif operations["backup"]:
+        baseline = "initial_full_backup_required"
+    else:
+        baseline = "initial_full_backup_required_backup_not_enabled"
+    return {"operations": operations, "flash_baseline": baseline}
+
+
 def operation_from_plan(plan: dict[str, Any]) -> OperationPlan:
     return OperationPlan(
         plan["flash_operation"],

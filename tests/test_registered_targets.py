@@ -4,12 +4,14 @@ import json
 from dataclasses import replace
 
 import httpx2
+import pytest
 from test_authenticated_mock import LOCAL, REMOTE
 from test_authenticated_mock import authenticated_mock as authenticated_mock
 from test_http_integration import service as service
 
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import BuildProject, Settings, SourceRepository
+from cardputer_mcp.firmware_flash import flash_readiness
 from cardputer_mcp.flash_models import FlashDevice
 from cardputer_mcp.server import RequestAuth
 
@@ -40,6 +42,12 @@ def registrations(tmp_path):
         allow_restore=False,
     )
     return project, device
+
+
+BLOCKED = {
+    "operations": {"backup": False, "flash": False, "restore": False},
+    "flash_baseline": "initial_full_backup_required_backup_not_enabled",
+}
 
 
 def assert_no_work(resident):
@@ -89,7 +97,10 @@ async def test_registered_targets_exact_ids_only_and_current_settings(
         assert result == {
             "ok": True,
             "build_projects": [{"project_id": "alpha-project"}, {"project_id": "z-project"}],
-            "flash_devices": [{"device_id": "alpha-device"}, {"device_id": "z-device"}],
+            "flash_devices": [
+                {"device_id": "alpha-device", **BLOCKED},
+                {"device_id": "z-device", **BLOCKED},
+            ],
         }
         rendered = json.dumps(result)
         for private in ("SYNTHETIC_PRIVATE", str(tmp_path), LOCAL, REMOTE, "c" * 64, "d" * 64):
@@ -101,7 +112,7 @@ async def test_registered_targets_exact_ids_only_and_current_settings(
         assert await call(client, "status", {"view": "targets"}) == {
             "ok": True,
             "build_projects": [],
-            "flash_devices": [{"device_id": "new-device"}],
+            "flash_devices": [{"device_id": "new-device", **BLOCKED}],
         }
         resident.settings = resident.settings.model_copy(update={"flash_devices": {}})
         assert await call(client, "status", {"view": "targets"}) == {
@@ -179,3 +190,23 @@ async def test_registered_targets_metadata_empty_input_and_read_only(authenticat
             assert denied.status_code == 401
             assert denied.json() == {"error": "authentication_required"}
     assert_no_work(resident)
+
+
+@pytest.mark.parametrize(
+    ("allow", "has_lkg", "baseline"),
+    [
+        (dict(allow_backup=True, allow_flash=True), True, "verified_lkg"),
+        (dict(allow_backup=True, allow_flash=True), False, "initial_full_backup_required"),
+        (dict(allow_flash=True), False, "initial_full_backup_required_backup_not_enabled"),
+        (dict(allow_flash=True), True, "verified_lkg"),
+    ],
+)
+def test_flash_readiness_names_the_missing_first_step(tmp_path, allow, has_lkg, baseline):
+    _, device = registrations(tmp_path)
+    readiness = flash_readiness(device.model_copy(update=allow), has_lkg)
+    assert readiness["flash_baseline"] == baseline
+    assert readiness["operations"] == {
+        "backup": allow.get("allow_backup", False),
+        "flash": allow.get("allow_flash", False),
+        "restore": False,
+    }
