@@ -10,7 +10,7 @@ from functools import partial
 from math import isfinite
 from pathlib import Path
 from time import time
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, overload
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -24,6 +24,7 @@ from mcp.types import (
 from pydantic import TypeAdapter, ValidationError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from . import cancellation
 from .app_models import AppCommandRequest, AppEventsRequest
 from .auth import AuthState
 from .broker import Broker, BrokerError
@@ -131,6 +132,33 @@ class RequestAuth:
         except (KeyRegistryError, ValueError, OSError):
             return False
         return False
+
+
+def require_principal(
+    authenticate: Callable[[str | None], Principal | None],
+    header: str | None,
+    scope: KeyScope,
+    *,
+    auth_required: bool,
+    honor_auth_required: bool,
+) -> Principal | None:
+    """The one principal/scope check behind every MCP handler.
+
+    `honor_auth_required=True` is the legacy-mock exception: when this server does
+    not require authentication the check is skipped and None is returned (status,
+    logs, job status, lease actions on a session capability, immediate acquire).
+    `honor_auth_required=False` always authenticates, even on a mock server without
+    configured credentials, where it raises `authentication_required` (logical work
+    sessions, registered-project and deferred jobs, principal-bound reads).
+    """
+    if honor_auth_required and not auth_required:
+        return None
+    owner = authenticate(header)
+    if owner is None:
+        raise BrokerError("authentication_required")
+    if scope not in owner.scopes:
+        raise BrokerError("insufficient_scope")
+    return owner
 
 
 class SafeMCPServer(MCPServer[Any]):
@@ -444,57 +472,37 @@ def create_server(
     resident.principal_valid = authenticator.principal_valid
     runtime_path = settings.state_dir / "runtime-auth.json"
 
-    def principal(ctx: Context[Any, Any], scope: KeyScope) -> Principal:
+    @overload
+    def require(
+        ctx: Context[Any, Any], scope: KeyScope, *, honor_auth_required: Literal[False]
+    ) -> Principal: ...
+    @overload
+    def require(
+        ctx: Context[Any, Any], scope: KeyScope, *, honor_auth_required: bool
+    ) -> Principal | None: ...
+    def require(
+        ctx: Context[Any, Any], scope: KeyScope, *, honor_auth_required: bool
+    ) -> Principal | None:
+        """Every MCP handler's principal/scope check; see `require_principal`."""
+        if honor_auth_required and not auth_required:
+            return None  # skipped before the request headers are read
         headers = ctx.headers
-        owner = authenticator.authenticate(headers.get("authorization") if headers else None)
-        if owner is None:
-            raise BrokerError("authentication_required")
-        if scope not in owner.scopes:
-            raise BrokerError("insufficient_scope")
-        return owner
-
-    def read(ctx: Context[Any, Any], action: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-        if auth_required:
-            principal(ctx, "read")
-        return action()
-
-    def owned(
-        request: LeaseRequest | PrepareRequest | ExecuteRequest | CancelRequest,
-        ctx: Context[Any, Any],
-        action: Callable[[], dict[str, Any]],
-    ) -> dict[str, Any]:
-        if auth_required:
-            owner = principal(ctx, "control")
-            resident.require_owner(
-                request.session, owner.origin.value, principal_id=owner.principal_id
-            )
-        return action()
-
-    def acquire_owned(request: AcquireRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
-        if auth_required:
-            owner = principal(ctx, "control")
-            if request.owner != owner.origin:
-                raise BrokerError("authenticated_owner_mismatch")
-            return resident.acquire(request, principal_id=owner.principal_id)
-        return resident.acquire(request)
-
-    def work_action(
-        ctx: Context[Any, Any],
-        scope: KeyScope,
-        action: Callable[[Principal], dict[str, Any]],
-    ) -> dict[str, Any]:
-        # Logical sessions are always authenticated, including on a legacy mock server.
-        return action(principal(ctx, scope))
-
-    def create_work_owned(
-        request: CreateWorkSessionRequest, ctx: Context[Any, Any]
-    ) -> dict[str, Any]:
-        owner = principal(ctx, "control")
-        if request.owner != owner.origin:
-            raise BrokerError("authenticated_owner_mismatch")
-        return resident.create_work_session(
-            request, principal_id=owner.principal_id, scopes=owner.scopes
+        return require_principal(
+            authenticator.authenticate,
+            headers.get("authorization") if headers else None,
+            scope,
+            auth_required=auth_required,
+            honor_auth_required=honor_auth_required,
         )
+
+    def bind_lease(owner: Principal | None, capability: str | None) -> None:
+        """The lease must belong to this principal; nothing is bound when auth was skipped."""
+        if owner is not None:
+            resident.require_owner(capability, owner.origin.value, principal_id=owner.principal_id)
+
+    def bind_origin(owner: Principal, requested: Origin) -> None:
+        if requested != owner.origin:
+            raise BrokerError("authenticated_owner_mismatch")
 
     @asynccontextmanager
     async def lifespan(_: MCPServer[Any]) -> AsyncIterator[None]:
@@ -576,7 +584,7 @@ def create_server(
         """Inspect this request's principal/scopes; never return credentials or capabilities."""
 
         def identify() -> dict[str, Any]:
-            owner = principal(ctx, "read")
+            owner = require(ctx, "read", honor_auth_required=False)
             return {
                 "authenticated": True,
                 "origin": owner.origin.value,
@@ -603,7 +611,7 @@ def create_server(
         """
 
         def targets() -> dict[str, Any]:
-            principal(ctx, "read")
+            require(ctx, "read", honor_auth_required=False)
             current = resident.settings
             store = resident._store()
             return {
@@ -639,7 +647,7 @@ def create_server(
         """
         try:
             project_id = request.project_id
-            owner = principal(ctx, "read")
+            owner = require(ctx, "read", honor_auth_required=False)
             store, settings, epoch = resident._store(), resident.settings, resident.epoch
             captured = settings.model_copy(deep=True)
             identity = settings_identity(captured)
@@ -651,7 +659,7 @@ def create_server(
                 )
             except SourceError as exc:
                 failure = exc
-            current = principal(ctx, "read")
+            current = require(ctx, "read", honor_auth_required=False)
             if (
                 resident.closing
                 or resident.store is not store
@@ -681,27 +689,55 @@ def create_server(
     @op
     async def device_status(ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read broker state without opening hardware. Never returns session capabilities."""
-        return _result(lambda: read(ctx, resident.status))
+
+        def status() -> dict[str, Any]:
+            require(ctx, "read", honor_auth_required=True)
+            return resident.status()
+
+        return _result(status)
 
     @op
     async def read_logs(request: LogRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read bounded cached events using a cursor; does not acquire or read a serial port."""
-        return _result(lambda: read(ctx, lambda: resident.read_logs(request)))
+
+        def logs() -> dict[str, Any]:
+            require(ctx, "read", honor_auth_required=True)
+            return resident.read_logs(request)
+
+        return _result(logs)
 
     @op
     async def acquire_session(request: AcquireRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Reserve a workflow; authenticated mode binds ownership to the client identity."""
-        return _result(lambda: acquire_owned(request, ctx))
+
+        def acquire() -> dict[str, Any]:
+            owner = require(ctx, "control", honor_auth_required=True)
+            if owner is None:
+                return resident.acquire(request)
+            bind_origin(owner, request.owner)
+            return resident.acquire(request, principal_id=owner.principal_id)
+
+        return _result(acquire)
 
     @op
     async def renew_session(request: RenewRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Extend a live lease using its in-memory bearer capability."""
-        return _result(lambda: owned(request, ctx, lambda: resident.renew(request)))
+
+        def renew() -> dict[str, Any]:
+            bind_lease(require(ctx, "control", honor_auth_required=True), request.session)
+            return resident.renew(request)
+
+        return _result(renew)
 
     @op
     async def release_session(request: LeaseRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Release an idle session. Active work cannot be cancelled or released this way."""
-        return _result(lambda: owned(request, ctx, lambda: resident.release(request)))
+
+        def release() -> dict[str, Any]:
+            bind_lease(require(ctx, "control", honor_auth_required=True), request.session)
+            return resident.release(request)
+
+        return _result(release)
 
     @op
     async def prepare_test(request: PrepareRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -755,10 +791,10 @@ def create_server(
                 TestName.BUILD,
                 TestName.SOURCE,
             ):
-                waiter = principal(ctx, "control")
+                waiter = require(ctx, "control", honor_auth_required=False)
                 return resident.prepare_deferred(request, waiter.principal_id, waiter.origin.value)
             if request.test in (TestName.BUILD, TestName.SOURCE):
-                owner = principal(ctx, "control")
+                owner = require(ctx, "control", honor_auth_required=False)
                 return resident.profile_jobs.prepare(
                     request, owner.principal_id, owner.origin.value
                 )
@@ -772,17 +808,16 @@ def create_server(
                 TestName.SOURCE,
                 *FLASH_TESTS,
             ):
-                owner = principal(ctx, "control")
-                resident.require_owner(
-                    request.session, owner.origin.value, principal_id=owner.principal_id
-                )
-            return owned(request, ctx, lambda: resident.prepare(request))
+                # Always authenticated (even on a mock server), then the gated check.
+                bind_lease(require(ctx, "control", honor_auth_required=False), request.session)
+            bind_lease(require(ctx, "control", honor_auth_required=True), request.session)
+            return resident.prepare(request)
 
         if request.test == TestName.SOURCE:
             try:
 
                 def current_owner() -> tuple[str, str]:
-                    owner = principal(ctx, "control")
+                    owner = require(ctx, "control", honor_auth_required=False)
                     if "read" not in owner.scopes:
                         raise BrokerError("insufficient_scope")
                     return owner.principal_id, owner.origin.value
@@ -835,14 +870,15 @@ def create_server(
                 TestName.BUILD.value,
                 TestName.SOURCE.value,
             ):
-                owner = principal(ctx, "control")
+                owner = require(ctx, "control", honor_auth_required=False)
                 return resident.profile_jobs.execute(
                     request, owner.principal_id, owner.origin.value
                 )
             if plan is not None and plan.get("execution_context") == "device_deferred":
-                waiter = principal(ctx, "control")
+                waiter = require(ctx, "control", honor_auth_required=False)
                 return resident.execute_deferred(request, waiter.principal_id, waiter.origin.value)
-            return owned(request, ctx, lambda: resident.execute(request))
+            bind_lease(require(ctx, "control", honor_auth_required=True), request.session)
+            return resident.execute(request)
 
         return _result(lambda: shared_job(execute()))
 
@@ -858,7 +894,7 @@ def create_server(
         """
 
         def submit() -> dict[str, Any]:
-            owner = principal(ctx, "control")
+            owner = require(ctx, "control", honor_auth_required=False)
             return resident.home_recovery.request(request, owner.principal_id, owner.origin.value)
 
         return _result(submit)
@@ -869,7 +905,12 @@ def create_server(
     ) -> dict[str, Any]:
         """Stop this principal's exact recovery; retain ownership until confirmed close."""
         return _result(
-            lambda: resident.home_recovery.cancel(request, principal(ctx, "control").principal_id)
+            lambda: cancellation.cancel_job(
+                resident,
+                cancellation.HomeRecoveryJob(
+                    request, require(ctx, "control", honor_auth_required=False).principal_id
+                ),
+            )
         )
 
     @op
@@ -885,7 +926,7 @@ def create_server(
                 TestName.DERBY_FIXED.value,
             ):
                 try:
-                    owner = principal(ctx, "read")
+                    owner = require(ctx, "read", honor_auth_required=False)
                 except BrokerError:
                     if auth_required:
                         raise
@@ -894,7 +935,7 @@ def create_server(
                 result = private_job(store, job, plan, owner.principal_id)
                 if "derby_diagnostics" in result or "fixed_trial" in result:
                     try:
-                        current = principal(ctx, "read")
+                        current = require(ctx, "read", honor_auth_required=False)
                     except BrokerError:
                         if auth_required:
                             raise
@@ -910,7 +951,7 @@ def create_server(
                         return shared_job(job)
                 return result
             if plan is not None and plan.get("operation") == "home_recovery":
-                owner = principal(ctx, "read")
+                owner = require(ctx, "read", honor_auth_required=False)
                 if plan["principal_id"] != owner.principal_id:
                     raise BrokerError("owned_home_recovery_required")
                 job["recovery_audit"] = [
@@ -922,12 +963,16 @@ def create_server(
                     )
                 ]
             if plan is not None and plan.get("execution_context") == "registered_project":
-                owner = principal(ctx, "read")
+                owner = require(ctx, "read", honor_auth_required=False)
                 if plan.get("principal_id") != owner.principal_id:
                     raise BrokerError("owned_registered_project_job_required")
             return shared_job(job)
 
-        return _result(lambda: read(ctx, get_job))
+        def checked() -> dict[str, Any]:
+            require(ctx, "read", honor_auth_required=True)
+            return get_job()
+
+        return _result(checked)
 
     @op
     async def read_build_logs(request: BuildLogRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -948,7 +993,7 @@ def create_server(
         """
 
         async def get_logs() -> dict[str, Any]:
-            owner = principal(ctx, "read")
+            owner = require(ctx, "read", honor_auth_required=False)
             store = resident._store()
             job = store.job(request.job_id)
             plan = store.plan(job["plan_hash"]) if job is not None else None
@@ -972,7 +1017,7 @@ def create_server(
                         usage = {"available": False, "code": exc.code}
                         if "scan" in exc.public():
                             usage["scan"] = exc.public()["scan"]
-                current_owner = principal(ctx, "read")
+                current_owner = require(ctx, "read", honor_auth_required=False)
                 if (
                     resident.closing
                     or resident.store is not store
@@ -1021,7 +1066,7 @@ def create_server(
                 raise BrokerError(str(exc)) from None
             # Hash IO awaited another thread. Recheck the current read grant and
             # the exact broker/job/registration before returning private receipts.
-            current_owner = principal(ctx, "read")
+            current_owner = require(ctx, "read", honor_auth_required=False)
             if (
                 resident.closing
                 or resident.store is not store
@@ -1063,7 +1108,7 @@ def create_server(
         """
 
         def read_catalog() -> dict[str, Any]:
-            principal(ctx, "read")
+            require(ctx, "read", honor_auth_required=False)
             return resident.app_sessions.list_apps()
 
         return _result(read_catalog)
@@ -1077,10 +1122,7 @@ def create_server(
         """
 
         def command() -> dict[str, Any]:
-            owner = principal(ctx, "control")
-            resident.require_owner(
-                request.session, owner.origin.value, principal_id=owner.principal_id
-            )
+            bind_lease(require(ctx, "control", honor_auth_required=False), request.session)
             return resident.app_command(request)
 
         return _result(command)
@@ -1093,7 +1135,7 @@ def create_server(
         """
 
         def events() -> dict[str, Any]:
-            owner = principal(ctx, "read")
+            owner = require(ctx, "read", honor_auth_required=False)
             return resident.read_app_events(request, owner.principal_id)
 
         return _result(events)
@@ -1110,7 +1152,7 @@ def create_server(
         """
 
         def get_report() -> dict[str, Any]:
-            owner = principal(ctx, "read")
+            owner = require(ctx, "read", honor_auth_required=False)
             return resident.read_device_logs(request.job_id, owner.principal_id)
 
         return _result(get_report)
@@ -1125,7 +1167,7 @@ def create_server(
         prove snapshot coherence or LCD transfer acknowledgement. No automatic recapture.
         """
         try:
-            owner = principal(ctx, "read")
+            owner = require(ctx, "read", honor_auth_required=False)
             captured = resident.read_capture(request.job_id, owner.principal_id)
         except BrokerError as exc:
             body = {"ok": False, "error": public_broker_reason(exc)}
@@ -1162,9 +1204,13 @@ def create_server(
                 TestName.BUILD.value,
                 TestName.SOURCE.value,
             ):
-                owner = principal(ctx, "control")
-                return resident.profile_jobs.cancel(request, owner.principal_id, owner.origin.value)
-            return owned(request, ctx, lambda: resident.cancel(request))
+                owner = require(ctx, "control", honor_auth_required=False)
+                return cancellation.cancel_job(
+                    resident,
+                    cancellation.ProfileJob(request, owner.principal_id, owner.origin.value),
+                )
+            bind_lease(require(ctx, "control", honor_auth_required=True), request.session)
+            return cancellation.cancel_job(resident, cancellation.LeasedDeviceJob(request))
 
         return _result(lambda: shared_job(cancel()))
 
@@ -1173,73 +1219,82 @@ def create_server(
         request: CreateWorkSessionRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
         """Create an authenticated logical workflow; does not reserve the device."""
-        return _result(lambda: create_work_owned(request, ctx))
+
+        def create() -> dict[str, Any]:
+            owner = require(ctx, "control", honor_auth_required=False)
+            bind_origin(owner, request.owner)
+            return resident.create_work_session(
+                request, principal_id=owner.principal_id, scopes=owner.scopes
+            )
+
+        return _result(create)
 
     @op
     async def resume_work_session(
         request: ResumeWorkSessionRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
         """Resume your logical workflow; device access needs its separate physical lease."""
-        return _result(
-            lambda: work_action(
-                ctx,
-                "read",
-                lambda owner: resident.resume_work_session(
-                    request, principal_id=owner.principal_id, scopes=owner.scopes
-                ),
+
+        def action() -> dict[str, Any]:
+            # Logical sessions are always authenticated, including on a legacy mock server.
+            owner = require(ctx, "read", honor_auth_required=False)
+            return resident.resume_work_session(
+                request, principal_id=owner.principal_id, scopes=owner.scopes
             )
-        )
+
+        return _result(action)
 
     @op
     async def request_device(
         request: RequestDeviceRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
         """Request a bounded FIFO device lease for your authenticated logical workflow."""
-        return _result(
-            lambda: work_action(
-                ctx,
-                "control",
-                lambda owner: resident.request_device(
-                    request, principal_id=owner.principal_id, scopes=owner.scopes
-                ),
+
+        def action() -> dict[str, Any]:
+            # Logical sessions are always authenticated, including on a legacy mock server.
+            owner = require(ctx, "control", honor_auth_required=False)
+            return resident.request_device(
+                request, principal_id=owner.principal_id, scopes=owner.scopes
             )
-        )
+
+        return _result(action)
 
     @op
     async def cancel_device_request(
         request: CancelDeviceRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
         """Cancel your pending device request without interrupting an active job."""
-        return _result(
-            lambda: work_action(
-                ctx,
-                "control",
-                lambda owner: resident.cancel_device_request(
-                    request, principal_id=owner.principal_id, scopes=owner.scopes
-                ),
+
+        def action() -> dict[str, Any]:
+            # Logical sessions are always authenticated, including on a legacy mock server.
+            owner = require(ctx, "control", honor_auth_required=False)
+            return cancellation.cancel_job(
+                resident,
+                cancellation.DeviceRequestWait(request, owner.principal_id, owner.scopes),
             )
-        )
+
+        return _result(action)
 
     @op
     async def close_work_session(
         request: CloseWorkSessionRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
         """Close your logical workflow safely; cannot stop an active physical job."""
-        return _result(
-            lambda: work_action(
-                ctx,
-                "control",
-                lambda owner: resident.close_work_session(
-                    request, principal_id=owner.principal_id, scopes=owner.scopes
-                ),
+
+        def action() -> dict[str, Any]:
+            # Logical sessions are always authenticated, including on a legacy mock server.
+            owner = require(ctx, "control", honor_auth_required=False)
+            return resident.close_work_session(
+                request, principal_id=owner.principal_id, scopes=owner.scopes
             )
-        )
+
+        return _result(action)
 
     register_surface(
         server,
         ops=ops,
         resident=resident,
-        principal=principal,
+        require=require,
         auth_required=auth_required,
         read_only=read_only,
         mutating=mutating,

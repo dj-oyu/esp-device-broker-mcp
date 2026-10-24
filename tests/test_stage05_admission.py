@@ -15,9 +15,11 @@ import pytest
 from test_pending_execution import prepare, running, submit
 
 import cardputer_mcp.broker as broker_module
+from cardputer_mcp import cancellation
 from cardputer_mcp.broker import Broker, BrokerError
 from cardputer_mcp.continuation import Deferred, Tickets
 from cardputer_mcp.job_ledger import JobLedger
+from cardputer_mcp.lease_manager import LeaseManager
 from cardputer_mcp.models import LogRequest
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.store import Store
@@ -461,11 +463,24 @@ SYNCHRONOUS = [
     (Tickets, "set_hold"),
     (Deferred, "add"),
     (Deferred, "finish"),
+    # Stage 2c: the device lease has one writer.
+    (Broker, "renew"),
+    (LeaseManager, "grant"),
+    (LeaseManager, "end"),
+    (LeaseManager, "shorten"),
+    (LeaseManager, "renew"),
+    (LeaseManager, "overwrite"),
+    # Stage 2c: one cancellation dispatcher.
+    (cancellation, "cancel_job"),
+    (cancellation, "device_stop"),
+    (Broker, "cancel_device_request"),
+    (Broker, "operator_cancel_wait"),
 ]
 
 
 @pytest.mark.parametrize(
-    ("owner", "name"), [pytest.param(o, n, id=f"{o.__name__}.{n}") for o, n in SYNCHRONOUS]
+    ("owner", "name"),
+    [pytest.param(o, n, id=f"{o.__name__.rpartition('.')[2]}.{n}") for o, n in SYNCHRONOUS],
 )
 def test_check_then_write_functions_are_not_coroutines(owner, name):
     """A sync function cannot ``await``, so its check and write share one loop step."""
