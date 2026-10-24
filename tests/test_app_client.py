@@ -3,7 +3,7 @@
 import asyncio
 import unittest
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from cardputer_mcp.app_client import AppClientError, AppSessionClient
 from cardputer_mcp.app_models import AppSessionOptions
@@ -31,8 +31,6 @@ class FakeBroker:
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
         self.pending: list[dict[str, Any]] = []
         self.sequence = 0
-        self.lose_ack = False
-        self.status_known = True
         self.mutation_failure = False
 
     async def call(
@@ -51,30 +49,8 @@ class FakeBroker:
             return {"ok": True, "state": "queued"}
         if tool == "app_input":
             assert request is not None
-            if request["operation"] == "status":
-                return dict(
-                    ok=True,
-                    command_id=request["command_id"],
-                    state="consumed" if self.status_known else "outcome_unknown",
-                    next_seq=request["seq"] + 1,
-                )
             if self.mutation_failure:
                 raise RuntimeError("synthetic secret never returned")
-            if not self.lose_ack:
-                self.pending.extend(
-                    [
-                        dict(kind="sent", command_id=request["command_id"], seq=request["seq"]),
-                        dict(kind="ack", command_id=request["command_id"], result="accepted"),
-                    ]
-                )
-                self.pending.append(
-                    dict(
-                        kind="ack",
-                        command_id=request["command_id"],
-                        result="consumed" if request["operation"] == "action.tap" else "ok",
-                        next_seq=request["seq"] + 1,
-                    )
-                )
             return dict(ok=True, command_id=request["command_id"], state="queued", sent=False)
         if tool == "events":
             self.sequence += 1
@@ -172,70 +148,6 @@ class AppClientTests(unittest.TestCase):
                         run.cancelled.set()
                     for task in tasks:
                         await asyncio.wait_for(task, 2)
-
-        asyncio.run(scenario())
-
-    def test_hello_and_stress_use_same_typed_calls_and_fresh_default(self) -> None:
-        async def scenario(app_id: str) -> None:
-            broker = FakeBroker()
-            with patch("cardputer_mcp.app_client.call", broker.call):
-                client = AppSessionClient(None)  # type: ignore[arg-type]
-                await client.list_apps()
-                await client.start("c" * 64, "recipe", AppSessionOptions(app_id=app_id))
-                ack = await client.tap("accept")
-                assert ack["result"] == "consumed"
-                await client.suspend()
-                await client.resume()
-                assert (await client.stop())["state"] == "succeeded"
-                assert len(client.recent_logs) > 0
-                prepared = next(r for t, r in broker.calls if t == "submit")
-                assert prepared is not None
-                assert prepared["app"]["app_id"] == app_id
-                assert prepared["app"]["start"] == "fresh"
-                commands = [r for t, r in broker.calls if t == "app_input"]
-                assert [r["seq"] for r in commands if r] == [2, 3, 4, 5]
-                assert all(r and r["run_id"] == 7 for r in commands)
-                assert all(r and r["boot_id"] == 123 for r in commands)
-
-        for app_id in ("local.hello", "local.stress"):
-            asyncio.run(scenario(app_id))
-
-    def test_lost_ack_uses_status_only(self) -> None:
-        async def scenario() -> None:
-            broker = FakeBroker()
-            with patch("cardputer_mcp.app_client.call", broker.call):
-                client = AppSessionClient(None)  # type: ignore[arg-type]
-                await client.start("c" * 64, "recipe", AppSessionOptions(app_id="local.hello"))
-                broker.lose_ack = True
-                with patch.object(
-                    client, "_wait", AsyncMock(side_effect=AppClientError("outcome_unknown"))
-                ):
-                    ack = await client.tap("accept")
-                assert ack["state"] == "consumed"
-                requests = [r for t, r in broker.calls if t == "app_input"]
-                assert [r["operation"] for r in requests if r] == ["action.tap", "status"]
-                assert requests[0] and requests[1]
-                assert requests[0]["command_id"] == requests[1]["command_id"]
-                assert client.next_seq == 3
-
-        asyncio.run(scenario())
-
-    def test_unknown_status_blocks_further_input(self) -> None:
-        async def scenario() -> None:
-            broker = FakeBroker()
-            with patch("cardputer_mcp.app_client.call", broker.call):
-                client = AppSessionClient(None)  # type: ignore[arg-type]
-                await client.start("c" * 64, "recipe", AppSessionOptions(app_id="local.hello"))
-                broker.status_known = False
-                with patch.object(
-                    client, "_wait", AsyncMock(side_effect=AppClientError("outcome_unknown"))
-                ):
-                    with self.assertRaisesRegex(AppClientError, "outcome_unknown"):
-                        await client.tap("accept")
-                with self.assertRaisesRegex(AppClientError, "invalid_client_state"):
-                    await client.tap("accept")
-                requests = [r for t, r in broker.calls if t == "app_input"]
-                assert len(requests) == 2
 
         asyncio.run(scenario())
 

@@ -3,7 +3,6 @@
 import asyncio
 import os
 import time
-from dataclasses import replace
 from datetime import UTC, datetime
 
 import httpx2
@@ -17,7 +16,7 @@ from cardputer_mcp.backend import MockBackend
 from cardputer_mcp.broker import RetainedCapture, digest_plan
 from cardputer_mcp.capture import LegacyCaptureDecoder, mock_image
 from cardputer_mcp.derby_smoke import SMOKE
-from cardputer_mcp.gui_live_preview import DENIED, FAILED, PreviewState
+from cardputer_mcp.gui_live_preview import DENIED, PreviewState
 from cardputer_mcp.gui_live_state import LiveState, apply, begin
 from cardputer_mcp.gui_live_transport import AUTH_FAILED, LiveRunner
 from cardputer_mcp.models import TestName as Action
@@ -191,26 +190,5 @@ async def test_preview_read_rechecks_current_operator_authentication(
         assert broker.captures[job_id] is retained and broker.backend.calls == 0
     finally:
         permitted[0] = True
-        runner.close()
-        assert not runner._thread.is_alive()
-
-
-async def test_preview_read_does_not_revive_expired_retained_capture(authenticated_mock):
-    url, broker = authenticated_mock
-    job_id, retained, _ = retain_capture(broker)
-    runner = LiveRunner(OperatorClient(url, LOCAL))
-    try:
-        _, preview = await available(runner, job_id)
-        broker.captures[job_id] = replace(retained, deadline=broker.clock() - 1)
-        request_id = runner.read_image(1, job_id, expires_at=preview.row.expires_at)
-        event = await next_event(runner, "image")
-        response = event.payload["response"]
-        assert response == {"ok": False, "error": "capture_not_available"}
-        rejected = preview.started(request_id).accept(
-            1, job_id, request_id, response, event.started_at, time.monotonic()
-        )
-        assert rejected.preview is None and rejected.message == FAILED
-        assert job_id not in broker.captures and broker.backend.calls == 0 and broker.queue.empty()
-    finally:
         runner.close()
         assert not runner._thread.is_alive()

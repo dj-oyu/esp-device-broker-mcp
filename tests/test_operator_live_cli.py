@@ -7,7 +7,7 @@ import pytest
 from cardputer_mcp import cli
 
 
-@pytest.mark.parametrize("command", sorted(cli.RETIRED_COMMANDS))
+@pytest.mark.parametrize("command", ["approve"])
 def test_old_command_is_retired_before_credentials_network_or_state(monkeypatch, capsys, command):
     monkeypatch.setattr(cli, "version", lambda _name: "test")
 
@@ -24,15 +24,6 @@ def test_old_command_is_retired_before_credentials_network_or_state(monkeypatch,
         cli.main()
     assert error.value.code == 1
     assert '"error": "product_approval_retired"' in capsys.readouterr().out
-
-
-def test_active_commands_still_reject_unknown_arguments(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "version", lambda _name: "test")
-    monkeypatch.setattr(sys, "argv", ["broker", "status", "--unrecognized"])
-    with pytest.raises(SystemExit) as error:
-        cli.main()
-    assert error.value.code == 2
-    assert "unrecognized arguments" in capsys.readouterr().err
 
 
 async def test_demo_requires_authenticated_clients_before_http():

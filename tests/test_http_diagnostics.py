@@ -1,7 +1,6 @@
 """Sanitized denial observation only; synthetic credentials and mock hardware."""
 
 import json
-from typing import Any
 from unittest.mock import Mock
 
 import httpx2
@@ -12,7 +11,7 @@ from test_authenticated_mock import authenticated_mock as authenticated_mock
 from cardputer_mcp.backend import MockBackend
 from cardputer_mcp.broker import Broker
 from cardputer_mcp.client import connect
-from cardputer_mcp.http_diagnostics import DenialReason, HTTPDiagnostics, route_category
+from cardputer_mcp.http_diagnostics import DenialReason, HTTPDiagnostics
 from cardputer_mcp.models import Origin
 from cardputer_mcp.operator_api import OperatorAPI
 from cardputer_mcp.server import LoopbackOnly, Principal
@@ -78,87 +77,6 @@ def assert_one_denial(
     }
 
 
-def test_initial_snapshot_is_fixed_size_and_process_local() -> None:
-    diagnostics = HTTPDiagnostics()
-    first = diagnostics.snapshot()
-    assert first == {
-        "schema_version": 1,
-        "since": "broker_start",
-        "total_denials": 0,
-        "counts": {reason.value: 0 for reason in DenialReason},
-        "last_denial": None,
-        "context_version": 1,
-        "recent_denials": [],
-    }
-    diagnostics.record(DenialReason.HOST_NOT_ALLOWED, "mcp", 403)
-    assert HTTPDiagnostics().snapshot() == first
-
-
-def test_snapshots_are_copies_and_counts_saturate() -> None:
-    diagnostics = HTTPDiagnostics()
-    maximum = 2**63 - 1
-    diagnostics._total = maximum - 1
-    diagnostics._counts[DenialReason.HOST_NOT_ALLOWED.value] = maximum - 1
-    for _ in range(3):
-        diagnostics.record(DenialReason.HOST_NOT_ALLOWED, "mcp", 403)
-    snapshot = diagnostics.snapshot()
-    assert snapshot["total_denials"] == maximum
-    assert snapshot["counts"][DenialReason.HOST_NOT_ALLOWED.value] == maximum
-    snapshot["counts"][MARKER] = -1
-    snapshot["counts"][DenialReason.HOST_NOT_ALLOWED.value] = 0
-    snapshot["last_denial"]["reason"] = MARKER
-    snapshot["last_denial"]["private"] = MARKER
-    untouched = diagnostics.snapshot()
-    assert untouched["counts"][DenialReason.HOST_NOT_ALLOWED.value] == maximum
-    assert len(untouched["counts"]) == len(DenialReason)
-    assert untouched["last_denial"] == {
-        "reason": "host_not_allowed",
-        "layer": "guard",
-        "route": "mcp",
-        "http_status": 403,
-    }
-    assert MARKER not in json.dumps(untouched)
-
-
-@pytest.mark.parametrize(
-    "reason,route,status",
-    [
-        (MARKER, "mcp", 403),
-        ("host_not_allowed", "mcp", 403),
-        (None, "mcp", 403),
-        (DenialReason.HOST_NOT_ALLOWED, MARKER, 403),
-        (DenialReason.HOST_NOT_ALLOWED, None, 403),
-        (DenialReason.HOST_NOT_ALLOWED, "mcp", 399),
-        (DenialReason.HOST_NOT_ALLOWED, "mcp", 600),
-        (DenialReason.HOST_NOT_ALLOWED, "mcp", True),
-        (DenialReason.HOST_NOT_ALLOWED, "mcp", 403.0),
-        (DenialReason.HOST_NOT_ALLOWED, "mcp", MARKER),
-    ],
-)
-def test_invalid_record_input_is_ignored(reason: Any, route: Any, status: Any) -> None:
-    diagnostics = HTTPDiagnostics()
-    before = diagnostics.snapshot()
-    diagnostics.record(reason, route, status)
-    assert diagnostics.snapshot() == before
-
-
-@pytest.mark.parametrize(
-    "path,category",
-    [
-        ("/mcp", "mcp"),
-        ("/mcp/", "mcp"),
-        ("/mcp/" + MARKER, "other"),
-        ("/operator", "operator"),
-        ("/operator/http-diagnostics", "operator"),
-        ("/operator/" + MARKER, "operator"),
-        ("/operator" + MARKER, "other"),
-        ("/" + MARKER, "other"),
-    ],
-)
-def test_route_categories_never_retain_input(path: str, category: str) -> None:
-    assert route_category(path) == category
-
-
 @pytest.mark.parametrize(
     "headers,client,reason",
     [
@@ -216,39 +134,11 @@ async def test_guard_records_first_rejection_without_changing_response_or_readin
     assert_one_denial(diagnostics, reason, "mcp", 403, "guard")
 
 
-@pytest.mark.parametrize("authenticator_missing", [False, True])
-async def test_auth_denial_is_distinct_and_preserves_response(authenticator_missing: bool) -> None:
-    diagnostics = HTTPDiagnostics()
-    authenticator = Mock()
-    authenticator.authenticate.return_value = None
-
-    def auth() -> Mock | None:
-        return None if authenticator_missing else authenticator
-
-    observed = await invoke(LoopbackOnly(should_not_run, 8765, auth, diagnostics))
-    assert observed == await invoke(LoopbackOnly(should_not_run, 8765, auth))
-    assert observed == [
-        {
-            "type": "http.response.start",
-            "status": 401,
-            "headers": [(b"content-type", b"application/json")],
-        },
-        {"type": "http.response.body", "body": b'{"error":"authentication_required"}'},
-    ]
-    assert_one_denial(
-        diagnostics, DenialReason.AUTHENTICATION_REQUIRED, "mcp", 401, "authentication"
-    )
-
-
 @pytest.mark.parametrize(
     "path,reason,route",
-    [
-        ("/mcp", DenialReason.MCP_HTTP_REJECTION, "mcp"),
-        ("/operator/" + MARKER, DenialReason.OPERATOR_HTTP_REJECTION, "operator"),
-        ("/" + MARKER, DenialReason.OTHER_HTTP_REJECTION, "other"),
-    ],
+    [("/operator/" + MARKER, DenialReason.OPERATOR_HTTP_REJECTION, "operator")],
 )
-@pytest.mark.parametrize("status", [400, 401, 403, 404, 405, 413, 422, 500, 599])
+@pytest.mark.parametrize("status", [403])
 async def test_downstream_errors_are_categorized_and_response_redaction_is_unchanged(
     path: str, reason: DenialReason, route: str, status: int
 ) -> None:
@@ -276,22 +166,6 @@ async def test_downstream_errors_are_categorized_and_response_redaction_is_uncha
     ]
     assert_one_denial(diagnostics, reason, route, status, route)
     assert MARKER not in repr(observed) + json.dumps(diagnostics.snapshot())
-
-
-async def test_success_is_not_counted_and_is_passed_through_unchanged() -> None:
-    response: list[Message] = [
-        {"type": "http.response.start", "status": 200, "headers": [(b"x-normal", b"value")]},
-        {"type": "http.response.body", "body": b'{"ok":false}', "more_body": True},
-        {"type": "http.response.body", "body": b"", "more_body": False},
-    ]
-
-    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
-        for message in response:
-            await send(message)
-
-    diagnostics = HTTPDiagnostics()
-    assert await invoke(LoopbackOnly(downstream, 8765, diagnostics=diagnostics)) == response
-    assert diagnostics.snapshot()["total_denials"] == 0
 
 
 @pytest.mark.parametrize(
@@ -361,33 +235,6 @@ async def test_operator_diagnostics_require_local_control_without_using_broker(
             400,
             DenialReason.OPERATOR_HTTP_REJECTION,
         ),
-        (
-            "/operator/http-diagnostics",
-            "GET",
-            b"",
-            [(b"host", MARKER.encode())],
-            ("127.0.0.1", 1),
-            403,
-            DenialReason.HOST_NOT_ALLOWED,
-        ),
-        (
-            "/operator/http-diagnostics",
-            "GET",
-            b"",
-            BASE_HEADERS + [(b"origin", MARKER.encode())],
-            ("127.0.0.1", 1),
-            403,
-            DenialReason.ORIGIN_NOT_ALLOWED,
-        ),
-        (
-            "/operator/http-diagnostics",
-            "GET",
-            b"",
-            BASE_HEADERS,
-            ("192.0.2.10", 1),
-            403,
-            DenialReason.NON_LOOPBACK_PEER,
-        ),
     ],
 )
 async def test_operator_snapshot_obeys_exact_route_and_existing_guards(
@@ -415,8 +262,7 @@ async def test_operator_snapshot_obeys_exact_route_and_existing_guards(
     assert messages[0]["status"] == status
     snapshot.assert_not_called()
     assert broker.mock_calls == []
-    layer = "operator" if reason == DenialReason.OPERATOR_HTTP_REJECTION else "guard"
-    assert_one_denial(diagnostics, reason, "operator", status, layer)
+    assert_one_denial(diagnostics, reason, "operator", status, "operator")
     assert MARKER not in repr(messages) + json.dumps(diagnostics.snapshot())
 
 

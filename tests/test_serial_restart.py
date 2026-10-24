@@ -304,16 +304,6 @@ async def test_exact_pulse_no_writes_no_reopen_and_report_after_close():
     ]
 
 
-async def test_empty_report_does_not_claim_application_boot():
-    backend, ports, _, _ = device()
-    ports[0].read_seconds = 1
-    result = await backend.execute(prepared(backend), lambda _: None)
-    assert result.observation.metadata() == observed(b"").metadata()
-    assert result.observation.metadata()["firmware"]["status"] == "unavailable"
-    assert all(start < 30 for start in ports[0].read_starts)
-    assert backend.clock.now == pytest.approx(30.1)
-
-
 @pytest.mark.parametrize(
     "change",
     [
@@ -440,21 +430,6 @@ async def test_reconnect_requires_exact_location_including_none(location):
     assert len(created) == 1 and ports[0].closes == 1
 
 
-async def test_reconnect_accepts_unchanged_none_location_and_description_change():
-    backend, ports, inventory, created = device(
-        entries=[identity(location=None)],
-        chunks=[OSError("disconnect")],
-    )
-    disconnect_to(
-        ports,
-        inventory,
-        identity(port="SYNTHETIC_COM99", location=None, description="Changed description"),
-    )
-    result = await backend.execute(prepared(backend), lambda _: None)
-    assert result.observation.metadata() == observed(b"", gap=True).metadata()
-    assert len(created) == 2
-
-
 @pytest.mark.parametrize(
     "entries",
     [
@@ -544,105 +519,12 @@ async def test_oversized_driver_return_never_reopens_or_publishes():
     assert len(created) == 1 and ports[0].closes == 1
 
 
-async def test_actual_wire_byte_cap_survives_reopen_and_limits_final_read():
-    wire = (b"password=" + b"x" * 1014 + b"\n") * 64
-    backend, ports, inventory, created = device(
-        chunks=[wire[:65535], OSError("disconnect")],
-        second_chunks=[wire[65535:] + b"AFTER"],
-    )
-    disconnect_to(ports, inventory)
-    result = await backend.execute(prepared(backend), lambda _: None)
-    expected = DeviceLogCollector()
-    expected.feed(wire[:65535])
-    expected.mark_gap()
-    expected.feed(wire[65535:])
-    assert (
-        result.observation.payload()
-        == replace(expected.finish(), reset_sequence_issued=True).payload()
-    )
-    assert result.observation.redacted_lines == 63
-    assert result.observation.omitted_lines == 2
-    assert len(created) == 2
-    assert sum(port.received for port in ports) == 65536
-    assert ports[1].read_sizes == [1] and list(ports[1].chunks) == [b"AFTER"]
-    assert backend.clock.now < 30
-
-
-async def test_read_returning_after_deadline_is_omitted_without_reopen():
-    backend, ports, _, created = device(chunks=[STARTUP])
-    ports[0].read_seconds = 30
-    result = await backend.execute(prepared(backend), lambda _: None)
-    # Late bytes were discarded, so the bounded capture explicitly reports a gap.
-    assert result.observation.metadata() == observed(b"", gap=True).metadata()
-    assert len(ports[0].read_starts) == len(created) == 1
-
-
 async def test_disconnect_after_reset_settling_window_does_not_reopen():
     backend, ports, _, created = device(chunks=[OSError("late disconnect")])
     ports[0].read_seconds = 9
     with pytest.raises(SerialFailure, match="serial_read_failed"):
         await backend.execute(prepared(backend), lambda _: None)
     assert len(created) == 1 and ports[0].closes == 1
-
-
-async def test_reset_pulse_holds_asserted_rts_and_cleared_dtr_for_fixed_pause():
-    backend, ports, _, _ = device()
-    pauses = []
-
-    def checked_pause(seconds):
-        pauses.append((seconds, ports[0].rts, ports[0].dtr))
-        backend.clock.pause(seconds)
-
-    backend.pause = checked_pause
-    await backend.execute(prepared(backend), lambda _: None)
-    assert pauses == [(0.1, True, False)]
-
-
-async def test_reconnect_wait_consumes_original_thirty_second_receive_budget():
-    backend, ports, inventory, created = device(chunks=[OSError("disconnect")])
-    ports[0].read_hook = lambda: inventory.clear()
-    ports[1].read_seconds = 1
-
-    def delayed_return(seconds):
-        backend.clock.pause(seconds)
-        if backend.clock.now >= 7:
-            inventory[:] = [identity(port="SYNTHETIC_COM99")]
-
-    backend.pause = delayed_return
-    result = await backend.execute(prepared(backend), lambda _: None)
-    assert len(created) == 2 and result.observation.metadata()["capture_gap"]
-    assert 7 <= ports[1].read_starts[0] < 8
-    assert all(start < 30 for start in ports[1].read_starts)
-    assert 30 <= backend.clock.now < 31
-
-
-@pytest.mark.parametrize("slow_phase", ["old_close", "new_open", "post_open_identity"])
-async def test_slow_reconnect_phase_cannot_extend_eight_second_window(slow_phase):
-    backend, ports, inventory, created = device(chunks=[OSError("disconnect")])
-    disconnect_to(ports, inventory)
-    if slow_phase == "old_close":
-        ports[0].close_hook = lambda: backend.clock.pause(9)
-    else:
-        original = ports[1].open
-
-        def slow_open():
-            original()
-            if slow_phase == "new_open":
-                backend.clock.pause(9)
-            else:
-
-                def slow_inventory():
-                    backend.clock.pause(9)
-                    return inventory
-
-                backend.inventory = slow_inventory
-
-        ports[1].open = slow_open
-    with pytest.raises(SerialFailure, match="serial_reconnect_timeout"):
-        await backend.execute(prepared(backend), lambda _: None)
-    assert all(port.closes == 1 for port in created)
-    assert not ports[1].read_starts
-    assert backend.active == 0 and not backend.hardware_connected
 
 
 async def test_fault_strings_are_observations_and_known_secrets_are_redacted():

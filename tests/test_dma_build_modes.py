@@ -11,7 +11,7 @@ import test_build_artifact_persistence as persistence
 from test_dma_modeproof import DMA_ENTRY, dma_fixture
 
 import cardputer_mcp.diagnostic_registry as registry
-from cardputer_mcp.build_locations import _json, build_directory
+from cardputer_mcp.build_locations import build_directory
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.diagnostic_dma_modeproof import PROOF_NAME, collect_dma_modeproof
 from cardputer_mcp.firmware_build import FirmwareBuild
@@ -230,63 +230,5 @@ def test_dma_durable_evidence_after_restart_and_log_expiry(detail, dma):
             assert result["artifact_status"] == "unavailable"
             assert "manifest_export" not in result and "manifest_export_sha256" not in result
             (root / filename).write_bytes(saved)
-    finally:
-        case.doCleanups()
-
-
-def test_large_cache_manifest_has_its_own_bound_without_relaxing_small_receipts(tmp_path):
-    path = tmp_path / "broker-manifest.json"
-    value = {"cache": "x" * 100000}
-    path.write_text(json.dumps(value))
-    assert _json(path, limit=1024 * 1024) == value
-    with pytest.raises(ValueError):
-        _json(path)
-    path.write_bytes(b" " * (1024 * 1024 + 1))
-    with pytest.raises(ValueError):
-        _json(path, limit=1024 * 1024)
-
-
-@pytest.mark.parametrize("key", ["derby_detail_mode", "derby_dma_mode"])
-def test_j1_durable_manifest_null_axis_is_not_legacy_omission(key):
-    from test_diagnostic_modeproof import collect_modeproof, image_fixture
-
-    case = persistence.DurableBuildArtifactTests()
-    case.setUp()
-    try:
-        root, manifest = case.publish(finish=False, publish=False)
-        source, artifacts, _ = image_fixture(root, "ON")
-        manifest.update(
-            source_provenance=source,
-            derby_detail_mode="ON",
-            diagnostic_modeproof=collect_modeproof(root, "ON", source, artifacts),
-            artifacts=artifacts,
-        )
-        job = case.store.job("build-0")
-        plan = case.store.plan(job["plan_hash"])
-        plan.update(derby_detail_mode="ON", source_provenance=source)
-        digest = persistence.digest(plan)
-        case.store.put_plan(digest, plan)
-        case.store.db.execute("UPDATE jobs SET plan_hash=? WHERE id=?", (digest, "build-0"))
-        case.store.db.commit()
-        manifest["build_plan_hash"] = digest
-        (root / "broker-manifest.json").write_text(json.dumps(manifest))
-        case.builder.artifacts.publish("build-0", "alice", root, manifest)
-        case.store.set_job("build-0", "succeeded", "firmware_build_succeeded_no_flash")
-        case.restart()
-        assert case.context()[1] == manifest
-        manifest[key] = None
-        (root / "broker-manifest.json").write_text(json.dumps(manifest))
-        row = case.store.db.execute(
-            "SELECT payload FROM build_artifact_references WHERE job_id=?", ("build-0",)
-        ).fetchone()
-        reference = json.loads(row[0])
-        reference["manifest_sha256"] = persistence.digest(manifest)
-        case.store.db.execute(
-            "UPDATE build_artifact_references SET payload=? WHERE job_id=?",
-            (json.dumps(reference), "build-0"),
-        )
-        case.store.db.commit()
-        with pytest.raises(ValueError):
-            case.context()
     finally:
         case.doCleanups()

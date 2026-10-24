@@ -83,6 +83,12 @@ class SourceDigestTests(unittest.TestCase):
         self.assertEqual(base, source_digest(source(private_acl_confirmed=True)))
         self.assertEqual(base, source_digest(source(previous_cache_roots=[BASE / "old"])))
         self.assertEqual(base, registration_digest(source("moved")))
+        base = project_digest(project())
+        self.assertEqual(base, project_digest(project(build_root=BASE / "elsewhere")))
+        self.assertEqual(base, project_digest(project(source_repository=source("moved"))))
+        base = flash_digest(flash())
+        self.assertEqual(base, flash_digest(flash(backup_directory=BASE / "elsewhere")))
+        self.assertEqual(base, flash_digest(flash(private_backup_acl_confirmed=True)))
 
     def test_content_fields_still_change_the_digest(self):
         base = source_digest(source())
@@ -100,21 +106,17 @@ class SourceDigestTests(unittest.TestCase):
                 expected = sha(old_source_json("owner/repo", BASE / "cache", acl, submodules))
                 self.assertIn(expected, source_digests(registration))
                 self.assertIn(expected, source_digests(registration, schema_version=2))
+        current = project()
+        old = sha(current.model_dump_json(exclude={"source_repository": {"previous_cache_roots"}}))
+        self.assertIn(old, project_digests(current))
+        self.assertNotIn(sha("unknown"), project_digests(current))
+        self.assertIn(sha(flash().model_dump_json()), flash_digests(flash()))
 
     def test_only_listed_previous_roots_are_trusted(self):
         old = sha(old_source_json("owner/repo", BASE / "old", False, []))
         self.assertNotIn(old, source_digests(source()))
         self.assertNotIn(old, source_digests(source(previous_cache_roots=[BASE / "other"])))
         self.assertIn(old, source_digests(source(previous_cache_roots=[BASE / "old"])))
-
-    def test_schema_two_rejects_the_pre_submodule_shape(self):
-        registration = source(submodule_repositories=["a/b"])
-        legacy = sha(old_source_json("owner/repo", BASE / "cache", False, []))
-        self.assertIn(legacy, source_digests(registration, schema_version=1))
-        self.assertIn(legacy, source_digests(registration))
-        self.assertNotIn(legacy, source_digests(registration, schema_version=2))
-
-    def test_previous_roots_must_be_absolute_distinct_and_unique(self):
         for roots in ([Path("relative")], [BASE / ".." / "x"], [BASE / "cache"]):
             with self.assertRaises(ValueError):
                 source(previous_cache_roots=roots)
@@ -123,15 +125,6 @@ class SourceDigestTests(unittest.TestCase):
 
 
 class BuildAndFlashDigestTests(unittest.TestCase):
-    def test_output_locations_do_not_change_the_project_digest(self):
-        base = project_digest(project())
-        self.assertEqual(base, project_digest(project(build_root=BASE / "elsewhere")))
-        self.assertEqual(base, project_digest(project(source_repository=source("moved"))))
-        self.assertEqual(
-            base,
-            project_digest(project(source_repository=source(previous_cache_roots=[BASE / "old"]))),
-        )
-
     def test_anything_that_decides_what_runs_still_changes_it(self):
         base = project_digest(project())
         for change in (
@@ -146,18 +139,6 @@ class BuildAndFlashDigestTests(unittest.TestCase):
             with self.subTest(change=sorted(change)):
                 self.assertNotEqual(base, project_digest(project(**change)))
 
-    def test_old_full_model_project_digest_is_still_accepted(self):
-        current = project()
-        old = sha(current.model_dump_json(exclude={"source_repository": {"previous_cache_roots"}}))
-        self.assertIn(old, project_digests(current))
-        self.assertIn(project_digest(current), project_digests(current))
-        self.assertNotIn(sha("unknown"), project_digests(current))
-
-    def test_backup_location_does_not_change_the_flash_digest(self):
-        base = flash_digest(flash())
-        self.assertEqual(base, flash_digest(flash(backup_directory=BASE / "elsewhere")))
-        self.assertEqual(base, flash_digest(flash(private_backup_acl_confirmed=True)))
-
     def test_flash_identity_and_permissions_still_change_it(self):
         base = flash_digest(flash())
         for change in (
@@ -170,11 +151,6 @@ class BuildAndFlashDigestTests(unittest.TestCase):
         ):
             with self.subTest(change=sorted(change)):
                 self.assertNotEqual(base, flash_digest(flash(**change)))
-
-    def test_old_full_flash_digest_is_still_accepted(self):
-        current = flash()
-        self.assertIn(sha(current.model_dump_json()), flash_digests(current))
-        self.assertIn(flash_digest(current), flash_digests(current))
 
 
 class MovedCacheRootTests(CacheFixture, unittest.TestCase):
@@ -228,11 +204,6 @@ class MovedCacheRootTests(CacheFixture, unittest.TestCase):
         with self.assertRaisesRegex(SourceError, "source_receipt_not_owned"):
             self.snapshots.resolve("fixture", result["source_receipt"], "owner")
         self.use_root(self.cache, previous=[old_root])
-        path, _ = self.snapshots.resolve("fixture", result["source_receipt"], "owner")
-        self.assertTrue(path.is_dir())
-
-    def test_old_style_receipt_still_valid_in_place(self):
-        result = self.old_style_fetch()
         path, _ = self.snapshots.resolve("fixture", result["source_receipt"], "owner")
         self.assertTrue(path.is_dir())
 

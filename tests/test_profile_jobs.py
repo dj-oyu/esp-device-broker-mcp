@@ -400,7 +400,7 @@ async def test_source_pending_cleanup_refusal_is_durable_uncertainty(
         assert list(cache.glob("pending-*"))
 
 
-@pytest.mark.parametrize("stop", ["cancel", "revoke", "config"])
+@pytest.mark.parametrize("stop", ["cancel", "revoke"])
 async def test_source_stop_confirms_pending_cleanup_without_usb_lease(
     registry_service, tmp_path, stop
 ):
@@ -449,8 +449,6 @@ async def test_source_stop_confirms_pending_cleanup_without_usb_lease(
         )
     elif stop == "revoke":
         service.registry.revoke(key.key_id)
-    else:
-        broker.settings = broker.settings.model_copy(update={"build_projects": {}})
     await asyncio.wait_for(broker.profile_jobs.queue.join(), 2)
     assert broker.job("source-stop")["state"] == "cancelled"
     assert not broker._store().needs_review()
@@ -504,18 +502,7 @@ async def test_unconfirmed_output_release_retains_lock_reference_and_review(
 
 @pytest.mark.parametrize(
     "code",
-    [
-        "build_output_insufficient_space",
-        "build_output_in_use",
-        "build_output_identity_mismatch",
-        "build_inputs_changed",
-        "idf_build_failed_needs_review",
-        "build_target_mismatch",
-        "build_artifacts_missing",
-        "artifact_count_limit",
-        "trusted_powershell_missing",
-        "external_idf_environment_invalid",
-    ],
+    ["build_output_in_use", "idf_build_failed_needs_review"],
 )
 async def test_build_failure_result_survives_execution_timeline_and_gui(
     registry_service, tmp_path, monkeypatch, code

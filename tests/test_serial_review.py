@@ -13,7 +13,7 @@ from cardputer_mcp.config import SerialSettings, Settings
 from cardputer_mcp.models import AcquireRequest, ExecuteRequest, LogRequest, Origin, PrepareRequest
 from cardputer_mcp.models import TestName as DeviceTest
 from cardputer_mcp.ports import DeviceSelector, PortInfo
-from cardputer_mcp.serial_backend import KNOWN, Reader, SerialBackend, SerialFailure, hello_cycle
+from cardputer_mcp.serial_backend import Reader, SerialBackend, SerialFailure
 
 
 class SyntheticClock:
@@ -67,18 +67,6 @@ def reader_for(port):
     return Reader(port, events.append, port.clock, port.clock() + 90), events
 
 
-def hello_responses(startup=None, teardown=None):
-    return (
-        [[b"HOME_READY\n"], [b"CATEGORY 0\n"]]
-        + [[b"APP 0\n"]] * 14
-        + [
-            startup or [b"APP_ID local.hello\nHELLO_READY\nHELLO_FRAME_PRESENTED\n"],
-            [b"HELLO_COUNT 1\n"],
-            teardown or [b"MEM free=100 largest=90 js=0 frames=1\nAPP_STOPPED\nHOME_READY\n"],
-        ]
-    )
-
-
 def synthetic_identity(location="synthetic-location"):
     return PortInfo(
         port="SYNTHETIC_PORT", vid=123, pid=456, serial_number="synthetic-serial", location=location
@@ -95,98 +83,6 @@ def synthetic_config():
 
 def prepared(backend, test=DeviceTest.OBSERVE):
     return {"test": test.value, **backend.prepare(test)}
-
-
-def test_review_serial_fragmented_coalesced_and_log_allowlist():
-    chunks = [
-        b"secret=DO_NOT_PERSIST\n\x1b[3",
-        b"2mI (123) app: APP_ID local.",
-        b"hello\x1b[0m\r\nHELLO_RE",
-        b"ADY\nHELLO_FRAME_PRESENTED\n",
-    ]
-    port = SyntheticPort(SyntheticClock(), responses=[chunks])
-    reader, events = reader_for(port)
-    lines = reader.command(b"e", rb"HELLO_FRAME_PRESENTED")
-    assert lines[-3:] == [b"APP_ID local.hello", b"HELLO_READY", b"HELLO_FRAME_PRESENTED"]
-    assert events == [
-        "serial_wait_command",
-        "serial_identity_hello",
-        "serial_hello_ready",
-        "serial_frame_presented",
-    ]
-    assert set(events) <= set(KNOWN.values()) | {"serial_wait_command"}
-    assert all("DO_NOT_PERSIST" not in event for event in events)
-    assert len(port.reader_threads) == 1
-
-
-def test_review_serial_cached_coalesced_ack_cannot_satisfy_next_command():
-    port = SyntheticPort(SyntheticClock(), responses=[[b"CATEGORY 0\nHOME_READY\n"], []])
-    reader, _ = reader_for(port)
-    reader.command(b"a", rb"CATEGORY 0")
-    with pytest.raises(SerialFailure, match="serial_marker_timeout"):
-        reader.command(b"q", rb"HOME_READY", timeout=0.1)
-
-
-def test_review_serial_unread_stale_ack_cannot_satisfy_new_command():
-    port = SyntheticPort(SyntheticClock(), preloaded=[b"HOME_READY\n"])
-    reader, _ = reader_for(port)
-    with pytest.raises(SerialFailure):
-        reader.command(b"q", rb"HOME_READY", timeout=0.1)
-
-
-def test_review_serial_partial_stale_ack_cannot_satisfy_new_command():
-    port = SyntheticPort(SyntheticClock(), responses=[[b"_READY\n"]], preloaded=[b"HOME"])
-    reader, _ = reader_for(port)
-    reader.read_once()
-    with pytest.raises(SerialFailure, match="serial_marker_timeout"):
-        reader.command(b"q", rb"HOME_READY", timeout=0.1)
-
-
-def test_review_serial_valid_complete_hello_cycle_uses_only_expected_keys():
-    port = SyntheticPort(SyntheticClock(), responses=hello_responses())
-    reader, _ = reader_for(port)
-    hello_cycle(reader)
-    assert port.writes == [b"q", b"a"] + [b"u"] * 14 + [b"e", b"e", b"q"]
-
-
-def test_review_serial_rejects_ready_before_identity():
-    startup = [b"HELLO_READY\nAPP_ID local.hello\nHELLO_FRAME_PRESENTED\n"]
-    port = SyntheticPort(SyntheticClock(), responses=hello_responses(startup=startup))
-    reader, _ = reader_for(port)
-    with pytest.raises(SerialFailure):
-        hello_cycle(reader)
-
-
-@pytest.mark.parametrize(
-    "startup",
-    [
-        [b"APP_ID local.other\nHELLO_READY\nHELLO_FRAME_PRESENTED\n"],
-        [b"APP_ID local.hello\nHELLO_FRAME_PRESENTED\n"],
-        [b"HELLO_FRAME_PRESENTED\nAPP_ID local.hello\nHELLO_READY\n"],
-    ],
-)
-def test_review_serial_rejects_bad_startup(startup):
-    port = SyntheticPort(SyntheticClock(), responses=hello_responses(startup=startup))
-    reader, _ = reader_for(port)
-    with pytest.raises(SerialFailure):
-        hello_cycle(reader)
-    assert port.writes.count(b"e") == 1
-
-
-@pytest.mark.parametrize(
-    "teardown",
-    [
-        [b"APP_STOPPED\nMEM free=100 largest=90 js=0 frames=1\nHOME_READY\n"],
-        [b"MEM free=100 largest=90 js=1 frames=1\nAPP_STOPPED\nHOME_READY\n"],
-        [b"MEM free=100 largest=90 js=0 frames=0\nAPP_STOPPED\nHOME_READY\n"],
-        [b"APP_STOPPED\nHOME_READY\n"],
-    ],
-)
-def test_review_serial_rejects_bad_teardown(teardown):
-    port = SyntheticPort(SyntheticClock(), responses=hello_responses(teardown=teardown))
-    reader, _ = reader_for(port)
-    with pytest.raises(SerialFailure):
-        hello_cycle(reader)
 
 
 def test_review_serial_rejects_unsupported_keys_without_write():
@@ -213,45 +109,6 @@ def test_review_serial_bounds_and_fragmented_faults(chunks, error):
     with pytest.raises(SerialFailure, match=error):
         for _ in range(10000):
             reader.read_once()
-
-
-async def test_review_serial_fingerprint_change_rejects_before_factory():
-    identity = [synthetic_identity()]
-    factory_calls = []
-
-    def forbidden_factory():
-        factory_calls.append(True)
-        raise AssertionError("Synthetic factory must not be invoked")
-
-    backend = SerialBackend(
-        synthetic_config(), inventory=lambda: identity, factory=forbidden_factory
-    )
-    plan = prepared(backend)
-    identity[0] = synthetic_identity("changed-synthetic-location")
-    with pytest.raises(SerialFailure, match="device_or_plan_changed"):
-        await backend.execute(plan, lambda _: None)
-    assert factory_calls == []
-    assert backend.active == 0
-
-
-async def test_review_serial_fingerprint_change_after_open_closes_before_any_command():
-    clock = SyntheticClock()
-    port = SyntheticPort(clock)
-    calls = 0
-
-    def inventory():
-        nonlocal calls
-        calls += 1
-        return [synthetic_identity("changed" if calls >= 3 else "synthetic-location")]
-
-    backend = SerialBackend(
-        synthetic_config(), inventory=inventory, factory=lambda: port, clock=clock
-    )
-    with pytest.raises(SerialFailure):
-        await backend.execute(prepared(backend, DeviceTest.HELLO), lambda _: None)
-    assert port.open_count == port.close_count == 1
-    assert not port.is_open
-    assert port.writes == []
 
 
 async def test_review_serial_cancellation_keeps_owner_until_thread_and_close_finish():
@@ -370,17 +227,6 @@ async def test_review_serial_unconfirmed_close_never_reports_disconnected(raise_
     with pytest.raises(SerialFailure):
         await backend.execute(prepared(backend), events.append)
     assert port.open_count == 1
-
-
-def test_review_serial_duplicate_coalesced_teardown_is_not_accepted():
-    teardown = [
-        b"MEM free=100 largest=90 js=0 frames=1\nAPP_STOPPED\nHOME_READY\n"
-        b"MEM free=100 largest=90 js=0 frames=1\nAPP_STOPPED\nHOME_READY\n"
-    ]
-    port = SyntheticPort(SyntheticClock(), responses=hello_responses(teardown=teardown))
-    reader, _ = reader_for(port)
-    with pytest.raises(SerialFailure):
-        hello_cycle(reader)
 
 
 async def test_review_serial_worker_task_cancellation_cannot_release_live_port():

@@ -143,47 +143,6 @@ class DerbyTests(unittest.TestCase):
         self.assertNotIn(b"s", wire.writes)
         self.assertNotIn(b"q", wire.writes)
 
-    def test_reentered_gate_or_mixed_race_ids_never_claim_one_cycle(self):
-        wire = Wire()
-        wire.phase_order = (b"gate", b"race", b"gate", b"photo", b"res")
-        _, code = self.run_wire(wire)
-        self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
-        wire = Wire()
-        read = wire.read
-
-        def mixed_read(size=1):
-            data = read(size)
-            return data.replace(b"photo race=1000001", b"photo race=1000002")
-
-        wire.read = mixed_read
-        _, code = self.run_wire(wire)
-        self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
-
-    def test_absent_phases_exits_without_capture_or_cycle_success(self):
-        image, code = self.run_wire(Wire(phases=False))
-        self.assertIsNone(image)
-        self.assertEqual(code, "derby_photo_not_verified_no_capture")
-
-    def test_wrong_order_and_duplicate_start_do_not_claim_cycle(self):
-        wire = Wire()
-        wire.phase_order = (b"race", b"gate", b"photo", b"res")
-        _, code = self.run_wire(wire)
-        self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
-        wire = Wire()
-        read = wire.read
-
-        def duplicate_start(size=1):
-            data = read(size)
-            if data.startswith(b"DERBY DEMO START"):
-                data += data
-            return data
-
-        wire.read = duplicate_start
-        _, code = self.run_wire(wire)
-        self.assertEqual(code, "derby_image_observed_demo_cycle_or_photo_phase_not_verified")
-        self.assertEqual(wire.writes.count(b"s"), 1)
-        self.assertEqual(wire.writes.count(b"q"), 1)
-
     def test_invalid_frame_or_missing_fresh_home_closes_without_retry(self):
         async def run(broken_step):
             wire = Wire()

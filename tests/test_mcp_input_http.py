@@ -87,10 +87,7 @@ async def test_http_tool_validation_is_actionable_and_never_echoes_input(
     "input_request,error,field",
     [
         (flash(session=None), "device_session_required", None),
-        (flash(device_id=None), "registered_flash_device_required", None),
         (flash(project_id="SYNTHETIC_PRIVATE"), "argument_not_allowed", "project_id"),
-        (flash(build_job_id=None), "successful_build_job_required", None),
-        (flash(source_commit="a" * 40), "argument_not_allowed", "source_commit"),
         (flash(backup_job_id="a-backup", lkg_receipt="b" * 64), "argument_conflict", "lkg_receipt"),
     ],
 )

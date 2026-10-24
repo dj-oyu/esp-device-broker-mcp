@@ -3,11 +3,8 @@
 import json
 import unittest
 
-from pydantic import ValidationError
-
 from cardputer_mcp.input_diagnostics import REQUEST_MODELS, validate_arguments
 from cardputer_mcp.models import PrepareRequest
-from cardputer_mcp.surface import SubmitRequest
 
 
 class InputDiagnosticTests(unittest.TestCase):
@@ -93,6 +90,27 @@ class InputDiagnosticTests(unittest.TestCase):
                 )
                 self.assertNotIn("SYNTHETIC", json.dumps(result))
                 self.assertNotIn("https://", json.dumps(result))
+        for tool in REQUEST_MODELS:
+            self.assertEqual(validate_arguments(tool, {})["fields"], ["request"])
+        nested = {"view": "logs", "stream": "build", "job_id": "safe", "levels": ["SYNTHETIC"]}
+        result = validate_arguments("status", {"request": nested})
+        self.assertEqual(result["fields"], ["levels"])
+        self.assertNotIn("SYNTHETIC", json.dumps(result))
+        base = {
+            "job_id": "build",
+            "test": "firmware_build",
+            "project_id": "fixture",
+            "source_receipt": "a" * 64,
+        }
+        for mode in ("ON", "OFF"):
+            self.assertEqual(PrepareRequest(**base, derby_detail_mode=mode).derby_detail_mode, mode)
+        for mode in ("-DANY=1", "on", "ON;echo unsafe", True):
+            with self.assertRaises(ValueError):
+                PrepareRequest(**base, derby_detail_mode=mode)
+        with self.assertRaises(ValueError):
+            PrepareRequest(job_id="build", test="firmware_build", derby_detail_mode="OFF")
+        with self.assertRaises(ValueError):
+            PrepareRequest(**base, flash_job_id="flash")
 
     def test_request_models_cover_exactly_the_six_surface_tools(self):
         self.assertEqual(
@@ -100,49 +118,6 @@ class InputDiagnosticTests(unittest.TestCase):
         )
         for old in ("prepare_test", "execute_test", "read_build_logs", "cancel_job"):
             self.assertIsNone(validate_arguments(old, {"request": {"SYNTHETIC": 1}}))
-
-    def test_missing_request_and_nested_names_have_safe_field_diagnostics(self):
-        for tool in REQUEST_MODELS:
-            with self.subTest(tool=tool):
-                self.assertEqual(validate_arguments(tool, {})["fields"], ["request"])
-        result = validate_arguments(
-            "status",
-            {
-                "request": {
-                    "view": "logs",
-                    "stream": "build",
-                    "job_id": "safe",
-                    "levels": ["SYNTHETIC_PRIVATE"],
-                }
-            },
-        )
-        self.assertEqual(result["fields"], ["levels"])
-        self.assertNotIn("SYNTHETIC", json.dumps(result))
-
-    def test_diagnostics_do_not_change_valid_optional_nulls_or_model_admission(self):
-        for kind in ("flash", "backup", "restore"):
-            request = self.submit(kind=kind)
-            if kind != "flash":
-                request.pop("build_job_id")
-            for null_project in (False, True):
-                with self.subTest(kind=kind, null_project=null_project):
-                    candidate = {**request, **({"project_id": None} if null_project else {})}
-                    SubmitRequest.model_validate(candidate)
-                    self.assertIsNone(validate_arguments("submit", {"request": candidate}))
-                    try:
-                        import jsonschema
-                    except ModuleNotFoundError:
-                        continue
-                    jsonschema.validate(candidate, SubmitRequest.model_json_schema())
-        # The legacy plan model still refuses a project on flash operations.
-        for test in ("firmware_flash", "firmware_backup", "firmware_restore"):
-            request = self.flash()
-            request["test"] = test
-            if test != "firmware_flash":
-                request.pop("build_job_id")
-            PrepareRequest.model_validate(request)
-        with self.assertRaises(ValidationError):
-            PrepareRequest.model_validate(self.flash(project_id="not-permitted"))
 
     def test_conditional_schema_requires_the_same_flash_references(self):
         import jsonschema

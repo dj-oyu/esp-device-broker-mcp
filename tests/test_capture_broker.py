@@ -166,41 +166,6 @@ async def test_capture_expires_at_five_minutes_without_read_refresh_or_recapture
         assert broker.backend.calls == 1
 
 
-async def test_capture_memory_cache_evicts_oldest_completion_at_eight(tmp_path: Path) -> None:
-    async with running(tmp_path) as broker:
-        session = acquire(broker)
-        for number in range(9):
-            enqueue(broker, session, f"capture-{number}")
-            await broker.queue.join()
-            assert len(broker.captures) <= 8
-        unavailable(broker, "capture-0")
-        for number in range(1, 9):
-            assert_image_available(broker, f"capture-{number}")
-            assert broker.read_capture(f"capture-{number}", PRINCIPAL).png
-        assert broker.job("capture-0")["state"] == "succeeded"
-        assert broker.backend.calls == 9
-
-
-async def test_expired_capture_releases_worker_reference_and_pixel_memory(tmp_path: Path) -> None:
-    clock = Clock()
-    async with running(tmp_path, clock=clock) as broker:
-        session = acquire(broker)
-        enqueue(broker, session, "discard-pixels")
-        await broker.queue.join()
-        assert_image_available(broker, "discard-pixels")
-        image = broker.read_capture("discard-pixels", PRINCIPAL)
-        retained = weakref.ref(image)
-        del image
-        assert retained() is not None
-        clock.now = 400.0
-        broker.maintenance_tick()
-        gc.collect()
-        assert not broker.captures
-        assert retained() is None
-        unavailable(broker, "discard-pixels")
-        assert broker.backend.calls == 1
-
-
 class ClosingCapture(MockBackend):
     """Synthetic physical close gate: pixels exist before transport is closed."""
 

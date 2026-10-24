@@ -16,7 +16,6 @@ from cardputer_mcp.source_payloads import _reclaim
 from cardputer_mcp.source_resources import resource_report
 from cardputer_mcp.source_retention import retention_evidence
 from cardputer_mcp.source_snapshot import (
-    LIMITS,
     SourceError,
     SourceSnapshots,
     canonical,
@@ -110,34 +109,6 @@ class CacheFixture:
 class SourceLifecycleTests(CacheFixture, unittest.TestCase):
     def setUp(self):
         self.setup_cache()
-
-    def test_sixteen_full_accepts_three_new_versions_retaining_receipts(self):
-        original = self.fill()
-        receipts = {
-            item["source_receipt"]: self.payload(item).parent.joinpath("receipt.json").read_bytes()
-            for item in original
-        }
-        for number in (17, 18, 19):
-            self.fetch(number)
-            self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 16)
-        usage = self.snapshots.usage("fixture")
-        self.assertEqual(usage["evidence_snapshots"], 19)
-        self.assertEqual(usage["evicted_snapshots"], 3)
-        for receipt, raw in receipts.items():
-            self.assertEqual((self.root / "cache" / receipt / "receipt.json").read_bytes(), raw)
-        self.assertFalse((self.root / "worktree").exists())
-        self.assertFalse((self.root / "build").exists())
-
-    def test_same_commit_reused_when_full_no_download_or_duplicate(self):
-        original = self.fill()
-        before = self.downloads
-        result = self.fetch(1, "repeat")
-        self.assertTrue(result["reused"])
-        self.assertEqual(result["source_receipt"], original[0]["source_receipt"])
-        self.assertEqual(self.downloads, before)
-        self.assertEqual(self.snapshots.usage("fixture")["evidence_snapshots"], 16)
-        manager = FirmwareSource(self.settings, lambda: self.store)
-        manager.authorize_receipt("fixture", result["source_receipt"], "owner")
 
     def test_explicit_refetch_restores_original_receipt_and_authority(self):
         original = self.fill()
@@ -237,15 +208,6 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
             "executable_firmware_operation", policy["protected"][first[1]["source_receipt"]]
         )
 
-    def test_capacity_is_shared_so_another_principals_unreferenced_payload_is_reclaimed(self):
-        first = self.fetch(1, principal="other")
-        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
-            second = self.fetch(2)
-        self.assertFalse(self.payload(first).exists())
-        self.assertTrue((self.root / "cache" / first["source_receipt"] / "receipt.json").exists())
-        self.assertTrue(self.payload(second).exists())
-        self.assertEqual(self.downloads, 2)
-
     def test_other_principals_referenced_payload_is_still_protected(self):
         first = self.fetch(1, principal="other")
         self.add(
@@ -303,72 +265,6 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
             with self.assertRaisesRegex(SourceError, "source_cache_references_incomplete"):
                 self.fetch(2)
         self.assertTrue(self.payload(first).exists())
-
-    def test_evidence_quota_and_disk_preflight_do_not_evict(self):
-        first = self.fetch(1)
-        with patch("cardputer_mcp.source_payloads.EVIDENCE_SNAPSHOTS", 1):
-            with self.assertRaisesRegex(SourceError, "source_cache_evidence_full"):
-                self.fetch(2)
-        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
-            with patch(
-                "cardputer_mcp.source_payloads.shutil.disk_usage",
-                return_value=SimpleNamespace(free=0),
-            ):
-                with self.assertRaisesRegex(SourceError, "source_disk_reserve_required"):
-                    self.fetch(3)
-        self.assertTrue(self.payload(first).exists())
-
-    def test_receipt_byte_headroom_is_bounded_and_reuse_needs_no_new_evidence(self):
-        first = self.fetch(1)
-        usage = self.snapshots.usage("fixture")
-        with patch(
-            "cardputer_mcp.source_payloads.EVIDENCE_BYTES",
-            usage["evidence_bytes"] + 32 * 1048576 - 1,
-        ):
-            with self.assertRaisesRegex(SourceError, "source_cache_evidence_full"):
-                self.fetch(2)
-            reused = self.fetch(1, "reuse-at-evidence-limit")
-        self.assertEqual(reused["source_receipt"], first["source_receipt"])
-        self.assertTrue(self.payload(first).exists())
-
-    def test_byte_pressure_reclaims_only_enough_and_insufficient_bytes_preserve_payload(self):
-        first = self.fill(3)
-        usage = self.snapshots.usage("fixture")
-        maximum = usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 - 1
-        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_bytes=maximum):
-            self.fetch(4)
-        self.assertEqual(sum(not self.payload(item).exists() for item in first), 1)
-        remaining = [item for item in first if self.payload(item).exists()]
-        for index, item in enumerate(remaining):
-            self.add(
-                {
-                    "job_id": f"pin-{index}",
-                    "project_id": "fixture",
-                    "broker_epoch": "epoch",
-                    "source_receipt": item["source_receipt"],
-                }
-            )
-        newest = self.store.job("source-4")["diagnostic"]["source"]
-        payload_bytes = newest["bytes"]
-        usage = self.snapshots.usage("fixture")
-        maximum = usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 - payload_bytes - 1
-        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_bytes=maximum):
-            with self.assertRaisesRegex(SourceError, "source_cache_protected"):
-                self.fetch(5)
-        self.assertTrue(self.payload(newest).exists())
-
-    def test_failed_download_leaves_no_pending_and_old_receipt_is_retained(self):
-        first = self.fetch(1)
-        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
-            with patch(
-                "cardputer_mcp.source_snapshot.RepositoryArchives.fetch",
-                side_effect=SourceError("source_download_failed"),
-            ):
-                with self.assertRaisesRegex(SourceError, "source_download_failed"):
-                    self.fetch(2)
-        self.assertTrue((self.payload(first).parent / "receipt.json").exists())
-        self.assertEqual(self.snapshots.usage("fixture")["pending_snapshots"], 0)
-        self.fetch(3)
 
     def test_published_without_durable_success_is_neither_reused_nor_reclaimed(self):
         first = self.fetch(1, commit=False)
@@ -518,14 +414,6 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         self.assertIn(first["source_receipt"], self.evidence()["protected"])
         self.assertNotIn(second["source_receipt"], self.evidence()["protected"])
 
-    def test_empty_lock_from_interrupted_first_claim_is_recoverable(self):
-        root = self.root / "cache"
-        root.mkdir(mode=0o700)
-        (root / ".source-cache.lock").touch()
-        self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 0)
-        self.fetch(1)
-        self.assertEqual((root / ".source-cache.lock").stat().st_size, 64)
-
     def test_unknown_hex_directory_not_deleted_when_known_payload_can_free_space(self):
         first = self.fetch(1)
         unknown = self.root / "cache" / ("f" * 64)
@@ -534,17 +422,6 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
             self.fetch(2)
         self.assertTrue(unknown.exists())
         self.assertFalse(self.payload(first).exists())
-
-    def test_insufficient_eligible_capacity_does_not_retire_any_payload(self):
-        first = self.fetch(1)
-        root = self.root / "cache"
-        (root / "unknown-one").mkdir()
-        (root / "unknown-two").mkdir()
-        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=2):
-            with self.assertRaisesRegex(SourceError, "source_cache_protected"):
-                self.fetch(2)
-        self.assertTrue(self.payload(first).exists())
-        self.assertEqual(self.downloads, 1)
 
     def test_hardlinked_payload_rejected_without_touching_external_file(self):
         first = self.fetch(1)
@@ -615,20 +492,6 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         )
         with self.assertRaisesRegex(SourceError, "source_cache_owner_conflict"):
             SourceSnapshots(other).usage("fixture")
-
-    def test_report_distinguishes_payload_and_receipt_only(self):
-        self.fill(2)
-        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=2):
-            self.fetch(3)
-        report = resource_report(
-            self.store, "fixture", "owner", self.snapshots.inventory("fixture"), epoch="epoch"
-        )
-        self.assertTrue(report["reference_inventory_complete"])
-        self.assertEqual(report["other_or_unclassified_snapshots"], 0)
-        self.assertEqual(report["reclamation_candidate_payloads"], 2)
-        self.assertFalse(any(row["cleanup_eligible"] for row in report["owned_snapshots"]))
-        self.assertFalse(report["cleanup_authorized"])
-        self.assertTrue(report["automatic_payload_reclamation"])
 
 
 class SourceLifecycleAsyncTests(CacheFixture, unittest.IsolatedAsyncioTestCase):

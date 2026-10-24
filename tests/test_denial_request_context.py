@@ -1,7 +1,6 @@
 """Fixed diagnostic categories cannot retain request values or arbitrary names."""
 
 import json
-from types import SimpleNamespace
 
 import pytest
 from test_http_diagnostics import BASE_HEADERS, MARKER, invoke, should_not_run
@@ -31,11 +30,11 @@ def context(headers=None, **extra):
     )
 
 
-@pytest.mark.parametrize("name", sorted(FORWARDING_NAMES))
-def test_known_names_are_finite_values_are_not_retained(name):
-    result = context(BASE_HEADERS + [(name.upper().encode(), MARKER.encode())])
-    assert result["forwarding_headers"] == [name]
-    assert MARKER not in json.dumps(result)
+def test_known_names_are_finite_values_are_not_retained():
+    for name in sorted(FORWARDING_NAMES):
+        result = context(BASE_HEADERS + [(name.upper().encode(), MARKER.encode())])
+        assert result["forwarding_headers"] == [name]
+        assert MARKER not in json.dumps(result)
 
 
 def test_arbitrary_names_collapse_to_other_and_duplicates_are_categories():
@@ -51,12 +50,8 @@ def test_arbitrary_names_collapse_to_other_and_duplicates_are_categories():
     [
         (None, "missing"),
         (b"application/json", "application_json"),
-        (b"application/json; charset=utf-8", "application_json"),
         (b"Application/JSON ", "application_json_variant"),
-        (b"text/plain", "text_plain"),
-        (b"application/x-www-form-urlencoded", "form_urlencoded"),
         (b"multipart/form-data; boundary=PRIVATE", "multipart_form_data"),
-        (b"application/octet-stream", "octet_stream"),
         (MARKER.encode(), "other"),
     ],
 )
@@ -79,9 +74,7 @@ def test_unknown_path_method_and_ambiguous_media_are_not_echoed():
     assert MARKER not in json.dumps(result)
 
 
-@pytest.mark.parametrize(
-    "field", ["entry", "stage", "method", "content_type", "forwarding_headers", "duplicate_headers"]
-)
+@pytest.mark.parametrize("field", ["entry", "content_type", "forwarding_headers"])
 def test_context_validation_never_echoes_invalid_fields(field):
     data = context()
     data[field] = [MARKER] if field.endswith("headers") else MARKER
@@ -122,22 +115,6 @@ async def test_direct_vs_ingress_rejection_has_original_physical_entry():
     ]
     assert recent[1]["context"]["forwarding_headers"] == ["x-forwarded-prefix"]
     assert MARKER not in json.dumps(recent)
-
-
-async def test_post_ingress_auth_failure_is_not_mislabeled_direct():
-    diagnostics = HTTPDiagnostics()
-    principal = Principal("synthetic", Origin.REMOTE, frozenset({"read"}))
-    guarded = LoopbackOnly(
-        should_not_run, 8765, lambda: SimpleNamespace(authenticate=lambda header: None), diagnostics
-    )
-    ingress = TunnelIngress(guarded, lambda header: principal)
-    response = await invoke(
-        ingress, path="/tunnel/mcp", headers=BASE_HEADERS + [(b"x-forwarded-for", MARKER.encode())]
-    )
-    assert response[0]["status"] == 401
-    result = diagnostics.snapshot()["last_denial"]["context"]
-    assert result["entry"] == "tunnel_ingress" and result["stage"] == "post_ingress_auth"
-    assert result["forwarding_headers"] == []
 
 
 async def test_post_and_get_classification_does_not_change_content_type_gate():

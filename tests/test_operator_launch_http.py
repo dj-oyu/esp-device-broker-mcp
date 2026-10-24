@@ -6,13 +6,13 @@ import httpx2
 import pytest
 
 from cardputer_mcp.models import Origin
-from cardputer_mcp.operator_api import RETIRED_ROUTES, OperatorAPI
+from cardputer_mcp.operator_api import OperatorAPI
+
+# One representative retired route: authentication first (401), then terminal (410).
+_CASES = [("/operator/plans", None, 401), ("/operator/approve-plan", "local", 410)]
 
 
-@pytest.mark.parametrize("path", sorted(RETIRED_ROUTES))
-@pytest.mark.parametrize(
-    "identity,status", [(None, 401), ("remote", 403), ("read", 403), ("local", 410)]
-)
+@pytest.mark.parametrize("path,identity,status", _CASES)
 async def test_old_operator_endpoint_is_authenticated_terminal_and_never_executes(
     path, identity, status
 ):

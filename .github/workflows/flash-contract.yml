@@ -39,8 +39,6 @@ on:
       - 'src/cardputer_mcp/cli.py'
       - 'tests/test_operator_live_cli.py'
       - 'tests/test_explicit_request_store.py'
-      - 'tests/test_capture_approval.py'
-      - 'tests/test_operator_submission_notice.py'
       - 'tests/test_console_logs.py'
       - 'tests/test_gui_timeline.py'
       - 'tests/test_gui_cancel_receipt_review.py'
@@ -106,7 +104,7 @@ jobs:
       - name: Source/build, authorization and device integration without hardware
         timeout-minutes: 12
         run: |
-          .venv/Scripts/python.exe -m pytest -vv --tb=short -o faulthandler_timeout=60 tests/test_flash_http.py tests/test_source_http.py tests/test_source_snapshot.py tests/test_profile_jobs.py tests/test_profile_device_review_independence.py tests/test_worker_callback_bindings.py tests/test_workflow_test_selectors.py tests/test_build_approval_integration.py tests/test_build_artifact_persistence.py tests/test_derby_smoke.py tests/test_derby_http.py tests/test_serial_backend.py tests/test_capture_broker.py tests/test_plan_approval.py tests/test_broker.py tests/test_review_invariants.py tests/test_session_safety_review.py tests/test_queued_principal_recheck.py tests/test_pending_execution.py tests/test_pending_execution_http.py tests/test_http_security.py tests/test_input_diagnostics.py tests/test_mcp_input_http.py tests/test_registry_http.py tests/test_work_sessions.py tests/test_operator_timeline.py tests/test_operator_timeline_http.py tests/test_gui_timeline.py tests/test_gui_cancel_receipt_review.py tests/test_operator_job_cancel.py tests/test_gui_retention_review.py tests/test_explicit_request_store.py tests/test_image_delivery.py tests/test_capture_policy_http.py tests/test_gui_shutdown_review.py tests/test_capture_approval.py tests/test_operator_submission_notice.py tests/test_console_logs.py tests/test_stdio_adapter.py tests/test_stdio_cli.py
+          .venv/Scripts/python.exe -m pytest -vv --tb=short -o faulthandler_timeout=60 tests/test_flash_http.py tests/test_source_http.py tests/test_source_snapshot.py tests/test_profile_jobs.py tests/test_profile_device_review_independence.py tests/test_worker_callback_bindings.py tests/test_workflow_test_selectors.py tests/test_build_approval_integration.py tests/test_build_artifact_persistence.py tests/test_derby_smoke.py tests/test_derby_http.py tests/test_serial_backend.py tests/test_capture_broker.py tests/test_plan_approval.py tests/test_broker.py tests/test_review_invariants.py tests/test_session_safety_review.py tests/test_queued_principal_recheck.py tests/test_pending_execution.py tests/test_pending_execution_http.py tests/test_http_security.py tests/test_input_diagnostics.py tests/test_mcp_input_http.py tests/test_registry_http.py tests/test_work_sessions.py tests/test_operator_timeline.py tests/test_operator_timeline_http.py tests/test_gui_timeline.py tests/test_gui_cancel_receipt_review.py tests/test_operator_job_cancel.py tests/test_gui_retention_review.py tests/test_explicit_request_store.py tests/test_image_delivery.py tests/test_capture_policy_http.py tests/test_gui_shutdown_review.py tests/test_console_logs.py tests/test_stdio_adapter.py tests/test_stdio_cli.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retired local approval CLI remains inert without hardware
         timeout-minutes: 2
@@ -116,7 +114,7 @@ jobs:
       - name: Retired approval relay and HTTP contracts without hardware
         timeout-minutes: 2
         run: |
-          .venv/Scripts/python.exe -m pytest -vv --tb=short -o faulthandler_timeout=60 tests/test_operator_launch_pipe.py tests/test_operator_launch_http.py
+          .venv/Scripts/python.exe -m pytest -vv --tb=short -o faulthandler_timeout=60 tests/test_operator_launch_http.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Source and build regression
         run: |

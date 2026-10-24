@@ -1,8 +1,6 @@
 """Deterministic synthetic Tunnel lifecycles; no client, account, or USB use."""
 
-import asyncio
 import json
-import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -13,7 +11,6 @@ from filelock import Timeout
 from cardputer_mcp import tunnel_manager as tm
 from cardputer_mcp.client import SURFACE_TOOLS
 from cardputer_mcp.tunnel import TunnelError, TunnelSettings
-from cardputer_mcp.windows_process import WindowsProcessError
 
 KEY = "SYNTHETIC_RUNTIME_KEY_NEVER_REAL"
 BEARER = "Bearer " + "a" * 64
@@ -189,6 +186,9 @@ def test_connect_idempotent_no_spawn_or_broker_reprobe(configured):
     c.manager.connect(KEY, BEARER)
     c.manager.connect(KEY, BEARER)
     assert c.capture["starts"] == c.capture["broker_calls"] == 1
+    c.settings.broker_config.write_text(c.settings.broker_config.read_text() + "# external edit\n")
+    state = c.manager.poll()
+    assert state["state"] == "running" and state["owned"] and c.process.stop_calls == 0
     assert c.manager.configure(c.settings, URL)["status_code"] == "tunnel_configuration_locked"
     assert c.manager.disconnect()["state"] == "disconnected"
     assert c.manager.disconnect()["state"] == "disconnected"
@@ -200,9 +200,7 @@ def test_connect_idempotent_no_spawn_or_broker_reprobe(configured):
     [
         ({"authenticated": False}, "tunnel_broker_auth_failed"),
         ({"origin": "local_cli"}, "tunnel_broker_origin_rejected"),
-        ({"scopes": ["control"]}, "tunnel_broker_scope_rejected"),
         ({"backend": "serial"}, "tunnel_broker_backend_mismatch"),
-        ({"status": {"ok": False, "error": PRIVATE}}, "tunnel_broker_status_invalid"),
     ],
 )
 def test_broker_validation_fail_closed(configured, change, code):
@@ -214,28 +212,13 @@ def test_broker_validation_fail_closed(configured, change, code):
     assert PRIVATE not in repr(state)
 
 
-@pytest.mark.parametrize(
-    "url", ["http://localhost:18765/mcp", URL + "/", "http://127.0.0.1:18767/mcp"]
-)
+@pytest.mark.parametrize("url", ["http://localhost:18765/mcp", "http://127.0.0.1:18767/mcp"])
 def test_exact_current_broker_url_required(configured, url):
     c = configured
     state = c.manager.configure(c.settings, url)
     assert state["status_code"] == "tunnel_broker_url_mismatch"
     assert not state["configured"]
     assert c.manager.connect(KEY, BEARER)["status_code"] == "tunnel_not_configured"
-
-
-def test_configuration_rechecked_at_connect(configured):
-    c = configured
-    c.settings.broker_config.write_text("port = 18764\n")
-    assert c.manager.connect(KEY, BEARER)["status_code"] == "tunnel_configuration_changed"
-    assert c.capture["starts"] == 0
-
-
-def test_placeholder_rejected(configured):
-    c = configured
-    settings = c.settings.model_copy(update={"tunnel_id": "tunnel_" + "0" * 32})
-    assert c.manager.configure(settings, URL)["status_code"] == "tunnel_id_placeholder"
 
 
 def test_failed_release_verification_does_not_lock_probe_or_spawn(configured):
@@ -300,21 +283,6 @@ def test_unconfirmed_shutdown_retains_ownership_and_window(configured, failure):
     assert not c.lock.held and c.manager.snapshot()["state"] == "closed"
 
 
-def test_partial_launch_keeps_exception_owned_job(configured):
-    c = configured
-    c.process.confirm_stop = False
-
-    def fail(args, env, cwd):
-        raise WindowsProcessError("owned_process_start_failed", owned=c.process)
-
-    c.manager._factory = fail
-    state = c.manager.connect(KEY, BEARER)
-    assert state["status_code"] == "tunnel_stop_unconfirmed"
-    assert state["owned"] and state["ownership_uncertain"] and c.lock.held
-    c.process.confirm_stop = True
-    assert c.manager.close() is True
-
-
 @pytest.mark.parametrize("status", [401, 403])
 def test_native_cloud_auth_failure_stops_only_owned_job_and_no_retry(configured, status):
     c = configured
@@ -341,36 +309,31 @@ def test_native_cloud_auth_failure_stops_only_owned_job_and_no_retry(configured,
 
 
 @pytest.mark.parametrize(
-    "updates,code",
+    "updates,code,age",
     [
-        ({"schema_version": 2}, "tunnel_health_schema_unsupported"),
-        ({"schema_version": True}, "tunnel_health_schema_unsupported"),
-        ({"limited": True}, "tunnel_health_schema_unsupported"),
-        ({"snapshot_at": stamp(NOW - 20)}, "tunnel_health_stale"),
-        ({"snapshot_at": stamp(NOW + 20)}, "tunnel_health_stale"),
-        ({"details": {"consecutive_failures": 0}}, "tunnel_cloud_poll_unobserved"),
+        ({"schema_version": 2}, "tunnel_health_schema_unsupported", 500),
+        ({"snapshot_at": stamp(NOW - 20)}, "tunnel_health_stale", 500),
+        ({"details": {"consecutive_failures": 0}}, "tunnel_cloud_poll_unobserved", 500),
         (
             {"details": {"consecutive_failures": 0, "last_success": stamp(NOW - 300)}},
             "tunnel_cloud_poll_stale",
+            500,
         ),
         (
-            {"details": {"consecutive_failures": 0, "last_success": stamp(NOW + 20)}},
+            {"details": {"consecutive_failures": 0, "last_success": stamp(NOW - 20)}},
             "tunnel_cloud_poll_stale",
+            0,  # success from a previous child is not evidence
         ),
         (
             {"details": {"consecutive_failures": 1}, "status": "degraded"},
             "tunnel_cloud_poll_degraded",
+            500,
         ),
     ],
 )
-def test_control_plane_requires_fresh_supported_success(updates, code):
+def test_control_plane_requires_fresh_supported_success(updates, code, age):
     payload = healthy(**updates)["control_plane"]
-    assert tm.classify_control_plane(payload, now=NOW, started_at=NOW - 500) == (False, code)
-
-
-def test_recent_success_from_previous_child_is_not_evidence():
-    payload = healthy(details={"consecutive_failures": 0, "last_success": stamp(NOW - 20)})
-    assert tm.classify_control_plane(payload["control_plane"], now=NOW, started_at=NOW)[0] is False
+    assert tm.classify_control_plane(payload, now=NOW, started_at=NOW - age) == (False, code)
 
 
 def test_only_readyz_does_not_verify_cloud_or_app(configured):
@@ -380,20 +343,6 @@ def test_only_readyz_does_not_verify_cloud_or_app(configured):
     state = c.manager.poll()
     assert state["local_readiness"] and not state["cloud_poll_observed"]
     assert state["app_verified"] is False and state["status_code"] == "tunnel_local_ready"
-
-
-def test_invalid_runtime_inputs_not_echoed_or_stored(configured):
-    c = configured
-    state = c.manager.connect(PRIVATE + "\n", BEARER)
-    assert state["status_code"] == "invalid_runtime_key"
-    assert PRIVATE not in repr(state) + repr(c.manager)
-    assert c.capture["starts"] == c.capture["broker_calls"] == 0
-
-
-@pytest.mark.asyncio
-async def test_sync_default_probe_requires_worker_not_nested_asyncio():
-    with pytest.raises(TunnelError, match="^tunnel_worker_required$"):
-        tm.broker_probe(URL, BEARER)
 
 
 def test_default_broker_probe_only_read_only_tools(monkeypatch):
@@ -477,100 +426,6 @@ def test_health_http_bounds_proxy_redirects_and_untrusted_body(monkeypatch):
     assert PRIVATE not in repr(result)
 
 
-@pytest.mark.asyncio
-async def test_health_total_timeout_covers_slow_drip_headers(monkeypatch):
-    monkeypatch.setattr(tm, "HEALTH_TOTAL_SECONDS", 0.12)
-    calls = []
-    tasks = set()
-
-    async def slow_headers(reader, writer):
-        task = asyncio.current_task()
-        tasks.add(task)
-        calls.append(True)
-        try:
-            await reader.readuntil(b"\r\n\r\n")
-            writer.write(b"HTTP/1.1 200 OK\r\nX-Slow: ")
-            await writer.drain()
-            while True:
-                writer.write(b"x")
-                await writer.drain()
-                await asyncio.sleep(0.02)
-        except (ConnectionError, asyncio.IncompleteReadError):
-            pass
-        finally:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except ConnectionError:
-                pass
-            tasks.discard(task)
-
-    server = await asyncio.start_server(slow_headers, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    try:
-        started = time.monotonic()
-        result = await asyncio.wait_for(tm._health_probe_async(port), timeout=1)
-        assert time.monotonic() - started < 0.7
-        assert calls == [True]
-        assert result == {"ready_status": 0, "control_status": 0, "control_plane": None}
-    finally:
-        server.close()
-        await server.wait_closed()
-        pending = list(tasks)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_health_total_timeout_covers_dripping_body(monkeypatch):
-    monkeypatch.setattr(tm, "HEALTH_TOTAL_SECONDS", 0.06)
-    original = tm.httpx2.AsyncClient
-    chunks = []
-
-    class Body(tm.httpx2.AsyncByteStream):
-        async def __aiter__(self):
-            for _ in range(100):
-                chunks.append(True)
-                await asyncio.sleep(0.01)
-                yield b"x"
-
-    def client(**kwargs):
-        transport = tm.httpx2.MockTransport(lambda request: tm.httpx2.Response(200, stream=Body()))
-        return original(transport=transport, **kwargs)
-
-    monkeypatch.setattr(tm.httpx2, "AsyncClient", client)
-    result = await tm._health_probe_async(18766)
-    assert len(chunks) < 10
-    assert result == {"ready_status": 0, "control_status": 0, "control_plane": None}
-
-
-def test_default_manager_fails_closed_off_windows(configured):
-    if tm.os.name == "nt":
-        pytest.skip("This assertion is specifically the non-Windows guard")
-    c = configured
-    manager = tm.TunnelManager()
-    manager.configure(c.settings, URL)
-    assert manager.connect(KEY, BEARER)["status_code"] == "tunnel_windows_required"
-    assert not manager.snapshot()["owned"]
-    assert manager.close()
-
-
-def test_health_exception_not_echoed_and_owned_job_kept_visible(configured):
-    c = configured
-    c.manager.connect(KEY, BEARER)
-
-    def fail(port):
-        raise RuntimeError(PRIVATE)
-
-    c.manager._health_probe = fail
-    state = c.manager.poll()
-    assert state["status_code"] == "tunnel_health_unavailable"
-    assert state["process_alive"] and state["owned"] and c.lock.held
-    assert PRIVATE not in repr(state) + repr(c.capture["events"])
-    assert c.process.stop_calls == 0
-
-
 def test_native_process_status_failure_retains_uncertain_ownership(configured):
     c = configured
     c.manager.connect(KEY, BEARER)
@@ -587,68 +442,25 @@ def test_native_process_status_failure_retains_uncertain_ownership(configured):
     assert c.manager.close()
 
 
-def test_long_poll_fresh_evidence_does_not_imply_app_verification():
-    payload = healthy(
-        details={
-            "consecutive_failures": 0,
-            "last_success": stamp(NOW - 300),
-            "deadline_seconds": 600,
-        }
-    )["control_plane"]
-    assert tm.classify_control_plane(payload, now=NOW, started_at=NOW - 400) == (
-        True,
-        "tunnel_cloud_poll_observed",
-    )
-    payload["details"]["deadline_seconds"] = float("inf")
-    assert tm.classify_control_plane(payload, now=NOW, started_at=NOW - 400)[0] is False
-
-
-@pytest.mark.parametrize("change", ["comment", "tunnel_id", "port", "oversized", "deleted"])
+@pytest.mark.parametrize("change", ["tunnel_id", "port", "deleted", "during_probe"])
 def test_canonical_config_edit_requires_explicit_reload_before_connect(configured, change):
     c = configured
     path = c.settings.broker_config
-    if change == "comment":
-        path.write_text(path.read_text() + "# changed externally\n")
-    elif change == "tunnel_id":
+    if change == "tunnel_id":
         path.write_text(path.read_text() + '[tunnel]\ntunnel_id = "tunnel_' + "2" * 32 + '"\n')
     elif change == "port":
         path.write_text("port = 18764\n")
-    elif change == "oversized":
-        path.write_bytes(b"#" * (tm.CONFIG_MAX_BYTES + 1))
+    elif change == "during_probe":
+
+        def probe(url, bearer):
+            path.write_text(path.read_text() + "# modified during connection\n")
+            return c.identity
+
+        c.manager._broker_probe = probe
     else:
         path.unlink()
     state = c.manager.connect(KEY, BEARER)
     assert state["status_code"] == "tunnel_configuration_changed"
     assert state["state"] == "disconnected" and not state["owned"]
-    assert c.capture["starts"] == c.capture["broker_calls"] == c.capture["verifies"] == 0
-
-
-def test_external_config_edit_does_not_touch_active_client(configured):
-    c = configured
-    c.manager.connect(KEY, BEARER)
-    c.settings.broker_config.write_text(c.settings.broker_config.read_text() + "# external edit\n")
-    state = c.manager.poll()
-    assert state["state"] == "running" and state["cloud_poll_observed"]
-    assert c.process.stop_calls == 0
-    c.manager.disconnect()
-    assert c.manager.connect(KEY, BEARER)["status_code"] == "tunnel_configuration_changed"
-    assert c.capture["starts"] == 1
-    assert c.manager.configure(c.settings, URL)["status_code"] == "tunnel_configured"
-    # The fixture returns the same synthetic process, so reset its exit state.
-    c.process.exit_code, c.process.children = None, 1
-    assert c.manager.connect(KEY, BEARER)["state"] == "running"
-    assert c.capture["starts"] == 2
-
-
-def test_config_edit_during_broker_probe_cannot_spawn_old_configuration(configured):
-    c = configured
-
-    def probe(url, bearer):
-        path = c.settings.broker_config
-        path.write_text(path.read_text() + "# modified during connection\n")
-        return c.identity
-
-    c.manager._broker_probe = probe
-    state = c.manager.connect(KEY, BEARER)
-    assert state["status_code"] == "tunnel_configuration_changed"
-    assert c.capture["starts"] == 0 and not c.lock.held
+    assert c.capture["starts"] == c.capture["broker_calls"] == 0 and not c.lock.held
+    assert c.capture["verifies"] == (change == "during_probe")

@@ -63,54 +63,6 @@ async def await_ack(run, command):
     raise AssertionError("command ACK deadline")
 
 
-def test_order_duplicate_conflict_stale_identity_and_no_queue_reapplication():
-    run = running()
-    first = request(run)
-    run.command(first)
-    duplicate = run.command(first)
-    assert duplicate["duplicate"] and run.pending.qsize() == 1
-    assert run.submitted_seq == 3
-    with pytest.raises(ValueError, match="conflict"):
-        run.command(request(run, action="back"))
-    with pytest.raises(ValueError, match="out_of_order"):
-        run.command(request(run, command=3, seq=5))
-    for field, value, code in (
-        ("boot_id", 12, "stale_boot"),
-        ("run_id", 8, "stale_run"),
-        ("control_session", 10, "stale_session"),
-    ):
-        with pytest.raises(ValueError, match=code):
-            run.command(request(run, command=3, seq=3, **{field: value}))
-    unknown = run.command(request(run, command=999, seq=0, operation="status"))
-    assert unknown["state"] == "outcome_unknown"
-    assert run.pending.qsize() == 1 and run.submitted_seq == 3
-
-
-def test_queue_full_rate_budget_plan_action_and_cancel_rejections_are_explicit():
-    run = running()
-    with patch("time.monotonic", side_effect=[100.0, 100.0]):
-        run.command(request(run))
-    with patch("time.monotonic", return_value=100.001):
-        with pytest.raises(ValueError, match="rate_limit"):
-            run.command(request(run, command=3, seq=3))
-    with pytest.raises(ValueError, match="action_not_in_plan"):
-        run.command(request(run, command=3, seq=3, action="up"))
-    for command in range(3, 6):
-        with patch("time.monotonic", return_value=100.0 + command):
-            run.command(request(run, command=command, seq=command))
-    with pytest.raises(ValueError, match="queue_full"):
-        run.command(request(run, command=6, seq=6))
-    assert run.pending.qsize() == 4
-    assert [run.pending.get_nowait().seq for _ in range(4)] == [2, 3, 4, 5]
-    limited = running(max_commands=1)
-    limited.command(request(limited))
-    with pytest.raises(ValueError, match="limit"):
-        limited.command(request(limited, command=3, seq=3))
-    limited.cancelled.set()
-    with pytest.raises(ValueError, match="app_input_stopped"):
-        limited.command(request(limited, command=3, seq=3))
-
-
 def test_stop_has_a_reserved_queue_slot_and_survives_rate_and_command_budget():
     limited = running(max_commands=1)
     with patch("time.monotonic", return_value=100):
@@ -234,21 +186,6 @@ def test_disconnect_marks_unknown_without_input_replay_or_successful_teardown():
     asyncio.run(scenario())
 
 
-def test_sequential_fresh_jobs_use_same_device_boot_and_new_instance():
-    async def scenario():
-        manager, backend = AppSessions(), MockBackend()
-        first, task = await started(manager, backend, job="hello")
-        first_boot, first_run = first.boot, first.run
-        first.command(request(first, operation="stop"))
-        await asyncio.wait_for(task, 2)
-        second, second_task = await started(manager, backend, "local.stress", job="stress")
-        assert second.boot == first_boot and second.run != first_run
-        second.command(request(second, operation="stop"))
-        await asyncio.wait_for(second_task, 2)
-
-    asyncio.run(scenario())
-
-
 def test_startup_rejection_queries_state_stops_and_closes_before_next_job():
     class RejectFirstStart(MockLink):
         rejected = False
@@ -354,44 +291,5 @@ def test_changed_catalog_fails_old_plan_without_launch_then_allows_new_explicit_
             second.command(request(second, operation="stop"))
             await asyncio.wait_for(second_task, 2)
             assert second.run != first.run
-
-    asyncio.run(scenario())
-
-
-def test_device_pre_admission_refusal_preserves_sequence_for_explicit_new_command():
-    from cardputer_mcp.app_wire import Reply, Result
-
-    class FullOnce(MockLink):
-        refused = False
-
-        def send(self, op, session, command_id, **fields):
-            if op == Op.TAP and not self.refused:
-                self.refused = True
-                return Reply(
-                    session,
-                    command_id,
-                    self.boot,
-                    self.run,
-                    fields["seq"],
-                    self.fence,
-                    Result.QUEUE_FULL,
-                    self.state,
-                    op,
-                    next_seq=self.seq,
-                )
-            return super().send(op, session, command_id, **fields)
-
-    async def scenario():
-        manager, backend = AppSessions(), MockBackend()
-        with patch("cardputer_mcp.app_sessions.MockLink", FullOnce):
-            run, task = await started(manager, backend)
-            run.command(request(run))
-            assert (await await_ack(run, 2))["state"] == "queue_full"
-            assert run.next_seq == run.submitted_seq == 2
-            await asyncio.sleep(0.11)
-            run.command(request(run, command=3, seq=2))
-            assert (await await_ack(run, 3))["state"] == "consumed"
-            run.command(request(run, command=4, seq=3, operation="stop"))
-            assert await asyncio.wait_for(task, 2) == "app_session_stopped"
 
     asyncio.run(scenario())

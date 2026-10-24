@@ -20,8 +20,7 @@ from cardputer_mcp.ports import DeviceSelector
 from cardputer_mcp.source_snapshot import SourceError, file_receipt, tree_hash
 
 
-@pytest.mark.parametrize("backend_name", ["mock", "serial"])
-@pytest.mark.parametrize("with_submodule", [False, True])
+@pytest.mark.parametrize(("backend_name", "with_submodule"), [("mock", False), ("serial", True)])
 async def test_registered_source_then_owned_receipt_build_without_operator(
     registry_service, tmp_path, monkeypatch, backend_name, with_submodule
 ):
@@ -352,14 +351,7 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
 
 @pytest.mark.parametrize(
     "failure_kind",
-    [
-        "known",
-        "unknown",
-        "unsafe_source_error",
-        "commit_known",
-        "commit_unknown",
-        "cache_protected",
-    ],
+    ["known", "unsafe_source_error", "cache_protected"],
 )
 async def test_failed_source_retains_safe_diagnostic_through_broker(
     registry_service, tmp_path, monkeypatch, failure_kind

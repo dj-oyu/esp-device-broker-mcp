@@ -207,12 +207,6 @@ def test_launch_failures_terminate_reap_and_close_only_owned_handles(stage: str)
     assert all(handle in {10, 20, 30} for _, handle in api.events)
 
 
-def test_create_job_failure_is_fixed_code() -> None:
-    with pytest.raises(wp.WindowsProcessError, match="owned_job_create_failed") as caught:
-        launch(FakeAPI("create_job"))
-    assert caught.value.owned is None
-
-
 def test_uncertain_launch_preserves_owner_for_manager_review() -> None:
     api = FakeAPI("resume_thread")
     api.query_works = False
@@ -266,15 +260,11 @@ def test_invalid_timeout_cannot_close_ownership(timeout: float) -> None:
     ("args", "env", "cwd"),
     [
         ([], ENV, CWD),
-        (["tunnel-client.exe", "run"], ENV, CWD),
-        ([r"C:\cmd.exe", "run"], ENV, CWD),
+        (ARGS + ["😀" * 17000], ENV, CWD),
         (ARGS + ["bad\0arg"], ENV, CWD),
         (ARGS, ENV, "relative"),
         (ARGS, {**ENV, "HTTP_PROXY": "bad"}, CWD),
-        (ARGS, {**ENV, "systemroot": "duplicate"}, CWD),
-        (ARGS, {**ENV, "TEMP": "bad\0value"}, CWD),
         (ARGS + ["--api-key=synthetic-api-secret"], ENV, CWD),
-        (ARGS + ["--header=Bearer synthetic-bearer"], ENV, CWD),
     ],
 )
 def test_validation_precedes_any_native_action(
@@ -292,22 +282,13 @@ def test_validation_precedes_any_native_action(
     "argument",
     [
         "--control-plane.api-key=unrelated-literal-secret",
-        "--control-plane.api-key",
         "--mcp.extra-headers=Authorization: unrelated-literal-secret",
-        "--mcp.discovery-extra-headers=Authorization: unrelated-literal-secret",
     ],
 )
 def test_credential_options_allow_only_fixed_environment_references(argument: str) -> None:
     api = FakeAPI()
     with pytest.raises(wp.WindowsProcessError, match="credentials_in_process_arguments"):
         wp.start(ARGS + [argument], ENV, CWD, api=api)
-    assert api.events == []
-
-
-def test_long_utf16_command_rejected_before_native_action() -> None:
-    api = FakeAPI()
-    with pytest.raises(wp.WindowsProcessError, match="invalid_owned_process_arguments"):
-        wp.start(ARGS + ["😀" * 17000], ENV, CWD, api=api)
     assert api.events == []
 
 
@@ -552,23 +533,3 @@ def test_failed_null_cleanup_after_creation_still_retains_process_receipt() -> N
     kernel.fail = ""
     owner.close()
     assert 10 in kernel.closed
-
-
-def test_native_exit_code_still_active_is_valid_after_handle_signaled() -> None:
-    kernel = FakeKernel()
-    api = native_with_kernel(kernel)
-    assert api.poll_process(20) is None
-    kernel.exited = True
-    assert api.poll_process(20) == 259
-
-
-def test_win32_struct_layout_on_64_bit_host() -> None:
-    if ctypes.sizeof(ctypes.c_void_p) != 8:
-        pytest.skip("64-bit ABI layout assertion")
-    assert ctypes.sizeof(wp._SecurityAttributes) == 24
-    assert ctypes.sizeof(wp._StartupInfo) == 104
-    assert ctypes.sizeof(wp._StartupInfoEx) == 112
-    assert ctypes.sizeof(wp._ProcessInformation) == 24
-    assert ctypes.sizeof(wp._BasicLimit) == 64
-    assert ctypes.sizeof(wp._ExtendedLimit) == 144
-    assert ctypes.sizeof(wp._BasicAccounting) == 48

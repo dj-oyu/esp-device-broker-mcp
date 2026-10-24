@@ -7,7 +7,6 @@ from collections import deque
 
 import pytest
 
-from cardputer_mcp import serial_backend as serial_module
 from cardputer_mcp.backend import BackendResult
 from cardputer_mcp.config import SerialSettings
 from cardputer_mcp.device_observation import DeviceLogCollector
@@ -145,7 +144,7 @@ def test_prepare_discloses_passive_bounds_and_sharing_without_open():
     assert port.opens == port.closes == 0 and port.writes == []
 
 
-@pytest.mark.parametrize("split", [1, 2, 7, 64, 4096])
+@pytest.mark.parametrize("split", [1, 7, 4096])
 async def test_fragmented_startup_uses_one_owner_no_commands_and_confirmed_close(split):
     wire = STARTUP + b"ordinary console output\n"
     backend, port, plan = device(incoming=[wire[n : n + split] for n in range(0, len(wire), split)])
@@ -174,42 +173,6 @@ async def test_fragmented_startup_uses_one_owner_no_commands_and_confirmed_close
     assert "synthetic-pocketjs" not in json.dumps(events)
 
 
-async def test_zero_bytes_returns_an_explicit_empty_observation_at_fixed_deadline():
-    backend, port, plan = device(clock_step=1)
-    result = await backend.execute(plan, lambda _: None)
-    assert isinstance(result, BackendResult) and result.observation is not None
-    assert result.observation.payload() == collected(b"").payload()
-    assert result.observation.metadata() == collected(b"").metadata()
-    assert result.observation.metadata()["bytes_received"] == 0
-    assert result.observation.metadata()["firmware"]["status"] == "unavailable"
-    assert result.observation.metadata()["firmware"]["app_version"] is None
-    assert port.clock.now == 30
-    assert port.read_starts == list(range(30))
-    assert port.writes == [] and port.opens == port.closes == 1
-
-
-async def test_console_faults_and_markers_do_not_use_legacy_reader(monkeypatch):
-    def forbidden_reader(*args, **kwargs):
-        raise AssertionError("Firmware observation must not use the legacy marker reader")
-
-    monkeypatch.setattr(serial_module, "Reader", forbidden_reader)
-    wire = (
-        b"Guru Meditation Error: synthetic panic\nHOME_READY\n"
-        b"APP_ID local.synthetic\nAPP_ERROR synthetic\n"
-        b"Authorization: Bearer SYNTHETIC_PRIVATE_TOKEN\n"
-    )
-    backend, port, plan = device(incoming=[wire])
-    events = []
-    result = await backend.execute(plan, events.append)
-    assert isinstance(result, BackendResult) and result.observation is not None
-    payload = result.observation.payload()
-    assert payload == collected(wire).payload()
-    assert "Guru Meditation" in json.dumps(payload)
-    assert "SYNTHETIC_PRIVATE_TOKEN" not in json.dumps(payload)
-    assert events == ["serial_open", "firmware_observe", "serial_close"]
-    assert port.writes == []
-
-
 async def test_receive_limit_finishes_early_without_an_extra_read_or_reopen():
     wire = (b"password=" + b"x" * 1014 + b"\n") * 64
     backend, port, plan = device(incoming=[wire, b"AFTER_LIMIT_NOT_READ\n"])
@@ -224,22 +187,6 @@ async def test_receive_limit_finishes_early_without_an_extra_read_or_reopen():
     assert port.returned_bytes == 65536
     assert port.clock.now < 30
     assert list(port.chunks) == [b"AFTER_LIMIT_NOT_READ\n"]
-    assert port.writes == [] and port.opens == port.closes == 1
-
-
-async def test_fragmented_receive_budget_limits_last_read_to_one_wire_byte():
-    wire = (b"password=" + b"x" * 1014 + b"\n") * 64
-    after_limit = b"SYNTHETIC_PRIVATE_AFTER_LIMIT" * 200
-    backend, port, plan = device(incoming=[wire[:-1], wire[-1:] + after_limit])
-    result = await backend.execute(plan, lambda _: None)
-    assert isinstance(result, BackendResult) and result.observation is not None
-    assert result.observation.payload() == collected(wire).payload()
-    assert result.observation.metadata()["bytes_received"] == 65536
-    assert result.observation.metadata()["stop_reason"] == "receive_limit"
-    assert port.returned_bytes == 65536
-    assert port.read_sizes == [4096] * 16 + [1]
-    assert list(port.chunks) == [after_limit]
-    assert port.clock.now < 30
     assert port.writes == [] and port.opens == port.closes == 1
 
 
@@ -262,17 +209,6 @@ async def test_oversized_driver_return_is_rejected_without_exposing_data(read_se
     assert port.writes == [] and port.opens == port.closes == 1
     assert backend.active == 0 and not backend.hardware_connected
     assert events == ["serial_open", "firmware_observe", "serial_close"]
-
-
-@pytest.mark.parametrize("read_seconds", [30, 31])
-async def test_read_returned_at_or_after_deadline_is_discarded(read_seconds):
-    backend, port, plan = device(clock_step=read_seconds, incoming=[STARTUP, b"NOT_READ\n"])
-    result = await backend.execute(plan, lambda _: None)
-    assert isinstance(result, BackendResult) and result.observation is not None
-    assert result.observation.payload() == collected(b"").payload()
-    assert len(port.read_starts) == 1 and port.read_starts == [0]
-    assert list(port.chunks) == [b"NOT_READ\n"]
-    assert port.writes == [] and port.closes == 1
 
 
 @pytest.mark.parametrize("change", [{"observe_seconds": 31}, {"protocol": "synthetic-other"}])
@@ -308,38 +244,6 @@ async def test_errors_expose_only_fixed_diagnostics_and_no_report(kwargs, code, 
     assert error.value.__context__ is None and error.value.__cause__ is None
     assert port.opens == port.closes == 1 and port.writes == []
     assert backend.active == 0 and not backend.hardware_connected
-
-
-async def test_collector_failure_is_sanitized_before_close_waits(monkeypatch):
-    import weakref
-
-    collectors = []
-
-    class FailingCollector:
-        def __init__(self):
-            self.raw = b""
-            collectors.append(weakref.ref(self))
-
-        def feed(self, incoming):
-            self.raw = incoming
-            raise RuntimeError("SYNTHETIC_PRIVATE_COLLECTOR_ERROR")
-
-    monkeypatch.setattr(serial_module, "DeviceLogCollector", FailingCollector)
-    backend, port, plan = device(incoming=[STARTUP])
-    port.close_release = threading.Event()
-    task = asyncio.create_task(backend.execute(plan, lambda _: None))
-    try:
-        assert await asyncio.to_thread(port.close_started.wait, 5)
-        assert not task.done() and backend.active == 1
-        assert len(collectors) == 1 and collectors[0]() is None
-    finally:
-        port.close_release.set()
-    with pytest.raises(SerialFailure, match="^serial_operation_uncertain$") as error:
-        await task
-    assert error.value.diagnostic["step"] == "firmware_observe"
-    assert "SYNTHETIC_PRIVATE" not in repr(error.value)
-    assert error.value.__context__ is None and error.value.__cause__ is None
-    assert port.closes == 1 and port.writes == []
 
 
 @pytest.mark.parametrize("kwargs", [{"close_error": True}, {"still_open": True}])

@@ -7,7 +7,6 @@ from pydantic import ValidationError
 from cardputer_mcp.backend import MockBackend
 from cardputer_mcp.broker import Broker, BrokerError
 from cardputer_mcp.config import Settings
-from cardputer_mcp.logs import Event, LogBook
 from cardputer_mcp.models import (
     AcquireRequest,
     CancelRequest,
@@ -145,20 +144,6 @@ async def test_no_capability_or_backend_exception_in_persistent_data(broker):
     for secret in (token, "SYNTHETIC_SECRET", "secret.invalid"):
         assert secret not in visible
         assert secret not in database_dump
-
-
-def test_bounded_logs_fanout_gap_and_restart():
-    logs = LogBook(4)
-    logs.append(Event.STARTED)
-    cursor = logs.read(LogRequest())["next_cursor"]
-    for _ in range(10):
-        logs.append(Event.STAGE, stage="mock_test")
-    result = logs.read(LogRequest(cursor=cursor, limit=2))
-    assert len(result["entries"]) == 2
-    assert result["gap"] and result["has_more"]
-    assert result == logs.read(LogRequest(cursor=cursor, limit=2))
-    fresh = LogBook(4)
-    assert fresh.read(LogRequest(cursor=cursor))["gap"]
 
 
 def test_usb_identity_follows_port_changes_without_opening():

@@ -7,28 +7,24 @@ import pytest
 from cardputer_mcp.models import Origin
 from cardputer_mcp.operator_api import OperatorAPI
 
+_ROUTES = [
+    ("GET", "/operator/policy-options"),
+    ("GET", "/operator/policies"),
+    ("POST", "/operator/policy-create"),
+    ("POST", "/operator/policy-update"),
+    ("POST", "/operator/policy-revoke"),
+    ("POST", "/operator/capture-arm"),
+]
+# The authentication/scope gate runs before route handling, so rejections need one
+# GET and one POST route; the terminal 410 is asserted for every retired route.
+_CASES = [
+    (method, path, identity, status)
+    for method, path in (_ROUTES[1], _ROUTES[5])
+    for identity, status in (("missing", 401), ("revoked", 401), ("remote", 403), ("reader", 403))
+] + [(method, path, "operator", 410) for method, path in _ROUTES]
 
-@pytest.mark.parametrize(
-    "method,path",
-    [
-        ("GET", "/operator/policy-options"),
-        ("GET", "/operator/policies"),
-        ("POST", "/operator/policy-create"),
-        ("POST", "/operator/policy-update"),
-        ("POST", "/operator/policy-revoke"),
-        ("POST", "/operator/capture-arm"),
-    ],
-)
-@pytest.mark.parametrize(
-    "identity,status",
-    [
-        ("missing", 401),
-        ("revoked", 401),
-        ("remote", 403),
-        ("reader", 403),
-        ("operator", 410),
-    ],
-)
+
+@pytest.mark.parametrize("method,path,identity,status", _CASES)
 async def test_policy_retirement_requires_authentication_before_gone(
     method, path, identity, status
 ):

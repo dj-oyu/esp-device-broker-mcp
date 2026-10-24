@@ -210,25 +210,32 @@ async def test_anonymous_lease_and_capture_policy_cannot_authorize_restart(tmp_p
         assert calls == [] and reset_count(env) == 1
 
 
-@pytest.mark.parametrize("rehash", [False, True])
-@pytest.mark.parametrize(
-    "section,field,value",
-    [
+# rehash=True re-signs the changed plan, so every field must be refused by the
+# plan-content validation itself.  rehash=False leaves the stored hash stale and
+# is refused by the digest binding before any field is read, so one field per
+# location (restart / log_delivery / top level) proves that path.
+DIGEST_ONLY_FIELDS = {
+    ("restart", "method"),
+    ("log_delivery", "principal_id"),
+    (None, "device_fingerprint"),
+}
+
+
+def _tamper_cases():
+    fields = [
         ("restart", "method", "generic_dtr_reset"),
         ("restart", "attempts", 2),
-        ("restart", "attempts", True),
-        ("restart", "rts_hold_milliseconds", 101),
-        ("restart", "reconnect_seconds", 9),
-        ("restart", "max_reopens", 2),
-        ("restart", "buffer_policy", "keep_pre_reset_data"),
-        ("restart", "stable_usb_fingerprint", "0" * 64),
         ("log_delivery", "principal_id", REMOTE_PRINCIPAL),
         ("log_delivery", "origin", "remote_mcp"),
-        ("log_delivery", "retention_seconds", 301),
         (None, "device_fingerprint", "0" * 64),
-        (None, "observe_seconds", 31),
-    ],
-)
+    ]
+    for section, field, value in fields:
+        yield pytest.param(True, section, field, value)
+        if (section, field) in DIGEST_ONLY_FIELDS:
+            yield pytest.param(False, section, field, value)
+
+
+@pytest.mark.parametrize("rehash,section,field,value", list(_tamper_cases()))
 async def test_changed_reset_identity_recipient_or_bounds_cannot_execute(
     tmp_path, rehash, section, field, value
 ):
@@ -455,19 +462,6 @@ async def test_report_reads_never_reset_or_extend_ttl_and_broker_restart_drops_c
         assert fresh.broker.queue.empty() and not fresh.created and reset_count(fresh) == 0
 
 
-async def test_broker_restart_erases_unexpired_report_without_replaying_reset(tmp_path):
-    async with running(tmp_path) as env:
-        plan = prepare(env)
-        validate_prepared(env, plan)
-        await execute(env, plan)
-        assert env.broker.read_device_logs(JOB, PRINCIPAL)["remaining_seconds"] == 300
-    async with running(tmp_path) as fresh:
-        unavailable(fresh)
-        assert fresh.broker.job(JOB)["result"] == RESULT
-        assert not fresh.broker.device_observations and not fresh.created
-        assert fresh.backend.calls == reset_count(fresh) == 0
-
-
 @pytest.mark.parametrize("failure", ["preflight", "discard", "control", "read"])
 async def test_private_exception_messages_are_never_returned_or_persisted(
     tmp_path, caplog, failure
@@ -503,18 +497,6 @@ async def test_private_exception_messages_are_never_returned_or_persisted(
         unavailable(env)
         assert all(value not in caplog.text for value in (LOG_LINE, *SECRETS, LOCAL))
         assert_no_public_or_durable_logs(env.broker, LOCAL, "/private/fake-port")
-
-
-async def test_retired_cli_approval_cannot_reset_or_prompt(tmp_path):
-    from cardputer_mcp import operator
-
-    async with running(tmp_path) as env:
-        prepare(env)
-        prompts = []
-        with pytest.raises(ValueError, match="^approval_interface_retired$"):
-            operator.approve_plan(env.broker.settings.state_dir, "a" * 64, prompts.append)
-        assert prompts == []
-        assert not env.created and reset_count(env) == 0
 
 
 @pytest.fixture

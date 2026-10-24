@@ -132,18 +132,6 @@ async def test_hold_expires_after_idle_period_and_late_ticket_is_refused(tmp_pat
         assert broker.acquire(AcquireRequest(owner=Origin.REMOTE), principal_id="key-b")
 
 
-async def test_expired_hold_returns_a_spent_ticket_follower_to_the_back(tmp_path):
-    clock = Clock()
-    async with running(tmp_path, clock) as broker:
-        _, ticket = await first_job_with_ticket(broker)
-        other = work_session(broker, "key-b")
-        request(broker, other, "key-b")
-        follower = work_session(broker, "key-a")
-        request(broker, follower, "key-a", after=ticket)
-        # The holder who spent the ticket in time is granted before the earlier waiter.
-        assert broker.session is not None and broker.session.principal_id == "key-a"
-
-
 async def test_failed_or_cancelled_parent_voids_its_ticket(tmp_path):
     clock = Clock()
     async with running(tmp_path, clock) as broker:

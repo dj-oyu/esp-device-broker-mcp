@@ -9,15 +9,6 @@ from cardputer_mcp.broker import BrokerError
 from cardputer_mcp.flash_binding import live_binding, prepare_binding, validate_binding
 
 
-async def test_source_binding_uses_real_owned_receipt_without_policy(env):
-    prepared = env.prepare("binding", build_job_id="build-one")
-    binding = prepare_binding(env.broker, prepared["plan"])
-    assert binding.fetch_receipt == env.receipt
-    assert live_binding(env.broker, binding, prepared["plan"])
-    assert validate_binding(env.broker, binding, prepared["plan"])
-    assert env.store.job("binding") is None
-
-
 @pytest.mark.parametrize("mutation", ["receipt", "fetch_plan", "build_plan", "project"])
 async def test_callback_free_binding_rejects_changed_identity(env, mutation):
     prepared = env.prepare("binding", build_job_id="build-one")
@@ -47,6 +38,9 @@ async def test_callback_free_binding_rejects_changed_identity(env, mutation):
 async def test_dispatch_rehashes_source_and_artifacts(env):
     prepared = env.prepare("binding", build_job_id="build-one")
     binding = prepare_binding(env.broker, prepared["plan"])
+    assert binding.fetch_receipt == env.receipt
+    assert validate_binding(env.broker, binding, prepared["plan"])
+    assert env.store.job("binding") is None
     (env.output / "app.bin").write_bytes(b"tampered")
     assert not validate_binding(env.broker, binding, prepared["plan"])
 

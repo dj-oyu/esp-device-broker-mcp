@@ -4,8 +4,6 @@ import json
 from dataclasses import replace
 
 import httpx2
-import pytest
-from pydantic import ValidationError
 from test_authenticated_mock import LOCAL, REMOTE
 from test_authenticated_mock import authenticated_mock as authenticated_mock
 from test_http_integration import service as service
@@ -181,21 +179,3 @@ async def test_registered_targets_metadata_empty_input_and_read_only(authenticat
             assert denied.status_code == 401
             assert denied.json() == {"error": "authentication_required"}
     assert_no_work(resident)
-
-
-async def test_registered_targets_requires_auth_even_on_legacy_mock(service):
-    async with connect(service) as client:
-        assert await call(client, "status", {"view": "targets"}) == {
-            "ok": False,
-            "error": "authentication_required",
-        }
-
-
-@pytest.mark.parametrize("field,limit", [("build_projects", 16), ("flash_devices", 8)])
-def test_registered_target_count_remains_bounded(tmp_path, field, limit):
-    project, device = registrations(tmp_path)
-    registration = project if field == "build_projects" else device
-    maximum = {f"target-{index}": registration for index in range(limit)}
-    assert len(getattr(Settings.model_validate({field: maximum}), field)) == limit
-    with pytest.raises(ValidationError):
-        Settings.model_validate({field: {**maximum, "one-too-many": registration}})

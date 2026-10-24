@@ -34,62 +34,16 @@ def test_console_uses_redacted_entries_and_throttles_progress_without_consuming_
     logs.append("info: ROM read 128/256 bytes; elapsed 2 s")
     assert len(emitted) == 4 and logs.entries[-1]["progress"]
     assert len(logs.entries) == 103
-
-
-def test_slow_console_never_blocks_producers_and_queue_is_bounded():
-    entered, release, published = threading.Event(), threading.Event(), threading.Event()
-
-    def blocked_writer(message):
-        entered.set()
-        release.wait(5)
-
-    sink = ConsoleOutput(blocked_writer, capacity=2)
-    try:
-        sink.emit("first")
-        assert entered.wait(2)
-
-        def produce():
-            for number in range(1000):
-                sink.emit(f"progress {number}")
-            sink.emit("completed")
-            published.set()
-
-        producer = threading.Thread(target=produce, daemon=True)
-        producer.start()
-        assert published.wait(2)
-        producer.join(2)
-        assert not producer.is_alive()
-        assert sink._queue.qsize() <= 2 and sink.dropped > 0
-        assert list(sink._queue.queue)[-1] == "completed"
-    finally:
-        release.set()
-
-
-def test_closed_console_is_silent_and_does_not_raise(capsys):
-    def closed_writer(message):
-        raise OSError("synthetic-private-console-error")
-
-    sink = ConsoleOutput(closed_writer, capacity=2)
-    sink.emit("one")
-    sink._thread.join(2)
-    assert sink._disabled
-    sink.emit("two")
-    assert "synthetic-private-console-error" not in capsys.readouterr().err
-
-
-def test_console_escapes_terminal_controls_and_caps_messages():
-    emitted, ready = [], threading.Event()
+    ready, escaped = threading.Event(), []
 
     def writer(message):
-        emitted.append(message)
+        escaped.append(message)
         ready.set()
 
-    sink = ConsoleOutput(writer)
-    sink.emit("warning: safe\x1b[2J\r\nnext" + "x" * 5000)
+    ConsoleOutput(writer).emit("warning: safe\x1b[2J\r\nnext" + "x" * 5000)
     assert ready.wait(2)
-    assert "\x1b" not in emitted[0] and "\n" not in emitted[0] and "\r" not in emitted[0]
-    assert "\\x1b" in emitted[0]
-    assert len(emitted[0]) <= 2048
+    assert not {"\x1b", "\n", "\r"} & set(escaped[0]) and "\\x1b" in escaped[0]
+    assert len(escaped[0]) <= 2048
 
 
 def test_job_lifecycle_is_after_commit_and_never_prints_raw_result(tmp_path, monkeypatch):

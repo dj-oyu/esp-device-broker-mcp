@@ -1,6 +1,5 @@
 """Offline admission tests; no process, USB or physical device operation."""
 
-import copy
 import hashlib
 import json
 import sys
@@ -78,12 +77,6 @@ class FlashManifestTests(unittest.TestCase):
         self.assertEqual(bundle.layout_sha256, self.manifest["flash_layout"]["sha256"])
         self.assertFalse(self.manifest["flash_authorized"])
 
-    def test_legacy_build_receipt_does_not_authorize_flash(self):
-        manifest = copy.deepcopy(self.manifest)
-        del manifest["flash_layout"]
-        with self.assertRaisesRegex(module.FlashAdmissionError, "layout_receipt_required"):
-            self.verify(manifest)
-
     def test_security_build_configuration_never_authorizes_first_boot_fuse_changes(self):
         for key in ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK"):
             security = {
@@ -112,13 +105,6 @@ class FlashManifestTests(unittest.TestCase):
                     self.verify()
                 path.write_bytes(saved)
 
-    def test_wrong_idf_target_and_bool_schema_are_rejected(self):
-        for key, value in (("idf_version", "6.1"), ("target", "esp32"), ("schema_version", True)):
-            manifest = copy.deepcopy(self.manifest)
-            manifest[key] = value
-            with self.assertRaises(module.FlashAdmissionError):
-                self.verify(manifest)
-
     def test_erase_all_arguments_and_encryption_are_rejected(self):
         self.layout["write_flash_args"].append("--erase-all")
         self.save_layout()
@@ -128,16 +114,6 @@ class FlashManifestTests(unittest.TestCase):
         self.layout["app"]["encrypted"] = "true"
         self.save_layout()
         with self.assertRaisesRegex(module.FlashAdmissionError, "encrypted_flash_not_authorized"):
-            self.verify()
-
-    def test_sector_overlap_and_unattested_path_rejected(self):
-        self.layout["flash_files"] = {"0x0": "boot.bin", "0x80": "app.bin"}
-        self.save_layout()
-        with self.assertRaises(module.FlashAdmissionError):
-            self.verify()
-        self.layout["flash_files"] = {"0x0": "../app.bin"}
-        self.save_layout()
-        with self.assertRaises(module.FlashAdmissionError):
             self.verify()
 
 

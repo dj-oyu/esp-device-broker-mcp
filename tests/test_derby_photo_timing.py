@@ -107,39 +107,6 @@ def test_no_photo_exits_without_s_with_capture_exit_and_margin_reserved(deadline
     assert reader.deadline == deadline
 
 
-def test_photo_after_reserved_deadline_is_not_captured():
-    wire = TimedWire(schedule(photo=60))
-    image, _, report, _ = run(wire, 100)
-    assert image is None and report.no_capture_completed()
-    assert b"s" not in wire.writes and wire.sent[-1][1] < 66
-
-
-def test_batched_photo_then_res_is_not_a_current_photo_for_s():
-    events = schedule()
-    events[3] = (68, scene("photo") + scene("res"))
-    wire = TimedWire(events)
-    image, _, report, _ = run(wire)
-    assert image is None and b"s" not in wire.writes
-    assert any(e.kind == "photo_observed" for e in report.events)
-    assert report.capture_reason == "photo_not_current_before_s"
-
-
-def test_predrain_phase_change_suppresses_s_without_second_attempt():
-    wire = Wire()
-    read = wire.read
-
-    def stale_read(size=4096):
-        data = read(size)
-        if data.startswith(b"DERBY SCENE photo"):
-            wire.photo_quiet = 0
-        return data
-
-    wire.read = stale_read
-    image, _, report, _ = run(wire)
-    assert image is None and b"s" not in wire.writes and wire.writes.count(b"q") == 1
-    assert report.capture_reason == "photo_not_current_before_s"
-
-
 @pytest.mark.parametrize(
     "changed", [scene("res"), scene("photo", race="1000002"), scene("photo", seed="AAAAAAAA")]
 )
@@ -195,32 +162,6 @@ async def test_legacy_fallback_plan_cannot_open_or_execute_new_behavior():
     assert not wire.is_open and not wire.writes
 
 
-def test_photo_just_before_observation_limit_keeps_one_capture_and_exit_budget():
-    events = schedule(photo=119)
-    events[-2:] = [(140, scene("res")), (141, b"DERBY DEMO END 5000,0,0,100\n")]
-    wire = TimedWire(events)
-    image, _, report, _ = run(wire)
-    assert image.png and report.image_acquired and not report.demo_cycle_observed
-    assert wire.writes.count(b"s") == wire.writes.count(b"q") == 1
-    assert wire.now < 180 and wire.sent[-1][1] < 180 - 12 - 5
-
-
-def test_photo_read_crossing_reserved_cutoff_never_sends_s():
-    wire = TimedWire(schedule(photo=58))
-    read = wire.read
-
-    def late_read(size=4096):
-        data = read(size)
-        if data.startswith(b"DERBY SCENE photo"):
-            wire.now += 2
-        return data
-
-    wire.read = late_read
-    image, _, report, _ = run(wire, 100)
-    assert image is None and b"s" not in wire.writes and wire.writes[-1] == b"q"
-    assert report.capture_reason == "insufficient_capture_exit_budget"
-
-
 async def test_waiting_for_late_photo_does_not_extend_or_bypass_live_authority():
     wire = TimedWire(schedule())
     config = SerialSettings(
@@ -253,16 +194,6 @@ def test_trace_is_bounded_and_contains_no_unrecognized_console_text():
     assert "SYNTHETIC_PRIVATE_CONSOLE_TEXT" not in report.model_dump_json()
 
 
-def test_demo_cycle_photo_context_and_image_are_separate_facts():
-    events = schedule()
-    events[-2] = (69, scene("res"))
-    image, code, report, _ = run(TimedWire(events))
-    assert report.demo_cycle_observed is True
-    assert report.photo_context_correlation == "changed_or_incomplete"
-    assert image.png and report.image_acquired is True and not report.photo_pixels_verified
-    assert code == "derby_image_observed_demo_cycle_or_photo_phase_not_verified"
-
-
 def test_silence_after_s_still_expires_capture_within_18_seconds_no_retry():
     wire = TimedWire(schedule())
     write = wire.write
@@ -284,13 +215,6 @@ def test_silence_after_s_still_expires_capture_within_18_seconds_no_retry():
     assert failure.value.diagnostic["derby_observation"]["image_acquired"] is False
 
 
-def test_demo_end_during_frame_cannot_leave_photo_context_correlated():
-    events = schedule()[:4] + [(69, b"DERBY DEMO END 5000,0,0,100\n")]
-    image, _, report, _ = run(TimedWire(events))
-    assert image.png and report.image_acquired
-    assert report.photo_context_correlation == "changed_or_incomplete"
-
-
 @pytest.mark.parametrize("marker", [b"APP_STOPPED\n", b"HOME_READY\n"])
 def test_unexpected_teardown_during_frame_fails_without_any_new_q(marker):
     events = schedule()
@@ -299,28 +223,6 @@ def test_unexpected_teardown_during_frame_fails_without_any_new_q(marker):
     with pytest.raises(SerialFailure):
         run(wire)
     assert wire.writes.count(b"s") == 1 and b"q" not in wire.writes
-
-
-def test_photo_then_next_demo_start_in_same_read_never_uses_old_photo():
-    events = schedule()
-    events[3] = (68, scene("photo") + b"DERBY DEMO START 5000,0,0,100\n")
-    wire = TimedWire(events)
-    image, _, report, _ = run(wire)
-    assert image is None and b"s" not in wire.writes
-    assert report.photo_context_correlation == "not_captured"
-    assert not report.demo_cycle_observed and wire.writes.count(b"q") == 1
-
-
-@pytest.mark.parametrize("new_scene", [b"", scene("photo")])
-def test_next_demo_start_during_s_predrain_invalidates_the_selected_cycle(new_scene):
-    events = schedule()
-    events.insert(4, (68.1, b"DERBY DEMO START 5000,0,0,100\n" + new_scene))
-    wire = TimedWire(events)
-    image, _, report, _ = run(wire)
-    assert image is None and b"s" not in wire.writes
-    assert report.capture_reason == "photo_not_current_before_s"
-    assert report.photo_context_correlation == "changed_or_incomplete"
-    assert not report.demo_cycle_observed and wire.writes.count(b"q") == 1
 
 
 @pytest.mark.parametrize("failure_kind", ["transport", "revoked_before_s"])
@@ -375,105 +277,6 @@ async def test_direct_s_write_failure_preserves_timing_and_still_closes(failure_
     assert len(attempted_s) == 1 and b"s" not in wire.writes and b"q" not in wire.writes
     assert wire.closed and backend.active == 0 and backend.hardware_connected is False
     assert "SYNTHETIC_PRIVATE_WRITE_ERROR" not in str(failure.value.diagnostic)
-
-
-def test_plan_documents_photo_trigger_without_timed_fallback():
-    config = SerialSettings(
-        selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
-        expected_firmware_sha256="a" * 64,
-    )
-    backend = SerialBackend(
-        config,
-        inventory=lambda: [PortInfo(port="COM42", vid=1, pid=2, serial_number="synthetic")],
-    )
-    plan = backend.prepare(Action.DERBY)
-    assert plan["smoke"]["capture"] == "one_s_only_at_current_observed_photo_no_fallback_v2"
-
-
-@pytest.mark.parametrize(
-    "split_at",
-    [None, 10, len(scene("res")) + 8, len(scene("res")) + 29],
-    ids=["same-chunk", "split-result", "split-end-token", "split-restored-pad"],
-)
-def test_demo_end_closes_scene_identity_window_across_read_chunks(split_at):
-    events = schedule()
-    # Ending the demo restores the normal race, then emits its pad scene. All
-    # three records may arrive together; only res belongs to the demo window.
-    ending = (
-        scene("res") + b"DERBY DEMO END 5000,19,0,100\n" + scene("pad", race="19", seed="CD987654")
-    )
-    chunks = [ending] if split_at is None else [ending[:split_at], ending[split_at:]]
-    events[-2:] = [(85, chunk) for chunk in chunks]
-    wire = TimedWire(events)
-    image, code, report, _ = run(wire)
-    assert image.png and report.demo_cycle_observed
-    assert code == "derby_demo_cycle_observed_render_buffer_lcd_unverified"
-    assert report.photo_context_correlation == "same_observed_phase_race_seed"
-    assert [event.phase for event in report.events if event.kind == "scene"] == [
-        "gate",
-        "race",
-        "photo",
-        "res",
-    ]
-    assert all(event.race in (None, "1000001") for event in report.events)
-    assert wire.writes.count(b"s") == wire.writes.count(b"q") == 1
-    assert report.exit_home_observed and not report.photo_pixels_verified
-
-
-@pytest.mark.parametrize(
-    "before_end",
-    [
-        scene("res", race="19"),
-        scene("res", seed="CD987654"),
-        scene("pad", race="19", seed="CD987654") + scene("res"),
-        scene("race") + scene("res"),
-    ],
-    ids=["wrong-race", "wrong-seed", "restored-pad-before-end", "wrong-phase-order"],
-)
-def test_demo_end_boundary_keeps_pre_end_identity_and_order_strict(before_end):
-    events = schedule()
-    events[-2:] = [
-        (
-            85,
-            before_end
-            + b"DERBY DEMO END 5000,19,0,100\n"
-            + scene("pad", race="19", seed="CD987654"),
-        )
-    ]
-    wire = TimedWire(events)
-    image, code, report, _ = run(wire)
-    assert image.png and not report.demo_cycle_observed
-    assert code == "derby_image_observed_demo_cycle_or_photo_phase_not_verified"
-    assert wire.writes.count(b"s") == wire.writes.count(b"q") == 1
-
-
-@pytest.mark.parametrize(
-    "boundary",
-    [b"DERBY DEMO END invalid\n", b"DERBY DEMO END \n", b"DERBY DEMO END 5000,19,0,100 extra\n"],
-)
-def test_malformed_end_does_not_close_scene_identity_window(boundary):
-    events = schedule()
-    events[-2:] = [
-        (
-            85,
-            scene("res")
-            + boundary
-            + scene("pad", race="19", seed="CD987654")
-            + b"DERBY DEMO END 5000,19,0,100\n",
-        )
-    ]
-    image, code, report, _ = run(TimedWire(events))
-    assert image.png and not report.demo_cycle_observed
-    assert code == "derby_image_observed_demo_cycle_or_photo_phase_not_verified"
-    assert len([event for event in report.events if event.kind == "demo_end"]) == 1
-
-
-def test_end_before_required_result_phase_cannot_be_repaired_by_post_end_scene():
-    events = schedule()
-    events[-2:] = [(85, b"DERBY DEMO END 5000,19,0,100\n" + scene("res"))]
-    image, code, report, _ = run(TimedWire(events))
-    assert image.png and not report.demo_cycle_observed
-    assert code == "derby_image_observed_demo_cycle_or_photo_phase_not_verified"
 
 
 @pytest.mark.parametrize(

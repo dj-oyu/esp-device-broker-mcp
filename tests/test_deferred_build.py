@@ -6,7 +6,7 @@ import pytest
 from test_profile_jobs import register
 from test_registry_http import registry_service as registry_service
 
-from cardputer_mcp.broker import BrokerError, digest_plan
+from cardputer_mcp.broker import digest_plan
 from cardputer_mcp.models import ExecuteRequest, PrepareRequest
 from cardputer_mcp.models import TestName as Action
 
@@ -112,25 +112,15 @@ async def test_failed_parent_cancels_the_waiting_build(
     assert broker._store().job("build-1") is None
 
 
-async def test_ticket_is_single_use_and_owner_bound(registry_service, tmp_path, monkeypatch):
-    broker, owner = await stage(registry_service, tmp_path, monkeypatch)
-    other = registry_service.keys["first"].metadata
-    ticket = parent_fetch(broker, owner)
-    with pytest.raises(BrokerError, match="ticket_invalid"):
-        defer(broker, other, ticket)
-    defer(broker, owner, ticket, "build-1")
-    with pytest.raises(BrokerError, match="ticket_consumed"):
-        defer(broker, owner, ticket, "build-2")
-    assert broker.deferred_job("build-1", other.principal_id) is None
-    assert broker.cancel_deferred("build-1", other.principal_id) is None
-
-
 async def test_waiting_build_can_be_cancelled_and_never_queues(
     registry_service, tmp_path, monkeypatch
 ):
     broker, owner = await stage(registry_service, tmp_path, monkeypatch)
     ticket = parent_fetch(broker, owner)
     defer(broker, owner, ticket)
+    other = registry_service.keys["first"].metadata
+    assert broker.deferred_job("build-1", other.principal_id) is None
+    assert broker.cancel_deferred("build-1", other.principal_id) is None
     cancelled = broker.cancel_deferred("build-1", owner.principal_id)
     assert cancelled["state"] == "cancelled" and cancelled["result"] == "client_cancelled_waiting"
     finish_parent(broker)

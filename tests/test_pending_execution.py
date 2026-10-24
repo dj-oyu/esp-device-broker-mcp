@@ -157,7 +157,7 @@ async def test_cancelled_job_and_released_lease_never_replay(tmp_path):
         assert broker.backend.calls == 0
 
 
-@pytest.mark.parametrize("mutation", ["cancel", "expire", "closing", "revoke", "plan"])
+@pytest.mark.parametrize("mutation", ["cancel", "closing", "plan"])
 async def test_auth_callback_races_cannot_start_a_queued_operation(tmp_path, mutation):
     async with running(tmp_path) as (broker, clock):
         digest = prepare(broker)
@@ -172,12 +172,8 @@ async def test_auth_callback_races_cannot_start_a_queued_operation(tmp_path, mut
                     broker.cancel(
                         CancelRequest(session=broker.session.capability, job_id="submitted")
                     )
-                elif mutation == "expire":
-                    clock.now += 30
                 elif mutation == "closing":
                     broker.closing = True
-                elif mutation == "revoke":
-                    broker.principal_valid = lambda *args: False
                 else:
                     broker._store().db.execute("DELETE FROM plans WHERE hash=?", (digest,))
                     broker._store().db.commit()

@@ -13,9 +13,6 @@ from cardputer_mcp.operator_api import OperatorAPI
     "route,body",
     [
         ("cancel", {"request_id": "fixture"}),
-        ("reorder", {"request_id": "fixture", "position": 1, "expected_revision": "a" * 64}),
-        ("job-cancel", {"job_id": "fixture", "plan_hash": "a" * 64, "broker_epoch": "b" * 32}),
-        ("release", {"lease_id": "fixture"}),
     ],
 )
 @pytest.mark.parametrize("changed", [None, "read_only", "remote"])

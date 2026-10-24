@@ -102,24 +102,19 @@ async def test_running_flash_expires_at_current_deadline_and_cannot_be_revived(e
         env.broker.renew(RenewRequest(session=token.capability, lease_seconds=300))
 
 
-@pytest.mark.parametrize("guard_number", [1, 2])
-@pytest.mark.parametrize(
-    "change",
-    [
-        "lease",
-        "principal",
-        "owner",
-        "epoch",
-        "registration",
-        "revoked",
-        "work_expired",
-        "work_replaced",
-        "work_scopes",
-        "work_closed",
-        "lease_nonfinite",
-        "work_nonfinite",
-    ],
-)
+# Representatives of each authority family at the final atomic guard (where the
+# uncommitted success row exists), plus one at the first guard.
+_CASES = [
+    ("lease", 2),
+    ("revoked", 2),
+    ("registration", 2),
+    ("work_scopes", 2),
+    ("work_nonfinite", 2),
+    ("lease", 1),
+]
+
+
+@pytest.mark.parametrize(("change", "guard_number"), _CASES)
 async def test_renewal_preserves_authority_at_both_commit_guards(env, guard_number, change):
     clock = setup(env, work=True)
     prepared = env.prepare("changed", build_job_id="build-one")

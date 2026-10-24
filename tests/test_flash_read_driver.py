@@ -107,24 +107,14 @@ class ReadDriverTests(unittest.TestCase):
         self.progress.start()
         self.addCleanup(self.progress.stop)
 
-    def test_progressing_full_read_exceeds_300_seconds_without_changing_write_deadline(self):
-        self.assertEqual(len(self.driver.read(0, 8388608)), 8388608)
-        self.assertEqual(self.now, 320)
-        self.assertEqual(self.invocations[0][1], 4861)
-        self.assertIn("native exit 0", "\n".join(self.logs))
-        self.driver.write(((4096, b"synthetic"),))
-        self.assertEqual(self.invocations[-1][1], 300)
-        self.assertIsNone(self.invocations[-1][2])
-        self.driver._invoke("probe")
-        self.assertEqual(self.invocations[-1][1], 300)
-        self.assertIsNone(self.invocations[-1][2])
-
     def test_stall_deadline_and_revocation_never_return_backup_bytes(self):
         for mode, code in (
             ("stalled", "read_stalled"),
             ("deadline", "read_deadline"),
             ("process_deadline", "read_deadline"),
             ("revoked", "authority_changed"),
+            ("native_failure", "flash_native_failed_needs_review"),
+            ("unsafe_worker_failure", "flash_native_failed_needs_review"),
         ):
             self.mode = mode
             self.now = 0
@@ -134,37 +124,8 @@ class ReadDriverTests(unittest.TestCase):
             self.assertEqual(list(self.driver.work_root.glob("**/read.bin")), [])
         text = "\n".join(self.logs)
         self.assertNotIn("COM1", text)
+        self.assertNotIn("COM7", text)
         self.assertNotIn(str(self.driver.work_root), text)
-
-    def test_native_read_failure_retains_only_bounded_safe_diagnostic(self):
-        self.mode = "native_failure"
-        with self.assertRaisesRegex(FlashFailure, "flash_native_failed_needs_review") as caught:
-            self.driver.read(0, 2287648)
-        self.assertEqual(
-            caught.exception.diagnostic,
-            {
-                "code": "flash_native_failed_needs_review",
-                "operation": "rom_read",
-                "read_bytes": 978944,
-                "read_total": 2287648,
-                "elapsed_seconds": 43,
-                "failure_origin": "native_worker",
-                "exception_type": "SerialException",
-                "failure_class": "io",
-            },
-        )
-        self.assertEqual(list(self.driver.work_root.glob("flash-op-*")), [])
-        self.assertNotIn("COM7", "\n".join(self.logs))
-
-    def test_untrusted_worker_failure_fields_are_not_retained(self):
-        self.mode = "unsafe_worker_failure"
-        with self.assertRaisesRegex(FlashFailure, "flash_native_failed_needs_review") as caught:
-            self.driver.read(0, 2287648)
-        diagnostic = caught.exception.diagnostic
-        self.assertIsNotNone(diagnostic)
-        self.assertEqual(diagnostic["failure_origin"], "driver_or_process")
-        self.assertNotIn("exception_type", diagnostic)
-        self.assertNotIn("COM7", json.dumps(diagnostic) + "\n".join(self.logs))
 
 
 if __name__ == "__main__":

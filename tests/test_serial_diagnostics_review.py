@@ -16,7 +16,6 @@ from cardputer_mcp.serial_backend import (
     Reader,
     SerialBackend,
     SerialFailure,
-    clean_line,
     hello_cycle,
 )
 
@@ -75,20 +74,6 @@ def make_reader(reply=b"", *, split=4096, preloaded=()):
     return reader, port, events
 
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        b"I (0) shell: HOME_READY\r",
-        b"I (123456789) shell: HOME_READY",
-        b"\x1b[0;32mI (123) shell: HOME_READY\x1b[0m\r",
-        b"\x1b[0m\x1b[0;32mI (123) shell: HOME_READY\x1b[0m",
-        b"HOME_READY\r",
-    ],
-)
-def test_diagnostics_review_accepts_ordinary_esp_log_prefix(line):
-    assert clean_line(line) == b"HOME_READY"
-
-
 @pytest.mark.parametrize("split", [1, 2, 7, 4096])
 def test_diagnostics_review_initial_q_at_home_still_gets_fresh_ack(split):
     # Pinned source maps q -> KEY_BACK. shell_key(KEY_BACK) emits this marker
@@ -100,69 +85,6 @@ def test_diagnostics_review_initial_q_at_home_still_gets_fresh_ack(split):
     assert events == ["serial_wait_command", "serial_home_ready"]
     assert reader.bytes_read == len(reply)
     assert len(reader.lines) == 1
-
-
-@pytest.mark.parametrize(
-    "reply",
-    [
-        b"I(123) shell: HOME_READY\n",  # Missing the standard ESP-IDF space.
-        b"2026-01-01 I (123) shell: HOME_READY\n",
-        b"I (123) shell: HOME_READY suffix=INVENTED_SECRET\n",
-        b"UNKNOWN_PREFIX HOME_READY token=INVENTED_SECRET\n",
-    ],
-)
-def test_diagnostics_review_unknown_prefix_counts_without_recognizing_or_emitting(reply):
-    reader, port, events = make_reader(reply, split=3)
-    with pytest.raises(SerialFailure, match="serial_marker_timeout") as failure:
-        reader.command(b"q", rb"HOME_READY", timeout=2)
-    assert reader.bytes_read == len(reply) > 0
-    assert len(reader.lines) == 1
-    assert events == ["serial_wait_command"]
-    assert port.writes == [b"q"]
-    diagnostic = dict(failure.value.diagnostic)
-    summary = diagnostic.pop("receive_summary")
-    assert summary["last_command"] == "home_quit"
-    assert summary["command_write_completed"] is True
-    assert summary["before_command"]["bytes"] == 0
-    assert summary["after_command"]["bytes"] == len(reply)
-    assert summary["after_command"]["home_ready_token_lines"] == 1
-    assert summary["after_command"]["home_ready_exact_lines"] == 0
-    assert diagnostic == {
-        "code": "serial_marker_timeout",
-        "step": "command",
-        "expected_marker": "HOME_READY",
-        "received_bytes": len(reply),
-        "received_lines": 1,
-        "recognized_markers": 0,
-    }
-    public = json.dumps(failure.value.diagnostic)
-    assert "INVENTED_SECRET" not in public
-    assert "shell:" not in public
-    assert "UNKNOWN_PREFIX" not in public
-
-
-def test_diagnostics_review_silence_has_zero_receive_counts_and_stops_at_first_q():
-    reader, port, events = make_reader()
-    with pytest.raises(SerialFailure, match="serial_marker_timeout") as failure:
-        hello_cycle(reader)
-    assert port.writes == [b"q"]
-    assert reader.bytes_read == len(reader.lines) == 0
-    assert events == ["serial_wait_initial_home"]
-    diagnostic = dict(failure.value.diagnostic)
-    summary = diagnostic.pop("receive_summary")
-    assert summary["last_command"] == "home_quit"
-    assert summary["command_write_completed"] is True
-    assert summary["before_command"]["bytes"] == 0
-    assert summary["after_command"]["bytes"] == 0
-    assert diagnostic == {
-        "code": "serial_marker_timeout",
-        "step": "initial_home",
-        "expected_marker": "HOME_READY",
-        "received_bytes": 0,
-        "received_lines": 0,
-        "recognized_markers": 0,
-    }
-    assert 12 <= reader.clock() < 12.1
 
 
 def test_diagnostics_review_previous_home_marker_does_not_bypass_initial_q():

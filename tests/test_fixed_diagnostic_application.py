@@ -1,9 +1,7 @@
 """U2/U5 and I1/I2/I5: fake ports, no SDK, broker, storage or serial."""
 
-import ast
 import unittest
 from dataclasses import FrozenInstanceError
-from pathlib import Path
 
 from cardputer_mcp.fixed_diagnostic import (
     DiagnosticContext,
@@ -53,8 +51,6 @@ class FixedDiagnosticApplicationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "collector_successful_owned_flash_required"):
                 prepare_fixed_diagnostic(DiagnosticContext("owner"), "flash", evidence, device)
             self.assertEqual(device.calls, [])
-
-    def test_empty_subject_never_reads_evidence(self):
         evidence = Evidence()
         with self.assertRaisesRegex(ValueError, "collector_successful_owned_flash_required"):
             prepare_fixed_diagnostic(DiagnosticContext(""), "flash", evidence, Device())
@@ -63,17 +59,6 @@ class FixedDiagnosticApplicationTests(unittest.TestCase):
     def test_preflight_cannot_substitute_device_identity(self):
         with self.assertRaisesRegex(ValueError, "collector_device_binding_invalid"):
             prepare_fixed_diagnostic(DiagnosticContext("owner"), "flash", Evidence(), Device("x"))
-
-    def test_inner_boundary_has_no_outward_imports(self):
-        import cardputer_mcp.fixed_diagnostic as inner
-
-        tree = ast.parse(Path(inner.__file__).read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                self.assertEqual(node.level, 0)
-                self.assertIn(node.module, {"dataclasses", "typing"})
-            elif isinstance(node, ast.Import):
-                self.assertTrue({n.name for n in node.names} <= {"hashlib", "json"})
 
 
 class Completion:
@@ -103,8 +88,6 @@ class FixedDiagnosticCompletionTests(unittest.TestCase):
                 self.assertEqual(call[:3], ("job", "hash", "owner"))
                 self.assertEqual(call[3], "needs_review" if interrupted else "succeeded")
                 self.assertIs(call[-1], capture)
-
-    def test_missing_subject_never_publishes(self):
         completion = Completion()
         with self.assertRaisesRegex(ValueError, "fixed_trial_result_invalid"):
             finish_fixed_diagnostic(

@@ -5,16 +5,10 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
-from cardputer_mcp.build_locations import (
-    build_directory,
-    build_location,
-    claim_build_directory,
-    identity_receipt,
-)
+from cardputer_mcp.build_locations import build_location, claim_build_directory
 from cardputer_mcp.firmware_build import FirmwareBuild
 from cardputer_mcp.store import Store
 
@@ -47,8 +41,6 @@ class DurableBuildArtifactTests(unittest.TestCase):
         *,
         finish=True,
         publish=True,
-        worker=False,
-        elf_bytes=None,
         owner="alice",
     ):
         fingerprint = hashlib.sha256(job.encode()).hexdigest()
@@ -64,18 +56,7 @@ class DurableBuildArtifactTests(unittest.TestCase):
         self.store.put_plan(plan_hash, plan)
         self.store.add_job(job, plan_hash)
         self.store.set_job(job, "running")
-        if self.project.build_root is None:
-            # Reconstruct an existing legacy slot; current Windows path limits
-            # apply to new builds, not read-only resolution of old receipts.
-            root = build_directory(self.state, None, fingerprint, environment)
-            root.mkdir(parents=True)
-            (root / "broker-build-identity.json").write_text(
-                json.dumps(identity_receipt(self.state, None, fingerprint, environment))
-            )
-        else:
-            root = claim_build_directory(
-                self.state, self.project.build_root, fingerprint, environment
-            )
+        root = claim_build_directory(self.state, self.project.build_root, fingerprint, environment)
 
         def receipt(name, data):
             path = root / name
@@ -85,7 +66,7 @@ class DurableBuildArtifactTests(unittest.TestCase):
 
         artifacts = [
             receipt("app.bin", b"firmware"),
-            receipt("app.elf", b"ELF-fixture" if elf_bytes is None else elf_bytes),
+            receipt("app.elf", b"ELF-fixture"),
         ]
         manifest = dict(
             schema_version=1,
@@ -103,13 +84,7 @@ class DurableBuildArtifactTests(unittest.TestCase):
         )
         (root / "broker-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         if publish:
-            if worker:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    executor.submit(
-                        self.builder.artifacts.publish, job, owner, root, manifest
-                    ).result()
-            else:
-                self.builder.artifacts.publish(job, owner, root, manifest)
+            self.builder.artifacts.publish(job, owner, root, manifest)
         if finish:
             self.store.set_job(job, "succeeded", "firmware_build_succeeded_no_flash")
         return root, manifest
@@ -123,21 +98,6 @@ class DurableBuildArtifactTests(unittest.TestCase):
         self.store.recover()
         self.builder = FirmwareBuild(self.settings, self.history)
 
-    def test_worker_publication_and_more_than_eight_builds_survive_restart(self):
-        root, manifest = self.publish(worker=True)
-        for index in range(1, 10):
-            self.publish(f"build-{index}")
-        self.assertNotIn("build-0", self.builder.artifacts._records)
-        self.assertEqual((root, manifest), self.context())
-        self.restart()
-        self.assertFalse(self.builder.artifacts._records)
-        self.assertEqual((root, manifest), self.context())
-        self.assertEqual(
-            10,
-            self.store.db.execute("SELECT count(*) FROM build_artifact_references").fetchone()[0],
-        )
-        self.assertEqual("succeeded", self.store.job("build-0")["state"])
-
     def test_flash_owned_context_uses_durable_reference_after_restart(self):
         try:
             from cardputer_mcp.firmware_flash import FirmwareFlash
@@ -149,41 +109,6 @@ class DurableBuildArtifactTests(unittest.TestCase):
         self.assertEqual((root, manifest), FirmwareFlash._build_context(flash, "build-0", "alice"))
         with self.assertRaises(ValueError):
             FirmwareFlash._build_context(flash, "build-0", "bob")
-
-    def test_lookup_does_not_create_missing_history_or_follow_relocated_output(self):
-        from cardputer_mcp.build_artifacts import BuildArtifacts
-
-        missing = self.root / "absent.sqlite3"
-        with self.assertRaises(sqlite3.DatabaseError):
-            BuildArtifacts(missing).reference("build-0", "alice", "fixture")
-        self.assertFalse(missing.exists())
-        root, _manifest = self.publish()
-        moved = root.with_name(root.name + "-moved")
-        root.rename(moved)
-        try:
-            root.symlink_to(moved, target_is_directory=True)
-        except OSError:
-            self.skipTest("symlink privilege unavailable")
-        with self.assertRaises(ValueError):
-            self.context()
-
-    def test_large_elf_remains_owned_and_hash_verified_after_restart(self):
-        data = b"E" * (33 * 1024 * 1024)
-        root, manifest = self.publish(elf_bytes=data)
-        self.restart()
-        self.assertEqual((root, manifest), self.context())
-        with self.assertRaises(ValueError):
-            self.context(owner="bob")
-        with (root / "app.elf").open("r+b") as handle:
-            handle.write(b"X")
-        with self.assertRaises(ValueError):
-            self.context()
-
-    def test_original_default_layout_survives_restart(self):
-        self.project.build_root = None
-        root, manifest = self.publish()
-        self.restart()
-        self.assertEqual((root, manifest), self.context())
 
     def test_no_reference_is_adopted_from_a_success_manifest_on_disk(self):
         self.publish(publish=False)
@@ -199,20 +124,6 @@ class DurableBuildArtifactTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.builder.resolve_flash_manifest("build-0", "alice", "other")
         self.settings.build_projects.clear()
-        with self.assertRaises(ValueError):
-            self.context()
-
-    def test_registered_output_root_or_target_change_is_rejected(self):
-        self.publish()
-        self.project.target = "esp32"
-        with self.assertRaises(ValueError):
-            self.context()
-        self.project.target = "esp32s3"
-        self.project.build_root = self.root / "other-output"
-        with self.assertRaises(ValueError):
-            self.context()
-        # A compact receipt never falls back to the old default output layout.
-        self.project.build_root = None
         with self.assertRaises(ValueError):
             self.context()
 

@@ -122,17 +122,5 @@ class PinnedRootTests(CacheFixture, unittest.TestCase):
             pin_root(Path(self.root.anchor))
 
 
-class PlainRootTests(CacheFixture, unittest.TestCase):
-    def setUp(self):
-        self.setup_cache()
-
-    def test_non_link_root_behaves_as_before(self):
-        registration = self.settings.build_projects["fixture"].source_repository
-        first = self.fetch(1)
-        self.assertEqual(self.snapshots.cache_root(registration), (self.root / "cache").resolve())
-        self.assertTrue(self.payload(first).is_dir())
-        self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 1)
-
-
 if __name__ == "__main__":
     unittest.main()

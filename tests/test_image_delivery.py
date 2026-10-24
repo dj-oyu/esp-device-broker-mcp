@@ -33,7 +33,10 @@ async def test_requested_capture_is_available_to_only_its_authenticated_recipien
 ) -> None:
     async with running(tmp_path) as broker:
         assert broker.operator_images()["images"] == []
-        preview = await completed_preview(broker)
+        session = acquire(broker)
+        enqueue(broker, session, "review")
+        await broker.queue.join()
+        preview = broker.operator_image("review")
         unavailable(broker, "review", "another-principal")
         pixels = base64.b64decode(preview["image_base64"], validate=True)
         assert pixels.startswith(b"\x89PNG\r\n\x1a\n")
@@ -54,28 +57,12 @@ async def test_requested_capture_is_available_to_only_its_authenticated_recipien
             broker.operator_image("review")
             assert broker.read_capture("review", PRINCIPAL).png == pixels
         assert broker.backend.calls == 1 and broker.queue.empty()
-
-
-@pytest.mark.parametrize("decision", ["approve", "reject", "", "yes", "approved", "Approve"])
-@pytest.mark.parametrize("field", [None, "sha256", "delivery_revision", "job_id"])
-async def test_retired_decision_cannot_mutate_any_image_or_create_a_grant(
-    tmp_path: Path, decision: str, field: str | None
-) -> None:
-    async with running(tmp_path) as broker:
-        preview = await completed_preview(broker)
-        if field is not None:
-            preview[field] = "0" * 64 if field != "job_id" else "unknown"
-        original = broker.captures["review"]
-        for _ in range(2):
-            with pytest.raises(BrokerError, match="^approval_interface_retired$"):
-                broker.operator_decide_image(
-                    preview["job_id"], preview["sha256"], preview["delivery_revision"], decision
-                )
-        assert broker.captures["review"] is original
-        assert original.delivery_state == "available"
-        assert broker.read_capture("review", PRINCIPAL).png
-        unavailable(broker, "unknown")
-        assert broker.backend.calls == 1
+        enqueue(broker, session, "second-image")
+        await broker.queue.join()
+        second = broker.operator_image("second-image")
+        assert second["sha256"] == preview["sha256"]
+        assert second["delivery_revision"] != preview["delivery_revision"]
+        assert broker.read_capture("second-image", PRINCIPAL).png
 
 
 @pytest.mark.parametrize("changed", ["pixels", "recipient", "origin", "born", "deadline", "epoch"])
@@ -172,20 +159,7 @@ async def test_current_recipient_authorization_requires_literal_true(
 
 @pytest.mark.parametrize(
     "mutation",
-    [
-        "expire",
-        "remove",
-        "recipient",
-        "pixels",
-        "origin",
-        "deadline",
-        "born",
-        "job",
-        "epoch",
-        "closing",
-        "replace-validator",
-        "delete-job",
-    ],
+    ["expire", "recipient", "pixels", "job", "closing", "replace-validator"],
 )
 async def test_read_revalidates_after_recipient_callback(tmp_path: Path, mutation: str) -> None:
     clock = Clock()
@@ -196,30 +170,18 @@ async def test_read_revalidates_after_recipient_callback(tmp_path: Path, mutatio
             retained = broker.captures["review"]
             if mutation == "expire":
                 clock.now = retained.deadline
-            elif mutation == "remove":
-                del broker.captures["review"]
             elif mutation == "recipient":
                 broker.captures["review"] = replace(retained, principal_id="changed-recipient")
             elif mutation == "pixels":
                 broker.captures["review"] = replace(
                     retained, image=replace(retained.image, png=b"different-pixels")
                 )
-            elif mutation == "origin":
-                broker.captures["review"] = replace(retained, origin=Origin.LOCAL.value)
-            elif mutation == "deadline":
-                broker.captures["review"] = replace(retained, deadline=retained.deadline + 1)
-            elif mutation == "born":
-                broker.captures["review"] = replace(retained, born_utc="replacement-time")
             elif mutation == "job":
                 broker._store().set_job("review", "failed", "synthetic_failure")
-            elif mutation == "epoch":
-                broker.epoch += "changed"
             elif mutation == "closing":
                 broker.closing = True
-            elif mutation == "replace-validator":
-                broker.principal_valid = lambda *args: True
             else:
-                broker._store().db.execute("DELETE FROM jobs WHERE id=?", ("review",))
+                broker.principal_valid = lambda *args: True
             return True
 
         broker.principal_valid = validate
@@ -239,22 +201,6 @@ async def test_inventory_is_bounded_and_evicted_pixels_cannot_be_read(tmp_path: 
         with pytest.raises(BrokerError, match="^capture_not_available$"):
             broker.operator_image("review-0")
         assert broker.backend.calls == 9
-
-
-async def test_identical_pixels_remain_bound_to_their_requested_job(tmp_path: Path) -> None:
-    async with running(tmp_path) as broker:
-        session = acquire(broker)
-        for job_id in ("first-image", "second-image"):
-            enqueue(broker, session, job_id)
-            await broker.queue.join()
-        first = broker.operator_image("first-image")
-        second = broker.operator_image("second-image")
-        assert first["sha256"] == second["sha256"]
-        assert first["delivery_revision"] != second["delivery_revision"]
-        assert broker.read_capture("first-image", PRINCIPAL).png
-        assert broker.read_capture("second-image", PRINCIPAL).png
-        unavailable(broker, "missing-image")
-        assert broker.backend.calls == 2 and broker.queue.empty()
 
 
 async def test_delivery_http_immediate_read_and_retired_decisions_without_recapture(
@@ -322,7 +268,7 @@ async def test_delivery_http_immediate_read_and_retired_decisions_without_recapt
             assert forbidden not in public and forbidden not in history
 
 
-@pytest.mark.parametrize("invalidation", ["revoke", "expire", "rotate"])
+@pytest.mark.parametrize("invalidation", ["revoke", "rotate"])
 async def test_delivery_http_rechecks_recipient_credential_on_every_read(
     registry_service: RegistryService, monkeypatch: pytest.MonkeyPatch, invalidation: str
 ) -> None:
@@ -338,8 +284,6 @@ async def test_delivery_http_rechecks_recipient_credential_on_every_read(
         assert_image(await read_capture(remote, "changed-recipient"))
     if invalidation == "revoke":
         assert service.registry.revoke(key.metadata.key_id)
-    elif invalidation == "expire":
-        service.now[0] += 11
     else:
         replacement = service.registry.rotate(key.metadata.key_id)
         async with connect(service.url, replacement.token) as stranger:

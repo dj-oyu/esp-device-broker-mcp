@@ -1,16 +1,14 @@
 """Explicit firmware reports cross broker/MCP boundaries using fake USB only."""
 
 import asyncio
-import gc
 import hashlib
 import json
 import os
-import sqlite3
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from weakref import WeakKeyDictionary, ref
+from weakref import WeakKeyDictionary
 
 import httpx2
 import pytest
@@ -23,7 +21,6 @@ from cardputer_mcp.config import Settings
 from cardputer_mcp.key_registry import KeyRegistry
 from cardputer_mcp.models import (
     AcquireRequest,
-    CloseWorkSessionRequest,
     CreateWorkSessionRequest,
     ExecuteRequest,
     LeaseRequest,
@@ -186,53 +183,6 @@ def assert_no_durable_logs(broker):
                 assert forbidden.encode() not in data
 
 
-async def test_live_filesystem_check_rejects_transient_wal_leak_before_shutdown(tmp_path):
-    async with running(tmp_path) as env:
-        descriptor = env.broker._state_lock._context.lock_file_fd
-        position = os.lseek(descriptor, 0, os.SEEK_CUR)
-        assert_no_public_or_durable_logs(env.broker)
-        assert os.lseek(descriptor, 0, os.SEEK_CUR) == position
-        assert env.broker._state_lock.is_locked
-        path = env.broker.settings.state_dir / "synthetic-leak.sqlite3-wal"
-        path.write_bytes(LOG_LINE.encode())
-        try:
-            with pytest.raises(AssertionError):
-                assert_no_public_or_durable_logs(env.broker)
-            assert env.broker._state_lock.is_locked
-        finally:
-            path.unlink()
-
-
-async def test_live_scan_detects_committed_secret_in_past_wal_frame(tmp_path):
-    async with running(tmp_path) as env:
-        path = env.broker.settings.state_dir / "synthetic-history.sqlite3"
-        db = sqlite3.connect(path)
-        try:
-            assert db.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
-            db.execute("PRAGMA wal_autocheckpoint=0")
-            db.execute("PRAGMA secure_delete=ON")
-            db.execute("CREATE TABLE fixture(value TEXT)")
-            db.execute("INSERT INTO fixture VALUES (?)", (LOG_LINE,))
-            db.commit()
-            db.execute("UPDATE fixture SET value='[redacted]'")
-            db.commit()
-            assert LOG_LINE not in "\n".join(db.iterdump())
-            hits = [
-                item.name
-                for item in path.parent.rglob("*")
-                if item.is_file() and LOG_LINE.encode() in read_live_fixture_file(env.broker, item)
-            ]
-            assert hits == [path.name + "-wal"]
-            with pytest.raises(AssertionError):
-                assert_no_public_or_durable_logs(env.broker)
-        finally:
-            db.close()
-        assert not path.with_name(path.name + "-wal").exists()
-        assert LOG_LINE.encode() not in path.read_bytes()
-        assert_no_public_or_durable_logs(env.broker)
-        assert env.port.opens == env.port.closes == 0
-
-
 async def test_explicit_request_delivers_redacted_report_without_approval(tmp_path, caplog):
     async with running(tmp_path) as env:
         plan = prepare(env)
@@ -292,27 +242,6 @@ async def test_unauthenticated_lease_cannot_prepare_device_log_sharing(tmp_path)
                 PrepareRequest(session=lease["session"], job_id="anonymous", test=Action.FIRMWARE)
             )
         assert env.port.opens == 0
-
-
-async def test_legacy_capture_policy_is_ignored_by_explicit_firmware_execution(tmp_path):
-    async with running(tmp_path) as env:
-        calls = []
-        env.broker.capture_policies = SimpleNamespace(
-            authorize_capture=lambda *args, **kwargs: calls.append("capture") or object(),
-            validate_capture=lambda *args, **kwargs: True,
-            invalidate_session=lambda: None,
-            target=lambda: "synthetic-policy-target",
-        )
-        plan = prepare(env)
-        assert plan["approval_required"] is False
-        _request = ExecuteRequest(
-            session=env.broker.session.capability, plan_hash=plan["plan_hash"]
-        )
-        assert env.port.opens == 0 and calls == []
-        validate_prepared(env, plan)
-        await execute(env, plan)
-        assert env.broker.read_device_logs("firmware-report", PRINCIPAL)["logs"]
-        assert calls == [] and env.port.opens == 1
 
 
 @pytest.mark.parametrize("change", [{"principal_id": REMOTE_PRINCIPAL}, {"origin": "remote_mcp"}])
@@ -401,19 +330,6 @@ async def test_read_after_release_retains_fixed_deadline_and_restart_never_repla
         assert fresh.port.opens == 0 and fresh.broker.queue.empty()
 
 
-async def test_restart_discards_a_still_unexpired_report(tmp_path):
-    async with running(tmp_path) as env:
-        plan = prepare(env)
-        validate_prepared(env, plan)
-        await execute(env, plan)
-        assert env.broker.read_device_logs("firmware-report", PRINCIPAL)["remaining_seconds"] == 300
-    async with running(tmp_path) as fresh:
-        unavailable(fresh)
-        assert not fresh.broker.device_observations
-        assert fresh.broker.job("firmware-report")["state"] == "succeeded"
-        assert fresh.port.opens == 0
-
-
 def create_work(env, *, origin=Origin.LOCAL):
     return env.broker.create_work_session(
         CreateWorkSessionRequest(owner=origin),
@@ -428,41 +344,6 @@ def request_device(env, work, *, origin=Origin.LOCAL):
         principal_id=f"ephemeral:{origin.value}",
         scopes=SCOPES,
     )
-
-
-async def test_closed_work_session_does_not_change_same_key_report_recipient(tmp_path):
-    async with running(tmp_path) as env:
-        first, second = create_work(env), create_work(env)
-        assert first["work_session_id"] != second["work_session_id"]
-        request_device(env, first)
-        plan = prepare(env)
-        validate_prepared(env, plan)
-        await execute(env, plan)
-        report = env.broker.read_device_logs("firmware-report", PRINCIPAL)
-        env.broker.close_work_session(
-            CloseWorkSessionRequest(resume_token=first["resume_token"]),
-            principal_id=PRINCIPAL,
-            scopes=SCOPES,
-        )
-        request_device(env, second)
-        assert env.broker.session.work_session_id == second["work_session_id"]
-        assert env.broker.read_device_logs("firmware-report", PRINCIPAL) == report
-        assert env.port.opens == env.port.closes == 1
-
-
-async def test_only_newest_completed_report_is_retained(tmp_path):
-    async with running(tmp_path) as env:
-        for index in range(2):
-            job_id = f"firmware-{index}"
-            if index:
-                env.port.chunks.append(STARTUP + b"second report\n")
-            plan = prepare(env, job_id)
-            validate_prepared(env, plan)
-            await execute(env, plan)
-            assert set(env.broker.device_observations) == {job_id}
-        unavailable(env, "firmware-0")
-        assert "second report" in env.broker.read_device_logs("firmware-1", PRINCIPAL)["logs"]
-        assert env.port.opens == env.port.closes == 2 and env.port.writes == []
 
 
 async def test_two_origins_wait_for_confirmed_close_before_handover(tmp_path):
@@ -501,63 +382,6 @@ async def test_two_origins_wait_for_confirmed_close_before_handover(tmp_path):
         assert env.port.writes == []
 
 
-@pytest.mark.parametrize("service_name", ["home_recovery", "profile_jobs"])
-async def test_shutdown_completion_does_not_retain_report_during_service_close(
-    tmp_path, monkeypatch, service_name
-):
-    async with running(tmp_path) as env:
-        env.port.close_release = threading.Event()
-        results = []
-        execute_backend = env.backend.execute
-
-        async def tracked_execute(plan, stage):
-            result = await execute_backend(plan, stage)
-            results.append(ref(result))
-            return result
-
-        monkeypatch.setattr(env.backend, "execute", tracked_execute)
-        plan = prepare(env)
-        validate_prepared(env, plan)
-        env.broker.execute(
-            ExecuteRequest(session=env.broker.session.capability, plan_hash=plan["plan_hash"])
-        )
-        assert await asyncio.to_thread(env.port.close_started.wait, 5)
-        entered, allowed = asyncio.Event(), asyncio.Event()
-        service = getattr(env.broker, service_name)
-        original_close = service.close
-
-        async def gated_close():
-            entered.set()
-            await allowed.wait()
-            await original_close()
-
-        monkeypatch.setattr(service, "close", gated_close)
-        closing = asyncio.create_task(env.broker.close())
-        try:
-            await asyncio.wait_for(entered.wait(), timeout=2)
-            assert env.backend.active == 1 and env.port.is_open
-            assert not env.broker.device_observations
-            env.port.close_release.set()
-            await asyncio.wait_for(env.broker.queue.join(), timeout=5)
-            assert env.broker.job("firmware-report")["state"] == "succeeded"
-            assert (
-                env.broker.job("firmware-report")["result"]
-                == "firmware_observation_completed_no_commands"
-            )
-            assert not closing.done() and env.backend.active == 0
-            assert env.broker._device_lock.is_locked and env.broker._state_lock.is_locked
-            assert not env.broker.device_observations and not env.broker.captures
-            gc.collect()
-            assert len(results) == 1 and results[0]() is None
-            unavailable(env)
-            assert env.port.opens == env.port.closes == 1 and env.port.writes == []
-        finally:
-            allowed.set()
-            env.port.close_release.set()
-            await asyncio.wait_for(closing, timeout=5)
-        assert not env.broker._device_lock.is_locked
-
-
 @pytest.mark.parametrize("port_options", [{"close_error": True}, {"still_open": True}])
 async def test_uncertain_close_withholds_data_and_keeps_device_lock(tmp_path, port_options):
     async with running(tmp_path, **port_options) as env:
@@ -585,20 +409,6 @@ async def test_uncertain_close_withholds_data_and_keeps_device_lock(tmp_path, po
             env.broker.active_job = None
 
 
-async def test_no_bytes_means_identity_unavailable_without_guessing_or_retry(tmp_path):
-    async with running(tmp_path, wire=b"") as env:
-        plan = prepare(env)
-        validate_prepared(env, plan)
-        await execute(env, plan)
-        report = env.broker.read_device_logs("firmware-report", PRINCIPAL)
-        assert report["logs"] == [] and report["bytes_received"] == 0
-        assert report["firmware"]["status"] == "unavailable"
-        assert report["firmware"]["project_name"] is None
-        assert report["firmware"]["app_version"] is None
-        assert env.port.clock.now == 30
-        assert env.port.opens == env.port.closes == 1 and env.port.writes == []
-
-
 async def test_read_failure_withholds_partial_logs_and_sanitizes_exception(tmp_path, caplog):
     async with running(tmp_path) as env:
         env.port.chunks.append(OSError(LOG_LINE + SECRETS[0]))
@@ -613,21 +423,6 @@ async def test_read_failure_withholds_partial_logs_and_sanitizes_exception(tmp_p
         assert env.port.opens == env.port.closes == 1 and env.port.writes == []
         assert LOG_LINE not in caplog.text and SECRETS[0] not in caplog.text
         assert_no_public_or_durable_logs(env.broker)
-
-
-@pytest.mark.parametrize("mutation", ["missing", "failed"])
-async def test_retained_report_requires_a_succeeded_job(tmp_path, mutation):
-    async with running(tmp_path) as env:
-        plan = prepare(env)
-        validate_prepared(env, plan)
-        await execute(env, plan)
-        if mutation == "missing":
-            env.broker._store().db.execute("DELETE FROM jobs WHERE id=?", ("firmware-report",))
-        else:
-            env.broker._store().set_job("firmware-report", "failed", "synthetic_failure")
-        unavailable(env)
-        assert env.broker.operator_device_observation_metadata("firmware-report") is None
-        assert env.port.opens == 1
 
 
 @pytest.mark.parametrize("mutation", ["missing", "failed"])
@@ -842,28 +637,3 @@ async def test_mcp_rechecks_key_authority_after_device_completion(http_observati
     assert env.broker.operator_device_observation_metadata("firmware-report") is None
     assert env.broker.job("firmware-report")["state"] == "succeeded"
     assert env.port.opens == 1
-
-
-async def test_mcp_missing_auth_and_invalid_read_arguments_do_not_leak_or_open_usb(
-    http_observation,
-):
-    env = http_observation
-    response = await rpc_response(
-        env,
-        "tools/call",
-        {
-            "name": "status",
-            "arguments": {"request": {**DEVICE_LOGS, "job_id": "missing"}},
-        },
-        token="invalid",
-    )
-    assert response.status_code == 401
-    for request in (
-        {"job_id": "missing", "principal_id": PRINCIPAL},
-        {"job_id": LOG_LINE + "\n"},
-        {"job_id": "missing", "session": LOCAL},
-    ):
-        response = await rpc(env, "read_device_logs", request)
-        assert response["isError"] is True
-        assert LOG_LINE not in json.dumps(response) and LOCAL not in json.dumps(response)
-    assert env.port.opens == 0

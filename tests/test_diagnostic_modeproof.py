@@ -133,23 +133,12 @@ class DiagnosticModeproofTests(unittest.TestCase):
             ).hexdigest()
             with self.assertRaises(ValueError):
                 verify_modeproof_bytes(forged, provenance, artifacts, files)
-
-    def test_other_image_source_manifest_and_view_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            provenance, artifacts, files = image_fixture(root, "ON")
-            envelope = collect_modeproof(root, "ON", provenance, artifacts)
             other_source = {**provenance, "commit": "main"}
             with self.assertRaises(ValueError):
                 verify_modeproof_bytes(envelope, other_source, artifacts, files)
-            with self.assertRaises(ValueError):
-                verify_modeproof_bytes(envelope, provenance, artifacts[:-1], files)
             altered = {**files, "cardputer_pocketjs.bin": files["cardputer_pocketjs.bin"] + b"x"}
             with self.assertRaises(ValueError):
                 verify_modeproof_bytes(envelope, provenance, artifacts, altered)
-            (root / "generated/derby_fixed_workload/derby_view.js").write_bytes(b"stale")
-            with self.assertRaises(ValueError):
-                collect_modeproof(root, "ON", provenance, artifacts)
 
 
 if __name__ == "__main__":

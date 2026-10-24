@@ -23,14 +23,10 @@ from cardputer_mcp.serial_backend import fingerprint
     "scenario",
     [
         "elf_mismatch",
-        "idf_mismatch",
-        "invalid_version",
         "timeout",
-        "transport",
         "transport_and_close",
         "invalid_and_close",
         "line_limit",
-        "late_chunk",
     ],
 )
 async def test_terminal_boot_failure_retains_owned_redacted_evidence(

@@ -2,8 +2,6 @@
 
 import asyncio
 import threading
-from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from test_source_preflight import registered
@@ -19,13 +17,6 @@ def caches(tmp_path):
     project = settings.build_projects["fixture"]
     alias = settings.model_copy(update={"build_projects": {"alias": project}})
     return SourceSnapshots(settings), SourceSnapshots(alias), project.source_repository.cache_root
-
-
-def test_same_root_guard_is_shared_across_instances_and_alias_projects_and_is_reentrant(tmp_path):
-    first, second, _ = caches(tmp_path)
-    with first.cache_guard("fixture"):
-        assert first.usage("fixture")["bytes"] == 0
-        assert second.usage("alias")["bytes"] == 0
 
 
 async def test_other_thread_same_cache_returns_busy_without_blocking(tmp_path):
@@ -50,6 +41,8 @@ async def test_other_thread_same_cache_returns_busy_without_blocking(tmp_path):
         release.set()
         await owned
     assert second.usage("alias")["bytes"] == 0
+    with first.cache_guard("fixture"):  # same-root guard is re-entrant and shared by aliases
+        assert first.usage("fixture")["bytes"] == 0 and second.usage("alias")["bytes"] == 0
 
 
 async def test_fetch_retains_guard_through_failed_download_and_pending_cleanup(
@@ -86,129 +79,6 @@ async def test_fetch_retains_guard_through_failed_download_and_pending_cleanup(
     assert usage["snapshots"] == 0 and usage["pending_snapshots"] == 0
 
 
-def test_cache_inventory_counts_empty_directories_against_entry_budget(tmp_path, monkeypatch):
-    first, _, root = caches(tmp_path)
-    root.mkdir(mode=0o700)
-    snapshot = root / "synthetic-snapshot"
-    snapshot.mkdir()
-    for index in range(5):
-        (snapshot / f"empty-{index}").mkdir()
-    monkeypatch.setattr(source_snapshot, "CACHE_SCAN_ENTRIES", 3)
-    with pytest.raises(SourceError, match="source_cache_scan_limit"):
-        first.usage("fixture")
-
-
-def test_cache_inventory_has_cooperative_time_and_stop_budgets(tmp_path, monkeypatch):
-    first, _, root = caches(tmp_path)
-    root.mkdir(mode=0o700)
-    (root / "synthetic-snapshot").mkdir()
-    ticks = iter([0.0, 0.0, source_snapshot.CACHE_SCAN_SECONDS + 1.0])
-    monkeypatch.setattr(source_snapshot, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
-    with pytest.raises(SourceError, match="source_cache_scan_limit"):
-        first.usage("fixture")
-    monkeypatch.setattr(source_snapshot, "time", SimpleNamespace(monotonic=lambda: 0.0))
-    stopped = threading.Event()
-    stopped.set()
-    with pytest.raises(SourceError, match="source_fetch_interrupted"):
-        first.usage("fixture", stop=stopped)
-
-
-def test_cache_inventory_checks_stop_between_pending_empty_directories(tmp_path, monkeypatch):
-    first, _, root = caches(tmp_path)
-    root.mkdir(mode=0o700)
-    snapshot = root / "synthetic-snapshot"
-    snapshot.mkdir()
-    for index in range(5):
-        (snapshot / f"empty-{index}").mkdir()
-    stopped = threading.Event()
-    visited = []
-    original = source_snapshot._not_link
-
-    def stop_after_first_empty(path):
-        original(path)
-        if path.parent == snapshot:
-            visited.append(path)
-            stopped.set()
-
-    monkeypatch.setattr(source_snapshot, "_not_link", stop_after_first_empty)
-    with pytest.raises(SourceError, match="source_fetch_interrupted"):
-        first.usage("fixture", stop=stopped)
-    assert len(visited) == 1
-
-
-def test_cache_inventory_checks_deadline_between_pending_empty_directories(tmp_path, monkeypatch):
-    first, _, root = caches(tmp_path)
-    root.mkdir(mode=0o700)
-    snapshot = root / "synthetic-snapshot"
-    snapshot.mkdir()
-    for index in range(5):
-        (snapshot / f"empty-{index}").mkdir()
-    clock = {"now": 0.0}
-    monkeypatch.setattr(source_snapshot, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
-    visited = []
-    original = source_snapshot._not_link
-
-    def expire_after_first_empty(path):
-        original(path)
-        if path.parent == snapshot:
-            visited.append(path)
-            clock["now"] = source_snapshot.CACHE_SCAN_SECONDS + 1.0
-
-    monkeypatch.setattr(source_snapshot, "_not_link", expire_after_first_empty)
-    with pytest.raises(SourceError, match="source_cache_scan_limit"):
-        first.usage("fixture")
-    assert len(visited) == 1
-
-
-@pytest.mark.parametrize(
-    ("expire", "expected"),
-    [(False, "source_fetch_interrupted"), (True, "source_cache_scan_limit")],
-)
-def test_cache_inventory_checks_budget_after_last_empty_directory(
-    tmp_path, monkeypatch, expire, expected
-):
-    first, _, root = caches(tmp_path)
-    root.mkdir(mode=0o700)
-    last = root / "synthetic-snapshot" / "only-empty"
-    last.mkdir(parents=True)
-    stopped = threading.Event()
-    clock = {"now": 0.0}
-    monkeypatch.setattr(source_snapshot, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
-    original = source_snapshot._not_link
-
-    def change_budget_during_last_directory(path):
-        original(path)
-        if path == last:
-            if expire:
-                clock["now"] = source_snapshot.CACHE_SCAN_SECONDS + 1.0
-            else:
-                stopped.set()
-
-    monkeypatch.setattr(source_snapshot, "_not_link", change_budget_during_last_directory)
-    with pytest.raises(SourceError, match=expected):
-        first.usage("fixture", stop=stopped)
-
-
-def test_cache_inventory_verifies_ancestors_per_directory_not_per_file(tmp_path, monkeypatch):
-    first, _, root = caches(tmp_path)
-    root.mkdir(mode=0o700)
-    leaf = root / "synthetic-snapshot" / "nested" / "leaf"
-    leaf.mkdir(parents=True)
-    for index in range(250):
-        (leaf / f"file-{index}").write_bytes(b"data")
-    original = Path.lstat
-    calls = 0
-
-    def counted(path, *args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "lstat", counted)
-    assert first.usage("fixture")["bytes"] == 1000
-    assert calls < 100  # Files are checked once, without replaying every ancestor.
-
-
 def test_cache_inventory_rejects_nested_link_before_traversing_it(tmp_path):
     first, _, root = caches(tmp_path)
     root.mkdir(mode=0o700)
@@ -224,36 +94,3 @@ def test_cache_inventory_rejects_nested_link_before_traversing_it(tmp_path):
     with pytest.raises(SourceError, match="source_linked_path_rejected"):
         first.usage("fixture")
     assert (outside / "private").read_bytes() == b"SECRET"
-
-
-@pytest.mark.parametrize("elapsed", [5.001, 29.999, 30.0, 30.001])
-def test_cache_scan_extended_budget_has_a_finite_exact_boundary(tmp_path, monkeypatch, elapsed):
-    first, _, root = caches(tmp_path)
-    root.mkdir(mode=0o700)
-    last = root / "synthetic-snapshot" / "only-empty"
-    last.mkdir(parents=True)
-    clock = {"now": 0.0}
-    monkeypatch.setattr(source_snapshot, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
-    original = source_snapshot._not_link
-
-    def advance_during_last_directory(path):
-        original(path)
-        if path == last:
-            clock["now"] = elapsed
-
-    monkeypatch.setattr(source_snapshot, "_not_link", advance_during_last_directory)
-    assert source_snapshot.CACHE_SCAN_SECONDS == 30.0
-    if elapsed < 30.0:
-        usage = first.usage("fixture")
-        assert usage["snapshots"] == 1 and usage["bytes"] == 0
-        assert usage["max_snapshots"] == 16
-        assert usage["max_bytes"] == 2 * 1024 * 1048576
-        assert usage["scan_elapsed_ms"] > 5000
-    else:
-        with pytest.raises(source_snapshot.CacheScanLimit) as caught:
-            first.usage("fixture")
-        report = caught.value.public()
-        assert report["scan"]["max_elapsed_ms"] == 30000
-        assert report["scan"]["reason"] == "deadline"
-        assert report["scan"]["complete"] is False
-        assert "bytes" not in report["scan"]

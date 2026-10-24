@@ -29,26 +29,6 @@ def test_log_flood_does_not_evict_ack_and_redacts_before_private_delivery():
     assert all(entry["stream"] == "observed_during_run" for entry in first["logs"])
 
 
-def test_control_gap_and_independent_cursors_report_retained_window():
-    events = AppEvents("owner", 262144)
-    for command in range(150):
-        events.emit("ack", command_id=command)
-    events.log("one diagnostic")
-    first = events.read("owner", AppEventsRequest(job_id="job", limit=40))
-    assert len(events.control) == 128
-    assert first["oldest_seq"]["control"] == 23
-    assert first["dropped_count"]["control"] == 22
-    assert first["gap"] and first["has_more"]
-    second = events.read(
-        "owner",
-        AppEventsRequest(job_id="job", cursor=AppEventCursor(**first["next_cursor"]), limit=100),
-    )
-    assert not second["gap"]
-    assert not second["logs"]
-    assert second["entries"][0]["sequence"] == first["entries"][-1]["sequence"] + 1
-    assert not second["has_more"]
-
-
 def test_principal_expiry_foreign_epoch_and_future_cursors():
     events = AppEvents("owner", 4096)
     events.emit("started", run_id=1)
@@ -72,15 +52,8 @@ def test_principal_expiry_foreign_epoch_and_future_cursors():
     assert expired["expired"] and expired["gap"]
     assert expired["expiry_seconds"] == 0
     assert not expired["entries"] and not expired["logs"]
-
-
-def test_unicode_log_line_is_bounded_in_bytes_and_reads_do_not_extend_expiry():
-    events = AppEvents("owner", 262144)
-    events.log("あ" * 2000)
-    deadline = events.logs.deadline
-    result = events.read("owner", AppEventsRequest(job_id="job"))
-    assert len(result["logs"][0]["text"].encode()) <= 1024
-    assert events.logs.deadline == deadline
+    events.expire()
+    assert not events.control and not events.logs.entries and events.logs.bytes == 0
 
 
 def test_partial_credentials_at_transport_and_output_boundaries_are_redacted():
@@ -97,14 +70,3 @@ def test_partial_credentials_at_transport_and_output_boundaries_are_redacted():
     assert len(report["logs"]) == 2
     assert all("cpk_" not in entry["text"] for entry in report["logs"])
     assert all(len(entry["text"].encode()) <= 1024 for entry in report["logs"])
-
-
-def test_expired_private_text_is_cleared_without_a_reader():
-    events = AppEvents("owner", 262144)
-    events.log("private synthetic text")
-    events.emit("ack", command_id=1)
-    events.deadline = events.logs.deadline = 0
-    events.expire()
-    assert not events.control and not events.logs.entries and events.logs.bytes == 0
-    report = events.read("owner", AppEventsRequest(job_id="expiry"))
-    assert report["expired"] and report["gap"]

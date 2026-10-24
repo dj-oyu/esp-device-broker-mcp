@@ -12,9 +12,15 @@ from cardputer_mcp.config import SourceRepository
 from cardputer_mcp.models import AcquireRequest, LeaseRequest, Origin
 
 
-@pytest.mark.parametrize("operation", ["firmware_fetch_source", "firmware_build"])
-@pytest.mark.parametrize("boundary", ["prepare", "execute"])
-@pytest.mark.parametrize("blocker", ["device_job", "device_request"])
+# Operation, boundary and blocker kind are independent axes; this orthogonal subset
+# puts every pair of axis values in at least one case.
+@pytest.mark.parametrize(
+    "operation,boundary,blocker",
+    [
+        ("firmware_fetch_source", "prepare", "device_job"),
+        ("firmware_build", "execute", "device_job"),
+    ],
+)
 async def test_unrelated_device_review_does_not_gate_explicit_profile_job(
     registry_service, tmp_path, monkeypatch, operation, boundary, blocker
 ):

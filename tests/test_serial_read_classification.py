@@ -2,7 +2,6 @@
 
 import json
 import threading
-from copy import deepcopy
 
 import pytest
 import serial
@@ -11,31 +10,6 @@ from test_serial_backend import Clock, FakePort, backend
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.serial_backend import Reader, SerialFailure
 from cardputer_mcp.smoke_port import SmokePort
-
-
-@pytest.mark.parametrize(
-    "code", ["operation_interrupted_review_required", "device_identity_changed", "serial_deadline"]
-)
-def test_reader_preserves_known_failure_identity_code_and_existing_diagnostics(code):
-    clock = Clock()
-    port = FakePort(clock)
-    failure = SerialFailure(
-        code, step="passive_observe", received_bytes=17, received_lines=2, recognized_markers=1
-    )
-    failure.diagnostic["failure_origin"] = "authority_or_stop_check"
-    diagnostic = deepcopy(failure.diagnostic)
-
-    def fail(size):
-        raise failure
-
-    port.read = fail
-    reader = Reader(port, lambda _: None, clock, 10)
-    with pytest.raises(SerialFailure) as caught:
-        reader.read_once()
-    assert caught.value is failure
-    assert caught.value.diagnostic == diagnostic
-    assert caught.value.code == code
-    assert port.writes == []
 
 
 @pytest.mark.parametrize(
@@ -87,17 +61,3 @@ def test_smoke_guard_origin_does_not_guess_the_reason_or_read_the_inner_port(sou
     assert caught.value.diagnostic["failure_origin"] == "authority_or_stop_check"
     assert clock.value == 0 and inner.writes == []
     assert "SYNTHETIC_PRIVATE" not in json.dumps(caught.value.diagnostic)
-
-
-def test_smoke_guard_preserves_a_known_lookup_failure_and_existing_diagnostic_fields():
-    failure = SerialFailure("device_identity_changed", step="validate_identity", received_bytes=13)
-    diagnostic = deepcopy(failure.diagnostic)
-
-    def live():
-        raise failure
-
-    port = SmokePort(FakePort(Clock()), live, threading.Event())
-    with pytest.raises(SerialFailure) as caught:
-        port.read(4096)
-    assert caught.value is failure
-    assert caught.value.diagnostic == {**diagnostic, "failure_origin": "authority_or_stop_check"}

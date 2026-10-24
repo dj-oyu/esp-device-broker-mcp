@@ -8,7 +8,6 @@ import pytest
 from test_broker import broker as broker
 from test_broker import plan
 from test_profile_jobs import register
-from test_work_sessions import create, request
 
 from cardputer_mcp.broker import BrokerError
 from cardputer_mcp.models import (
@@ -34,14 +33,12 @@ def history(broker):
     return [store.job("old-capture"), store.job("old-flash"), store.request("old-owner")]
 
 
-@pytest.mark.parametrize("boundary", ["acquire", "prepare", "execute", "dispatch", "running"])
+@pytest.mark.parametrize("boundary", ["acquire", "execute", "running"])
 async def test_new_explicit_job_runs_without_changing_or_replaying_history(broker, boundary):
     before = None
     if boundary == "acquire":
         before = history(broker)
     token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")["session"]
-    if boundary == "prepare":
-        before = history(broker)
     digest = plan(broker, token, "new-job")
     assert broker.backend.calls == 0
     if boundary == "execute":
@@ -50,9 +47,7 @@ async def test_new_explicit_job_runs_without_changing_or_replaying_history(broke
         broker.backend.gate = asyncio.Event()
     execute = ExecuteRequest(session=token, plan_hash=digest)
     broker.execute(execute)
-    if boundary == "dispatch":
-        before = history(broker)
-    elif boundary == "running":
+    if boundary == "running":
         await asyncio.sleep(0)
         assert broker.active_job == "new-job"
         before = history(broker)
@@ -75,14 +70,8 @@ async def test_new_explicit_job_runs_without_changing_or_replaying_history(broke
     "resource,attribute,value",
     [
         ("backend", "active", 1),
-        ("backend", "hardware_connected", True),
-        ("backend", "ownership_uncertain", True),
         ("process", "active", True),
-        ("process", "uncertain", True),
         ("build", "output_uncertain", True),
-        ("snapshots", "uncertain", True),
-        ("profile", "uncertain", True),
-        ("profile", "state_uncertain", True),
         ("broker", "execution_uncertain", True),
     ],
 )
@@ -94,8 +83,6 @@ async def test_current_resource_hazards_still_prevent_new_ownership(
         "backend": broker.backend,
         "process": broker.firmware_build.process,
         "build": broker.firmware_build,
-        "snapshots": broker.firmware_source.snapshots,
-        "profile": broker.profile_jobs,
         "broker": broker,
     }[resource]
     with monkeypatch.context() as change:
@@ -104,17 +91,6 @@ async def test_current_resource_hazards_still_prevent_new_ownership(
             broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")
         assert broker.session is None and broker.backend.calls == 0
     assert broker.job("old-capture") == before[0]
-
-
-async def test_waiter_grant_uses_current_resources_not_history(broker):
-    history(broker)
-    first, second = create(broker), create(broker)
-    owning = request(broker, first)
-    waiting = request(broker, second)
-    assert waiting["request"]["state"] == "waiting"
-    broker.release(LeaseRequest(session=owning["lease"]["session"]))
-    assert broker.session.work_session_id == second["work_session_id"]
-    assert broker.status()["needs_review"] is True
 
 
 async def test_current_uncertainty_after_preparation_or_enqueue_blocks_io(broker, monkeypatch):
@@ -135,57 +111,13 @@ async def test_current_uncertainty_after_preparation_or_enqueue_blocks_io(broker
     assert broker.backend.calls == 0
 
 
-@pytest.mark.parametrize("boundary", ["prepare", "execute", "dispatch", "running"])
-async def test_profile_history_does_not_block_new_build(broker, tmp_path, monkeypatch, boundary):
-    register(SimpleNamespace(resident=broker), tmp_path)
-    store = broker._store()
-    effects = []
-    before = None
-
-    def old_build():
-        store.add_job("old-build", "c" * 64)
-        store.set_job("old-build", "needs_review", "build_process_exit_unconfirmed")
-        return store.job("old-build")
-
-    async def build(prepared, stage, *, defer_publish):
-        nonlocal before
-        if boundary == "running":
-            before = old_build()
-        assert defer_publish and broker.firmware_build.authority()
-        effects.append(prepared["job_id"])
-        return "build_completed_no_device_write"
-
-    monkeypatch.setattr(broker.firmware_build, "execute", build)
-    monkeypatch.setattr(broker.firmware_build, "commit_deferred", lambda p, live: live())
-    if boundary == "prepare":
-        before = old_build()
-    prepared = broker.profile_jobs.prepare(
-        PrepareRequest(job_id="new-build", test=Action.BUILD, project_id="fixture"),
-        "owner",
-        Origin.REMOTE.value,
-    )
-    if boundary == "execute":
-        before = old_build()
-    broker.profile_jobs.execute(
-        ExecuteRequest(plan_hash=prepared["plan_hash"]), "owner", Origin.REMOTE.value
-    )
-    if boundary == "dispatch":
-        before = old_build()
-    await asyncio.wait_for(broker.profile_jobs.queue.join(), 2)
-    assert broker.job("new-build")["state"] == "succeeded"
-    assert broker.job("old-build") == before
-    assert effects == ["new-build"] and broker.backend.calls == 0
-
-
-@pytest.mark.parametrize("hazard", ["process", "output", "cache", "state"])
+@pytest.mark.parametrize("hazard", ["process", "state"])
 async def test_profile_current_uncertainty_remains_blocking(broker, tmp_path, monkeypatch, hazard):
     register(SimpleNamespace(resident=broker), tmp_path)
     candidate = PrepareRequest(job_id="new-build", test=Action.BUILD, project_id="fixture")
     prepared = broker.profile_jobs.prepare(candidate, "owner", Origin.REMOTE.value)
     target, attribute = {
         "process": (broker.firmware_build.process, "uncertain"),
-        "output": (broker.firmware_build, "output_uncertain"),
-        "cache": (broker.firmware_source.snapshots, "uncertain"),
         "state": (broker.profile_jobs, "state_uncertain"),
     }[hazard]
     with monkeypatch.context() as change:

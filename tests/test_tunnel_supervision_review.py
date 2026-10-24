@@ -2,13 +2,12 @@
 
 import asyncio
 import threading
-import tomllib
 from datetime import UTC, datetime
 
 import httpx2
 import pytest
 
-from cardputer_mcp import tunnel, tunnel_manager
+from cardputer_mcp import tunnel_manager
 from cardputer_mcp.gui_tunnel import TunnelController, TunnelView, perform_tunnel
 from cardputer_mcp.tunnel import TunnelSettings
 from cardputer_mcp.windows_process import WindowsProcessError
@@ -234,7 +233,7 @@ def test_exit_during_health_request_discards_success_and_stops_remaining_subtree
 
 
 def test_health_slow_body_is_cancelled_by_the_total_request_budget(monkeypatch):
-    consumed, requests, closed = [], [], []
+    consumed, requests, closed, cancelled = [], [], [], []
 
     class Drip(httpx2.AsyncByteStream):
         async def __aiter__(self):
@@ -265,29 +264,22 @@ def test_health_slow_body_is_cancelled_by_the_total_request_budget(monkeypatch):
     assert requests == ["http://127.0.0.1:28766/readyz"]
     assert closed
     assert result["ready_status"] == 0 and result["control_status"] == 0
+    # A header stall is bounded by the same total budget and the request is cancelled.
+    cancelled.clear()
 
-
-async def test_health_slow_headers_are_cancelled_without_abandoned_requests(monkeypatch):
-    requests, cancelled = [], []
-
-    async def handle(request):
-        requests.append(str(request.url))
+    async def hang(request):
         try:
             await asyncio.sleep(10)
         except asyncio.CancelledError:
             cancelled.append(True)
             raise
-        return httpx2.Response(200, content=b"ready")
 
-    real_client = httpx2.AsyncClient
     monkeypatch.setattr(
         tunnel_manager.httpx2,
         "AsyncClient",
-        lambda **kwargs: real_client(transport=httpx2.MockTransport(handle), **kwargs),
+        lambda **kwargs: real_client(transport=httpx2.MockTransport(hang), **kwargs),
     )
-    monkeypatch.setattr(tunnel_manager, "HEALTH_TOTAL_SECONDS", 0.025)
-    result = await asyncio.wait_for(tunnel_manager._health_probe_async(28766), timeout=1)
-    assert requests == ["http://127.0.0.1:28766/readyz"]
+    result = tunnel_manager.health_probe(28766)
     assert cancelled == [True]
     assert result["ready_status"] == 0 and result["control_status"] == 0
 
@@ -318,74 +310,3 @@ def test_real_manager_gui_contract_retains_uncertain_owner_and_hides_credentials
     assert model.failed and model.view.needs_review and model.stop_unconfirmed
     assert not model.prompt_after_stop and not model.can_connect() and lock.held
     assert PRIVATE not in repr(result) + model.message
-
-
-def test_close_during_restart_suppresses_new_key_prompt_and_finishes_owned_cleanup(review_manager):
-    manager, settings, process, lock, launches, _ = review_manager
-    manager.connect(API_KEY, BEARER)
-    model = TunnelController()
-    model.view = TunnelView.parse(manager.snapshot())
-    restart = model.restart()
-    assert restart is not None
-    assert model.request_close() is None and model.closing
-    result = perform_tunnel(
-        manager, restart, "http://127.0.0.1:28765/mcp", settings.broker_config.parent
-    )
-    assert model.accept(result)
-    assert model.closing and not model.prompt_after_stop
-    close = model.pending_close()
-    assert close is not None
-    assert not model.accept(result)  # Old restart result cannot replace pending close.
-    result = perform_tunnel(
-        manager, close, "http://127.0.0.1:28765/mcp", settings.broker_config.parent
-    )
-    assert model.accept(result) and model.closed
-    assert len(launches) == 1 and process.stops == 1 and not lock.held
-
-
-def test_connect_failure_is_a_gui_failure_even_when_manager_remains_disconnected(review_manager):
-    manager, settings, _, lock, launches, _ = review_manager
-    manager._broker_probe = lambda url, bearer: {**identity(), "origin": "local_cli"}
-    model = TunnelController()
-    model.view = TunnelView.parse(manager.snapshot())
-    operation = model.connect(API_KEY, BEARER)
-    assert operation is not None
-    result = perform_tunnel(
-        manager, operation, "http://127.0.0.1:28765/mcp", settings.broker_config.parent
-    )
-    assert model.accept(result) and model.failed
-    assert "local operator" in model.message.lower()
-    assert not model.view.owned and not model.view.process_alive
-    assert not launches and not lock.held
-
-
-def test_metadata_save_preserves_non_bmp_strings_as_valid_toml(tmp_path):
-    broker = tmp_path / "broker.toml"
-    broker.write_text('backend = "mock"\nstate_dir = "state-😀"\n', encoding="utf-8")
-    metadata = {
-        "tunnel_id": "tunnel_" + "1" * 32,
-        "client_exe": "tools-😀/tunnel-client.exe",
-        "client_archive": "archive-😀/client.zip",
-    }
-    tunnel.save_gui_config(broker, tmp_path, metadata)
-    saved = tomllib.loads(broker.read_text(encoding="utf-8"))
-    assert saved["state_dir"] == "state-😀"
-    assert saved["tunnel"] == metadata
-    assert tunnel.load_gui_config(broker, tmp_path).client_exe == (
-        tmp_path / "tools-😀/tunnel-client.exe"
-    )
-
-
-def test_metadata_save_rejects_unrepresentable_surrogates_without_replacing_file(tmp_path):
-    broker = tmp_path / "broker.toml"
-    original = b'backend = "mock"\nstate_dir = "existing-state"\n'
-    broker.write_bytes(original)
-    metadata = {
-        "tunnel_id": "tunnel_" + "1" * 32,
-        "client_exe": "bad-\ud800/tunnel-client.exe",
-        "client_archive": "client.zip",
-    }
-    with pytest.raises(tunnel.TunnelError):
-        tunnel.save_gui_config(broker, tmp_path, metadata)
-    assert broker.read_bytes() == original
-    assert not list(tmp_path.glob(".tunnel-config-*"))

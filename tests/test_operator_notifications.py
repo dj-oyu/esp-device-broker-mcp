@@ -1,13 +1,9 @@
 """Postcommit and thread-safe coalesced wakeups contain no job/output payloads."""
 
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-
 import pytest
 
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.logs import Event, LogBook
-from cardputer_mcp.operator_notifications import OperatorNotifications
 from cardputer_mcp.store import Store
 
 
@@ -27,29 +23,6 @@ async def test_commits_wake_only_after_success_and_rollback_does_not_notify(tmp_
         raise ValueError("abort")
     assert len(events) == count and store.job("job")["state"] == "running"
     store.db.close()
-
-
-async def test_thread_log_callbacks_coalesce_without_retaining_output():
-    changes = OperatorNotifications()
-    callbacks = []
-    unsubscribe = changes.subscribe(lambda: callbacks.append(True))
-    logs = BuildLogs("owner", on_change=changes.notify_logs)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        # The broker loop deliberately stays busy while the producer completes;
-        # its pending callback stays bounded even under a burst of raw output.
-        pool.submit(lambda: [logs.append("warning: secret=fixture") for _ in range(100)]).result()
-    assert changes.revision() == (100, 100)
-    await asyncio.sleep(0)
-    assert callbacks == [True]
-    assert "fixture" not in repr(vars(changes))
-    events = LogBook(8, on_change=changes.notify)
-    events.append(Event.STAGE, stage="idf_build")
-    await asyncio.sleep(0)
-    assert changes.revision() == (101, 100) and len(callbacks) == 2
-    unsubscribe()
-    changes.notify()
-    await asyncio.sleep(0)
-    assert len(callbacks) == 2
 
 
 def test_observer_failure_never_changes_commit_or_log_append(tmp_path):

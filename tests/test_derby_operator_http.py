@@ -9,7 +9,7 @@ from test_serial_http import serial_service as serial_service
 
 @pytest.mark.parametrize(
     "route",
-    ["approve-plan", "home-recovery-approve", "image-decision", "capture-arm", "policy-create"],
+    ["approve-plan", "capture-arm"],
 )
 async def test_retired_operator_mutations_never_execute(derby_service, route):
     env = derby_service

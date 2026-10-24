@@ -42,13 +42,7 @@ def _literal_codes() -> set[str]:
 def test_every_request_path_reason_is_classified():
     unclassified = _literal_codes() - PUBLIC_REASON_CODES - SUPPRESSED_REASON_CODES
     assert not unclassified, sorted(unclassified)
-
-
-def test_public_and_suppressed_do_not_overlap():
     assert not PUBLIC_REASON_CODES & SUPPRESSED_REASON_CODES
-
-
-def test_public_codes_are_plain_snake_case_without_values():
     for code in PUBLIC_REASON_CODES | SUPPRESSED_REASON_CODES:
         assert re.fullmatch(r"[a-z][a-z0-9_]{2,80}", code)
 
@@ -60,16 +54,9 @@ def _raiser(exc: Exception):
     return call
 
 
-def test_registered_reason_is_returned():
-    assert _result(_raiser(ValueError("source_fetch_busy"))) == {
-        "ok": False,
-        "error": "source_fetch_busy",
-    }
-
-
-@pytest.mark.parametrize("code", sorted(SUPPRESSED_REASON_CODES))
-def test_suppressed_reason_stays_invalid_request(code):
-    assert _result(_raiser(ValueError(code))) == {"ok": False, "error": "invalid_request"}
+def test_suppressed_reason_stays_invalid_request():
+    for code in sorted(SUPPRESSED_REASON_CODES):
+        assert _result(_raiser(ValueError(code))) == {"ok": False, "error": "invalid_request"}
 
 
 @pytest.mark.parametrize(
@@ -89,6 +76,10 @@ def test_unregistered_text_is_flattened(exc):
 
 
 def test_source_error_keeps_its_own_public_form():
+    assert _result(_raiser(ValueError("source_fetch_busy"))) == {
+        "ok": False,
+        "error": "source_fetch_busy",
+    }
     assert _result(_raiser(SourceError("source_cache_protected")))["error"] == (
         "source_cache_protected"
     )

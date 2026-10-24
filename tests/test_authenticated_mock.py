@@ -184,7 +184,7 @@ async def test_authenticated_mock_missing_environment_fails_closed(
     assert not (settings.state_dir / "runtime-auth.json").exists()
 
 
-@pytest.mark.parametrize("options", [[], ["--auth-source", "none"]])
+@pytest.mark.parametrize("options", [["--auth-source", "none"]])
 def test_cli_require_auth_needs_explicit_source(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], options: list[str]
 ) -> None:
@@ -200,9 +200,20 @@ def test_cli_require_auth_needs_explicit_source(
     run.assert_not_called()
 
 
-@pytest.mark.parametrize("source", ["environment", "file"])
+@pytest.mark.parametrize(
+    ("argv", "require_auth", "source"),
+    [
+        (["--auth-source", "environment", "serve", "--require-auth"], True, "environment"),
+        (["--auth-source", "file", "serve", "--require-auth"], True, "file"),
+        (["serve"], False, "environment"),
+    ],
+)
 def test_cli_require_auth_passes_explicit_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    require_auth: bool,
+    source: str,
 ) -> None:
     settings = Settings(state_dir=tmp_path / "state")
     create = Mock(return_value=object())
@@ -210,38 +221,17 @@ def test_cli_require_auth_passes_explicit_source(
     monkeypatch.setattr(cli, "load_settings", lambda _: settings)
     monkeypatch.setattr(cli, "create_app", create)
     monkeypatch.setattr(cli.uvicorn, "run", run)
-    monkeypatch.setattr(
-        "sys.argv", ["cardputer", "--auth-source", source, "serve", "--require-auth"]
-    )
+    monkeypatch.setattr("sys.argv", ["cardputer", *argv])
     cli.main()
     create.assert_called_once_with(
         settings,
         serial_enabled=False,
-        require_auth=True,
+        require_auth=require_auth,
         key_registry_path=None,
         auth_source=source,
     )
     run.assert_called_once()
     assert run.call_args.kwargs["proxy_headers"] is False
-
-
-def test_cli_legacy_mock_remains_unauthenticated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    settings = Settings(state_dir=tmp_path / "state")
-    create = Mock(return_value=object())
-    monkeypatch.setattr(cli, "load_settings", lambda _: settings)
-    monkeypatch.setattr(cli, "create_app", create)
-    monkeypatch.setattr(cli.uvicorn, "run", Mock())
-    monkeypatch.setattr("sys.argv", ["cardputer", "serve"])
-    cli.main()
-    create.assert_called_once_with(
-        settings,
-        serial_enabled=False,
-        require_auth=False,
-        key_registry_path=None,
-        auth_source="environment",
-    )
 
 
 async def test_status_reports_default_ingress_disabled_but_external_lifecycle_unknown(

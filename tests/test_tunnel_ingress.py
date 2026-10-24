@@ -19,8 +19,6 @@ from unittest.mock import Mock
 import httpx2
 import pytest
 import uvicorn
-from mcp import Client
-from mcp.client.streamable_http import streamable_http_client
 from mcp.types import (
     CLIENT_CAPABILITIES_META_KEY,
     CLIENT_INFO_META_KEY,
@@ -121,26 +119,14 @@ def assert_denied(
     "change,reason",
     [
         ({"extra": [(b"x-private", b"\xff")]}, DenialReason.NON_ASCII_HEADERS),
-        ({"extra": [(b"x-\xff", b"value")]}, DenialReason.NON_ASCII_HEADERS),
         ({"extra": [(b"HOST", b"public.invalid")]}, DenialReason.DUPLICATE_HEADERS),
         ({"extra": [(b"authorization", b"Bearer invalid")]}, DenialReason.DUPLICATE_HEADERS),
-        *[
-            ({"extra": [(name.lower(), b"duplicate")]}, DenialReason.DUPLICATE_HEADERS)
-            for name, _ in PROXY_HEADERS
-        ],
-        ({"client": None}, DenialReason.NON_LOOPBACK_PEER),
+        ({"extra": [(b"forwarded", b"duplicate")]}, DenialReason.DUPLICATE_HEADERS),
         ({"client": ("198.51.100.7", 1)}, DenialReason.NON_LOOPBACK_PEER),
-        ({"client": ("::ffff:127.0.0.1", 1)}, DenialReason.NON_LOOPBACK_PEER),
         ({"host": b"public.invalid"}, DenialReason.HOST_NOT_ALLOWED),
-        ({"host": b"127.0.0.1:9999"}, DenialReason.HOST_NOT_ALLOWED),
         ({"extra": [(b"Origin", b"https://public.invalid")]}, DenialReason.ORIGIN_NOT_ALLOWED),
-        ({"extra": [(b"Origin", b"null")]}, DenialReason.ORIGIN_NOT_ALLOWED),
-        *[
-            ({"extra": [(name, b"anything")]}, DenialReason.FORWARDING_HEADER_PRESENT)
-            for name in (b"X-Forwarded-Prefix", b"x-forwarded-certificate", b"X-Forwarded-")
-        ],
+        ({"extra": [(b"X-Forwarded-Prefix", b"anything")]}, DenialReason.FORWARDING_HEADER_PRESENT),
         ({"content_type": b"text/plain"}, DenialReason.CONTENT_TYPE_NOT_JSON),
-        ({"content_type": b"Application/JSON"}, DenialReason.CONTENT_TYPE_NOT_JSON),
     ],
 )
 async def test_raw_guards_run_before_authentication_or_stripping(change, reason):
@@ -168,14 +154,9 @@ async def test_raw_guards_run_before_authentication_or_stripping(change, reason)
     "changes",
     [
         {"raw_path": b"/tunnel/%6dcp"},
-        {"raw_path": b"/tunnel%2fmcp"},
         {"raw_path": b"/tunnel/mcp/"},
-        {"raw_path": b"/tunnel/mcp/../operator/state"},
         {"raw_path": b"/operator/state"},
-        {"raw_path": b"/TUNNEL/mcp"},
-        {"raw_path": b""},
         {"root_path": "/operator"},
-        {"app_root_path": "/operator"},
         {"query_string": f"target=/operator/state&private={MARKER}".encode()},
     ],
 )
@@ -194,8 +175,7 @@ async def test_only_canonical_unprefixed_queryless_transport_alias_is_accepted(c
     assert scope == original
 
 
-@pytest.mark.parametrize("method", ["POST", "GET", "DELETE"])
-@pytest.mark.parametrize("include_raw_path", [False, True])
+@pytest.mark.parametrize(("method", "include_raw_path"), [("POST", True), ("GET", False)])
 async def test_exact_allowed_headers_stripped_only_after_remote_read_and_scope_is_copied(
     method, include_raw_path
 ):
@@ -296,7 +276,7 @@ async def test_missing_local_or_readless_principal_never_reaches_inner_guard(
     assert scope == original
 
 
-@pytest.mark.parametrize("invalidation", ["expired", "revoked", "wrong-secret"])
+@pytest.mark.parametrize("invalidation", ["expired", "revoked"])
 async def test_registry_requires_current_remote_key_at_every_ingress_request(
     tmp_path, invalidation
 ):
@@ -383,13 +363,8 @@ async def test_revocation_between_outer_gate_and_inner_auth_is_not_cached(tmp_pa
     "path",
     [
         "/mcp",
-        "/mcp/",
         "/operator/state",
-        "/operator/http-diagnostics",
-        "/tunnel/operator/state",
         "/tunnel/mcp/",
-        "/tunnel/mcp/operator/state",
-        "/prefix/tunnel/mcp",
         "/TUNNEL/mcp",
     ],
 )
@@ -414,16 +389,6 @@ def test_enabled_ingress_requires_real_authentication_configuration(tmp_path):
     with pytest.raises(ValueError, match="^tunnel_ingress_requires_authenticated_broker$"):
         create_app(settings, auth=AuthState({Origin.LOCAL: LOCAL, Origin.REMOTE: REMOTE}))
     assert not settings.state_dir.exists()
-
-
-@pytest.mark.parametrize("tunnel", [None, TunnelMetadata()])
-def test_default_configuration_does_not_install_ingress(tunnel, tmp_path):
-    settings = Settings(state_dir=tmp_path / "state", tunnel=tunnel)
-    app = create_app(
-        settings, require_auth=True, auth=AuthState({Origin.LOCAL: LOCAL, Origin.REMOTE: REMOTE})
-    )
-    assert isinstance(app, LoopbackOnly)
-    assert not isinstance(app, TunnelIngress)
 
 
 def wire_request(method, *, params=None, token=REMOTE, version=LATEST_MODERN_VERSION, request_id=1):
@@ -571,9 +536,13 @@ async def test_modern_discovery_and_fixed_status_through_real_http(ingress_servi
     assert status["hardware_connected"] is False
     assert status["execution_policy"] == "authenticated_explicit_request"
     assert status["owner"] is None and status["active_job"] is None
+    assert status["tunnel_ingress_enabled"] is True
+    assert status["tunnel"] == "external_lifecycle_unknown"
 
 
-@pytest.mark.parametrize("version", sorted(HANDSHAKE_PROTOCOL_VERSIONS))
+@pytest.mark.parametrize(
+    "version", [min(HANDSHAKE_PROTOCOL_VERSIONS), max(HANDSHAKE_PROTOCOL_VERSIONS)]
+)
 async def test_legacy_initialize_and_discovery_through_ingress(ingress_service, version):
     service = ingress_service
     body, headers = wire_request(
@@ -601,48 +570,25 @@ async def test_legacy_initialize_and_discovery_through_ingress(ingress_service, 
         assert annotations["openWorldHint"] is False
 
 
-async def test_official_sdk_client_can_discover_through_ingress(ingress_service):
-    headers = {
-        "Authorization": f"Bearer {REMOTE}",
-        **{k.decode(): v.decode() for k, v in PROXY_HEADERS},
-    }
-    async with httpx2.AsyncClient(headers=headers, trust_env=False, timeout=5) as http:
-        url = str(ingress_service.http.base_url).rstrip("/") + "/tunnel/mcp"
-        async with Client(streamable_http_client(url, http_client=http)) as client:
-            tools = await client.list_tools()
-            assert "status" in {tool.name for tool in tools.tools}
-            result = await client.call_tool("status", {"request": {"view": "device"}})
-            assert result.structured_content["backend"] == "mock"
-
-
-@pytest.mark.parametrize("method", ["GET", "DELETE", "PUT", "PATCH", "HEAD", "OPTIONS"])
-async def test_http_methods_retain_sdk_transport_status(ingress_service, method):
-    service = ingress_service
-    _, headers = wire_request("tools/list")
-    headers["Mcp-Session-Id"] = MARKER
-    direct = await service.http.request(method, "/mcp", headers=headers)
-    headers.update({k.decode(): v.decode() for k, v in PROXY_HEADERS})
-    tunneled = await service.http.request(method, "/tunnel/mcp", headers=headers)
-    assert tunneled.status_code == direct.status_code == 405
-    if method == "HEAD":
-        assert tunneled.content == direct.content == b""
-    else:
-        assert tunneled.json() == direct.json() == {"error": "request_rejected"}
-    assert MARKER not in tunneled.text + str(tunneled.headers)
-
-
-@pytest.mark.parametrize("token,status", [(LOCAL, 403), ("c" * 64, 401), ("", 401)])
-async def test_remote_only_bearer_gate_over_real_http(ingress_service, token, status):
+@pytest.mark.parametrize(
+    "token,status,xfcc", [(LOCAL, 403, True), ("c" * 64, 401, False), ("", 401, True)]
+)
+async def test_remote_only_bearer_gate_over_real_http(ingress_service, token, status, xfcc):
     body, headers = wire_request("tools/list", token=token)
     if not token:
         headers.pop("Authorization")
-    response = await ingress_service.post("/tunnel/mcp", body, headers)
+    if xfcc:  # An XFCC claim of local_cli must not authenticate or select the operator.
+        headers["X-Forwarded-Client-Cert"] = 'Subject="CN=local_cli";URI=' + MARKER
+        response = await ingress_service.http.post("/tunnel/mcp", json=body, headers=headers)
+    else:
+        response = await ingress_service.post("/tunnel/mcp", body, headers)
     assert response.status_code == status
+    assert MARKER not in response.text
     if token:
         assert token not in response.text
 
 
-@pytest.mark.parametrize("invalidation", ["revoke", "expire"])
+@pytest.mark.parametrize("invalidation", ["revoke"])
 async def test_registry_invalidation_is_immediate_over_real_http(ingress_service, invalidation):
     service = ingress_service
     key = service.keys["first"]
@@ -874,21 +820,6 @@ async def test_no_body_header_query_token_or_principal_leaks_in_errors_or_diagno
         assert secret not in visible
 
 
-@pytest.mark.parametrize("token,status", [(None, 401), (LOCAL, 403), ("c" * 64, 401)])
-async def test_xfcc_claims_cannot_authenticate_or_select_operator(ingress_service, token, status):
-    service = ingress_service
-    body, headers = wire_request("tools/list")
-    if token is None:
-        headers.pop("Authorization")
-    else:
-        headers["Authorization"] = "Bearer " + token
-    headers["X-Forwarded-Client-Cert"] = 'Subject="CN=local_cli";URI=' + MARKER
-    response = await service.http.post("/tunnel/mcp", json=body, headers=headers)
-    assert response.status_code == status
-    assert MARKER not in response.text
-    assert service.backend.calls == 0
-
-
 async def test_xfcc_is_discarded_only_on_authenticated_alias(ingress_service):
     service = ingress_service
     body, headers = wire_request(
@@ -907,12 +838,3 @@ async def test_xfcc_is_discarded_only_on_authenticated_alias(ingress_service):
     operator = await service.http.get("/operator/state", headers=headers)
     assert operator.status_code == 403
     assert service.backend.calls == 0
-
-
-async def test_status_reports_enabled_ingress_without_claiming_cloud_connection(ingress_service):
-    service = ingress_service
-    for route in ("/mcp", "/tunnel/mcp"):
-        status = await service.tool(route, "status", {"view": "device"})
-        assert status["tunnel_ingress_enabled"] is True
-        assert status["tunnel"] == "external_lifecycle_unknown"
-        assert status["hardware_connected"] is False

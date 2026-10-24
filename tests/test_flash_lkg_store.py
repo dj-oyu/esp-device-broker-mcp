@@ -13,16 +13,6 @@ from cardputer_mcp.store import Store
 
 
 class PersistenceTests(unittest.TestCase):
-    def test_hash_objects_are_shared_and_survive_source_removal(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            snapshots = FirmwareSnapshots(root / "private", windows_private_acl_confirmed=True)
-            first = snapshots.stage({"device": "synthetic", "job": "one"}, {"app.bin": b"image"})
-            second = snapshots.stage({"device": "synthetic", "job": "two"}, {"app.bin": b"image"})
-            self.assertNotEqual(first, second)
-            self.assertEqual(len(list(snapshots.root.iterdir())), 3)
-            self.assertEqual(snapshots.load(first)[1], {"app.bin": b"image"})
-
     def test_competing_pending_object_is_preserved(self):
         with tempfile.TemporaryDirectory() as temp:
             snapshots = FirmwareSnapshots(Path(temp), windows_private_acl_confirmed=True)

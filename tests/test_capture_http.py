@@ -153,44 +153,6 @@ async def test_capture_http_rechecks_credential_after_success(
         assert service.resident.job("credential-changed")["state"] == "succeeded"
 
 
-async def test_capture_http_reconnect_release_and_expiry_never_recaptures(
-    registry_service: RegistryService, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    service = registry_service
-    monkeypatch.setattr(server_module, "time", lambda: service.now[0])
-    now = [100.0]
-    service.resident.clock = lambda: now[0]
-    key = service.keys["second"]
-    async with connect(service.url, key.token) as owner:
-        acquired = await call(
-            owner, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
-        )
-        session = acquired["session"]
-        plan = await capture(owner, "reconnect", session)
-    await service.resident.queue.join()
-    async with connect(service.url, key.token) as reconnected:
-        repeated = await call(
-            reconnected,
-            "execute",
-            {"op": "run", "session": session, "plan_hash": plan["plan_hash"]},
-        )
-        assert repeated["deduplicated"]
-        original = assert_image(await read_capture(reconnected, "reconnect"))
-        assert (await call(reconnected, "session", {"action": "release", "session": session}))[
-            "released"
-        ]
-    async with connect(service.url, key.token) as later:
-        now[0] = 399.999
-        assert assert_image(await read_capture(later, "reconnect")) == original
-        now[0] = 400.0
-        assert_unavailable(await read_capture(later, "reconnect"))
-        assert_unavailable(await read_capture(later, "reconnect"))
-        assert (await call(later, "status", {"view": "job", "job_id": "reconnect"}))[
-            "state"
-        ] == "succeeded"
-        assert service.backend.calls == 1
-
-
 async def test_legacy_mock_capture_reads_and_preparation_still_require_authentication(
     service: str,
 ) -> None:

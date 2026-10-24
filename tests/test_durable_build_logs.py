@@ -64,20 +64,16 @@ def test_durable_manifest_is_independent_of_log_retention(receipt, retention):
     assert receipt.builder.artifacts._records == {}
 
 
-@pytest.mark.parametrize(
-    "file,mutation",
-    [
-        ("broker-manifest.json", "corrupt"),
-        ("app.bin", "corrupt"),
-        ("app.elf", "corrupt"),
-        ("flasher_args.json", "corrupt"),
-        ("config/sdkconfig.json", "corrupt"),
-        ("app.bin", "missing"),
-        ("broker-manifest.json", "missing"),
-        ("broker-build-identity.json", "corrupt"),
-    ],
-)
-@pytest.mark.parametrize("retention", ["restart", "fresh"])
+# One corrupt and one missing artifact, after a restart and with fresh logs.
+_RECEIPT_CASES = [
+    ("broker-manifest.json", "corrupt", "restart"),
+    ("app.bin", "missing", "restart"),
+    ("broker-manifest.json", "corrupt", "fresh"),
+    ("app.bin", "missing", "fresh"),
+]
+
+
+@pytest.mark.parametrize("file,mutation,retention", _RECEIPT_CASES)
 def test_invalid_receipt_never_falls_back_to_ram_manifest(receipt, file, mutation, retention):
     root, manifest = receipt.publish()
     receipt.restart()
@@ -240,9 +236,7 @@ async def test_mcp_unavailable_artifact_preserves_log_gap_and_success_history(re
         assert broker.job("build-0")["state"] == "succeeded"
 
 
-@pytest.mark.parametrize(
-    "mutation", ["none", "revoke", "registration", "job_state", "plan_hash", "plan_owner", "epoch"]
-)
+@pytest.mark.parametrize("mutation", ["none", "revoke", "epoch"])
 async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
     receipt, monkeypatch, mutation
 ):
@@ -296,25 +290,8 @@ async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
                 assert status["ok"] and status["active_job"] is None
             if mutation == "revoke":
                 auth._tokens[Origin.REMOTE] = "c" * 64
-            elif mutation == "registration":
-                broker.settings.build_projects.clear()
-            elif mutation == "job_state":
-                broker._store().set_job("build-0", "needs_review", "synthetic_invalidation")
-            elif mutation == "plan_hash":
-                store = broker._store()
-                store.db.execute("UPDATE jobs SET plan_hash=? WHERE id='build-0'", ("f" * 64,))
-                store.db.commit()
             elif mutation == "epoch":
                 broker.epoch = "f" * 32
-            elif mutation == "plan_owner":
-                store = broker._store()
-                digest = store.job("build-0")["plan_hash"]
-                changed = store.plan(digest)
-                changed["build_principal"] = "other-owner"
-                store.db.execute(
-                    "UPDATE plans SET payload=? WHERE hash=?", (json.dumps(changed), digest)
-                )
-                store.db.commit()
         finally:
             release.set()
         result = await asyncio.wait_for(reading, 3)

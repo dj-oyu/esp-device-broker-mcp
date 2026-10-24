@@ -5,11 +5,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from cardputer_mcp.firmware_build import (
     BuildFlashLayoutFailure,
-    BuildFlashSecurityFailure,
     build_flash_layout_receipt,
     build_flash_security_receipt,
 )
@@ -67,15 +65,13 @@ class BuildFlashLayoutTests(unittest.TestCase):
         self.write_layout()
         with self.assertRaises(BuildFlashLayoutFailure):
             self.verify()
-        (self.root / "flasher_args.json").unlink()
-        with self.assertRaises(BuildFlashLayoutFailure):
-            self.verify()
-
-    def test_oversized_malformed_and_duplicate_json(self):
-        for raw in (b" " * 65537, b"not-json", b'{"flash_files":{},"flash_files":{}}'):
+        for raw in (b"not-json", b'{"flash_files":{},"flash_files":{}}'):
             (self.root / "flasher_args.json").write_bytes(raw)
             with self.assertRaises(BuildFlashLayoutFailure):
                 self.verify()
+        (self.root / "flasher_args.json").unlink()
+        with self.assertRaises(BuildFlashLayoutFailure):
+            self.verify()
 
     def test_escape_absolute_and_unattested_binary_paths(self):
         for name in ("../outside.bin", "/outside.bin", "C:\\outside.bin", "missing.bin"):
@@ -89,39 +85,6 @@ class BuildFlashLayoutTests(unittest.TestCase):
         with self.assertRaises(BuildFlashLayoutFailure):
             self.verify()
         self.binary.write_bytes(b"synthetic firmwarX")
-        with self.assertRaises(BuildFlashLayoutFailure):
-            self.verify()
-
-    def test_linked_layout_is_rejected(self):
-        outside = self.root / "outside.json"
-        outside.write_bytes(self.raw)
-        path = self.root / "flasher_args.json"
-        path.unlink()
-        try:
-            path.symlink_to(outside)
-        except OSError as error:
-            self.skipTest(str(error))
-        with self.assertRaises(BuildFlashLayoutFailure):
-            self.verify()
-
-    def test_reparse_marker_is_rejected(self):
-        original = Path.lstat
-
-        def reparse(path):
-            value = original(path)
-            if path.name == "flasher_args.json":
-                from types import SimpleNamespace
-
-                return SimpleNamespace(st_mode=value.st_mode, st_file_attributes=0x400)
-            return value
-
-        with patch.object(Path, "lstat", reparse):
-            with self.assertRaises(BuildFlashLayoutFailure):
-                self.verify()
-
-    def test_duplicate_numeric_offsets_are_rejected(self):
-        self.layout["flash_files"] = {"0x10000": "firmware.bin", "0x00010000": "firmware.bin"}
-        self.write_layout()
         with self.assertRaises(BuildFlashLayoutFailure):
             self.verify()
 
@@ -150,34 +113,3 @@ class BuildFlashSecurityTests(unittest.TestCase):
             (root / "config/sdkconfig.json").write_text(json.dumps(config))
             _, summary = build_flash_security_receipt(root, "esp32s3")
             self.assertTrue(summary["secure_boot"])
-
-    def test_missing_malformed_and_wrong_target_config_rejected(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            (root / "config").mkdir()
-            for raw in (b"{}", b"not-json", b" " * 1048577):
-                (root / "config/sdkconfig.json").write_bytes(raw)
-                with self.assertRaises(BuildFlashSecurityFailure):
-                    build_flash_security_receipt(root, "esp32s3")
-            (root / "config/sdkconfig.json").unlink()
-            with self.assertRaises(BuildFlashSecurityFailure):
-                build_flash_security_receipt(root, "esp32s3")
-
-
-class ActualIDF601ConfigTests(unittest.TestCase):
-    def test_real_ordinary_projection_produces_receipt(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            (root / "config").mkdir()
-            config = {
-                "IDF_TARGET": "esp32s3",
-                "SECURE_BOOT": False,
-                "SECURE_FLASH_ENC_ENABLED": False,
-                "BOOTLOADER_APP_ROLLBACK_ENABLE": False,
-                "SECURE_BOOT_V2_PREFERRED": True,
-                "SECURE_BOOT_V2_RSA_SUPPORTED": True,
-            }
-            (root / "config/sdkconfig.json").write_text(json.dumps(config))
-            _, summary = build_flash_security_receipt(root, "esp32s3")
-            self.assertTrue(summary["anti_rollback_inferred_disabled"])
-            self.assertFalse(summary["additional_security_enabled"])

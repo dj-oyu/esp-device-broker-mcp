@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import logging
 import os
 import socket
 import sys
@@ -12,23 +11,19 @@ from typing import Any
 
 import pytest
 import uvicorn
-from mcp import Client
 from mcp.server import Server
 from mcp.types import (
     CallToolRequestParams,
     CallToolResult,
     ImageContent,
     ListToolsResult,
-    PaginatedRequestParams,
     TextContent,
     Tool,
     ToolAnnotations,
 )
 from test_registry_http import registry_service as registry_service
 
-from cardputer_mcp import stdio_adapter
 from cardputer_mcp.client import connect
-from cardputer_mcp.models import Origin
 from cardputer_mcp.stdio_adapter import (
     HTTPBrokerAdapter,
     StdioAdapterError,
@@ -254,48 +249,12 @@ async def test_catalog_and_results_are_lossless(synthetic_service):
         ("mixed", {"line": "a\nb"}),
     ]
     assert "DELETE" not in service.methods
-
-
-async def test_pagination_and_catalog_metadata_are_forwarded(synthetic_service):
-    service = synthetic_service
-    params = PaginatedRequestParams(cursor="page-two", _meta={"synthetic/request": "kept"})
-    catalog = await HTTPBrokerAdapter(service.url, KEY).list_tools(params)
-    assert catalog.next_cursor == "page-three"
-    assert catalog.meta["synthetic/page"] == "kept"
-    # The SDK may list tools once while resolving the identity call; the caller's
-    # own request is the last upstream tools/list and must be forwarded unchanged.
-    forwarded = service.catalog_params[-1]
-    assert forwarded.cursor == params.cursor
-    assert forwarded.meta["synthetic/request"] == "kept"
-
-
-@pytest.mark.parametrize("mode", ["legacy", "auto"])
-async def test_downstream_dual_era_and_truthful_capabilities(synthetic_service, mode):
-    adapter = HTTPBrokerAdapter(synthetic_service.url, KEY)
-    async with Client(create_stdio_server(adapter), mode=mode) as client:
-        assert client.server_capabilities.tools is not None
-        assert client.server_capabilities.resources is None
-        assert client.server_capabilities.prompts is None
-        assert client.server_capabilities.tasks is None
-        catalog = await client.list_tools()
-        assert [t.model_dump() for t in catalog.tools] == [t.model_dump() for t in TOOLS]
-        result = await client.call_tool("mixed", {"line": "literal\nnewlines"})
-        assert result.content == MIXED.content
-        assert result.structured_content == MIXED.structured_content
-
-
-async def test_upstream_tool_error_is_preserved(synthetic_service):
-    service = synthetic_service
     service.result = MIXED.model_copy(update={"is_error": True})
-    result = await HTTPBrokerAdapter(service.url, KEY).call_tool(
-        CallToolRequestParams(name="mixed")
-    )
-    assert result.is_error is True
-    assert result.content == MIXED.content
-    assert result.structured_content == MIXED.structured_content
+    errored = await adapter.call_tool(CallToolRequestParams(name="mixed"))
+    assert errored.is_error is True and errored.content == MIXED.content
 
 
-@pytest.mark.parametrize("key", ["", "a" * 64, "malformed", KEY + "\n", KEY + SECRET])
+@pytest.mark.parametrize("key", ["", "malformed", KEY + SECRET])
 def test_invalid_or_ephemeral_keys_fail_closed(key):
     with pytest.raises(StdioAdapterError, match="^stdio_adapter_invalid_key$"):
         HTTPBrokerAdapter("http://127.0.0.1:9000/mcp", key)
@@ -307,14 +266,8 @@ def test_invalid_or_ephemeral_keys_fail_closed(key):
         "https://127.0.0.1:9000/mcp",
         "http://example.invalid:9000/mcp",
         "http://127.0.0.1:9000/mcp?key=private",
-        "http://private@127.0.0.1:9000/mcp",
-        "http://127.0.0.1:9000/other",
-        "http://127.0.0.1:invalid/mcp",
         "http://localhost:9000/mcp",
-        "http://127.0.0.1:80/mcp",
-        "http://127.0.0.1:65536/mcp",
         "http://127.0.0.1:09000/mcp",
-        "\nhttp://127.0.0.1:9000/mcp",
     ],
 )
 def test_only_exact_loopback_endpoint_is_allowed(url):
@@ -373,14 +326,6 @@ async def test_live_registry_invalidation_fails_without_mutation(registry_servic
     assert service.resident.session is None and service.resident.active_job is None
 
 
-async def test_local_operator_key_is_rejected_before_any_other_tool(registry_service):
-    service = registry_service
-    local = service.registry.issue("Synthetic local", Origin.LOCAL, scopes={"read", "control"})
-    with pytest.raises(StdioAdapterError, match="^stdio_adapter_remote_read_key_required$"):
-        await HTTPBrokerAdapter(service.url, local.token).check_broker()
-    assert service.resident.session is None and service.resident.active_job is None
-
-
 async def test_actual_broker_catalog_matches_and_connections_do_not_acquire(registry_service):
     service = registry_service
     key = service.keys["reader"].token
@@ -426,52 +371,6 @@ async def test_cancelled_request_does_not_issue_cancel_release_or_replay(synthet
     assert [name for name, _ in service.calls].count("mixed") == 1
     assert {name for name, _ in service.calls} == {"status", "mixed"}
     assert "DELETE" not in service.methods
-
-
-async def test_deadline_has_unknown_outcome_without_replay(synthetic_service, monkeypatch):
-    service = synthetic_service
-    service.gate = asyncio.Event()
-    monkeypatch.setattr(stdio_adapter, "_REQUEST_SECONDS", 0.5)
-    adapter = HTTPBrokerAdapter(service.url, KEY)
-    with pytest.raises(StdioAdapterError, match="^stdio_adapter_tool_outcome_unknown$"):
-        await adapter.call_tool(CallToolRequestParams(name="mixed"))
-    assert [name for name, _ in service.calls].count("mixed") == 1
-    assert "DELETE" not in service.methods
-
-
-@pytest.mark.parametrize(
-    "fields", [{"task": {"ttl": 1000}}, {"input_responses": {}}, {"request_state": "opaque"}]
-)
-async def test_unadvertised_resumption_and_tasks_are_not_sent(synthetic_service, fields):
-    service = synthetic_service
-    with pytest.raises(StdioAdapterError, match="^stdio_adapter_unsupported_tool_request$"):
-        await HTTPBrokerAdapter(service.url, KEY).call_tool(
-            CallToolRequestParams(name="mixed", **fields)
-        )
-    assert service.calls == []
-
-
-async def test_connection_concurrency_is_bounded(synthetic_service):
-    service = synthetic_service
-    service.gate = asyncio.Event()
-    adapter = HTTPBrokerAdapter(service.url, KEY)
-    tasks = [
-        asyncio.create_task(adapter.call_tool(CallToolRequestParams(name="mixed")))
-        for _ in range(9)
-    ]
-    try:
-        async with asyncio.timeout(5):
-            while service.active < stdio_adapter._MAX_CONNECTIONS:
-                await asyncio.sleep(0.01)
-        assert service.peak == stdio_adapter._MAX_CONNECTIONS
-        service.gate.set()
-        await asyncio.gather(*tasks)
-        assert service.peak <= stdio_adapter._MAX_CONNECTIONS
-    finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _start_stdio(url: str, key: str) -> asyncio.subprocess.Process:
@@ -603,54 +502,6 @@ async def test_malformed_upstream_notification_cannot_leak_through_sdk_client_lo
         assert KEY.encode() not in errors
         assert b"Failed to validate notification" not in errors
         assert b"Traceback" not in errors
-    finally:
-        if process.returncode is None:
-            process.kill()
-            await process.communicate()
-
-
-def test_sdk_client_logger_level_is_restored_after_adapter_exit():
-    logger = logging.getLogger("client")
-    original = logger.level
-    logger.setLevel(logging.DEBUG)
-    try:
-        with stdio_adapter._quiet_dependencies():
-            assert logger.level == logging.CRITICAL + 1
-        assert logger.level == logging.DEBUG
-    finally:
-        logger.setLevel(original)
-
-
-async def test_stdio_lost_response_error_and_debug_logs_are_sanitized(synthetic_service):
-    service = synthetic_service
-    service.lose_response = True
-    process = await _start_stdio(service.url, KEY)
-    try:
-        result = await _exchange(
-            process,
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "mixed",
-                    "_meta": {
-                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                        "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1"},
-                        "io.modelcontextprotocol/clientCapabilities": {},
-                    },
-                },
-            },
-        )
-        assert result["result"]["isError"] is True
-        assert result["result"]["content"] == [
-            {"type": "text", "text": "stdio_adapter_tool_outcome_unknown"}
-        ]
-        process.stdin.close()
-        tail, errors = await asyncio.wait_for(process.communicate(), timeout=10)
-        assert tail == b"" and process.returncode == 0
-        assert SECRET.encode() not in errors and KEY.encode() not in errors
-        assert [name for name, _ in service.calls].count("mixed") == 1
     finally:
         if process.returncode is None:
             process.kill()

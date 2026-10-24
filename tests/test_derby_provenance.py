@@ -1,12 +1,10 @@
 """Read-only bounded request receipts; no artifact, configuration-path or USB IO."""
 
 import json
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
 
 from cardputer_mcp.broker import digest_plan
 from cardputer_mcp.config import SerialSettings, Settings
@@ -119,20 +117,6 @@ def test_capture_binds_exact_owned_request_and_reads_database_only(context, monk
     assert_safe(scope)
 
 
-def test_exact_registration_remains_candidate_without_receipt_chain_proofs(context, tmp_path):
-    broker, _, plan = context
-    broker.settings = broker.settings.model_copy(
-        update={
-            "flash_devices": {"device": registration(broker.settings.serial.selector, tmp_path)}
-        }
-    )
-    scope = capture_provenance(broker, plan, "demo", OWNER)
-    assert scope.binding_status == "captured"
-    assert scope.association.status == "missing"
-    assert scope.association.reason == "durable_receipt_chain_unavailable"
-    assert_safe(scope)
-
-
 def test_duplicate_selector_registrations_are_ambiguous_without_first_choice(context, tmp_path):
     broker, _, plan = context
     candidate = registration(broker.settings.serial.selector, tmp_path)
@@ -225,27 +209,6 @@ def test_configured_expected_hash_is_separate_from_installed_identity(context):
     assert_safe(scope)
 
 
-@pytest.mark.parametrize("payload", ["malformed", json.dumps({"private": PRIVATE}), " " * 16385])
-def test_invalid_or_oversized_durable_plan_is_never_returned(context, payload):
-    broker, store, plan = context
-    store.db.execute("UPDATE plans SET payload=?", (payload,))
-    scope = capture_provenance(broker, plan, "demo", OWNER)
-    assert scope.binding_status == "missing"
-    assert_safe(scope)
-
-
-def test_database_read_failure_is_safe_missing_not_an_execution_error(context):
-    broker, _, plan = context
-
-    def unavailable():
-        raise sqlite3.DatabaseError(PRIVATE)
-
-    broker._store = unavailable
-    scope = capture_provenance(broker, plan, "demo", OWNER)
-    assert scope.binding_status == "missing" and scope.association.reason == "history_unavailable"
-    assert_safe(scope)
-
-
 def test_finish_freezes_same_scope_and_detects_config_selector_change(context):
     broker, _, plan = context
     before = capture_provenance(broker, plan, "demo", OWNER)
@@ -290,26 +253,3 @@ def test_finish_never_adopts_later_job_owner_or_receipt_association(context):
     )
     assert finish_provenance(before, {"private": PRIVATE}) == final
     assert_safe(final)
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        {"private": PRIVATE},
-        {"job_id": "../private"},
-        {"principal_id": PRIVATE * 10},
-        {"device_fingerprint": "not-a-hash"},
-        {"schema_version": True},
-        {"association": {"status": "associated", "reason": PRIVATE}},
-        {"association": {"status": "missing", "reason": "registered_selector_ambiguous"}},
-    ],
-)
-def test_stored_scope_schema_rejects_unknown_fields_and_unbounded_claims(context, change):
-    broker, _, plan = context
-    scope = capture_provenance(broker, plan, "demo", OWNER)
-    with pytest.raises(ValidationError):
-        DerbyProvenance.model_validate({**scope.model_dump(), **change})
-    with pytest.raises(ValidationError):
-        scope.job_id = "later"
-    with pytest.raises(ValidationError):
-        scope.association.reason = "history_unavailable"

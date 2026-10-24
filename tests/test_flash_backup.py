@@ -47,13 +47,10 @@ class BackupTests(unittest.TestCase):
         self.store.save("backup-job", "principal", self.receipt, self.data)
         with self.assertRaises(FileExistsError):
             self.store.save("backup-job", "principal", self.receipt, self.data)
-
-    @unittest.skipUnless(os.name == "posix", "POSIX privacy receipt")
-    def test_relaxed_backup_permissions_are_rejected(self):
-        self.store.save("backup-job", "principal", self.receipt, self.data)
-        (self.directory / "backup-job.bin").chmod(0o644)
-        with self.assertRaisesRegex(FlashFailure, "missing_or_changed"):
-            self.store.load("backup-job", "principal")
+        if os.name == "posix":
+            (self.directory / "backup-job.bin").chmod(0o644)
+            with self.assertRaisesRegex(FlashFailure, "missing_or_changed"):
+                self.store.load("backup-job", "principal")
 
 
 if __name__ == "__main__":

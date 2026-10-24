@@ -192,6 +192,14 @@ class SourceHistoryRetentionTests(HistoryFixture, unittest.TestCase):
         old = next(item for item in sources if not self.payload(item).exists())
         with self.assertRaisesRegex(SourceError, "source_snapshot_evicted_fetch_required"):
             self.snapshots.resolve("fixture", old["source_receipt"], "owner")
+        report = resource_report(
+            self.store, "fixture", "owner", self.snapshots.inventory("fixture"), epoch="epoch"
+        )
+        rows = {row["source_receipt"]: row for row in report["owned_snapshots"]}
+        self.assertEqual(rows[old["source_receipt"]]["payload_protection_reasons"], [])
+        self.assertIn(
+            "recovery_history_evidence", rows[old["source_receipt"]]["provenance_reasons"]
+        )
         refreshed = self.fetch(int(old["commit"], 16), "refetch-old")
         self.assertEqual(refreshed["source_receipt"], old["source_receipt"])
         self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 16)
@@ -200,23 +208,6 @@ class SourceHistoryRetentionTests(HistoryFixture, unittest.TestCase):
             (self.payload(old).parent / "receipt.json").read_bytes(),
             receipts[old["source_receipt"]],
         )
-
-    def test_report_history_only_is_provenance_not_a_payload_blocker(self):
-        old, _, _ = self.publish_generation(1)
-        current, _, _ = self.publish_generation(2)
-        report = resource_report(
-            self.store, "fixture", "owner", self.snapshots.inventory("fixture"), epoch="epoch"
-        )
-        rows = {row["source_receipt"]: row for row in report["owned_snapshots"]}
-        historical = rows[old["source_receipt"]]
-        self.assertTrue(historical["payload_reclamation_candidate"])
-        self.assertEqual(historical["payload_protection_reasons"], [])
-        self.assertIn("recovery_history_evidence", historical["provenance_reasons"])
-        self.assertNotIn("recovery_history_evidence", historical["protection_reasons"])
-        self.assertEqual(
-            rows[current["source_receipt"]]["payload_protection_reasons"], ["current_lkg_evidence"]
-        )
-        self.assertEqual(report["protection_reason_counts"], {"current_lkg_evidence": 1})
 
     def test_history_source_still_protected_by_prepared_and_unfinished_jobs(self):
         old, _, _ = self.publish_generation(1)
