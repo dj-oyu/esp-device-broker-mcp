@@ -24,6 +24,7 @@ from .derby_telemetry import DerbyDiagnosticsCollector
 from .device_faults import fault_category, fault_detail
 from .device_observation import MAX_RECEIVE_BYTES, DeviceLogCollector, DeviceObservation
 from .home_line import HomeLineProbe
+from .job_logs import DeviceLogTap
 from .models import TestName
 from .ports import PortInfo, enumerate_ports, resolve_port
 from .serial_diagnostics import ReceiveDiagnostics
@@ -143,6 +144,8 @@ class Reader:
         self.receive_diagnostics = ReceiveDiagnostics()
         self.diagnostic_pending_bytes = 0
         self.local_home_probe = local_home_probe
+        # Passive durable job log tee; it only sees bytes this reader already read.
+        self.device_tap: DeviceLogTap | None = None
 
     def failure(self, code: str) -> SerialFailure:
         failure = SerialFailure(
@@ -184,6 +187,8 @@ class Reader:
             raise failure from None
         if incoming:
             self.bytes_read += len(incoming)
+            if self.device_tap is not None:
+                self.device_tap.feed(incoming)
             if self.wire_observer is not None:
                 try:
                     self.wire_observer(incoming)
@@ -339,6 +344,7 @@ class Reader:
         """Drop protocol buffers after this worker finishes, including on failure."""
         self.pending = b""
         self.lines.clear()
+        self.device_tap = None
         self.phase_observer = None
         self.wire_observer = None
         self.fixed_collector = None
@@ -466,7 +472,9 @@ RESTART_HOLD_SECONDS = 0.1
 RECONNECT_SECONDS = 8
 
 
-def observe_firmware(port: SerialPort, clock: Callable[[], float]) -> DeviceObservation:
+def observe_firmware(
+    port: SerialPort, clock: Callable[[], float], tap: DeviceLogTap | None = None
+) -> DeviceObservation:
     """Collect passive device text without interpreting it as protocol commands.
 
     Panic/fault strings and legacy markers are observations, not reasons to
@@ -489,6 +497,8 @@ def observe_firmware(port: SerialPort, clock: Callable[[], float]) -> DeviceObse
             # Bound bytes received from the driver, independently of how many
             # bytes the collector accepts before any of its tighter limits.
             received += len(incoming)
+            if tap is not None and incoming:
+                tap.feed(incoming)
             if clock() >= deadline:
                 break
             if incoming and not collector.feed(incoming):
@@ -523,6 +533,8 @@ class SerialBackend:
         self._unclosed_port: SerialPort | None = None
         self.last_closed_plan: dict[str, Any] | None = None
         self.smoke_stop = threading.Event()
+        # Set by the broker for one device job; never opens or reads anything itself.
+        self.device_log: DeviceLogTap | None = None
 
     def usb_presence(self) -> str:
         """USB enumeration only; never opens the port and never reports port identities."""
@@ -838,7 +850,7 @@ class SerialBackend:
                 raise SerialFailure("device_identity_changed", step="validate_identity")
             if test == TestName.FIRMWARE:
                 emit(test.value)
-                observation = observe_firmware(port, self.clock)
+                observation = observe_firmware(port, self.clock, self.device_log)
                 # The existing finally block must confirm close before the
                 # broker can receive any report, including an empty observation.
                 return BackendResult(
@@ -860,6 +872,7 @@ class SerialBackend:
                 ),
                 local_home_probe,
             )
+            reader.device_tap = self.device_log
             emit(test.value)
             if test == TestName.OBSERVE:
                 reader.step = "passive_observe"
@@ -1070,6 +1083,8 @@ class SerialBackend:
                         if type(incoming) is not bytes or len(incoming) > requested:
                             raise SerialFailure("serial_read_failed", step="restart_observe")
                         received += len(incoming)
+                        if incoming and self.device_log is not None:
+                            self.device_log.feed(incoming)
                         if self.clock() >= deadline:
                             # The inspected-byte count cannot include this discarded chunk.
                             if incoming:
@@ -1092,6 +1107,8 @@ class SerialBackend:
                 # Never open a replacement before the old handle is confirmed
                 # closed. On uncertain close, finally must not try again.
                 collector.mark_gap()
+                if self.device_log is not None:
+                    self.device_log.mark_gap()
                 self._close_restart_port(owned)
                 owned = None
                 emit("serial_reconnect_wait")

@@ -131,8 +131,17 @@ async def execute(env, plan):
 
 
 def unavailable(env, job_id="firmware-report", principal=PRINCIPAL):
-    with pytest.raises(BrokerError, match="^device_logs_not_available$"):
-        env.broker.read_device_logs(job_id, principal)
+    """No RAM report is delivered. The owner may still read the durable job log."""
+    owner = env.broker.job_principal(job_id) if env.broker.store is not None else None
+    try:
+        result = env.broker.read_device_logs(job_id, principal)
+    except BrokerError as error:
+        assert str(error) == "device_logs_not_available"
+        return
+    assert owner == principal
+    assert result["source"] == "durable_job_log" and "sha256" not in result
+    for secret in SECRETS:
+        assert secret not in json.dumps(result)
 
 
 def assert_no_public_or_durable_logs(broker, *credentials):
@@ -146,8 +155,13 @@ def assert_no_public_or_durable_logs(broker, *credentials):
     for path in broker.settings.state_dir.rglob("*"):
         if path.is_file():
             data = read_live_fixture_file(broker, path)
-            for forbidden in (LOG_LINE, *SECRETS, *credentials):
+            for forbidden in (*_console_text(path), *SECRETS, *credentials):
                 assert forbidden.encode() not in data
+
+
+def _console_text(path):
+    """Redacted device text is durable only in the owner's per-job log."""
+    return () if path.parent.name == "job-logs" and path.suffix == ".jsonl" else (LOG_LINE,)
 
 
 def read_live_fixture_file(broker, path):
@@ -179,7 +193,7 @@ def assert_no_durable_logs(broker):
     for path in broker.settings.state_dir.rglob("*"):
         if path.is_file():
             data = path.read_bytes()
-            for forbidden in (LOG_LINE, *SECRETS, *credentials):
+            for forbidden in (*_console_text(path), *SECRETS, *credentials):
                 assert forbidden.encode() not in data
 
 

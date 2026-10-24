@@ -31,6 +31,7 @@ from test_device_observation_integration import (
     rpc,
     rpc_response,
 )
+from test_device_observation_integration import unavailable as no_ram_report
 from test_serial_restart import device, disconnect_to, identity, observed
 
 from cardputer_mcp import server as server_module
@@ -117,8 +118,7 @@ async def execute(env, plan):
 
 
 def unavailable(env, job_id=JOB, principal=PRINCIPAL):
-    with pytest.raises(BrokerError, match="^device_logs_not_available$"):
-        env.broker.read_device_logs(job_id, principal)
+    no_ram_report(env, job_id, principal)
 
 
 def reset_count(env):
