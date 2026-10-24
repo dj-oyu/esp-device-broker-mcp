@@ -153,6 +153,10 @@ class FlashLifecycle:
         self.cancelled = threading.Event()
         self._lock = threading.RLock()
         self._committed: str | None = None
+        # Evidence for failure classification (device_failure_outcome.py): set
+        # immediately before `driver.write` is called and never cleared, so any
+        # failure after this point counts as "write started or possibly started".
+        self.write_started = False
 
     def request_stop(self, job_id: str) -> bool:
         with self._lock:
@@ -309,6 +313,7 @@ class FlashLifecycle:
                 self._live(live)
                 stage("flash_write" if plan.operation == "flash" else "flash_restore_write")
                 self._live(live)
+                self.write_started = True
                 self.driver.write(segments)
                 self._live(live)
                 stage("flash_readback_verify")

@@ -153,7 +153,9 @@ async def test_diagnostics_review_safe_timeout_detail_survives_backend_and_broke
         broker.execute(ExecuteRequest(session=token, plan_hash=plan["plan_hash"]))
         await asyncio.wait_for(broker.queue.join(), timeout=2)
         job = broker.job("diagnostics-review")
-        assert job["state"] == "needs_review"
+        # Review classification fix: a timeout with a confirmed close and no write is
+        # `failed` (was needs_review); the result code and diagnostic are unchanged.
+        assert job["state"] == "failed"
         assert job["result"] == "serial_marker_timeout"
         diagnostic = dict(job["diagnostic"])
         summary = diagnostic.pop("receive_summary")
@@ -170,7 +172,7 @@ async def test_diagnostics_review_safe_timeout_detail_survives_backend_and_broke
         }
         assert port.writes == [b"q"]
         assert not port.is_open
-        assert broker.status()["needs_review"] is True
+        assert broker.status()["needs_review"] is False  # failed, not a review
         stored = "\n".join(broker._store().db.iterdump())
         public = json.dumps([job, broker.read_logs(LogRequest())])
         if b"HOME_READY" in reply:

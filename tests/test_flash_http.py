@@ -240,7 +240,9 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
             assert cancelled["ok"], cancelled
             release.set()
             await service.resident.queue.join()
-            assert service.resident.job("cancel-one")["state"] == "needs_review"
+            # Review classification fix: cancelled during the pre-write read with a
+            # confirmed close, so `failed` (was needs_review); LKG is unchanged.
+            assert service.resident.job("cancel-one")["state"] == "failed"
             assert driver.closed and not service.resident.firmware_flash.active
             assert store.firmware_current("fixture")["receipt"] == selected
     finally:

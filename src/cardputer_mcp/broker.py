@@ -37,6 +37,8 @@ from .continuation import (
 )
 from .derby_provenance import DerbyProvenance, capture_provenance, finish_provenance
 from .derby_reports import PROVENANCE_KEY
+from .device_failure_outcome import FailureEvidence
+from .device_failure_outcome import classify as classify_failure
 from .device_observation import DeviceObservation
 from .firmware_build import BuildPreflightFailure
 from .fixed_diagnostic import DiagnosticContext, finish_fixed_diagnostic
@@ -391,6 +393,59 @@ class Broker:
         if not self._store().ledger.transition(job_id, "needs_review", result, diagnostic):
             self.execution_uncertain = True
 
+    def _record_failure(
+        self,
+        job_id: str,
+        result: str,
+        diagnostic: dict[str, Any] | None,
+        evidence: FailureEvidence,
+    ) -> None:
+        """End a running device job that raised a failure, by classification.
+
+        `failed` (device state established: close confirmed, no write) keeps the
+        result code and leaves other queued jobs alone. Everything else is the
+        review barrier: `needs_review` plus cancelling the queue, as before.
+        See device_failure_outcome.py for the table.
+        """
+        if classify_failure(evidence) == "failed":
+            if self._store().ledger.transition(job_id, "failed", result, diagnostic):
+                self.logs.append(Event.FAILED)
+                return
+            # The row already left `running`; treat it like a refused review write.
+            self.execution_uncertain = True
+        else:
+            self._record_review(job_id, result, diagnostic)
+        self.logs.append(Event.REVIEW)
+        self._cancel_queued("recovery_review_required")
+
+    def _failure_evidence(self, plan: dict[str, Any], job_id: str, code: str) -> FailureEvidence:
+        """Observed close/write evidence for a typed failure of the running job."""
+        backend = self.backend
+        try:
+            serial_closed = not (
+                backend.active
+                or backend.hardware_connected
+                or getattr(backend, "ownership_uncertain", False)
+            )
+        except Exception:
+            serial_closed = False
+        test = plan.get("test")
+        if test in {item.value for item in FLASH_TESTS}:
+            write_started, flash_closed = self.firmware_flash.failure_evidence(job_id)
+            closed = serial_closed and flash_closed
+        else:
+            # Serial jobs never call a flash write; the mock workflow models one.
+            write_started, closed = test == TestName.WORKFLOW.value, serial_closed
+        from .home_recovery import CAPTURE_FAILURES
+
+        return FailureEvidence(
+            code=code,
+            known=True,
+            close_confirmed=closed,
+            write_possibly_started=write_started,
+            home_recovery_source=test == TestName.DERBY.value and code in CAPTURE_FAILURES,
+        )
+
     def _cancel_execution_intent(self, intent: ExecutionIntent, reason: str) -> None:
         job = self._store().job(intent.job_id)
         if (
@@ -438,7 +493,7 @@ class Broker:
             or intent.epoch != self.epoch
             or lease is None
             or not math.isfinite(lease.deadline)
-            or now >= lease.deadline
+            or (lease.revoked if running else now >= lease.deadline)
             or (intent.lease_ref is not None and lease is not intent.lease_ref)
             or lease.id != intent.lease_id
             or lease.principal_id != intent.principal_id
@@ -451,9 +506,9 @@ class Broker:
             if (
                 work is None
                 or work is not intent.work_ref
-                or work.state != "open"
+                or work.state not in (("open", "expired") if running else ("open",))
                 or not math.isfinite(work.deadline)
-                or now >= work.deadline
+                or (not running and now >= work.deadline)
                 or work.principal_id != intent.principal_id
                 or work.owner != intent.owner
                 or not {"read", "control"} <= work.scopes
@@ -2749,15 +2804,14 @@ class Broker:
                                 delivery_state="available",
                             )
                 except (FlashFailure, FlashAdmissionError) as failure:
-                    self._record_review(
+                    self._record_failure(
                         job_id,
                         str(failure),
                         _bounded_read_diagnostic(failure.code, failure.diagnostic)
                         if isinstance(failure, FlashFailure)
                         else None,
+                        self._failure_evidence(plan, job_id, str(failure)),
                     )
-                    self.logs.append(Event.REVIEW)
-                    self._cancel_queued("recovery_review_required")
                 except (BuildPreflightFailure, BuildLocationError) as failure:
                     self._record_review(
                         job_id,
@@ -2779,18 +2833,20 @@ class Broker:
                 except DeviceOperationFailure as failure:
                     from .serial_backend import SerialFailure
 
+                    evidence = self._failure_evidence(plan, job_id, failure.code)
                     if (
                         plan["test"] == TestName.DERBY_FIXED.value
                         and isinstance(failure, SerialFailure)
                         and failure.fixed_trial is not None
                         and capture_principal is not None
                     ):
+                        outcome = classify_failure(evidence)
                         try:
                             store.finish_fixed_trial(
                                 job_id,
                                 job["plan_hash"],
                                 capture_principal,
-                                "needs_review",
+                                outcome,
                                 failure.code,
                                 failure.fixed_trial,
                                 failure.diagnostic,
@@ -2798,18 +2854,26 @@ class Broker:
                         except Exception:
                             self.execution_uncertain = True
                             self._record_review(job_id, "fixed_trial_persist_failed")
+                            outcome = "needs_review"
+                        if outcome == "failed":
+                            self.logs.append(Event.FAILED)
+                        else:
+                            self.logs.append(Event.REVIEW)
+                            self._cancel_queued("recovery_review_required")
                     else:
-                        self._record_review(
+                        self._record_failure(
                             job_id,
                             failure.code,
                             derby_diagnostic(failure.diagnostic),
+                            evidence,
                         )
-                    self.logs.append(Event.REVIEW)
-                    self._cancel_queued("recovery_review_required")
                 except DeviceDisconnected:
-                    self._record_review(job_id, "device_disconnected_no_retry")
-                    self.logs.append(Event.REVIEW)
-                    self._cancel_queued("recovery_review_required")
+                    self._record_failure(
+                        job_id,
+                        "device_disconnected_no_retry",
+                        None,
+                        self._failure_evidence(plan, job_id, "device_disconnected_no_retry"),
+                    )
                 except Exception:
                     # Never persist the exception string (may contain credentials).
                     if plan["test"] == TestName.SOURCE.value:

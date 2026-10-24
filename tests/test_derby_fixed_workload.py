@@ -352,7 +352,9 @@ async def test_same_app_relaunch_after_home_invalidates_trial(serial_service, ch
         await resident.queue.join()
         owned = await call(owner, "status", {"view": "job", "job_id": "fixed-relaunch"})
         shared = await call(other, "status", {"view": "job", "job_id": "fixed-relaunch"})
-    assert owned["state"] == shared["state"] == "needs_review"
+    # Review classification fix: a typed trial failure with a confirmed close is
+    # committed as `failed` (was needs_review), still with its private raw evidence.
+    assert owned["state"] == shared["state"] == "failed"
     assert owned["fixed_trial"]["valid"] is False
     assert owned["fixed_trial"]["receipt"]["reset"] is True
     assert relaunch in base64.b64decode(owned["fixed_trial"]["raw_base64"])
@@ -383,7 +385,9 @@ async def test_bad_work_or_partial_transport_keeps_review_and_private_raw(serial
         await resident.queue.join()
         owned = await call(owner, "status", {"view": "job", "job_id": "fixed-bad"})
         shared = await call(other, "status", {"view": "job", "job_id": "fixed-bad"})
-    assert owned["state"] == shared["state"] == "needs_review"
+    # Review classification fix: a typed trial failure with a confirmed close is
+    # committed as `failed` (was needs_review), still with its private raw evidence.
+    assert owned["state"] == shared["state"] == "failed"
     assert owned["fixed_trial"]["valid"] is False
     assert owned["fixed_trial"]["receipt"]["complete"] is (not partial)
     assert raw[:100] in base64.b64decode(owned["fixed_trial"]["raw_base64"])
@@ -469,7 +473,9 @@ async def test_fault_after_workload_end_never_reports_terminal_success(
         await resident.queue.join()
         owned = await call(owner, "status", {"view": "job", "job_id": "fixed-fault"})
         shared = await call(other, "status", {"view": "job", "job_id": "fixed-fault"})
-    assert owned["state"] == shared["state"] == "needs_review"
+    # Review classification fix: a typed trial failure with a confirmed close is
+    # committed as `failed` (was needs_review), still with its private raw evidence.
+    assert owned["state"] == shared["state"] == "failed"
     assert owned["result"] == "serial_fault_marker"
     assert owned["diagnostic"]["device_fault_category"] in ("vm_exception", "device_fault")
     assert owned["diagnostic"]["serial_close_confirmed"] is True

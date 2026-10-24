@@ -491,7 +491,9 @@ async def test_private_exception_messages_are_never_returned_or_persisted(
             else:
                 env.ports[0].chunks.append(RuntimeError(private))
             await execute(env, plan)
-            assert env.broker.job(JOB)["state"] == "needs_review"
+            # Review classification fix: a typed restart failure with a confirmed close
+            # is `failed` (was needs_review).
+            assert env.broker.job(JOB)["state"] == "failed"
             assert reset_count(env) <= 1
             assert env.ports[0].closes == 1 and env.ports[0].writes == []
         unavailable(env)

@@ -49,7 +49,9 @@ async def test_failure_code_and_safe_counts_persist_without_replay(tmp_path, fai
         )
         assert result["result"] == expected
         assert result["result"] != "device_disconnected_no_retry"
-        assert result["state"] == "needs_review" and not result["reviewed"]
+        # Review classification fix: a typed serial failure with a confirmed close
+        # is `failed` (was needs_review); code and safe counts are unchanged.
+        assert result["state"] == "failed" and not result["reviewed"]
         assert result["stage"] == "serial_close"
         details = result["diagnostic"]
         assert details["code"] == expected

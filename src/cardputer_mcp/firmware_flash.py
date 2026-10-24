@@ -295,6 +295,25 @@ class FirmwareFlash:
     def uncertain(self) -> bool:
         return self.engine is not None and self.engine.uncertain
 
+    def failure_evidence(self, job_id: str) -> tuple[bool, bool]:
+        """`(write_possibly_started, close_confirmed)` for a failed run of `job_id`.
+
+        Read by the broker after `execute` raised, to classify the outcome
+        (device_failure_outcome.py). If no lifecycle was created for this job, the
+        failure came from the pre-driver checks: no driver call was made, and the
+        close is confirmed only when no earlier engine is still active or uncertain.
+        """
+        with self._lock:
+            engine = self.engine if self.job_id == job_id else None
+        if engine is None:
+            return False, not self.active and not self.uncertain
+        driver = engine.driver
+        try:
+            closed = not (engine.active or engine.uncertain or driver.active or driver.uncertain)
+        except Exception:
+            closed = False
+        return engine.write_started is not False, closed
+
     def request_stop(self, job_id: str | None = None) -> bool:
         with self._lock:
             if job_id is not None and self.job_id != job_id:
@@ -823,9 +842,7 @@ class FirmwareFlash:
             }:
                 failure_code = failure.code
             try:
-                log.append(
-                    "error: flash operation failed; needs review; no retry or automatic restore"
-                )
+                log.append("error: flash operation failed; no retry or automatic restore")
             except Exception:
                 pass
             raise

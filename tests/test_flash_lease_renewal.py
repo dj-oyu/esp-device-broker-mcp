@@ -269,6 +269,9 @@ async def test_reentrant_renewal_cannot_bypass_binding_after_auth_callback(env, 
     env.execute(prepared)
     await env.broker.queue.join()
     assert changed
-    assert env.broker.job("reentrant-renew")["state"] == "needs_review"
+    # Review classification fix: authority was lost before any write and the driver
+    # close was confirmed, so the flash ends `failed` (it was needs_review).
+    assert env.broker.job("reentrant-renew")["state"] == "failed"
+    assert not env.store.needs_review()
     assert env.driver.writes == before
     assert env.store.firmware_current("fixture") == previous

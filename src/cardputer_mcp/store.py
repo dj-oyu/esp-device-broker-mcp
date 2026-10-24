@@ -469,7 +469,8 @@ class Store:
             or (trial.valid and (not receipt["complete"] or any(receipt[key] for key in flags)))
             or (trial.valid and trial.parsed != parse_collected(trial.raw, receipt))
             or (not trial.valid and trial.parsed is not None)
-            or state not in ("succeeded", "needs_review")
+            # "failed": a known failure with confirmed close (device_failure_outcome.py).
+            or state not in ("succeeded", "failed", "needs_review")
             or (state == "succeeded" and (not trial.valid or code != "derby_fixed_trial_verified"))
         ):
             raise ValueError("invalid_fixed_trial_commit")
@@ -535,7 +536,7 @@ class Store:
             JOIN execution_requests AS requests ON requests.job_id=trial.job_id
             AND requests.plan_hash=trial.plan_hash AND requests.principal_id=trial.principal_id
             JOIN jobs ON jobs.id=trial.job_id AND jobs.plan_hash=trial.plan_hash
-            AND jobs.state IN ('succeeded','needs_review')
+            AND jobs.state IN ('succeeded','failed','needs_review')
             WHERE trial.job_id=? AND trial.plan_hash=? AND trial.principal_id=?""",
             (job_id, plan_hash, principal_id),
         ).fetchone()

@@ -263,7 +263,9 @@ async def test_single_reader_to_owned_http_report_on_success_and_failure(derby_s
             "execute",
             {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
         )
-    assert result["state"] == ("needs_review" if fault else "succeeded")
+    # Review classification fix: a device fault marker with a confirmed close is
+    # `failed` (was needs_review); the DERBY report is still delivered.
+    assert result["state"] == ("failed" if fault else "succeeded")
     assert result["result"] == (
         "serial_fault_marker" if fault else "derby_demo_cycle_observed_render_buffer_lcd_unverified"
     )
