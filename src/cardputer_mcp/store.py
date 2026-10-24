@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from .console_logs import console_line
 from .derby_fixed import FIXED_PLAN, MAX_BYTES, FixedTrial, parse_collected
+from .job_ledger import JobLedger
 from .job_outcome import review_summary
 from .timeline_order import initialize_timeline_order
 
@@ -51,6 +52,8 @@ class Store:
         self.db = sqlite3.connect(path, factory=_ObservedConnection)
         self.db.on_commit = on_commit
         self.db.row_factory = sqlite3.Row
+        # The only runtime writer of job state (legality enforced in SQL).
+        self.ledger = JobLedger(self.db, self._console_state)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
@@ -423,6 +426,11 @@ class Store:
         result: str | None = None,
         diagnostic: dict[str, Any] | None = None,
     ) -> None:
+        """Unguarded state setter for test fixtures and synthetic history only.
+
+        Runtime code must use `self.ledger` (`JobLedger.transition`/`annotate`); a
+        structural test keeps `set_job` out of `src/`.
+        """
         terminal = state not in ("awaiting_approval", "queued", "running")
         self.db.execute(
             """UPDATE jobs SET state=?, result=?, diagnostic=?,
