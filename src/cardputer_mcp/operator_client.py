@@ -30,6 +30,11 @@ def safe_refusal(data: Any) -> dict[str, Any]:
             "authentication_required",
             "local_operator_required",
             "invalid_request",
+            "review_not_required",
+            "review_target_not_found",
+            "review_target_in_use",
+            "stale_operator_snapshot",
+            "broker_closing",
         }:
             result["error"] = code
     return result
@@ -161,6 +166,30 @@ class OperatorClient:
             "/operator/job-cancel",
             {"job_id": job_id, "plan_hash": plan_hash, "broker_epoch": broker_epoch},
             allow_refusal=True,
+        )
+
+    def review_job(self, job_id: str, plan_hash: str, broker_epoch: str) -> dict[str, Any]:
+        """Acknowledge one needs_review job; sets only its reviewed flag."""
+        return self._request(
+            "POST",
+            "/operator/review",
+            {"job_id": job_id, "plan_hash": plan_hash, "broker_epoch": broker_epoch},
+            allow_refusal=True,
+        )
+
+    def review_request(self, request_id: str, broker_epoch: str) -> dict[str, Any]:
+        """Acknowledge one needs_review device request; sets only its reviewed flag."""
+        return self._request(
+            "POST",
+            "/operator/review",
+            {"request_id": request_id, "broker_epoch": broker_epoch},
+            allow_refusal=True,
+        )
+
+    def recheck(self, broker_epoch: str) -> dict[str, Any]:
+        """Run the explicit resource re-check once; never retried by this client."""
+        return self._request(
+            "POST", "/operator/recheck", {"broker_epoch": broker_epoch}, allow_refusal=True
         )
 
     def images(self) -> dict[str, Any]:

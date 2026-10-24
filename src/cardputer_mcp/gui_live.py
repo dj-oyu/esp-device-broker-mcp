@@ -32,6 +32,16 @@ from .gui_live_transport import (
     UNREACHABLE,
     LiveRunner,
 )
+from .gui_review import (
+    RECHECK_CONFIRM,
+    REVIEW_CONFIRM,
+    perform_recheck,
+    perform_review_job,
+    perform_review_request,
+    recheck_available,
+    review_available,
+    uncertainty_summary,
+)
 from .gui_theme import apply_theme
 from .gui_timeline import TimelineOperation, perform_timeline
 from .job_failure_reason import REASON_LABELS
@@ -185,6 +195,9 @@ class LiveWindow:
             detail, text="Cancel job...", command=self._cancel_job, style="Danger.TButton"
         )
         self.job_cancel.grid(row=9, sticky="e", pady=(16, 0))
+        # Human acknowledgement of a needs_review row: sets only its reviewed flag.
+        self.job_review = ttk.Button(detail, text="Acknowledge review...", command=self._review_job)
+        self.job_review.grid(row=10, sticky="e", pady=(8, 0))
         detail.bind("<Configure>", self._resize_details, add="+")
         if self._detail_canvas is not None:
             for widget in (
@@ -192,6 +205,7 @@ class LiveWindow:
                 self.log_text,
                 self.copy_button,
                 self.job_cancel,
+                self.job_review,
             ):
                 widget.bind("<FocusIn>", self._reveal_detail_focus, add="+")
                 for key in ("Prior", "Next", "Home", "End"):
@@ -397,6 +411,10 @@ class LiveWindow:
             controls, text="Release idle owner...", command=self._release
         )
         self.release_button.pack(side="left")
+        self.recheck_button = ttk.Button(
+            controls, text="Re-check resources...", command=self._recheck
+        )
+        self.recheck_button.pack(side="left", padx=(8, 0))
         if self.tunnel_panel is not None:
             ttk.Button(controls, text="Tunnel...", command=self.tunnel_panel.show).pack(
                 side="right"
@@ -424,6 +442,22 @@ class LiveWindow:
             parent, lambda kind: self._diagnostic(kind == "mcp")
         )
         self.connection_panels.frame.grid(row=5, sticky="nsew", pady=(8, 0))
+        ttk.Label(parent, text="Device requests needing review", style="Section.TLabel").grid(
+            row=7, sticky="w", pady=(12, 0)
+        )
+        review_box, self.review_tree = self._table(parent, ("reason", "created"), (260, 180))
+        self.review_box = review_box
+        review_box.grid(row=8, sticky="ew", pady=(8, 0))
+        self.review_empty = ttk.Label(parent, text="Waiting for review state")
+        self.review_empty.grid(row=8, sticky="w", pady=8)
+        self.review_tree.bind("<<TreeviewSelect>>", lambda _event: self._controls())
+        review_actions = ttk.Frame(parent)
+        self.review_actions = review_actions
+        review_actions.grid(row=9, sticky="ew", pady=10)
+        self.request_review = ttk.Button(
+            review_actions, text="Acknowledge request...", command=self._review_request
+        )
+        self.request_review.pack(side="left")
         parent.bind("<Configure>", self._resize_connection, add="+")
         for panel in self.connection_panels.panels.values():
             for widget in (panel.toggle, panel.refresh, panel.copy, panel.text):
@@ -776,8 +810,27 @@ class LiveWindow:
                 f"Current execution uncertainty: {execution_uncertainty} | "
                 f"Current ownership uncertainty: "
                 f"{'yes' if snapshot.ownership_uncertain else 'no'}\n"
-                f"Historical review: {'pending' if snapshot.needs_review else 'none'}"
+                f"Historical review: {'pending' if snapshot.needs_review else 'none'}\n"
+                f"{uncertainty_summary(snapshot)}"
             )
+            if hasattr(self, "review_tree"):
+                if snapshot.recovery_requests:
+                    self.review_empty.grid_remove()
+                    self.review_box.grid()
+                    self.review_actions.grid()
+                    self.review_tree.configure(height=min(8, len(snapshot.recovery_requests)))
+                else:
+                    self.review_box.grid_remove()
+                    self.review_actions.grid_remove()
+                    self.review_empty.configure(text="No device requests need review")
+                    self.review_empty.grid()
+                sync_rows(
+                    self.review_tree,
+                    [
+                        (row.request_id, row.request_id, (row.reason, row.created or "-"))
+                        for row in snapshot.recovery_requests
+                    ],
+                )
             if hasattr(self, "wait_box"):
                 if snapshot.waiters:
                     self.wait_empty.grid_remove()
@@ -857,6 +910,24 @@ class LiveWindow:
             elif card and card.cancel_available and not ready:
                 reason = "Cancellation currently unavailable"
             self.cancel_context.set(reason)
+        job_review = getattr(self, "job_review", None)
+        if job_review is not None:
+            can_review = bool(ready and review_available(card))
+            job_review.configure(state="normal" if can_review else "disabled")
+            if review_available(card):
+                job_review.grid()
+            else:
+                job_review.grid_remove()
+        recheck = getattr(self, "recheck_button", None)
+        if recheck is not None:
+            recheck.configure(
+                state="normal" if ready and recheck_available(self.state.snapshot) else "disabled"
+            )
+        request_review = getattr(self, "request_review", None)
+        if request_review is not None:
+            request_review.configure(
+                state="normal" if ready and self._selected_review_request() else "disabled"
+            )
         if hasattr(self, "connection_panels"):
             self.connection_panels.set_enabled(not self.action_pending and not self._is_closing())
         self.release_button.configure(
@@ -1036,6 +1107,80 @@ class LiveWindow:
             return result.error or result.message
 
         self._run_action(cancel)
+
+    def _review_job(self) -> None:
+        from tkinter import messagebox
+
+        card = self.state.selected_card
+        if not self._actions_ready() or not review_available(card) or card is None:
+            return
+        epoch = self.state.timeline.broker_epoch if self.state.timeline else ""
+        generation = self.state.generation
+        if not messagebox.askyesno("Acknowledge review", REVIEW_CONFIRM, parent=self.root):
+            return
+        if (
+            not self._actions_ready()
+            or self.state.generation != generation
+            or self.state.selected_card != card
+            or self.state.timeline is None
+            or self.state.timeline.broker_epoch != epoch
+        ):
+            self.action_status.set("Selection changed. Check the current job before acknowledging.")
+            return
+        job_id, plan_hash = card.job_id, card.plan_hash or ""
+        self._run_action(lambda: perform_review_job(self.api, job_id, plan_hash, epoch))
+
+    def _selected_review_request(self) -> str:
+        tree = getattr(self, "review_tree", None)
+        snapshot = self.state.snapshot
+        if tree is None or snapshot is None:
+            return ""
+        chosen = tree.selection()
+        selected = chosen[0] if chosen else ""
+        known = {row.request_id for row in snapshot.recovery_requests}
+        return selected if selected in known else ""
+
+    def _review_request(self) -> None:
+        from tkinter import messagebox
+
+        request_id = self._selected_review_request()
+        if not self._actions_ready() or not request_id:
+            return
+        epoch = self.state.timeline.broker_epoch if self.state.timeline else ""
+        generation = self.state.generation
+        if not messagebox.askyesno(
+            "Acknowledge request", f"{request_id}\n\n{REVIEW_CONFIRM}", parent=self.root
+        ):
+            return
+        if (
+            not self._actions_ready()
+            or self.state.generation != generation
+            or self._selected_review_request() != request_id
+            or self.state.timeline is None
+            or self.state.timeline.broker_epoch != epoch
+        ):
+            self.action_status.set("Selection changed. Check the current request first.")
+            return
+        self._run_action(lambda: perform_review_request(self.api, request_id, epoch))
+
+    def _recheck(self) -> None:
+        from tkinter import messagebox
+
+        if not self._actions_ready() or not recheck_available(self.state.snapshot):
+            return
+        epoch = self.state.timeline.broker_epoch if self.state.timeline else ""
+        generation = self.state.generation
+        if not messagebox.askyesno("Re-check resources", RECHECK_CONFIRM, parent=self.root):
+            return
+        if (
+            not self._actions_ready()
+            or self.state.generation != generation
+            or self.state.timeline is None
+            or self.state.timeline.broker_epoch != epoch
+        ):
+            self.action_status.set("Broker state changed. Check the current status first.")
+            return
+        self._run_action(lambda: perform_recheck(self.api, epoch))
 
     def _queue_action(self, operation: Any) -> None:
         if operation is not None:
