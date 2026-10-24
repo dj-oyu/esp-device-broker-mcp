@@ -2,7 +2,6 @@
 
 from test_derby_http import derby_service as derby_service
 from test_derby_smoke import Wire
-from test_pending_execution import running
 from test_serial_http import serial_service as serial_service
 
 from cardputer_mcp.config import SerialSettings
@@ -57,11 +56,3 @@ async def test_saved_derby_callback_stays_bound_to_completed_job(derby_service, 
         assert all(callback() is False for callback in callbacks)
     assert len(callbacks) == len(wires) == 2
     assert all(wire.closed for wire in wires)
-
-
-async def test_refresh_discards_legacy_delivery_consent_without_reviving_it(tmp_path):
-    async with running(tmp_path) as (broker, _):
-        broker.capture_delivery_consents["legacy-job"] = object()
-        broker.status()
-        assert broker.capture_delivery_consents == {}
-        assert broker.backend.calls == 0

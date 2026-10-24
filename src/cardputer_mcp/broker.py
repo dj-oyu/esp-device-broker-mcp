@@ -145,16 +145,6 @@ class ExecutionIntent:
     work_ref: WorkSession | None = None
 
 
-@dataclass(frozen=True, repr=False)
-class CaptureDeliveryConsent:
-    """Local consent for one future image from this exact reviewed capture."""
-
-    intent: ExecutionIntent
-    lease: Session
-    work: WorkSession | None
-    target: str
-
-
 @dataclass(frozen=True)
 class RetainedCapture:
     principal_id: str = field(repr=False)
@@ -272,7 +262,6 @@ class Broker:
         self.closing = False
         self.execution_uncertain = False
         self.captures: dict[str, RetainedCapture] = {}
-        self.capture_delivery_consents: dict[str, CaptureDeliveryConsent] = {}
         self.device_observations: dict[str, RetainedDeviceObservation] = {}
         self._flash_bindings: dict[str, FlashBinding] = {}
         self._execution_bindings: dict[str, str] = {}
@@ -331,7 +320,6 @@ class Broker:
         # Release completed private output before any service shutdown can yield.
         # Denying new reads alone must not leave these bytes retained in RAM.
         self.captures.clear()
-        self.capture_delivery_consents.clear()
         self.device_observations.clear()
         await self.home_recovery.close()
         await self.profile_jobs.close()
@@ -392,7 +380,6 @@ class Broker:
                     store.set_job(job_id, "cancelled", reason)
                     self._flash_bindings.pop(job_id, None)
                     self._execution_bindings.pop(job_id, None)
-                    self.capture_delivery_consents.pop(job_id, None)
                     self.logs.append(Event.CANCELLED)
         if stopping:
             self.queue.put_nowait(None)
@@ -409,7 +396,6 @@ class Broker:
         self._execution_intents.pop(intent.job_id, None)
         self._execution_bindings.pop(intent.job_id, None)
         self._flash_bindings.pop(intent.job_id, None)
-        self.capture_delivery_consents.pop(intent.job_id, None)
 
     def _execution_intent_binding_live(self, intent: ExecutionIntent) -> bool:
         """Final callback-free identity/deadline checks; never extend an intent."""
@@ -601,7 +587,6 @@ class Broker:
             if request is not None:
                 request.state = state
         self.session = None
-        self.capture_delivery_consents.clear()
         self._queue_sequence += 1
         self.operator_changes.notify()
         self.logs.append(Event.EXPIRED if state == "expired" else Event.RELEASED)
@@ -659,9 +644,6 @@ class Broker:
                     self._end_ownership("expired", "lease_expired")
         self._release_finished_job_lease()
         self._prune_execution_intents()
-        # The approval interface is retired: discard any legacy consent rather
-        # than calling its removed validator or reviving delivery authority.
-        self.capture_delivery_consents.clear()
         self._deferred_tick()
         self._tickets_tick(now)
         if (
@@ -1920,9 +1902,6 @@ class Broker:
         self.logs.append(Event.QUEUED)
         return {**self.job(job_id), "deduplicated": False}
 
-    def dispatch_pending_execution(self, plan_hash: str) -> bool:
-        raise BrokerError("approval_interface_retired")
-
     def cancel(self, request: CancelRequest) -> dict[str, Any]:
         session = self._lease(request.session)
         job = self.job(request.job_id)
@@ -1966,7 +1945,6 @@ class Broker:
             raise BrokerError("only_queued_jobs_can_be_cancelled")
         self._store().set_job(request.job_id, "cancelled", "client_cancelled_queued")
         self._execution_intents.pop(request.job_id, None)
-        self.capture_delivery_consents.pop(request.job_id, None)
         self.logs.append(Event.CANCELLED)
         return self.job(request.job_id)
 
@@ -2140,27 +2118,6 @@ class Broker:
             "metadata": retained.observation.metadata(),
         }
 
-    def _capture_delivery_target(self) -> str:
-        from .serial_backend import SerialBackend
-
-        return digest_plan(
-            {
-                "backend": self.backend.name,
-                "device": self.backend.device,
-                "serial": self.settings.serial.model_dump(mode="json")
-                if self.settings.serial
-                else None,
-                "backend_serial": self.backend.config.model_dump(mode="json")
-                if isinstance(self.backend, SerialBackend)
-                else None,
-            }
-        )
-
-    def _make_capture_delivery_consent(
-        self, plan: dict[str, Any], lease: Session
-    ) -> CaptureDeliveryConsent:
-        raise BrokerError("approval_interface_retired")
-
     def read_capture(self, job_id: str, principal_id: str) -> CapturedImage:
         """Read completed pixels from memory only, after per-request authentication."""
         self._store()
@@ -2189,11 +2146,6 @@ class Broker:
         if self._operator_capture(job_id) is not retained:
             raise BrokerError("capture_not_available")
         return retained.image
-
-    def _image_policy_allowed(
-        self, job_id: str, retained: RetainedCapture, *, record_use: bool = False
-    ) -> bool:
-        return False
 
     def _operator_capture(self, job_id: str) -> RetainedCapture:
         self._store()
@@ -2390,7 +2342,6 @@ class Broker:
                         store.set_job(job_id, "cancelled", "principal_or_lease_no_longer_valid")
                         self.logs.append(Event.CANCELLED)
                         continue
-                capture_target = ""
                 current_valid = self.principal_valid
                 current_binding = self._execution_bindings.get(job_id)
                 flash_binding = self._flash_bindings.get(job_id)
@@ -2455,13 +2406,7 @@ class Broker:
                         queued_intent is not None and not self._execution_intent_live(queued_intent)
                     )
                 ):
-                    if queued_intent is not None:
-                        self._cancel_execution_intent(
-                            queued_intent, "execution_intent_not_available"
-                        )
-                    elif current_job is not None and current_job["state"] == "queued":
-                        store.set_job(job_id, "cancelled", "session_not_available")
-                        self.logs.append(Event.CANCELLED)
+                    self._cancel_execution_intent(queued_intent, "execution_intent_not_available")
                     continue
                 self._execution_intents.pop(job_id, None)
                 if plan["test"] == TestName.BUILD.value:
@@ -2722,7 +2667,6 @@ class Broker:
                                 self.session.owner if self.session is not None else "",
                                 datetime.now(UTC).isoformat(),
                                 delivery_state="available",
-                                policy_target=capture_target,
                             )
                 except (FlashFailure, FlashAdmissionError) as failure:
                     store.set_job(
@@ -2925,7 +2869,6 @@ class Broker:
                 self.logs.append(Event.REVIEW)
             finally:
                 if job_id is not None:
-                    self.capture_delivery_consents.pop(job_id, None)
                     self._flash_bindings.pop(job_id, None)
                     self._execution_bindings.pop(job_id, None)
                     self._execution_intents.pop(job_id, None)

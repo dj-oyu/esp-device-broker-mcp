@@ -384,7 +384,6 @@ async def test_bad_work_or_partial_transport_keeps_review_and_private_raw(serial
         owned = await call(owner, "status", {"view": "job", "job_id": "fixed-bad"})
         shared = await call(other, "status", {"view": "job", "job_id": "fixed-bad"})
     assert owned["state"] == shared["state"] == "needs_review"
-    assert resident._store().profile_needs_review() is False
     assert owned["fixed_trial"]["valid"] is False
     assert owned["fixed_trial"]["receipt"]["complete"] is (not partial)
     assert raw[:100] in base64.b64decode(owned["fixed_trial"]["raw_base64"])

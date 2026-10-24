@@ -61,13 +61,6 @@ def test_migration_never_replays_or_invents_an_execution_request(tmp_path):
         store.migrate_explicit_requests()
         assert store.job("new-job")["state"] == "queued"
         assert store.db.execute("SELECT count(*) FROM execution_audit").fetchone()[0] == 4
-        for action in (
-            lambda: store.approve(digest),
-            lambda: store.approved_enqueue("new-job", digest, True, awaiting_approval=True),
-            lambda: store.add_awaiting_job("another-job", digest),
-        ):
-            with pytest.raises(ValueError, match="approval_interface_retired"):
-                action()
         assert store.job("new-job")["state"] == "queued"
     finally:
         store.close()

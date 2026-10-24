@@ -92,7 +92,10 @@ def test_restart_quarantines_every_waiting_or_owning_request(tmp_path: Path) -> 
         cancelled = recovered.request("cancelled")
         assert cancelled is not None
         assert cancelled["state"] == "cancelled"
-        assert all(row["state"] == "needs_review" for row in recovered.session_history())
+        assert all(
+            row["state"] == "needs_review"
+            for row in recovered.db.execute("SELECT state FROM work_sessions")
+        )
         recovered.review_request("owning")
         assert recovered.needs_review()
         recovered.review_request("waiting")
@@ -238,7 +241,7 @@ async def test_resume_token_is_bound_to_principal_and_snapshot_never_discloses_i
             broker.status(),
             broker.operator_snapshot(),
             broker.read_logs(LogRequest()),
-            broker._store().session_history(),
+            [dict(row) for row in broker._store().db.execute("SELECT * FROM work_sessions")],
             broker._store().recovery_requests(),
         ]
     ) + "\n".join(broker._store().db.iterdump())

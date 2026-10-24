@@ -178,15 +178,6 @@ class Tickets:
         )
         db.commit()
 
-    def void_for_job(self, job_id: str, reason: str) -> None:
-        db = self._store().db
-        db.execute(
-            "UPDATE continuation_tickets SET state='void', reason=? "
-            "WHERE parent_job_id=? AND state='issued'",
-            (reason, job_id),
-        )
-        db.commit()
-
     # -- derived views ------------------------------------------------------------
 
     def row_for_parent(self, job_id: str) -> dict[str, Any] | None:

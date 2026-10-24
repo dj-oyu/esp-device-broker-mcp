@@ -22,25 +22,6 @@ REQUEST_MODELS: dict[str, type[BaseModel]] = {
     "session": SessionRequest,
 }
 
-# These are model-validator constants, not error messages derived from input.
-MODEL_REASONS = {
-    "device_session_required": ["session"],
-    "source_fetch_requires_registered_project_and_full_commit": ["project_id", "source_commit"],
-    "source_commit_only_for_fetch": ["source_commit"],
-    "source_receipt_only_for_registered_build": ["source_receipt", "project_id"],
-    "flash_references_only_for_flash_operations": [
-        "device_id",
-        "build_job_id",
-        "backup_job_id",
-        "lkg_receipt",
-    ],
-    "registered_flash_device_required": ["device_id"],
-    "project_id_not_allowed_for_flash_operations": ["project_id"],
-    "backup_has_no_build_or_backup_input": ["build_job_id", "backup_job_id", "lkg_receipt"],
-    "choose_one_recovery_source": ["backup_job_id", "lkg_receipt"],
-    "successful_build_job_required": ["build_job_id"],
-    "restore_uses_backup_only": ["build_job_id"],
-}
 TYPE_REASONS = {
     "missing": "required_field",
     "extra_forbidden": "unexpected_field",
@@ -82,14 +63,6 @@ def validate_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any] |
         model.model_validate(arguments["request"])
     except ValidationError as error:
         issue = error.errors(include_input=False, include_url=False)[0]
-        context_error = issue.get("ctx", {}).get("error")
-        fixed = (
-            context_error.args[0]
-            if type(context_error) is ValueError and len(context_error.args) == 1
-            else None
-        )
-        if type(fixed) is str and fixed in MODEL_REASONS:
-            return invalid_arguments(fixed, list(MODEL_REASONS[fixed]))
         kind = issue.get("type", "")
         reason = TYPE_REASONS.get(kind, "invalid_field")
         if kind.endswith("_type") or kind.endswith("_parsing"):
