@@ -90,8 +90,15 @@ or unknown-level reads. Each reader owns its epoch/sequence cursor; reads do not
 consume entries. Retention is at most eight jobs, 2,048 lines / 256 KiB per job and
 five minutes since the last appended line. Oversized process lines are omitted after 4,096 bytes rather than split into
 potential credential fragments.
-Cursor gaps, restart epoch mismatch and expiry are explicit. Raw output stays in
-RAM; no caller-specified path can be opened. Known credential patterns and known
+Cursor gaps, restart epoch mismatch and expiry are explicit. Raw output is never
+written; no caller-specified path can be opened. Each redacted line is also
+appended to the job's durable log, `<state_dir>/job-logs/<job_id>.jsonl` (same
+format and bounds as described in DEVICE-LOGS.md, with `stream` `build`,
+`source` or `flash`). When the RAM output has expired or the broker restarted,
+`status(view=logs, stream=build)` serves the owner's durable entries with the
+same level/context/limit filtering, `"source": "durable_job_log"`, `expired=false`
+and a separate cursor epoch; a RAM cursor then reports `gap=true` and restarts
+from the beginning. Known credential patterns and known
 ambient secret values are removed; arbitrary application secrets cannot be
 universally recognized, so the explicit execution request includes log delivery.
 
@@ -455,9 +462,10 @@ project/output registrations across upgrades. ESP-IDF remains external 6.0.1.
 
 For a successful owned build, `status(view=logs, stream=build)` revalidates the persisted build
 reference and returns its public `manifest` even after log expiry, eviction or
-broker restart. The result still reports `expired=true`, `gap=true`, empty entries
-and the existing missing-history reason when RAM output is gone. It does not
-reconstruct lost logs, rerun the build or change the job's outcome.
+broker restart. When RAM output is gone and no durable job log exists, the result
+still reports `expired=true`, `gap=true`, empty entries and the existing
+missing-history reason; otherwise the durable entries are returned as above. It
+never reruns the build or changes the job's outcome.
 
 `artifact_status` is `verified` only after registered output/root identity,
 manifest/plan/fingerprint binding and every binary/ELF/layout/security receipt

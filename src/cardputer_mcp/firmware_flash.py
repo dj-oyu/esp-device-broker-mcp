@@ -31,6 +31,7 @@ from .flash_lkg_bundle import (
 )
 from .flash_lkg_store import FirmwareSnapshots
 from .flash_manifest import _file, verify_bundle
+from .job_logs import attach
 from .manifest_export import make_manifest_export, manifest_export_sha256, validate_plan_export
 from .models import TestName
 from .registration_digest import flash_digest
@@ -220,6 +221,9 @@ class FirmwareFlash:
         self.job_id: str | None = None
         self.logs: dict[str, BuildLogs] = {}
         self.on_logs_change: Callable[[], None] | None = None
+        # Durable per-job log hooks, set by the broker; None keeps RAM-only behaviour.
+        self.open_job_log: Callable[[str, str, str], Any] | None = None
+        self.job_logs: Any = None
         self.results: dict[str, dict[str, Any]] = {}
         self.promotions: dict[str, dict[str, str]] = {}
         self._cancelled_jobs: set[str] = set()
@@ -646,6 +650,14 @@ class FirmwareFlash:
             for key, value in os.environ.items()
             if re.search(r"(?i)token|secret|password|key|bearer", key) and len(value) >= 8
         )
+        attach(
+            log,
+            self.open_job_log,
+            plan["job_id"],
+            plan["flash_principal"],
+            plan.get("test", "firmware_flash"),
+            "flash",
+        )
         while len(self.logs) >= 8:
             oldest = next(iter(self.logs))
             del self.logs[oldest]
@@ -795,6 +807,10 @@ class FirmwareFlash:
                 )
             else:
                 result = logs.read(principal, request)
+            if result["expired"] and self.job_logs is not None:
+                durable = self.job_logs.build_read(request.job_id, principal, "flash", request)
+                if durable is not None:
+                    result = durable
             persisted = self.store().firmware_summary(request.job_id, principal)
             if persisted is not None:
                 result["flash_summary"] = persisted

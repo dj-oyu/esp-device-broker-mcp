@@ -39,6 +39,7 @@ from .diagnostic_registry import (
     validate_diagnostic_selection,
     validate_entry_binding,
 )
+from .job_logs import attach
 from .manifest_export import export_response, public_manifest
 from .models import DiagnosticMode
 
@@ -342,6 +343,9 @@ class FirmwareBuild:
         self.process = BuildProcess()
         self.logs: dict[str, BuildLogs] = {}
         self.on_logs_change: Callable[[], None] | None = None
+        # Durable per-job log hooks, set by the broker; None keeps RAM-only behaviour.
+        self.open_job_log: Callable[[str, str, str], Any] | None = None
+        self.job_logs: Any = None
         self.manifests: dict[str, tuple[str, dict[str, Any]]] = {}
         self._lock = threading.RLock()
         self._receipt_read_lock = threading.Lock()
@@ -652,6 +656,14 @@ class FirmwareBuild:
             value
             for key, value in os.environ.items()
             if re.search(r"(?i)token|secret|password|key|bearer", key) and len(value) >= 8
+        )
+        attach(
+            logs,
+            self.open_job_log,
+            plan["job_id"],
+            principal,
+            plan.get("test", "firmware_build"),
+            "build",
         )
         with self._lock:
             while len(self.logs) >= 8:
@@ -1254,6 +1266,10 @@ class FirmwareBuild:
                 manifest = self.manifests.get(request.job_id)
                 if manifest and manifest[0] == principal and not result["expired"]:
                     result.update(export_response(manifest[1]))
+            if result["expired"] and self.job_logs is not None:
+                durable = self.job_logs.build_read(request.job_id, principal, "build", request)
+                if durable is not None:
+                    result = durable
         if project_id is not None:
             if not self._receipt_read_lock.acquire(blocking=False):
                 result["artifact_status"] = "busy"

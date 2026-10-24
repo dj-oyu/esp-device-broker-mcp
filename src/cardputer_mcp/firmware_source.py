@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .build_logs import BuildLogs
+from .job_logs import attach
 from .source_retention import retention_evidence
 from .source_snapshot import SOURCE_ERROR_CODES, SourceError, SourceSnapshots
 
@@ -22,6 +23,9 @@ class FirmwareSource:
         self.active = False
         self.logs: dict[str, BuildLogs] = {}
         self.on_logs_change: Callable[[], None] | None = None
+        # Durable per-job log hooks, set by the broker; None keeps RAM-only behaviour.
+        self.open_job_log: Callable[[str, str, str], Any] | None = None
+        self.job_logs: Any = None
         self.results: dict[str, dict[str, Any]] = {}
         self.committed: str | None = None
 
@@ -64,6 +68,14 @@ class FirmwareSource:
             del self.logs[next(iter(self.logs))]
         logs = self.logs[plan["job_id"]] = BuildLogs(
             plan["source_principal"], job_id=plan["job_id"], on_change=self.on_logs_change
+        )
+        attach(
+            logs,
+            self.open_job_log,
+            plan["job_id"],
+            plan["source_principal"],
+            plan.get("test", "firmware_fetch_source"),
+            "source",
         )
         loop = asyncio.get_running_loop()
 
@@ -142,6 +154,14 @@ class FirmwareSource:
             logs = self.logs[plan["job_id"]] = BuildLogs(
                 plan["source_principal"], job_id=plan["job_id"], on_change=self.on_logs_change
             )
+        attach(
+            logs,
+            self.open_job_log,
+            plan["job_id"],
+            plan["source_principal"],
+            plan.get("test", "firmware_fetch_source"),
+            "source",
+        )
         message = "error: source fetch failed: " + code
         if not logs.entries or logs.entries[-1]["text"] != message:
             logs.append(message)
@@ -167,6 +187,10 @@ class FirmwareSource:
             )
         else:
             result = logs.read(principal, request)
+        if result["expired"] and self.job_logs is not None:
+            durable = self.job_logs.build_read(request.job_id, principal, "source", request)
+            if durable is not None:
+                result = durable
         job = self.store().job(request.job_id)
         plan = self.store().plan(job["plan_hash"]) if job else None
         if plan is None or plan.get("source_principal") != principal:

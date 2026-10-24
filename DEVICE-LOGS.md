@@ -135,8 +135,9 @@ job; the job diagnostic then carries `job_log_unavailable: true`.
   `"source": "durable_job_log"`, the job `state`/`result` and the newest
   lines (at most 1000 lines / 256 KiB; `omitted_oldest_lines` counts the rest).
   Other principals get `device_logs_not_available`
-- App sessions use their own framed transport and are not included yet; flash
-  jobs have their own flash log
+- App sessions use their own framed transport and are not included yet. Build,
+  source and flash output goes to the same per-job file under its own stream
+  (see FIRMWARE-BUILD.md)
 - These files are private state: they stay on disk until pruned. Delete the
   directory yourself if you need them gone sooner
 - The original principal must still have read permission. A different principal
