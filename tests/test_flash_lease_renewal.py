@@ -76,11 +76,14 @@ async def test_running_renewal_crosses_original_expiry_and_both_atomic_guards(en
 
 
 @pytest.mark.parametrize("renewed", [False, True])
-async def test_running_flash_expires_at_current_deadline_and_cannot_be_revived(env, renewed):
+async def test_running_flash_keeps_its_lease_past_the_deadline_and_commits(env, renewed):
+    # Running-job lease fix (was ..._expires_at_current_deadline_and_cannot_be_revived):
+    # an admitted, running flash keeps its lease until it finishes
+    # (DESIGN-CONTINUATION-TICKETS.md 5.3), so passing the deadline during the write
+    # no longer loses authority; LKG is promoted. The lease ends after the job.
     clock = setup(env)
     prepared = env.prepare("expired", build_job_id="build-one")
     original = env.broker.firmware_flash.execute
-    previous = env.store.firmware_current("fixture")
 
     async def execute(plan, stage, live):
         if renewed:
@@ -96,8 +99,10 @@ async def test_running_flash_expires_at_current_deadline_and_cannot_be_revived(e
     env.execute(prepared)
     token = env.broker.session
     await env.broker.queue.join()
-    assert env.broker.job("expired")["state"] == "needs_review"
-    assert env.store.firmware_current("fixture") == previous
+    assert env.broker.job("expired")["state"] == "succeeded"
+    assert env.store.firmware_current("fixture")["completed_job"] == "expired"
+    assert env.driver.closed
+    # The expired lease ends with the job; it cannot be renewed afterwards.
     with pytest.raises(BrokerError, match="invalid_session|lease_expired"):
         env.broker.renew(RenewRequest(session=token.capability, lease_seconds=300))
 

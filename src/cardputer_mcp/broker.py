@@ -418,8 +418,19 @@ class Broker:
             and self._execution_lease_binding_live(intent)
         )
 
-    def _execution_lease_binding_live(self, intent: ExecutionIntent) -> bool:
-        """Current lease authority, independent of the fixed admission deadline."""
+    def _execution_lease_binding_live(
+        self, intent: ExecutionIntent, *, running: bool = False
+    ) -> bool:
+        """Current lease authority, independent of the fixed admission deadline.
+
+        `running=True` is used only for a job that was already admitted and is
+        running under this lease. Such a job keeps its lease until it finishes
+        (DESIGN-CONTINUATION-TICKETS.md section 5.3): the lease and work-session
+        clocks no longer revoke it. A job-only lease returns no capability, so it
+        could never be renewed. Revocation (`Session.revoked`, set when the principal
+        or work session loses authority), closing, epoch and identity changes still
+        stop it. Admission (`running=False`) keeps every clock check.
+        """
         lease, now = self.session, self.clock()
         if (
             self.closing
@@ -491,7 +502,7 @@ class Broker:
                 # A peer build's still-owned normal teardown is not revoked
                 # device authority. Admission and failed cleanup remain gated.
                 or self._execution_uncertain(allow_profile_cleanup=True)
-                or not self._execution_lease_binding_live(intent)
+                or not self._execution_lease_binding_live(intent, running=True)
                 or not self._device_lock.is_locked
                 or not self._state_lock.is_locked
                 or (committing and not store.db.in_transaction)
@@ -647,10 +658,15 @@ class Broker:
         session = self.session
         if session is not None:
             owning_work = self.work_sessions.get(session.work_session_id or "")
-            if owning_work is not None and (
-                owning_work.state != "open" or not self._principal_live(owning_work)
-            ):
-                self.leases.shorten(session, now)
+            if owning_work is not None:
+                if owning_work.state not in ("open", "expired") or not self._principal_live(
+                    owning_work
+                ):
+                    self.leases.revoke(session, now)
+                elif owning_work.state == "expired":
+                    # Clock expiry of the work session: like lease expiry, it ends an
+                    # idle lease but does not revoke a running job.
+                    self.leases.shorten(session, now)
             if (
                 owning_work is None
                 and session.principal_id is not None
@@ -663,7 +679,7 @@ class Broker:
                 except Exception:
                     live = False
                 if live is not True:
-                    self.leases.shorten(session, now)
+                    self.leases.revoke(session, now)
             if now >= session.deadline:
                 self._cancel_queued("lease_expired")
                 if not self._physical_busy():
@@ -1229,7 +1245,12 @@ class Broker:
     def _expire(self) -> None:
         self.maintenance_tick()
 
-    def _lease(self, capability: str | None) -> Session:
+    def _lease(self, capability: str | None, *, running_job: bool = False) -> Session:
+        """The live lease for `capability`.
+
+        `running_job=True` (cancel only) also accepts a lease past its deadline while
+        a running job keeps it, so the owner can still stop that job.
+        """
         self._expire()
         if self.closing:
             raise BrokerError("broker_closing")
@@ -1239,9 +1260,22 @@ class Broker:
             or not secrets.compare_digest(self.session.capability, capability)
         ):
             raise BrokerError("invalid_session")
-        if self.clock() >= self.session.deadline:
+        if self.clock() >= self.session.deadline and not (
+            running_job and self._lease_kept_by_running_job(self.session)
+        ):
             raise BrokerError("lease_expired_active_job_retains_ownership")
         return self.session
+
+    def _lease_kept_by_running_job(self, lease: Session) -> bool:
+        """The lease is held past its deadline only because its own job is running."""
+        job_id = self.active_job
+        if job_id is None or lease.revoked or self.closing or self.session is not lease:
+            return False
+        job = self._store().job(job_id)
+        if job is None or job["state"] != "running":
+            return False
+        plan = self._store().plan(job["plan_hash"])
+        return bool(plan is not None and plan.get("session_id") == lease.id)
 
     def _connection(self) -> dict[str, Any]:
         """Keep the broker's own port state apart from USB presence; opens nothing."""
@@ -1930,7 +1964,8 @@ class Broker:
         return {**self.job(job_id), "deduplicated": False}
 
     def cancel(self, request: CancelRequest) -> dict[str, Any]:
-        session = self._lease(request.session)
+        # A running job keeps its lease past the deadline; its owner can still stop it.
+        session = self._lease(request.session, running_job=True)
         job = self.job(request.job_id)
         plan = self._store().plan(job["plan_hash"])
         if not plan or plan["session_id"] != session.id:
@@ -2508,7 +2543,7 @@ class Broker:
                             and self._runtime_binding() == current_binding
                             and collector_live(self, plan, lease.principal_id or "")
                             and self.session is lease
-                            and self._execution_lease_binding_live(queued_intent)
+                            and self._execution_lease_binding_live(queued_intent, running=True)
                             and self._device_lock.is_locked
                             and self._state_lock.is_locked
                             and self.active_job == job_id
@@ -2557,7 +2592,10 @@ class Broker:
                                 or current is not lease
                                 or current.principal_id != capture_principal
                                 or not math.isfinite(self.clock())
-                                or self.clock() >= current.deadline
+                                # A running flash keeps its lease past the deadline;
+                                # only revocation stops it (see
+                                # _execution_lease_binding_live).
+                                or current.revoked
                             ):
                                 return False
                             registration = self.settings.flash_devices.get(plan["device_id"])
@@ -2588,7 +2626,7 @@ class Broker:
                                 and flash_binding is not None
                                 and live_binding(self, flash_binding, plan)
                                 and self.session is lease
-                                and self._execution_lease_binding_live(queued_intent)
+                                and self._execution_lease_binding_live(queued_intent, running=True)
                                 and self._device_lock.is_locked
                                 and self._state_lock.is_locked
                                 and self._running_job_binding_live(
