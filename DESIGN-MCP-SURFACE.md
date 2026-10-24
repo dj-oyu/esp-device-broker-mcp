@@ -1,6 +1,33 @@
 # 設計: MCP ツール面の作り直し
 
-状態: 設計提案(実装なし)。この文書は `src/` を変更しない。
+状態: **実装済み**(0.13.0 向け。下の「実装状況」を参照)。以降の本文は、実装前の設計の記述で、
+実装と異なる点は「実装状況」に挙げる。
+
+## 実装状況(実装後に追記)
+
+実装したもの(`src/cardputer_mcp/surface.py`):
+
+- 6 本のツール `status` / `submit` / `execute` / `flash` / `cancel` / `session`。旧 25 本は、別名なしで除いた。
+  旧ハンドラは `server.py` の内部の操作(`ops`)として残し、新しいツールが、区別の引数と
+  必須・禁止の引数を、固定の理由コード(`argument_required` / `argument_not_allowed` /
+  `argument_conflict` / `argument_invalid`、`wrong_execute_tool` / `wrong_flash_tool`)で検査してから呼ぶ。
+- `tools/list` は 13,350 文字(旧 32,207 文字)。破壊的の注釈は `flash` だけ。`execute` / `flash` は、plan の種類
+  (`DESTRUCTIVE_TESTS`)から、ブローカーが、使うべきツールを決めて強制する(状態を変える前に拒否)。
+- `status(view=identity)` は `tool_set_version: 2` を返す。
+- `ValueError` の理由を固定語彙で返す(`public_reasons.py`、`PUBLIC_REASON_CODES`)。
+- `submit` の `after`、`execute` / `flash` の `continues` と `chain_total_hint`、`session`(`action=request`)の
+  `after`、`cancel`(`target=ticket`)、`status(view=job)` の `chain`、`status(view=device)` の `device_hold`。
+
+設計と違う点・実装しなかった点:
+
+- `JobKind` の登録(§7、段階 2)は、実装していない。`DESTRUCTIVE_TESTS` と `KIND_TEST` の対応表で足りた。
+  内部の判定(`_physical_busy` など)は、従来のまま。
+- `session(action=open)` に `lease_seconds` を付けて `wait_seconds` が 0 か省略のとき、従来の
+  `acquire_session` と同じく、**作業セッションを作らない**(§4.6 の記述と異なる)。`wait_seconds` が
+  1 以上のときは、作業セッションを作って、デバイスの要求まで行う。
+- `app_input` の `command_id` と `seq` は、必須ではなく任意(`status` 操作は不要なため。従来どおり)。
+- 先積みは、`backup` と `app_session` を対象外にした(§13 の未決事項 4 の案どおり)。
+
 確認の区別: 「確認済み」はこの文書の作成時に該当コードを読んで、または計測して確かめた
 事実。「未確認」「推測」と書いたものは確かめていない。
 

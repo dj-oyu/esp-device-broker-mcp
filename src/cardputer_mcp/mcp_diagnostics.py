@@ -14,7 +14,7 @@ from mcp.types import CallToolRequest, CallToolRequestParams, CallToolResult
 from .client import validate_url
 from .stdio_adapter import _quiet_dependencies
 
-GUI_CODE_VERSION = "0.12.0"
+GUI_CODE_VERSION = "0.13.0"
 TOTAL_SECONDS = 5.0
 _VERSION = re.compile(
     r"(?:unknown|[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:[-+][A-Za-z0-9.-]{1,16})?)\Z"
