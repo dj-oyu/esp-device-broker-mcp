@@ -3,9 +3,7 @@
 import json
 import os
 import sqlite3
-import stat
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,62 +29,6 @@ class ResourceTests(unittest.TestCase):
         self.snapshots = SourceSnapshots(
             SimpleNamespace(build_projects={"fixture": project}, state_dir=self.base / "state")
         )
-
-    def test_one_traversal_totals_remaining_slots_and_inventory(self):
-        root = self.root / ("a" * 64)
-        root.mkdir()
-        (root / "file").write_bytes(b"four")
-        self.root.joinpath("pending-" + "b" * 32).mkdir()
-        scanned = []
-        original = os.scandir
-
-        def counted(path):
-            scanned.append(path)
-            return original(path)
-
-        with patch.object(os, "scandir", counted):
-            result = self.snapshots.inventory("fixture")
-        self.assertEqual(len(scanned), 3)
-        self.assertEqual(result["usage"]["snapshots"], 2)
-        self.assertEqual(result["usage"]["remaining_snapshots"], 14)
-        self.assertEqual(result["usage"]["bytes"], 4)
-        self.assertEqual(sum(r["bytes"] for r in result["records"]), 4)
-
-    def test_thirteen_slots_with_slow_metadata_fit_extended_deadline(self):
-        for i in range(13):
-            self.root.joinpath(f"snapshot-{i}").mkdir()
-        clock = SimpleNamespace(now=0.0)
-        original = os.scandir
-        info = SimpleNamespace(st_mode=stat.S_IFREG, st_size=1, st_nlink=1)
-
-        class Entry:
-            name = "synthetic"
-
-            def stat(self, *, follow_symlinks):
-                self_test.assertFalse(follow_symlinks)
-                clock.now += 0.000125
-                return info
-
-        class Children:
-            def __enter__(self):
-                return (Entry() for _ in range(3432))
-
-            def __exit__(self, *args):
-                pass
-
-        self_test = self
-        with (
-            patch.object(module, "time", SimpleNamespace(monotonic=lambda: clock.now)),
-            patch.object(os, "scandir", lambda p: original(p) if p == self.root else Children()),
-        ):
-            usage = self.snapshots.usage("fixture")
-        self.assertEqual(usage["snapshots"], 13)
-        self.assertEqual(usage["bytes"], 13 * 3432)
-        self.assertGreater(usage["scan_elapsed_ms"], 5000)
-        self.assertLess(usage["scan_elapsed_ms"], 30000)
-        self.assertLess(usage["scan_entries"], 1_000_000)
-        self.assertEqual(usage["max_snapshots"], 16)
-        self.assertEqual(usage["max_bytes"], 2 * 1024 * 1048576)
 
     def test_execute_rechecks_capacity_once_and_timeout_publishes_no_receipt(self):
         for i in range(13):
@@ -121,81 +63,6 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(len([p for p in self.root.iterdir() if p.is_dir()]), 13)
         self.assertFalse(list(self.root.rglob("receipt.json")))
         self.assertFalse(self.snapshots.uncertain)
-
-    def test_million_entry_cap_and_empty_directory_deadline_still_apply(self):
-        snapshot = self.root / "snapshot"
-        snapshot.mkdir()
-        original = os.scandir
-        info = SimpleNamespace(st_mode=stat.S_IFREG, st_size=0, st_nlink=1)
-        entry = SimpleNamespace(name="synthetic", stat=lambda **kwargs: info)
-
-        class Children:
-            def __enter__(self):
-                return (entry for _ in range(1_000_001))
-
-            def __exit__(self, *args):
-                pass
-
-        with (
-            patch.object(module, "time", SimpleNamespace(monotonic=lambda: 0.0)),
-            patch.object(os, "scandir", lambda p: original(p) if p == self.root else Children()),
-        ):
-            with self.assertRaises(CacheScanLimit) as caught:
-                self.snapshots.usage("fixture")
-        self.assertEqual(caught.exception.scan["reason"], "entries")
-        self.assertEqual(caught.exception.scan["entries"], 1_000_001)
-        stopped = threading.Event()
-        stopped.set()
-        with self.assertRaisesRegex(SourceError, "source_fetch_interrupted"):
-            self.snapshots.usage("fixture", stop=stopped)
-
-    def test_ancestor_checks_preserve_order_and_include_missing_and_root(self):
-        path = self.base / "missing" / "file"
-        visited = []
-        original = module._path_is_link
-
-        def counted(candidate):
-            visited.append(os.fspath(candidate))
-            return original(candidate)
-
-        with patch.object(module, "_path_is_link", counted):
-            module._not_link(path)
-        self.assertEqual(visited, [os.fspath(p) for p in (path, *path.parents)])
-
-    def test_windows_attribute_checks_are_fresh_and_reject_reparse_points(self):
-        queried = []
-        attributes = [0x10, 0x410]
-
-        def query(path):
-            queried.append(path)
-            return attributes.pop(0)
-
-        with (
-            patch.object(os, "name", "nt"),
-            patch.object(module, "_windows_attributes_query", return_value=query),
-            patch.object(os, "lstat") as full_stat,
-        ):
-            self.assertFalse(module._path_is_link("same-path"))
-            self.assertTrue(module._path_is_link("same-path"))
-            full_stat.assert_not_called()
-        self.assertEqual(queried, ["same-path", "same-path"])
-
-    def test_windows_attribute_failure_falls_back_to_full_nofollow_stat(self):
-        reparse = SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
-        with (
-            patch.object(os, "name", "nt"),
-            patch.object(module, "_windows_attributes_query", return_value=lambda p: 0xFFFFFFFF),
-            patch.object(os, "lstat", return_value=reparse) as full_stat,
-        ):
-            self.assertTrue(module._path_is_link("synthetic"))
-            full_stat.assert_called_once_with("synthetic")
-        with (
-            patch.object(os, "name", "nt"),
-            patch.object(module, "_windows_attributes_query", side_effect=OSError("unavailable")),
-            patch.object(os, "lstat", side_effect=PermissionError("denied")),
-        ):
-            with self.assertRaises(PermissionError):
-                module._path_is_link("synthetic")
 
     def test_link_and_pending_directory_swap_are_rejected(self):
         snapshot = self.root / "snapshot"

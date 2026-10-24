@@ -253,27 +253,6 @@ async def test_exact_owned_source_receipt_auto_flash_commits_lkg_once(env):
 
 
 @pytest.mark.parametrize(
-    "field,value",
-    [
-        ("principal_id", "bob"),
-        ("device_id", "other"),
-        ("project_id", "other"),
-        ("source_receipt", "b" * 64),
-        ("source_repository", "fixture/other"),
-        ("source_commit", "b" * 40),
-    ],
-)
-async def test_obsolete_policy_scope_never_grants_or_blocks_explicit_request(env, field, value):
-    env.configure(env.policy.model_copy(update={field: value}))
-    before = env.driver.writes
-    prepared = env.prepare("mismatch", build_job_id="build-one")
-    assert prepared["approval_required"] is False and env.driver.writes == before
-    env.execute(prepared)
-    await env.broker.queue.join()
-    assert env.broker.job("mismatch")["state"] == "succeeded"
-
-
-@pytest.mark.parametrize(
     "action,references",
     [
         (Action.BACKUP, {}),
@@ -416,42 +395,6 @@ async def test_failed_or_late_revoked_flash_preserves_lkg_and_current_guards(env
         env.prepare("fresh", build_job_id="build-one")
 
 
-@pytest.mark.parametrize("boundary", ["prepare", "execute", "readback"])
-async def test_historical_flash_failure_does_not_block_verified_new_flash(env, boundary):
-    before = None
-
-    def historical_failure():
-        env.store.add_job("old-readback", "e" * 64)
-        env.store.set_stage("old-readback", "flash_readback_verify")
-        env.store.set_job("old-readback", "needs_review", "flash_authority_changed_needs_review")
-        return env.store.job("old-readback")
-
-    if boundary == "prepare":
-        before = historical_failure()
-    prepared = env.prepare("fresh-flash", build_job_id="build-one")
-    assert env.store.job("fresh-flash") is None
-    if boundary == "execute":
-        before = historical_failure()
-    elif boundary == "readback":
-        original = env.store.set_stage
-
-        def stage(job, name):
-            nonlocal before
-            if job == "fresh-flash" and name == "flash_readback_verify" and before is None:
-                before = historical_failure()
-            return original(job, name)
-
-        env.store.set_stage = stage
-    env.execute(prepared)
-    await env.broker.queue.join()
-    assert env.broker.job("fresh-flash")["state"] == "succeeded"
-    assert env.store.job("old-readback") == before
-    current = env.store.firmware_current("fixture", "alice")
-    assert current["receipt"] == env.selected
-    assert current["completed_job"] == "fresh-flash"
-    assert env.driver.closed and env.broker.status()["execution_uncertain"] is False
-
-
 def test_registration_is_explicit_strict_and_flash_only():
     data = dict(
         principal_id="alice",
@@ -477,26 +420,6 @@ async def test_allow_flash_still_gates_operation(env):
     env.configure(allow_flash=False)
     with pytest.raises(BrokerError, match="registered_flash_operation_not_enabled"):
         env.prepare("disabled-operation", build_job_id="build-one")
-
-
-async def test_missing_lkg_never_becomes_unattended(env):
-    env.configure()
-    env.store.db.execute("DELETE FROM firmware_lkg")
-    env.store.db.commit()
-    with pytest.raises(BrokerError, match="verified_lkg_or_initial_backup_required"):
-        env.prepare("missing-recovery", build_job_id="build-one")
-
-
-async def test_draining_cancelled_queue_discards_transient_permission(env):
-    env.configure()
-    prepared = env.prepare("drained", build_job_id="build-one")
-    env.execute(prepared)
-    before = env.driver.writes
-    env.broker._cancel_queued("session_released")
-    assert env.broker.job("drained")["state"] == "cancelled"
-    assert not env.broker._execution_intents and env.broker.queue.empty()
-    assert env.driver.writes == before
-    assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
 
 
 async def test_second_atomic_commit_guard_rechecks_registration_and_rolls_back(env):

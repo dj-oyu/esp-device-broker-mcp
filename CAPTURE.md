@@ -1,6 +1,6 @@
 # HOME render-buffer capture
 
-`capture_home` is a bounded job in the existing queue. `read_capture` reads its
+`capture_home` is a bounded job in the existing queue. `status(view=capture)` reads its
 completed PNG without opening USB. Mock mode returns an image with **TEST / NOT
 DEVICE** visibly drawn into the pixels. The serial implementation is covered by
 synthetic-port tests. One user-run Windows HOME capture has succeeded; this does
@@ -50,11 +50,11 @@ disconnect, or uncertain close. Such jobs require review and are never retried.
 ## Prepare, execute and retrieve
 
 1. Use the authenticated broker and obtain an owned live device lease.
-2. Call `prepare_test` with `session`, a new `job_id` and `test="capture_home"`.
+2. Call `submit` with `session`, a new `job_id` and `kind="capture"` (the `capture_home` plan).
    Inspect the exact device, effects and expected firmware configuration.
-3. Call `execute_test` with that lease and exact `plan_hash`. It queues directly;
-   `wait_for_approval` is deprecated and ignored. Poll `job_status`.
-4. On success, call `read_capture` with the job ID using the original current
+3. Call `execute(op=run)` with that lease and exact `plan_hash`. It queues directly;
+   There is no approval argument. Poll `status(view=job)`.
+4. On success, call `status(view=capture)` with the job ID using the original current
    authenticated principal and read scope. No image approval or capture policy
    is required. The MCP result contains ImageContent and metadata; the host
    decides how to display or attach it.

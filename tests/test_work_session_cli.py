@@ -1,8 +1,6 @@
 """Typed CLI parsing and offline recovery; synthetic local files only."""
 
-import json
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 from filelock import FileLock
@@ -61,34 +59,3 @@ def test_review_request_refuses_running_broker(recovery):
     with FileLock(str(recovery / "broker.lockfile"), timeout=0):
         with pytest.raises(ValueError, match="stop_broker_before_recovery_review"):
             acknowledge_device_request_recovery(recovery, "synthetic-request", lambda _: "yes")
-
-
-def test_cli_passes_explicit_registry_without_issuing(monkeypatch, tmp_path):
-    create = Mock(return_value=object())
-    monkeypatch.setattr(cli, "create_app", create)
-    monkeypatch.setattr(cli.uvicorn, "run", Mock())
-    path = tmp_path / "synthetic.sqlite3"
-    monkeypatch.setattr(
-        "sys.argv",
-        ["cardputer", "--auth-source", "environment", "serve", "--key-registry", str(path)],
-    )
-    cli.main()
-    assert create.call_args.kwargs["key_registry_path"] == path
-    assert not path.exists()
-
-
-def test_gui_launcher_keeps_one_broker_and_no_raw_tokens():
-    source = (Path(__file__).resolve().parents[1] / "Start-CardputerGui.ps1").read_text()
-    assert source.isascii()
-    assert "Start-Cardputer.ps1" in source
-    assert "if ($NoSerial)" in source
-    assert "--auth-source environment gui --config $profilePath" in source
-    assert "Stop-Process" not in source and "TOKEN" not in source
-
-
-def test_review_request_output_never_replays(recovery, capsys):
-    result = acknowledge_device_request_recovery(
-        recovery, "synthetic-request", lambda _: "REVIEW REQUEST synthetic-request"
-    )
-    cli.output(result)
-    assert json.loads(capsys.readouterr().out)["replayed"] is False

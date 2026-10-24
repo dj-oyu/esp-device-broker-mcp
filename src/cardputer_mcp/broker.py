@@ -26,6 +26,14 @@ from .build_locations import BuildLocationError
 from .capture import CapturedImage
 from .collector_binding import collector_live, prepare_collector
 from .config import Settings
+from .continuation import (
+    HOLD_SECONDS,
+    TICKET_TTL_SECONDS,
+    Deferred,
+    Hold,
+    TicketError,
+    Tickets,
+)
 from .derby_provenance import DerbyProvenance, capture_provenance, finish_provenance
 from .derby_reports import PROVENANCE_KEY
 from .device_observation import DeviceObservation
@@ -57,6 +65,9 @@ from .registration_digest import flash_digests
 from .source_snapshot import SourceError
 from .store import Store
 
+# Longest a pre-requested job may wait for the device once its parent has finished.
+DEVICE_WAIT_SECONDS = 1800.0
+
 
 class BrokerError(ValueError):
     """Public, fixed-string errors. Do not include exceptions or request content."""
@@ -71,6 +82,8 @@ class Session:
     principal_id: str | None = None
     work_session_id: str | None = None
     request_id: str | None = None
+    chain_ticket: str | None = None
+    job_id: str | None = None
 
 
 @dataclass
@@ -93,6 +106,10 @@ class DeviceWait:
     deadline: float
     state: str = "waiting"
     lease_id: str | None = None
+    ticket_id: str | None = None
+    job_id: str | None = None
+    principal_id: str | None = None
+    origin: str | None = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -218,6 +235,9 @@ class Broker:
         self.work_sessions: dict[str, WorkSession] = {}
         self.device_requests: dict[str, DeviceWait] = {}
         self.waiters: list[str] = []
+        self.hold: Hold | None = None
+        self.tickets = Tickets(self._store, lambda: self.epoch)
+        self.deferred = Deferred(self._store, lambda: self.epoch)
         self._queue_sequence = 0
         self.maintenance: asyncio.Task[None] | None = None
         self.active_job: str | None = None
@@ -282,6 +302,8 @@ class Broker:
             if os.name != "nt":
                 os.chmod(self.settings.state_dir / "history.sqlite3", 0o600)
             self.store.recover()
+            self.tickets.void_stale()
+            self.deferred.cancel_stale()
             self.logs.append(Event.STARTED)
             self.worker = asyncio.create_task(self._work(), name="single-device-worker")
             self.profile_jobs.start()
@@ -598,6 +620,12 @@ class Broker:
                 work.state = "expired"
         for request_id in tuple(self.waiters):
             request = self.device_requests[request_id]
+            if request.job_id is not None:
+                if now >= request.deadline:
+                    self._end_wait(request, "expired", "wait_expired")
+                elif not self._owner_live(request.principal_id, request.origin):
+                    self._end_wait(request, "cancelled", "principal_not_authorized")
+                continue
             work = self.work_sessions[request.session_id]
             if work.state != "open" or now >= request.deadline:
                 self._end_wait(request, "expired", "wait_expired")
@@ -627,10 +655,13 @@ class Broker:
                 self._cancel_queued("lease_expired")
                 if not self._physical_busy():
                     self._end_ownership("expired", "lease_expired")
+        self._release_finished_job_lease()
         self._prune_execution_intents()
         # The approval interface is retired: discard any legacy consent rather
         # than calling its removed validator or reviving delivery authority.
         self.capture_delivery_consents.clear()
+        self._deferred_tick()
+        self._tickets_tick(now)
         if (
             self.closing
             or self.session is not None
@@ -639,7 +670,19 @@ class Broker:
             or not self.waiters
         ):
             return
-        request = self.device_requests[self.waiters[0]]
+        if self.hold is not None:
+            # A reservation is the only thing that may take the slot while it lasts.
+            held = [
+                w for w in self.waiters if self.device_requests[w].ticket_id == self.hold.ticket_id
+            ]
+            if not held:
+                return
+            request = self.device_requests[held[0]]
+        else:
+            request = self.device_requests[self.waiters[0]]
+        if request.job_id is not None:
+            self._grant_job_lease(request)
+            return
         work = self.work_sessions[request.session_id]
         # Recheck directly before the durable transition; no token is cached.
         if not self._principal_live(work):
@@ -660,15 +703,511 @@ class Broker:
             work.principal_id,
             work.id,
             request.id,
+            request.ticket_id,
         )
         self._store().set_request(request.id, "owning", lease_id=lease.id)
         request.state = "owning"
         request.lease_id = lease.id
-        self.waiters.pop(0)
+        self.waiters.remove(request.id)
+        if self.hold is not None and self.hold.ticket_id == request.ticket_id:
+            self.hold = None
+            self.tickets.set_hold(request.ticket_id or "", "ended")
         self.session = lease
         self._queue_sequence += 1
         self.operator_changes.notify()
         self.logs.append(Event.ACQUIRED)
+
+    def _owner_live(self, principal_id: str | None, origin: str | None) -> bool:
+        if self.principal_valid is None or principal_id is None or origin is None:
+            return False
+        try:
+            return (
+                self.principal_valid(principal_id, origin, frozenset({"read", "control"})) is True
+            )
+        except Exception:
+            return False
+
+    def _parent_state(self, parent_id: str) -> str:
+        """pending while the parent may still succeed, succeeded, or broken."""
+        job = self._store().job(parent_id)
+        if job is not None:
+            if job["state"] in ("awaiting_approval", "queued", "running"):
+                return "pending"
+            return "succeeded" if job["state"] == "succeeded" else "broken"
+        waiting = self.deferred.get(parent_id)
+        return "pending" if waiting is not None and waiting["state"] == "pending" else "broken"
+
+    def _deferred_tick(self) -> None:
+        store = self._store()
+        for row in self.deferred.pending():
+            plan = store.plan(str(row["plan_hash"]))
+            if plan is not None and plan.get("execution_context") == "device_deferred":
+                self._advance_device_deferred(row, plan)
+            else:
+                self.profile_jobs.promote(row)
+
+    def _advance_device_deferred(self, row: dict[str, Any], plan: dict[str, Any]) -> None:
+        job_id = str(row["job_id"])
+        if row["wait_id"]:
+            wait = self.device_requests.get(str(row["wait_id"]))
+            if wait is None or wait.state in ("cancelled", "expired"):
+                self.deferred.finish(job_id, "cancelled", "wait_cancelled")
+            return  # queued for the device; the grant happens later in the tick
+        state = self._parent_state(str(row["parent_job_id"]))
+        if state == "pending":
+            return
+        if state == "broken" or digest_plan(plan) != row["plan_hash"]:
+            self.deferred.finish(job_id, "cancelled", "chain_broken")
+            return
+        if len(self.waiters) >= self.settings.max_waiters:
+            return  # keep waiting for room in the device queue
+        if self._store().record_count("device_requests") >= 10000:
+            self.deferred.finish(job_id, "cancelled", "history_full_archive_offline")
+            return
+        wait = DeviceWait(
+            uuid4().hex,
+            "job:" + job_id,
+            int(plan["lease_seconds"]),
+            self.clock() + DEVICE_WAIT_SECONDS,
+            ticket_id=row["ticket_id"],
+            job_id=job_id,
+            principal_id=str(row["principal_id"]),
+            origin=str(row["origin"]),
+        )
+        self._store().put_request(wait.id, None, wait.lease_seconds)
+        self.device_requests[wait.id] = wait
+        self.deferred.set_wait(job_id, wait.id)
+        if self.hold is not None and self.hold.ticket_id == row["ticket_id"]:
+            self.waiters.insert(0, wait.id)  # continuation priority
+        else:
+            self.waiters.append(wait.id)
+        self._queue_sequence += 1
+        self.operator_changes.notify()
+
+    def _grant_job_lease(self, request: DeviceWait) -> None:
+        """Give the slot to a job its owner requested ahead of time; no capability is returned."""
+        store = self._store()
+        job_id = str(request.job_id)
+        row = self.deferred.get(job_id)
+        plan = store.plan(str(row["plan_hash"])) if row is not None else None
+
+        def refuse(reason: str) -> None:
+            self._end_wait(request, "cancelled", reason)
+            if row is not None:
+                self.deferred.finish(job_id, "cancelled", reason)
+            if self.hold is not None and self.hold.ticket_id == request.ticket_id:
+                self.hold = None
+                self.tickets.set_hold(request.ticket_id or "", "ended")
+
+        if (
+            row is None
+            or row["state"] != "pending"
+            or plan is None
+            or digest_plan(plan) != row["plan_hash"]
+        ):
+            return refuse("job_not_available")
+        if not self._owner_live(request.principal_id, request.origin):
+            return refuse("principal_not_authorized")
+        fence = self.tickets._row(request.ticket_id) if request.ticket_id else None
+        if (
+            fence is not None
+            and fence["fence_seq"] is not None
+            and int(fence["fence_seq"]) != store.device_write_seq()
+        ):
+            return refuse("device_state_changed")
+        lease = Session(
+            secrets.token_hex(32),
+            uuid4().hex,
+            str(request.origin),
+            self.clock() + request.lease_seconds,
+            request.principal_id,
+            None,
+            request.id,
+            request.ticket_id,
+            job_id,
+        )
+        store.set_request(request.id, "owning", lease_id=lease.id)
+        request.state = "owning"
+        request.lease_id = lease.id
+        self.waiters.remove(request.id)
+        if self.hold is not None and self.hold.ticket_id == request.ticket_id:
+            self.hold = None
+            self.tickets.set_hold(request.ticket_id or "", "ended")
+        self.session = lease
+        self._queue_sequence += 1
+        self.operator_changes.notify()
+        self.logs.append(Event.ACQUIRED)
+        try:
+            prepared = self.prepare(
+                PrepareRequest(
+                    session=lease.capability,
+                    job_id=job_id,
+                    test=TestName(plan["test"]),
+                    **plan["params"],
+                )
+            )
+            self.execute(ExecuteRequest(session=lease.capability, plan_hash=prepared["plan_hash"]))
+        except Exception as failure:
+            code = (
+                str(failure)
+                if isinstance(failure, BrokerError)
+                else failure.code
+                if isinstance(failure, SourceError)
+                else "promotion_failed"
+            )
+            self.deferred.finish(job_id, "cancelled", code)
+            try:
+                self._end_ownership("released", "promotion_failed")
+            except BrokerError:
+                pass
+            return
+        self.deferred.finish(job_id, "promoted", None, prepared["plan_hash"])
+
+    def _release_finished_job_lease(self) -> None:
+        """A lease made for one pre-requested job ends with that job (or becomes a hold)."""
+        session = self.session
+        if session is None or session.job_id is None or self._physical_busy():
+            return
+        job = self._store().job(session.job_id)
+        if job is None:
+            waiting = self.deferred.get(session.job_id)
+            if waiting is not None and waiting["state"] == "pending":
+                return  # the job is being prepared under this lease right now
+        if job is not None and job["state"] in ("awaiting_approval", "queued", "running"):
+            return
+        if job is not None and job["state"] == "succeeded":
+            ticket = self.tickets.row_for_parent(session.job_id)
+            if ticket is not None and ticket["state"] == "issued" and ticket["hold"] is None:
+                return  # the ticket tick turns this lease into the reservation
+        self._end_ownership("released", "job_complete")
+
+    def prepare_deferred(
+        self, request: PrepareRequest, principal_id: str, origin: str
+    ) -> dict[str, Any]:
+        """Plan a device job to be requested before the slot or its parent is ready."""
+        store = self._store()
+        assert request.after is not None
+        if self.closing or not self._owner_live(principal_id, origin):
+            raise BrokerError("principal_not_authorized")
+        try:
+            ticket = self.tickets.peek(request.after, principal_id)
+        except TicketError as exc:
+            raise BrokerError(str(exc)) from None
+        parent_id = str(ticket["parent_job_id"])
+        if self._parent_state(parent_id) == "broken":
+            raise BrokerError("chain_broken")
+        params = {
+            name: getattr(request, name)
+            for name in (
+                "device_id",
+                "build_job_id",
+                "backup_job_id",
+                "lkg_receipt",
+                "flash_job_id",
+            )
+            if getattr(request, name) is not None
+        }
+        if "derby_detail_mode" in request.model_fields_set and request.derby_detail_mode:
+            params["derby_detail_mode"] = request.derby_detail_mode.value
+        plan: dict[str, Any] = dict(
+            version=2,
+            execution_context="device_deferred",
+            broker_epoch=self.epoch,
+            job_id=request.job_id,
+            test=request.test.value,
+            principal_id=principal_id,
+            origin=origin,
+            lease_seconds=request.lease_seconds or 60,
+            params=params,
+            continues={"parent_job_id": parent_id},
+        )
+        digest = digest_plan(plan)
+        existing = store.job(request.job_id)
+        waiting = self.deferred.get(request.job_id)
+        if (existing and existing["plan_hash"] != digest) or (
+            waiting and waiting["plan_hash"] != digest
+        ):
+            raise BrokerError("job_id_conflict")
+        if store.plan(digest) is None and store.record_count("plans") >= 10000:
+            raise BrokerError("history_full_archive_offline")
+        store.put_plan(digest, plan)
+        return dict(plan_hash=digest, plan=plan, approval_required=False)
+
+    def execute_deferred(
+        self, request: ExecuteRequest, principal_id: str, origin: str
+    ) -> dict[str, Any]:
+        """Accept the owner's explicit request now; the job joins the queue when its parent ends."""
+        store = self._store()
+        plan = store.plan(request.plan_hash)
+        if (
+            plan is None
+            or digest_plan(plan) != request.plan_hash
+            or plan.get("execution_context") != "device_deferred"
+            or plan.get("principal_id") != principal_id
+            or plan.get("origin") != origin
+        ):
+            raise BrokerError("plan_not_found_or_changed")
+        job_id = str(plan["job_id"])
+        waiting = self.deferred.get(job_id)
+        existing = store.job(job_id)
+        if waiting is not None or existing is not None:
+            if (waiting and waiting["plan_hash"] != request.plan_hash) or (
+                waiting is None and existing is not None
+            ):
+                raise BrokerError("job_id_conflict")
+            assert waiting is not None
+            return {**self.deferred.view(waiting), "deduplicated": True}
+        if (
+            plan["broker_epoch"] != self.epoch
+            or self.closing
+            or not self._owner_live(principal_id, origin)
+        ):
+            raise BrokerError("principal_not_authorized")
+        if self._execution_uncertain():
+            raise BrokerError("recovery_review_required")
+        if store.record_count("jobs") >= 10000:
+            raise BrokerError("history_full_archive_offline")
+        parent_id = str(plan["continues"]["parent_job_id"])
+        ticket = self.tickets.row_for_parent(parent_id)
+        if ticket is None:
+            raise BrokerError("ticket_invalid")
+        try:
+            self.deferred.add(
+                job_id, request.plan_hash, parent_id, principal_id, origin, str(ticket["ticket_id"])
+            )
+            try:
+                self.tickets.consume(str(ticket["ticket_id"]), principal_id)
+                self.tickets.note_consumer(str(ticket["ticket_id"]), job_id)
+            except TicketError:
+                self.deferred.remove(job_id)
+                raise
+        except TicketError as exc:
+            raise BrokerError(str(exc)) from None
+        row = self.deferred.get(job_id)
+        assert row is not None
+        return {**self.deferred.view(row), "deduplicated": False}
+
+    def cancel_job_only(self, job_id: str, principal_id: str) -> dict[str, Any] | None:
+        """Cancel a pre-requested job through its own lease (owner identity, no capability)."""
+        lease = self.session
+        if lease is None or lease.job_id != job_id or self.job_principal(job_id) != principal_id:
+            return None
+        return self.cancel(CancelRequest(session=lease.capability, job_id=job_id))
+
+    def _release_hold(self, reason: str) -> None:
+        hold = self.hold
+        if hold is None:
+            return
+        self.hold = None
+        self.tickets.mark_state(hold.ticket_id, "expired", reason)
+        self.tickets.set_hold(hold.ticket_id, "ended")
+        # A follower that spent the ticket in time keeps waiting, but no longer first.
+        for request_id in tuple(self.waiters):
+            if self.device_requests[request_id].ticket_id == hold.ticket_id:
+                self.waiters.remove(request_id)
+                self.waiters.append(request_id)
+        self._queue_sequence += 1
+        self.operator_changes.notify()
+
+    def _tickets_tick(self, now: float) -> None:
+        """Decide void/hold for unspent tickets from job state. Synchronous, no awaits."""
+        store = self._store()
+        wall = time.time()
+        hold = self.hold
+        if hold is not None:
+            row = self.tickets._row(hold.ticket_id)
+            if (
+                row is None
+                or now >= hold.deadline
+                or self.tickets.budget_remaining(row) == 0.0
+                or self._execution_uncertain()
+            ):
+                self._release_hold("hold_expired")
+        for row in self.tickets.issued():
+            ticket_id = str(row["ticket_id"])
+            job = store.job(str(row["parent_job_id"]))
+            if job is None:
+                waiting = self.deferred.get(str(row["parent_job_id"]))
+                if waiting is not None and waiting["state"] == "pending":
+                    continue
+                if waiting is not None and waiting["state"] == "promoted":
+                    continue
+                self.tickets.mark_state(ticket_id, "void", "chain_broken")
+                continue
+            if job["state"] in ("awaiting_approval", "queued", "running"):
+                continue
+            if job["state"] != "succeeded":
+                self.tickets.mark_state(ticket_id, "void", "ticket_void")
+                continue
+            if row["hold"] is not None:
+                if row["hold"] == "none" and wall - float(row["created"]) > TICKET_TTL_SECONDS:
+                    self.tickets.mark_state(ticket_id, "expired", "hold_expired")
+                continue
+            plan = store.plan(job["plan_hash"])
+            if plan is None or "session_id" not in plan:
+                self.tickets.set_hold(ticket_id, "none")
+                continue
+            self.tickets.set_fence(ticket_id, store.device_write_seq())
+            if self._execution_uncertain():
+                self.tickets.mark_state(ticket_id, "void", "ticket_void")
+                continue
+            if self.hold is not None or self.tickets.budget_remaining(row) == 0.0:
+                self.tickets.set_hold(ticket_id, "none")
+                continue
+            if self._physical_busy() or not self.queue.empty() or self._execution_intents:
+                continue
+            session = self.session
+            if session is not None and session.id != plan["session_id"]:
+                self.tickets.mark_state(ticket_id, "expired", "hold_expired")
+                self.tickets.set_hold(ticket_id, "ended")
+                continue
+            finished = self.tickets.finished_epoch(job)
+            elapsed = max(0.0, wall - finished) if finished is not None else 0.0
+            if elapsed >= HOLD_SECONDS:
+                self.tickets.mark_state(ticket_id, "expired", "hold_expired")
+                self.tickets.set_hold(ticket_id, "ended")
+                continue
+            if session is not None:
+                try:
+                    self._end_ownership("released", "chain_hold")
+                except BrokerError:
+                    continue
+            self.hold = Hold(ticket_id, str(row["principal_id"]), now + HOLD_SECONDS - elapsed)
+            self.tickets.set_hold(ticket_id, "held")
+            self._queue_sequence += 1
+            self.operator_changes.notify()
+
+    def job_principal(self, job_id: str) -> str | None:
+        """Principal that explicitly requested a job (recorded when it was queued)."""
+        row = (
+            self._store()
+            .db.execute("SELECT principal_id FROM execution_requests WHERE job_id=?", (job_id,))
+            .fetchone()
+        )
+        return str(row[0]) if row is not None else None
+
+    def issue_ticket(self, job_id: str, total_hint: int | None = None) -> str:
+        """Issue the single continuation ticket of one queued device job."""
+        store = self._store()
+        job = store.job(job_id)
+        plan = store.plan(job["plan_hash"]) if job is not None else None
+        principal_id = self.job_principal(job_id)
+        if job is None:
+            waiting = self.deferred.get(job_id)
+            plan = store.plan(waiting["plan_hash"]) if waiting is not None else None
+            principal_id = waiting["principal_id"] if waiting is not None else None
+        elif plan is not None and plan.get("execution_context") == "registered_project":
+            principal_id = plan.get("principal_id")
+        registered = plan is not None and (
+            str(plan.get("execution_context", "")).startswith("registered_project")
+            or plan.get("execution_context") == "device_deferred"
+        )
+        if (
+            plan is None
+            or ("session_id" not in plan and not registered)
+            or not isinstance(principal_id, str)
+        ):
+            raise BrokerError("continuation_not_supported")
+        try:
+            return self.tickets.issue(job_id, principal_id, total_hint=total_hint)
+        except TicketError as exc:
+            raise BrokerError(str(exc)) from None
+
+    def deferred_job(self, job_id: str, principal_id: str) -> dict[str, Any] | None:
+        """Job-shaped view of a waiting job; only for the principal that requested it."""
+        row = self.deferred.get(job_id)
+        if row is None or row["principal_id"] != principal_id:
+            return None
+        if row["state"] == "promoted":
+            return None  # the real job row answers from here on
+        view = self.deferred.view(row)
+        if row["wait_id"] and row["wait_id"] in self.waiters:
+            view["device_queue_position"] = self.waiters.index(row["wait_id"]) + 1
+        return view
+
+    def cancel_deferred(self, job_id: str, principal_id: str) -> dict[str, Any] | None:
+        row = self.deferred.get(job_id)
+        if row is None or row["principal_id"] != principal_id or row["state"] != "pending":
+            return None
+        self.deferred.finish(job_id, "cancelled", "client_cancelled_waiting")
+        wait = self.device_requests.get(str(row["wait_id"])) if row["wait_id"] else None
+        if wait is not None and wait.state == "waiting":
+            self._end_wait(wait, "cancelled", "client_cancelled_waiting")
+        updated = self.deferred.get(job_id)
+        assert updated is not None
+        return self.deferred.view(updated)
+
+    def cancel_ticket(self, ticket_id: str, principal_id: str) -> dict[str, Any]:
+        row = self.tickets._row(ticket_id)
+        if row is None or row["principal_id"] != principal_id:
+            raise BrokerError("ticket_invalid")
+        if row["state"] == "consumed":
+            raise BrokerError("ticket_consumed")
+        if row["state"] == "issued":
+            self.tickets.mark_state(ticket_id, "void", "client_cancelled")
+        if self.hold is not None and self.hold.ticket_id == ticket_id:
+            self.hold = None
+            self.tickets.set_hold(ticket_id, "ended")
+            self._queue_sequence += 1
+            self.operator_changes.notify()
+        return {"cancelled": True}
+
+    def hold_status(self) -> dict[str, Any]:
+        """Aggregate only: no ticket, job or principal is disclosed."""
+        hold = self.hold
+        return {
+            "active": hold is not None,
+            "expires_in_seconds": max(0, round(hold.deadline - self.clock(), 3)) if hold else 0,
+        }
+
+    def chain_progress(self, job_id: str) -> dict[str, Any] | None:
+        """Read-only chain progress derived from ticket links; None if not in a chain."""
+        before, after, open_ticket = self.tickets.chain_jobs(job_id)
+        own = self.tickets.row_for_parent(job_id)
+        if not before and not after and own is None:
+            return None
+        job = self._store().job(job_id)
+        waiting = self.deferred.get(job_id) if job is None else None
+        reference = own or open_ticket
+        if reference is None and before:
+            reference = self.tickets._previous(job_id)
+        hold = self.hold
+        held = own is not None and hold is not None and hold.ticket_id == own["ticket_id"]
+        state = (
+            str(job["state"])
+            if job is not None
+            else "waiting_parent"
+            if waiting is not None and waiting["state"] == "pending"
+            else "cancelled"
+            if waiting is not None and waiting["state"] == "cancelled"
+            else "unknown"
+        )
+        if state == "waiting_parent":
+            chain_state = "waiting_parent"
+        elif state in ("failed", "cancelled", "needs_review", "interrupted"):
+            chain_state = "broken"
+        elif state == "queued":
+            chain_state = "waiting_for_device"
+        elif state == "running":
+            chain_state = "running"
+        elif held:
+            chain_state = "holding_device"
+        elif after or (own is not None and own["state"] == "issued"):
+            chain_state = "between_jobs"
+        else:
+            chain_state = "finished"
+        budget = self.tickets.budget_remaining(reference)
+        return {
+            "chain_position": len(before) + 1,
+            "chain_jobs_known": len(before) + 1 + len(after),
+            "chain_open": bool(open_ticket is not None and open_ticket["state"] == "issued"),
+            "chain_state": chain_state,
+            "chain_total": reference["chain_total"] if reference is not None else None,
+            "hold_expires_in_seconds": (
+                max(0, round(hold.deadline - self.clock(), 3)) if held and hold else None
+            ),
+            "chain_budget_remaining_seconds": round(budget, 1) if budget is not None else None,
+        }
 
     async def _maintain(self) -> None:
         while not self.closing:
@@ -716,6 +1255,7 @@ class Broker:
             else 0,
             "queue_depth": self.queue.qsize(),
             "wait_queue_depth": len(self.waiters),
+            "device_hold": self.hold_status(),
             "work_session_count": sum(w.state == "open" for w in self.work_sessions.values()),
             "history": store.counts(),
             "needs_review": pending_review,
@@ -754,7 +1294,7 @@ class Broker:
             raise BrokerError("broker_closing")
         if self._execution_uncertain():
             raise BrokerError("recovery_review_required")
-        if self.session or self.waiters or self._physical_busy():
+        if self.session or self.waiters or self.hold is not None or self._physical_busy():
             raise BrokerError("device_busy")
         if self._store().record_count("device_requests") >= 10000:
             raise BrokerError("history_full_archive_offline")
@@ -971,10 +1511,23 @@ class Broker:
             request.lease_seconds,
             min(self.clock() + request.wait_seconds, work.deadline),
         )
+        priority = False
+        if request.after is not None:
+            # Spending the ticket and taking the queue position are one synchronous step.
+            self.maintenance_tick()
+            try:
+                self.tickets.consume(request.after, work.principal_id)
+            except TicketError as exc:
+                raise BrokerError(str(exc)) from None
+            waiting.ticket_id = request.after
+            priority = self.hold is not None and self.hold.ticket_id == request.after
         self._store().put_request(waiting.id, work.id, request.lease_seconds)
         self.device_requests[waiting.id] = waiting
         work.request_id = waiting.id
-        self.waiters.append(waiting.id)
+        if priority:
+            self.waiters.insert(0, waiting.id)
+        else:
+            self.waiters.append(waiting.id)
         self._queue_sequence += 1
         self.operator_changes.notify()
         self.maintenance_tick()
@@ -1337,6 +1890,8 @@ class Broker:
         ):
             raise BrokerError("execution_intent_not_available")
         store.enqueue_requested(job_id, request.plan_hash, session.principal_id)
+        if session.chain_ticket is not None:
+            self.tickets.note_consumer(session.chain_ticket, job_id)
         self._execution_intents[job_id] = intent
         self._execution_bindings[job_id] = binding
         if flash_binding is not None:

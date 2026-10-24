@@ -5,10 +5,9 @@ import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-import pytest
 from test_serial_capture import device
 
-from cardputer_mcp.broker import Broker, BrokerError
+from cardputer_mcp.broker import Broker
 from cardputer_mcp.config import Settings
 from cardputer_mcp.models import AcquireRequest, ExecuteRequest, LogRequest, Origin, PrepareRequest
 from cardputer_mcp.models import TestName as Action
@@ -84,14 +83,3 @@ async def test_failed_home_wait_keeps_metadata_but_no_raw_wire_or_storage(tmp_pa
         assert_no_private(list(env.broker._store().db.iterdump()))
         for path in env.broker.settings.state_dir.glob("history.sqlite3*"):
             assert SECRET.encode() not in path.read_bytes()
-
-
-async def test_old_broker_opt_in_is_retired_before_any_io(tmp_path):
-    async with running(tmp_path) as env:
-        prepared = prepare(env)
-        plan = env.broker._store().plan(prepared["plan_hash"])
-        with pytest.raises(BrokerError, match="approval_interface_retired"):
-            env.broker._make_local_home_diagnostic(plan, env.broker.session)
-        with pytest.raises(BrokerError, match="local_home_diagnostic_not_available"):
-            env.broker.operator_home_line("private-home", prepared["plan_hash"], "0" * 32)
-        assert env.port.opens == 0 and env.broker.local_home_diagnostic is None

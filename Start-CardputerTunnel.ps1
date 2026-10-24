@@ -159,7 +159,7 @@ try {
     [void]$bootstrapErr.GetAwaiter().GetResult()
     if ($process.ExitCode -ne 0) { throw 'Tunnel console could not be started. Broker remains running.' }
     Write-Host 'Tunnel console opened. Its local readiness is not proof of cloud connectivity.'
-    Write-Host 'Verify actual app discovery and a read-only device_status call before any device work.'
+    Write-Host 'Verify actual app discovery and a read-only status(view=device) call before any device work.'
 } finally {
     $runtimeApi = $null
     if ($apiPointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($apiPointer) }

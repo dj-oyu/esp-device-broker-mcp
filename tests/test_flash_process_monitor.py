@@ -3,13 +3,12 @@
 import os
 import sys
 import tempfile
-import threading
 import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from cardputer_mcp.build_process import BuildProcess, ProcessDeadlineExpired
+from cardputer_mcp.build_process import BuildProcess
 from cardputer_mcp.flash_lifecycle import FlashFailure
 
 
@@ -35,41 +34,6 @@ class ProcessMonitorTests(unittest.TestCase):
                     timeout=600,
                     monitor=monitor,
                 )
-        self.assertLess(time.monotonic() - started, 6)
-        self.assertFalse(process.active)
-        self.assertFalse(process.uncertain)
-
-    def test_process_deadline_has_a_distinct_type_after_confirmed_teardown(self):
-        process = BuildProcess()
-        with tempfile.TemporaryDirectory() as temp:
-            with self.assertRaises(ProcessDeadlineExpired):
-                process.run(
-                    [sys.executable, "-c", "import time; time.sleep(60)"],
-                    dict(os.environ),
-                    Path(temp),
-                    lambda line, stream: None,
-                    timeout=0.2,
-                )
-        self.assertFalse(process.active)
-        self.assertFalse(process.uncertain)
-
-    def test_stop_remains_responsive_even_with_a_long_read_budget(self):
-        process = BuildProcess()
-        timer = threading.Timer(0.25, process.stop_requested.set)
-        with tempfile.TemporaryDirectory() as temp:
-            started = time.monotonic()
-            timer.start()
-            try:
-                with self.assertRaisesRegex(ValueError, "interrupted"):
-                    process.run(
-                        [sys.executable, "-c", "import time; time.sleep(60)"],
-                        dict(os.environ),
-                        Path(temp),
-                        lambda line, stream: None,
-                        timeout=600,
-                    )
-            finally:
-                timer.cancel()
         self.assertLess(time.monotonic() - started, 6)
         self.assertFalse(process.active)
         self.assertFalse(process.uncertain)

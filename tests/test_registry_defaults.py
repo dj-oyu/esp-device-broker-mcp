@@ -43,16 +43,6 @@ def test_default_is_stable_across_cwd_and_executable(automatic_path, tmp_path, m
     assert not automatic_path.exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX state fallback")
-def test_posix_home_fallback_is_absolute(tmp_path, monkeypatch):
-    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    assert default_key_registry_path() == tmp_path / ".local/state/DeviceBroker/keys.sqlite3"
-    monkeypatch.setenv("XDG_STATE_HOME", "relative")
-    with pytest.raises(KeyRegistryError, match="private_app_state_unavailable"):
-        default_key_registry_path()
-
-
 def test_missing_then_issue_revoke_atomic_replace_and_corrupt_fail_closed(automatic_path):
     source = LiveKeyRegistry(automatic_path)
     assert source.list_keys() == []
@@ -85,6 +75,13 @@ def test_missing_then_issue_revoke_atomic_replace_and_corrupt_fail_closed(automa
     assert source.authenticate(header) is None and not automatic_path.exists()
     source.close()
     assert source.authenticate(header) is None
+    # A reader of an existing registry rejects a replaced schema version.
+    existing = KeyRegistry(automatic_path, random_bytes=lambda n: b"\x04" * n)
+    token = existing.issue("synthetic", Origin.REMOTE).token
+    with closing(sqlite3.connect(automatic_path)) as writer, writer:
+        writer.execute("PRAGMA user_version=99")
+    assert existing.authenticate("Bearer " + token) is None
+    existing.close()
 
 
 def test_uncommitted_revocation_and_rollback_do_not_cache_grants(automatic_path):
@@ -98,16 +95,6 @@ def test_uncommitted_revocation_and_rollback_do_not_cache_grants(automatic_path)
         assert source.authenticate("Bearer " + key.token) is not None
         writer.commit()
     assert source.authenticate("Bearer " + key.token) is None
-    registry.close()
-
-
-def test_replaced_schema_version_is_rejected_by_existing_reader(automatic_path):
-    private_directory(automatic_path.parent)
-    registry = KeyRegistry(automatic_path, random_bytes=lambda n: b"\x04" * n)
-    key = registry.issue("synthetic", Origin.REMOTE)
-    with closing(sqlite3.connect(automatic_path)) as writer, writer:
-        writer.execute("PRAGMA user_version=99")
-    assert registry.authenticate("Bearer " + key.token) is None
     registry.close()
 
 

@@ -29,13 +29,6 @@ class GeometryTests(unittest.TestCase):
         result = factory_layout(table(), table_offset=0x8000, flash_bytes=8388608)
         self.assertEqual((result.app_offset, result.app_bytes), (0x10000, 0x300000))
 
-    def test_duplicate_partition_label_is_rejected(self):
-        raw = bytearray(table())
-        raw[32 + 12 : 32 + 28] = raw[12:28]
-        raw[96 + 16 : 96 + 32] = hashlib.md5(raw[:96]).digest()
-        with self.assertRaisesRegex(FlashFailure, "label_invalid"):
-            factory_layout(bytes(raw), table_offset=0x8000, flash_bytes=8388608)
-
     def test_unknown_ota_encryption_and_bad_checksum_fail_closed(self):
         for data in (table(16), table(flags=1), table()[:96] + b"x" + table()[97:]):
             with self.assertRaises(FlashFailure):

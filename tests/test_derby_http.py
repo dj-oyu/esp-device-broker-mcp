@@ -80,30 +80,26 @@ async def test_fixed_smoke_explicit_request_then_principal_bound_image(derby_ser
         connect(service.url, key.token) as remote,
     ):
         catalog = await remote.list_tools()
-        preparation = next(tool for tool in catalog.tools if tool.name == "prepare_test")
-        assert "derby_smoke" in json.dumps(preparation.input_schema)
-        lease = await call(remote, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300})
+        preparation = next(tool for tool in catalog.tools if tool.name == "submit")
+        assert "derby" in json.dumps(preparation.input_schema)
+        lease = await call(
+            remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 300}
+        )
         prepared = await call(
-            remote,
-            "prepare_test",
-            {
-                "session": lease["session"],
-                "job_id": "derby-one",
-                "test": "derby_smoke",
-            },
+            remote, "submit", {"session": lease["session"], "job_id": "derby-one", "kind": "derby"}
         )
         assert prepared["ok"] and not prepared["approval_required"], prepared
         assert not wire.writes and not wire.is_open
         execution = {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
-        result = await call(remote, "execute_test", execution)
+        result = await call(remote, "execute", {"op": "run", **execution})
         assert result["ok"], result
         if interruption in ("cancel", "lease_expired"):
             assert await asyncio.to_thread(entered.wait, 3)
             if interruption == "cancel":
                 cancelled = await call(
                     remote,
-                    "cancel_job",
-                    {"session": lease["session"], "job_id": "derby-one"},
+                    "cancel",
+                    {"target": "job", "session": lease["session"], "job_id": "derby-one"},
                 )
                 assert cancelled["stop_requested"]
             else:
@@ -132,6 +128,8 @@ async def test_fixed_smoke_explicit_request_then_principal_bound_image(derby_ser
         assert wire.closed and wire.writes[-2:] == [b"s", b"q"]
         preview = service.resident.operator_image("derby-one")
         assert preview["delivery_state"] == "available"
-        captured = await remote.call_tool("read_capture", {"request": {"job_id": "derby-one"}})
+        captured = await remote.call_tool(
+            "status", {"request": {"view": "capture", "job_id": "derby-one"}}
+        )
         assert not captured.is_error and any(c.type == "image" for c in captured.content)
         assert service.resident.read_capture("derby-one", key.metadata.principal_id).png

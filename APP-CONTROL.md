@@ -1,11 +1,11 @@
 # Registered app sessions (initial version)
 
-`prepare_test(test="app_session", app={...})` fixes the registered app, fresh
+`submit(kind="app_session", app={...})` fixes the registered app, fresh
 launch, typed action allowlist, count/rate/duration/log limits and stop/teardown
-impact. `execute_test` runs it in the existing authenticated lease/job/worker.
+impact. `execute(op=run)` runs it in the existing authenticated lease/job/worker.
 There is no app-specific MCP tool, arbitrary source/path/shell or raw serial.
 
-`list_apps` reads a cached catalog without opening USB. Before the first session
+`status(view=apps)` reads a cached catalog without opening USB. Before the first session
 it explicitly returns `source=unobserved`; the immutable plan binds this fact.
 Execution reads every actual descriptor plus the device-reported firmware hash
 and version before OPEN/START. Subsequent plans bind a canonical catalog hash,
@@ -13,7 +13,7 @@ boot, firmware hash/version and observation time, then recheck them at handshake
 A mismatch fails that job without START; the newly observed cache supports a new
 explicit plan. Device-reported identity is not cryptographic attestation.
 
-`app_command` targets one owned running job with expected boot/run/control-session,
+`execute(op=app_input)` targets one owned running job with expected boot/run/control-session,
 command ID and sequence. Supported operations are `action.tap`, `status`,
 `suspend`, `resume` and `stop`. Allowed actions are accept/back/up/right/down/left.
 START uses ID/sequence 1; client commands begin at 2. Status never applies input.
@@ -43,13 +43,13 @@ needs_review. A close failure retains the existing serial ownership barrier.
 No disconnect/restart reopens, relaunches or replays input. No DERBY recovery is
 used as a generic stop guarantee.
 
-`read_app_events` returns private control events and redacted logs on separate
+`status(view=logs, stream=app)` returns private control events and redacted logs on separate
 cursors. Control is bounded to 128 entries; logs to 256 entries/256 KiB, each
 line to 1024 UTF-8 bytes, retention to 300 seconds. Cursor responses include
 oldest sequences, next cursor, has_more, gap, dropped counts and expiry. Console
 flood cannot evict control ACK state. Untagged text is `observed_during_run`.
 Known secret patterns are redacted through the existing principal-bound log cache.
-Raw text is not persisted in public job history or shared read_logs.
+Raw text is not persisted in public job history or shared status(view=logs, stream=broker).
 
 `AppSessionClient` and `examples/app_session.py` use the same MCP calls for
 local.hello and local.stress. The example connects to a separately started

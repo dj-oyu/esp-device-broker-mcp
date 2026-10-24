@@ -17,7 +17,7 @@ offset0 boot_id:u64; 8 run_id:u32; 12 seq:u32; 16 lease_fence:u32;
 20 ttl_ms:u32; 24 app_id:char[32] (ASCII,NUL padded,max31);
 56 arg:u8; 57 reserved[3]=0.
 CATALOG uses seq as descriptor index (0-based), other fields zero, session/id0.
-It returns current boot identity and descriptor/count; no serial open by list_apps.
+It returns current boot identity and descriptor/count; no serial open by status(view=apps).
 OPEN uses known boot, run0, seq0, nonzero random session and nonzero lease fence,
 ttl1..90000, command_id0, app_id empty, arg0. Repeated identical OPEN is idempotent,
 never extends TTL; another session/fence is busy until cleanup completes.
@@ -64,9 +64,9 @@ original authority/cleanup agreement; unconfirmed teardown/port close=needs_revi
 Console flood does not evict ledger/ACK state; ACKs share serialized frame writer.
 
 Broker retains existing auth/immutable plan/lease/jobs/one serial worker and
-principal-bound bounded log cache. Add test=app_session to prepare/execute workflow,
-list_apps (cached catalog with freshness, never opens device), app_command,
-read_app_events (cursor,oldest_seq,next_cursor,has_more,gap,dropped_count,expiry).
+principal-bound bounded log cache. Add kind=app_session to the submit/execute workflow,
+status(view=apps) (cached catalog with freshness, never opens device), execute(op=app_input),
+status(view=logs, stream=app) (cursor,oldest_seq,next_cursor,has_more,gap,dropped_count,expiry).
 Separate bounded control events from logs; 128 control events and256 log events,
 per-line<=1024B,total logs<=262144B,retention<=existing bounded log TTL.
 Existing redaction applies. Untagged console attribution=observed_during_run.

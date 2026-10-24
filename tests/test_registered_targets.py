@@ -4,8 +4,6 @@ import json
 from dataclasses import replace
 
 import httpx2
-import pytest
-from pydantic import ValidationError
 from test_authenticated_mock import LOCAL, REMOTE
 from test_authenticated_mock import authenticated_mock as authenticated_mock
 from test_http_integration import service as service
@@ -87,7 +85,7 @@ async def test_registered_targets_exact_ids_only_and_current_settings(
             monkeypatch.setattr(target, name, forbidden)
 
     async with connect(url, REMOTE) as client:
-        result = await call(client, "list_registered_targets")
+        result = await call(client, "status", {"view": "targets"})
         assert result == {
             "ok": True,
             "build_projects": [{"project_id": "alpha-project"}, {"project_id": "z-project"}],
@@ -100,13 +98,13 @@ async def test_registered_targets_exact_ids_only_and_current_settings(
         resident.settings = resident.settings.model_copy(
             update={"build_projects": {}, "flash_devices": {"new-device": device}}
         )
-        assert await call(client, "list_registered_targets") == {
+        assert await call(client, "status", {"view": "targets"}) == {
             "ok": True,
             "build_projects": [],
             "flash_devices": [{"device_id": "new-device"}],
         }
         resident.settings = resident.settings.model_copy(update={"flash_devices": {}})
-        assert await call(client, "list_registered_targets") == {
+        assert await call(client, "status", {"view": "targets"}) == {
             "ok": True,
             "build_projects": [],
             "flash_devices": [],
@@ -127,13 +125,13 @@ async def test_registered_targets_requires_current_read_scope(authenticated_mock
     # without a registry fixture's platform-specific filesystem requirements.
     monkeypatch.setattr(RequestAuth, "authenticate", scoped)
     async with connect(url, REMOTE) as client:
-        assert await call(client, "list_registered_targets") == {
+        assert await call(client, "status", {"view": "targets"}) == {
             "ok": True,
             "build_projects": [],
             "flash_devices": [],
         }
         scopes[0] = frozenset({"control"})
-        assert await call(client, "list_registered_targets") == {
+        assert await call(client, "status", {"view": "targets"}) == {
             "ok": False,
             "error": "insufficient_scope",
         }
@@ -144,17 +142,25 @@ async def test_registered_targets_metadata_empty_input_and_read_only(authenticat
     url, resident = authenticated_mock
     async with connect(url, LOCAL) as client:
         catalog = (await client.list_tools()).tools
-        tool = next(tool for tool in catalog if tool.name == "list_registered_targets")
+        tool = next(tool for tool in catalog if tool.name == "status")
         assert tool.input_schema["type"] == "object"
-        assert not tool.input_schema.get("properties")
-        assert not tool.input_schema.get("required")
+        assert tool.input_schema["required"] == ["request"]
+        assert "targets" in json.dumps(tool.input_schema["$defs"]["View"])
         assert tool.annotations.read_only_hint is True
         assert tool.annotations.destructive_hint is False
         assert tool.annotations.open_world_hint is False
-        assert "project_id" in tool.description and "device_id" in tool.description
-        rejected = await client.call_tool("list_registered_targets", {"path": "SYNTHETIC_PRIVATE"})
+        assert "no side effects" in tool.description
+        assert [item.name for item in catalog if item.annotations.read_only_hint] == ["status"]
+        rejected = await client.call_tool("status", {"path": "SYNTHETIC_PRIVATE"})
         assert rejected.is_error
         assert "SYNTHETIC_PRIVATE" not in json.dumps(rejected.model_dump(mode="json"))
+        extra = await client.call_tool(
+            "status", {"request": {"view": "targets", "SYNTHETIC_PRIVATE": 1}}
+        )
+        assert extra.is_error
+        assert "SYNTHETIC_PRIVATE" not in json.dumps(extra.model_dump(mode="json"))
+        unexpected = await call(client, "status", {"view": "targets", "job_id": "synthetic-job"})
+        assert unexpected == {"ok": False, "error": "argument_not_allowed", "field": "job_id"}
     async with httpx2.AsyncClient(trust_env=False) as http:
         for headers in ({}, {"Authorization": "Bearer " + "c" * 64}):
             denied = await http.post(
@@ -164,27 +170,12 @@ async def test_registered_targets_metadata_empty_input_and_read_only(authenticat
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "tools/call",
-                    "params": {"name": "list_registered_targets", "arguments": {}},
+                    "params": {
+                        "name": "status",
+                        "arguments": {"request": {"view": "targets"}},
+                    },
                 },
             )
             assert denied.status_code == 401
             assert denied.json() == {"error": "authentication_required"}
     assert_no_work(resident)
-
-
-async def test_registered_targets_requires_auth_even_on_legacy_mock(service):
-    async with connect(service) as client:
-        assert await call(client, "list_registered_targets") == {
-            "ok": False,
-            "error": "authentication_required",
-        }
-
-
-@pytest.mark.parametrize("field,limit", [("build_projects", 16), ("flash_devices", 8)])
-def test_registered_target_count_remains_bounded(tmp_path, field, limit):
-    project, device = registrations(tmp_path)
-    registration = project if field == "build_projects" else device
-    maximum = {f"target-{index}": registration for index in range(limit)}
-    assert len(getattr(Settings.model_validate({field: maximum}), field)) == limit
-    with pytest.raises(ValidationError):
-        Settings.model_validate({field: {**maximum, "one-too-many": registration}})

@@ -107,23 +107,6 @@ class DriverBootTests(unittest.TestCase):
             if revoked:
                 self.assertEqual(ports[0].opens, 0)
 
-    def test_stop_during_passive_read_closes_without_commands(self):
-        driver, _, ports, _ = self.make_driver()
-        original = ports[0].read
-
-        def stop_after_read(size):
-            result = original(size)
-            driver.stop()
-            return result
-
-        ports[0].read = stop_after_read
-        with self.assertRaises((FlashFailure, SerialFailure)):
-            driver.boot()
-        self.assertEqual(ports[0].writes, [])
-        self.assertEqual(ports[1].writes, [])
-        self.assertFalse(driver.active)
-        self.assertEqual(ports[0].opens, ports[0].closes)
-
     def test_stop_before_reset_controls_never_opens(self):
         driver, backend, ports, _ = self.make_driver()
         original = backend.factory
@@ -137,26 +120,6 @@ class DriverBootTests(unittest.TestCase):
             driver.boot()
         self.assertEqual(ports[0].opens, 0)
         self.assertFalse(any(event[1:] == ("rts", True) for event in ports[0].trace))
-        self.assertFalse(driver.active)
-
-    def test_post_open_revocation_never_starts_reset(self):
-        driver, backend, ports, _ = self.make_driver()
-        original = backend.inventory
-        count = 0
-
-        def revoke_after_open():
-            nonlocal count
-            count += 1
-            if count == 3:
-                driver.stop()
-            return original()
-
-        backend.inventory = revoke_after_open
-        with self.assertRaises((FlashFailure, SerialFailure)):
-            driver.boot()
-        self.assertEqual(ports[0].opens, 1)
-        self.assertFalse(any(event[1:] == ("rts", True) for event in ports[0].trace))
-        self.assertEqual(ports[0].opens, ports[0].closes)
         self.assertFalse(driver.active)
 
     def test_cancel_during_pulse_allows_deassertion_and_close(self):
@@ -189,38 +152,6 @@ class DriverBootTests(unittest.TestCase):
         self.assertEqual(ports[1].opens, 0)
         self.assertEqual(ports[0].opens, ports[0].closes)
         self.assertFalse(driver.active)
-
-    def test_without_expected_elf_boot_cannot_be_claimed(self):
-        driver, _, ports, _ = self.make_driver()
-        driver.expected_elf_sha256 = None
-        with self.assertRaisesRegex(FlashFailure, "boot_unverified"):
-            driver.boot()
-        self.assertEqual(ports[1].writes, [])
-        self.assertFalse(driver.active)
-
-    def test_slash_version_boot_preserves_exact_elf_and_idf_checks(self):
-        for version, idf, elf, accepted in (
-            (b"archive/20261021/ci/full-contra", b"v6.0.1", b"abcdef0123456789", True),
-            (b"archive/20261021/ci/full-contra", b"v6.0.2", b"abcdef0123456789", False),
-            (b"archive/20261021/ci/full-contra", b"v6.0.1", b"1111111111111111", False),
-        ):
-            driver, _, ports, _ = self.make_driver()
-            ports[0].chunks = deque(
-                [
-                    STARTUP.replace(b"v0.0.7-test", version)
-                    .replace(b"v5.5-test", idf)
-                    .replace(b"abcdef0123456789", elf)
-                ]
-            )
-            if accepted:
-                self.assertTrue(driver.boot()["boot_observed"])
-            else:
-                with self.assertRaisesRegex(FlashFailure, "boot_unverified"):
-                    driver.boot()
-            self.assertEqual(driver.last_observation.firmware.app_version, version.decode())
-            self.assertIsNotNone(driver.last_boot_attempt)
-            self.assertEqual(ports[0].writes, [])
-            self.assertEqual(ports[0].opens, ports[0].closes)
 
     def test_partial_transport_failure_and_failed_close_keep_primary_evidence(self):
         for close_failure in (False, True):

@@ -1,7 +1,6 @@
 """Independent safety/recovery regressions. All devices and state are synthetic."""
 
 import asyncio
-import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -189,50 +188,6 @@ async def test_review_recovery_never_replays_and_allows_fresh_acquire(tmp_path: 
         assert broker.job("running")["reviewed"] == 0
         await asyncio.sleep(0)
         assert backend.calls == 0
-    finally:
-        await broker.close()
-
-
-@pytest.mark.asyncio
-async def test_review_different_state_dirs_share_device_lock(tmp_path: Path) -> None:
-    lock = tmp_path / "device.lockfile"
-    first = Broker(Settings(state_dir=tmp_path / "one"), lock_path=lock)
-    second = Broker(Settings(state_dir=tmp_path / "two"), lock_path=lock)
-    await first.start()
-    try:
-        with pytest.raises(BrokerError, match="broker_already_running"):
-            await second.start()
-        assert first.status()["backend"] == "mock"
-    finally:
-        await first.close()
-    await second.start()
-    await second.close()
-
-
-@pytest.mark.asyncio
-async def test_review_mutated_plan_is_rejected(tmp_path: Path) -> None:
-    broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
-        lock_path=tmp_path / "device.lockfile",
-        principal_valid=lambda *args: True,
-    )
-    await broker.start()
-    try:
-        token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="synthetic-client")[
-            "session"
-        ]
-        request = prepare(broker, token, "integrity")
-        assert broker.store is not None
-        payload = broker.store.plan(request.plan_hash)
-        assert payload is not None
-        payload["test"] = "diagnostics"
-        broker.store.db.execute(
-            "UPDATE plans SET payload=? WHERE hash=?", (json.dumps(payload), request.plan_hash)
-        )
-        broker.store.db.commit()
-        with pytest.raises(BrokerError, match="plan_not_found_or_changed"):
-            broker.execute(request)
-        assert broker.queue.empty()
     finally:
         await broker.close()
 

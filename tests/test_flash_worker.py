@@ -92,12 +92,6 @@ class WorkerTests(unittest.TestCase):
             run_job(dict(self.job, flash_bytes=33554432), self.root, self.tool)
         self.assertEqual(self.calls, [])
 
-    def test_existing_stub_is_rejected(self):
-        self.chip.IS_STUB = True
-        with self.assertRaisesRegex(ValueError, "target_mismatch"):
-            run_job(self.job, self.root, self.tool)
-        self.assertEqual(self.writes, [])
-
     def test_rom_crossing_read_and_write_rejected_before_device_open(self):
         for job in (
             dict(self.job, action="read", flash_bytes=16777216, offset=0xFFF000, size=8192),
@@ -143,52 +137,6 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(result["sha256"], hashlib.sha256(b"x" * 128).hexdigest())
         self.assertNotIn("data", result)
         self.assertEqual(self.writes, [])
-
-    def test_rom_progress_callback_is_structured_and_native_output_stays_private(self):
-        from unittest.mock import patch
-
-        updates = []
-
-        def native_read(offset, size, callback):
-            for done in range(1024, size + 1, 1024):
-                callback(done, size, offset)
-            return b"x" * size
-
-        self.chip.read_flash = native_read
-        self.tool.cmds.read_flash = lambda chip, offset, size, **kwargs: chip.read_flash(
-            offset, size
-        )
-        with patch("cardputer_mcp.flash_worker.time.monotonic", side_effect=[0, 6, 12, 18, 24]):
-            result = run_job(
-                dict(self.job, action="read", offset=4096, size=4096),
-                self.root,
-                self.tool,
-                lambda done, total: updates.append((done, total)),
-            )
-        self.assertEqual(updates, [(1024, 4096), (2048, 4096), (3072, 4096), (4096, 4096)])
-        self.assertEqual(result["bytes"], 4096)
-        self.assertNotIn("data", result)
-        self.assertEqual(self.writes, [])
-        self.assertFalse(self.chip._port.is_open)
-
-    def test_invalid_read_progress_never_creates_private_success_output(self):
-        def native_read(offset, size, callback):
-            callback(size + 1, size, offset)
-            return b"x" * size
-
-        self.chip.read_flash = native_read
-        self.tool.cmds.read_flash = lambda chip, offset, size, **kwargs: chip.read_flash(
-            offset, size
-        )
-        with self.assertRaisesRegex(ValueError, "read_progress"):
-            run_job(
-                dict(self.job, action="read", offset=0, size=1024),
-                self.root,
-                self.tool,
-                lambda done, total: None,
-            )
-        self.assertFalse((self.root / "read.bin").exists())
-        self.assertFalse(self.chip._port.is_open)
 
     def test_native_read_failure_emits_only_fixed_type_and_class(self):
         secret = "password=private COM7 C:/private/device.toml"

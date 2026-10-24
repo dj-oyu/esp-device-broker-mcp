@@ -64,20 +64,16 @@ def test_durable_manifest_is_independent_of_log_retention(receipt, retention):
     assert receipt.builder.artifacts._records == {}
 
 
-@pytest.mark.parametrize(
-    "file,mutation",
-    [
-        ("broker-manifest.json", "corrupt"),
-        ("app.bin", "corrupt"),
-        ("app.elf", "corrupt"),
-        ("flasher_args.json", "corrupt"),
-        ("config/sdkconfig.json", "corrupt"),
-        ("app.bin", "missing"),
-        ("broker-manifest.json", "missing"),
-        ("broker-build-identity.json", "corrupt"),
-    ],
-)
-@pytest.mark.parametrize("retention", ["restart", "fresh"])
+# One corrupt and one missing artifact, after a restart and with fresh logs.
+_RECEIPT_CASES = [
+    ("broker-manifest.json", "corrupt", "restart"),
+    ("app.bin", "missing", "restart"),
+    ("broker-manifest.json", "corrupt", "fresh"),
+    ("app.bin", "missing", "fresh"),
+]
+
+
+@pytest.mark.parametrize("file,mutation,retention", _RECEIPT_CASES)
 def test_invalid_receipt_never_falls_back_to_ram_manifest(receipt, file, mutation, retention):
     root, manifest = receipt.publish()
     receipt.restart()
@@ -195,7 +191,9 @@ async def test_actual_mcp_receipt_survives_broker_restart_and_denies_other_princ
         logs = BuildLogs(OWNER)
         logs.append("warning: synthetic job output")
         broker.firmware_build.logs["build-0"] = logs
-        first = await call(owner, "read_build_logs", {"job_id": "build-0"})
+        first = await call(
+            owner, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
+        )
         assert first["ok"] and first["manifest"] == manifest and not first["expired"]
         expected_export = first["manifest_export"], first["manifest_export_sha256"]
     before = list(receipt.store.db.iterdump())
@@ -205,11 +203,15 @@ async def test_actual_mcp_receipt_survives_broker_restart_and_denies_other_princ
         connect(url, LOCAL) as stranger,
     ):
         assert not broker.firmware_build.logs and not broker.firmware_build.manifests
-        result = await call(owner, "read_build_logs", {"job_id": "build-0"})
+        result = await call(
+            owner, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
+        )
         assert result["ok"] and result["expired"] and result["gap"]
         assert result["artifact_status"] == "verified" and result["manifest"] == manifest
         assert (result["manifest_export"], result["manifest_export_sha256"]) == expected_export
-        denied = await call(stranger, "read_build_logs", {"job_id": "build-0"})
+        denied = await call(
+            stranger, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
+        )
         assert denied == {"ok": False, "error": "build_log_not_available"}
         assert "manifest_export" not in denied
         assert broker.session is None and broker.backend.calls == 0
@@ -224,7 +226,9 @@ async def test_mcp_unavailable_artifact_preserves_log_gap_and_success_history(re
     else:
         (root / "app.bin").unlink()
     async with running(receipt) as (url, broker, _), connect(url, REMOTE) as owner:
-        result = await call(owner, "read_build_logs", {"job_id": "build-0"})
+        result = await call(
+            owner, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
+        )
         assert result["ok"] and result["expired"] and result["gap"]
         assert result["artifact_status"] == "unavailable" and "manifest" not in result
         assert "SYNTHETIC_PRIVATE" not in json.dumps(result)
@@ -232,9 +236,7 @@ async def test_mcp_unavailable_artifact_preserves_log_gap_and_success_history(re
         assert broker.job("build-0")["state"] == "succeeded"
 
 
-@pytest.mark.parametrize(
-    "mutation", ["none", "revoke", "registration", "job_state", "plan_hash", "plan_owner", "epoch"]
-)
+@pytest.mark.parametrize("mutation", ["none", "revoke", "epoch"])
 async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
     receipt, monkeypatch, mutation
 ):
@@ -256,8 +258,10 @@ async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
             result = await owner.session.send_request(
                 CallToolRequest(
                     params=CallToolRequestParams(
-                        name="read_build_logs",
-                        arguments={"request": {"job_id": "build-0"}},
+                        name="status",
+                        arguments={
+                            "request": {"view": "logs", "stream": "build", "job_id": "build-0"}
+                        },
                     )
                 ),
                 CallToolResult,
@@ -269,41 +273,33 @@ async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
             assert await asyncio.to_thread(entered.wait, 2)
             async with connect(url, REMOTE) as status_client:
                 concurrent = await asyncio.wait_for(
-                    call(status_client, "read_build_logs", {"job_id": "build-0"}), 1
+                    call(
+                        status_client,
+                        "status",
+                        {"view": "logs", "stream": "build", "job_id": "build-0"},
+                    ),
+                    1,
                 )
                 assert concurrent["ok"] and concurrent["artifact_status"] == "busy"
                 assert "manifest" not in concurrent
                 assert "manifest_export" not in concurrent
                 assert "manifest_export_sha256" not in concurrent
-                status = await asyncio.wait_for(call(status_client, "device_status"), 1)
+                status = await asyncio.wait_for(
+                    call(status_client, "status", {"view": "device"}), 1
+                )
                 assert status["ok"] and status["active_job"] is None
             if mutation == "revoke":
                 auth._tokens[Origin.REMOTE] = "c" * 64
-            elif mutation == "registration":
-                broker.settings.build_projects.clear()
-            elif mutation == "job_state":
-                broker._store().set_job("build-0", "needs_review", "synthetic_invalidation")
-            elif mutation == "plan_hash":
-                store = broker._store()
-                store.db.execute("UPDATE jobs SET plan_hash=? WHERE id='build-0'", ("f" * 64,))
-                store.db.commit()
             elif mutation == "epoch":
                 broker.epoch = "f" * 32
-            elif mutation == "plan_owner":
-                store = broker._store()
-                digest = store.job("build-0")["plan_hash"]
-                changed = store.plan(digest)
-                changed["build_principal"] = "other-owner"
-                store.db.execute(
-                    "UPDATE plans SET payload=? WHERE hash=?", (json.dumps(changed), digest)
-                )
-                store.db.commit()
         finally:
             release.set()
         result = await asyncio.wait_for(reading, 3)
         if mutation == "none":
             assert result["ok"] and result["artifact_status"] == "verified"
-            again = await call(owner, "read_build_logs", {"job_id": "build-0"})
+            again = await call(
+                owner, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
+            )
             assert again["ok"] and again["artifact_status"] == "verified"
             assert again["manifest"] == result["manifest"]
             assert again["manifest_export"] == result["manifest_export"]

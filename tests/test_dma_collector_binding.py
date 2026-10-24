@@ -83,8 +83,10 @@ def test_four_axis_choices_bind_to_verified_retained_flash(make_dma_chain, detai
     )
 
 
-@pytest.mark.parametrize("detail", ["ON", "OFF"])
-@pytest.mark.parametrize("dma", ["ON", "OFF"])
+# The export commitment is checked independently of the two axes (all four
+# axis choices are bound in test_four_axis_choices_bind_to_verified_retained_flash),
+# so the two mixed combinations are enough here.
+@pytest.mark.parametrize("detail,dma", [("ON", "OFF"), ("OFF", "ON")])
 @pytest.mark.parametrize("damage", ["none", "wrong", "null", "bool"])
 def test_collector_rechecks_present_export_commitment(make_dma_chain, detail, dma, damage):
     chain = make_dma_chain(detail, dma)

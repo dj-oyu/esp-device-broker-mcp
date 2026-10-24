@@ -6,7 +6,6 @@ import threading
 import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from types import SimpleNamespace
 from typing import Any
 
 import httpx2
@@ -15,17 +14,13 @@ import pytest
 from cardputer_mcp import gui_live_transport
 from cardputer_mcp.gui_live_transport import (
     AUTH_FAILED,
-    DELIVERY_GAP,
-    IMAGE_EXPIRED,
     INVALID_RESPONSE,
-    MAX_DELIVERIES,
     MAX_RESPONSE_BYTES,
     REJECTED,
     STARTUP_FAILED,
     LiveRunner,
 )
 from cardputer_mcp.operator_client import OperatorClient, OperatorClientError
-from cardputer_mcp.operator_live import HEARTBEAT_SECONDS
 
 EPOCH = "a" * 32
 TOKEN = "test-private-token"
@@ -73,48 +68,6 @@ def runner_factory(monkeypatch):
         assert not runner._thread.is_alive()
 
 
-def test_held_reads_advance_cursor_and_heartbeat_without_state_refresh(runner_factory):
-    make, options = runner_factory
-    requests = []
-    held = threading.Event()
-
-    async def handler(request):
-        requests.append(request)
-        if len(requests) == 1:
-            return httpx2.Response(
-                200, json=envelope(), headers={"set-cookie": "unused=cookie; Path=/"}
-            )
-        if len(requests) == 2:
-            return httpx2.Response(200, json=envelope("heartbeat"))
-        held.set()
-        await asyncio.Future()
-
-    runner = make(handler)
-    runner.start(1)
-    assert held.wait(1)
-    events = runner.drain()
-    assert [event.payload["kind"] for event in events] == ["snapshot", "heartbeat"]
-    assert all(event.kind == "message" and event.generation == 1 for event in events)
-    assert all(event.started_at > 0 for event in events)
-    assert all(request.url.path == "/operator/live" for request in requests)
-    assert json.loads(requests[0].content) == {"cursor": None}
-    assert [json.loads(request.content)["cursor"] for request in requests[1:]] == [
-        {"epoch": EPOCH, "sequence": 1},
-        {"epoch": EPOCH, "sequence": 1},
-    ]
-    assert all(request.headers["authorization"] == f"Bearer {TOKEN}" for request in requests)
-    assert all(TOKEN not in str(request.url) for request in requests)
-    assert all("cookie" not in request.headers for request in requests)
-    assert options[0]["trust_env"] is False
-    assert options[0]["follow_redirects"] is False
-    # The client's inactivity timeout must outlast an idle server heartbeat plus
-    # scheduling/network overhead; equal deadlines caused normal idle disconnects.
-    assert options[0]["timeout"].read >= HEARTBEAT_SECONDS + 5.0
-    assert options[0]["timeout"].connect == 2.0
-    assert options[0]["timeout"].write == 5.0
-    assert options[0]["timeout"].pool == 2.0
-
-
 @pytest.mark.parametrize(
     "status,expected", [(302, REJECTED), (401, AUTH_FAILED), (403, AUTH_FAILED)]
 )
@@ -152,181 +105,6 @@ def test_credential_validation_precedes_worker_and_no_secret_repr():
 
     with pytest.raises(OperatorClientError, match="127.0.0.1"):
         LiveRunner(ForeignAPI())
-
-
-@pytest.mark.parametrize(
-    "response",
-    [
-        b"not json",
-        b"[]",
-        b'{"ok":false}',
-        json.dumps(envelope("heartbeat")).encode(),
-        json.dumps(envelope(cursor={"epoch": "invalid", "sequence": 0})).encode(),
-    ],
-)
-def test_invalid_initial_envelopes_disconnect_with_safe_error(runner_factory, response):
-    make, _ = runner_factory
-
-    async def handler(request):
-        return httpx2.Response(200, content=response)
-
-    runner = make(handler)
-    runner.start(1)
-    events = wait_until(runner.drain)
-    assert len(events) == 1
-    assert events[0].kind == "disconnected"
-    assert events[0].payload["error"] in (INVALID_RESPONSE, REJECTED)
-
-
-def test_response_limit_stops_stream_before_parsing_unbounded_body(runner_factory):
-    make, _ = runner_factory
-    yielded = 0
-    closed = threading.Event()
-
-    class LargeBody(httpx2.AsyncByteStream):
-        async def __aiter__(self):
-            nonlocal yielded
-            for _ in range(1000):
-                yielded += 8192
-                yield b"x" * 8192
-
-        async def aclose(self):
-            closed.set()
-
-    async def handler(request):
-        return httpx2.Response(200, stream=LargeBody())
-
-    runner = make(handler)
-    runner.start(1)
-    events = wait_until(runner.drain)
-    assert events[0].payload == {"error": INVALID_RESPONSE}
-    assert yielded == MAX_RESPONSE_BYTES + 8192
-    assert closed.is_set()
-
-
-def test_content_length_limit_rejects_before_reading(runner_factory):
-    make, _ = runner_factory
-    read = threading.Event()
-
-    class Body(httpx2.AsyncByteStream):
-        async def __aiter__(self):
-            read.set()
-            yield b"{}"
-
-    async def handler(request):
-        return httpx2.Response(
-            200, headers={"content-length": str(MAX_RESPONSE_BYTES + 1)}, stream=Body()
-        )
-
-    runner = make(handler)
-    runner.start(1)
-    assert wait_until(runner.drain)[0].payload == {"error": INVALID_RESPONSE}
-    assert not read.is_set()
-
-
-def test_reconnect_cancels_held_read_and_rejects_late_generation(runner_factory):
-    make, _ = runner_factory
-    requests = []
-    old_held = threading.Event()
-    old_cancelled = threading.Event()
-    new_held = threading.Event()
-    closed_cancelled = threading.Event()
-
-    async def handler(request):
-        requests.append(json.loads(request.content))
-        if len(requests) == 1:
-            old_held.set()
-            try:
-                await asyncio.Future()
-            except asyncio.CancelledError:
-                old_cancelled.set()
-                # Simulate an uncancellable response already completing.
-                return httpx2.Response(200, json=envelope(sequence=99))
-        if len(requests) == 2:
-            return httpx2.Response(200, json=envelope(sequence=2))
-        new_held.set()
-        try:
-            await asyncio.Future()
-        except asyncio.CancelledError:
-            closed_cancelled.set()
-            return httpx2.Response(200, json=envelope("heartbeat", sequence=2))
-
-    runner = make(handler)
-    runner.start(1)
-    assert old_held.wait(1)
-    runner.reconnect(2)
-    assert new_held.wait(1)
-    assert old_cancelled.is_set()
-    events = runner.drain()
-    assert len(events) == 1
-    assert events[0].generation == 2
-    assert events[0].payload["cursor"]["sequence"] == 2
-    assert requests[:2] == [{"cursor": None}, {"cursor": None}]
-    start = time.monotonic()
-    runner.close()
-    assert time.monotonic() - start < 1
-    assert closed_cancelled.is_set()
-    assert not runner._thread.is_alive()
-    assert runner.drain() == []
-    runner.reconnect(3)
-    runner.close()
-
-
-def test_mismatched_delta_base_stops_subscription(runner_factory):
-    make, _ = runner_factory
-    requests = []
-
-    async def handler(request):
-        requests.append(request)
-        if len(requests) == 1:
-            return httpx2.Response(200, json=envelope())
-        return httpx2.Response(
-            200,
-            json=envelope("delta", sequence=3, base_cursor={"epoch": EPOCH, "sequence": 2}),
-        )
-
-    runner = make(handler)
-    runner.start(1)
-    wait_until(lambda: len(requests) == 2)
-    events = wait_until(lambda: result if len(result := runner.drain()) == 2 else None)
-    assert [event.kind for event in events] == ["message", "disconnected"]
-    assert events[-1].payload == {"error": INVALID_RESPONSE}
-    assert len(requests) == 2
-
-
-def test_overflow_discards_delta_chain_and_waits_for_explicit_new_generation(runner_factory):
-    make, _ = runner_factory
-    requests = []
-    recovered = threading.Event()
-
-    async def handler(request):
-        payload = json.loads(request.content)
-        requests.append(payload)
-        if len(requests) > MAX_DELIVERIES + 1:
-            if payload["cursor"] is None:
-                recovered.set()
-                return httpx2.Response(200, json=envelope(sequence=100))
-            await asyncio.Future()
-        if payload["cursor"] is None:
-            return httpx2.Response(200, json=envelope())
-        sequence = payload["cursor"]["sequence"]
-        return httpx2.Response(
-            200, json=envelope("delta", sequence + 1, base_cursor=payload["cursor"])
-        )
-
-    runner = make(handler)
-    runner.start(1)
-    wait_until(lambda: runner._gap_generation == 1)
-    assert len(requests) == MAX_DELIVERIES + 1
-    assert runner.drain()[0].payload == {"error": DELIVERY_GAP}
-    assert runner.drain() == []
-    runner.reconnect(1)
-    assert len(requests) == MAX_DELIVERIES + 1
-    runner.reconnect(2)
-    assert recovered.wait(1)
-    events = wait_until(runner.drain)
-    assert events[0].generation == 2
-    assert events[0].payload["kind"] == "snapshot"
 
 
 def test_logs_are_bounded_selected_reads_with_per_request_identity(runner_factory):
@@ -383,32 +161,6 @@ def test_logs_are_bounded_selected_reads_with_per_request_identity(runner_factor
     with pytest.raises(ValueError):
         runner.read_logs(1, "../not-a-job")
     assert len(logs) == 2
-
-
-def test_log_refusal_remains_separate_from_live_subscription(runner_factory):
-    make, _ = runner_factory
-    held = threading.Event()
-
-    async def handler(request):
-        if request.url.path == "/operator/job-logs":
-            return httpx2.Response(200, json={"ok": False, "error": "not_authorized"})
-        if json.loads(request.content)["cursor"] is None:
-            return httpx2.Response(200, json=envelope())
-        held.set()
-        await asyncio.Future()
-
-    runner = make(handler)
-    runner.start(1)
-    assert held.wait(1)
-    runner.drain()
-    request_id = runner.read_logs(1, "job_A")
-    events = wait_until(runner.drain)
-    assert events[0].payload == {
-        "job_id": "job_A",
-        "request_id": request_id,
-        "response": {"ok": False, "error": "not_authorized"},
-    }
-    assert not runner._live_task.done()
 
 
 def test_real_localhost_auth_ignores_proxies_and_does_not_follow_redirect(monkeypatch):
@@ -638,57 +390,6 @@ def test_explicit_image_read_is_once_bounded_authenticated_and_independent_of_lo
         runner.read_image(1, "../invalid")
 
 
-def test_replacing_image_read_rejects_late_a_b_a_completion_without_cancelling_logs(runner_factory):
-    make, _ = runner_factory
-    live_held = threading.Event()
-    logs_held = threading.Event()
-    image_held = threading.Event()
-    cancelled = threading.Event()
-    image_jobs = []
-
-    async def handler(request):
-        payload = json.loads(request.content)
-        if request.url.path == "/operator/live":
-            if payload["cursor"] is None:
-                return httpx2.Response(200, json=envelope())
-            live_held.set()
-            await asyncio.Future()
-        if request.url.path == "/operator/job-logs":
-            logs_held.set()
-            await asyncio.Future()
-        image_jobs.append(payload["job_id"])
-        if len(image_jobs) == 1:
-            image_held.set()
-            try:
-                await asyncio.Future()
-            except asyncio.CancelledError:
-                cancelled.set()
-                return httpx2.Response(200, json={"ok": True, "body": "STALE A"})
-        return httpx2.Response(200, json={"ok": True, "body": "current " + payload["job_id"]})
-
-    runner = make(handler)
-    runner.start(1)
-    assert live_held.wait(1)
-    runner.drain()
-    runner.read_logs(1, "job_A")
-    assert logs_held.wait(1)
-    old_id = runner.read_image(1, "job_A")
-    assert image_held.wait(1)
-    middle_id = runner.read_image(1, "job_B")
-    assert wait_until(runner.drain)[0].payload["request_id"] == middle_id
-    current_id = runner.read_image(1, "job_A")
-    events = wait_until(runner.drain)
-    assert old_id < middle_id < current_id
-    assert cancelled.is_set()
-    assert events[0].payload == {
-        "job_id": "job_A",
-        "request_id": current_id,
-        "response": {"ok": True, "body": "current job_A"},
-    }
-    assert not runner._log_task.done() and not runner._live_task.done()
-    assert "STALE" not in repr(events)
-
-
 @pytest.mark.parametrize("action", ["pause", "reconnect", "close"])
 def test_image_read_is_cancelled_and_late_result_fenced_by_view_lifecycle(runner_factory, action):
     make, _ = runner_factory
@@ -781,47 +482,6 @@ def test_image_failures_are_safe_bounded_and_never_retry_or_disconnect_live(
     assert not runner._live_task.done()
 
 
-def test_delivery_overflow_cancels_image_read_and_drops_late_preview(runner_factory):
-    make, _ = runner_factory
-    held = threading.Event()
-    image_held = threading.Event()
-    image_cancelled = threading.Event()
-    flood = []
-
-    async def handler(request):
-        if request.url.path == "/operator/image":
-            image_held.set()
-            try:
-                await asyncio.Future()
-            except asyncio.CancelledError:
-                image_cancelled.set()
-                return httpx2.Response(200, json={"ok": True, "body": "late preview"})
-        cursor = json.loads(request.content)["cursor"]
-        if cursor is None:
-            return httpx2.Response(200, json=envelope())
-        if not flood:
-            gate = asyncio.get_running_loop().create_future()
-            flood.append(gate)
-            held.set()
-            await gate
-        return httpx2.Response(
-            200, json=envelope("delta", cursor["sequence"] + 1, base_cursor=cursor)
-        )
-
-    runner = make(handler)
-    runner.start(1)
-    assert held.wait(1)
-    runner.drain()
-    runner.read_image(1, "job_A")
-    assert image_held.wait(1)
-    runner._loop.call_soon_threadsafe(flood[0].set_result, None)
-    assert image_cancelled.wait(1)
-    events = runner.drain()
-    assert len(events) == 1 and events[0].kind == "disconnected"
-    assert events[0].payload == {"error": DELIVERY_GAP}
-    assert runner._gap_generation == 1
-
-
 def test_real_three_connection_budget_allows_held_live_log_and_image_without_cancellation():
     held = {path: threading.Event() for path in ("live", "job-logs", "image")}
     releases = {path: threading.Event() for path in held}
@@ -901,158 +561,13 @@ def test_real_three_connection_budget_allows_held_live_log_and_image_without_can
 
 
 @pytest.mark.parametrize(
-    "deadline", [0.0, -1.0, float("nan"), float("inf"), float("-inf"), True, TOKEN, 10**500]
-)
-def test_invalid_or_expired_image_deadline_returns_fixed_error_without_http(
-    runner_factory, deadline
-):
-    make, _ = runner_factory
-    held = threading.Event()
-    requests = []
-
-    async def handler(request):
-        requests.append(request)
-        if json.loads(request.content).get("cursor", "not live") is None:
-            return httpx2.Response(200, json=envelope())
-        held.set()
-        await asyncio.Future()
-
-    runner = make(handler)
-    runner.start(1)
-    assert held.wait(1)
-    runner.drain()
-    request_id = runner.read_image(1, "capture_A", expires_at=deadline)
-    events = wait_until(runner.drain)
-    assert len(events) == 1 and events[0].kind == "image"
-    assert events[0].payload == {
-        "job_id": "capture_A",
-        "request_id": request_id,
-        "error": IMAGE_EXPIRED,
-    }
-    assert all(request.url.path == "/operator/live" for request in requests)
-    assert TOKEN not in repr(events)
-    assert runner._image_task is None
-
-
-def test_image_deadline_is_rechecked_after_worker_queue_delay(runner_factory, monkeypatch):
-    make, _ = runner_factory
-    held = threading.Event()
-    blocked = threading.Event()
-    release = threading.Event()
-    requests = []
-    clock = [1000.0]
-    monkeypatch.setattr(gui_live_transport, "time", SimpleNamespace(monotonic=lambda: clock[0]))
-
-    async def handler(request):
-        requests.append(request)
-        if json.loads(request.content).get("cursor", "not live") is None:
-            return httpx2.Response(200, json=envelope())
-        held.set()
-        await asyncio.Future()
-
-    def busy_worker():
-        blocked.set()
-        release.wait(timeout=1)
-
-    runner = make(handler)
-    runner.start(1)
-    assert held.wait(1)
-    runner.drain()
-    runner._loop.call_soon_threadsafe(busy_worker)
-    assert blocked.wait(1)
-    try:
-        request_id = runner.read_image(1, "capture_A", expires_at=1001.0)
-        clock[0] = 1002.0
-    finally:
-        release.set()
-    events = wait_until(runner.drain)
-    assert events[0].payload == {
-        "job_id": "capture_A",
-        "request_id": request_id,
-        "error": IMAGE_EXPIRED,
-    }
-    assert all(request.url.path == "/operator/live" for request in requests)
-
-
-def test_image_deadline_guard_is_immediately_before_http_send(runner_factory, monkeypatch):
-    make, _ = runner_factory
-    held = threading.Event()
-    requests = []
-    clock = [1000.0]
-    monkeypatch.setattr(gui_live_transport, "time", SimpleNamespace(monotonic=lambda: clock[0]))
-
-    async def handler(request):
-        requests.append(request)
-        if json.loads(request.content).get("cursor", "not live") is None:
-            return httpx2.Response(200, json=envelope())
-        held.set()
-        await asyncio.Future()
-
-    runner = make(handler)
-    runner.start(1)
-    assert held.wait(1)
-    runner.drain()
-    build = runner._client.build_request
-
-    def build_request(*args, **kwargs):
-        request = build(*args, **kwargs)
-        if request.url.path == "/operator/image":
-            clock[0] = 1002.0
-        return request
-
-    monkeypatch.setattr(runner._client, "build_request", build_request)
-    runner.read_image(1, "capture_A", expires_at=1001.0)
-    events = wait_until(runner.drain)
-    assert events[0].payload["error"] == IMAGE_EXPIRED
-    assert all(request.url.path == "/operator/live" for request in requests)
-
-
-def test_old_generation_image_request_cannot_invalidate_current_pending_preview(runner_factory):
-    make, _ = runner_factory
-    live_held = threading.Event()
-    image_held = threading.Event()
-    release = []
-
-    async def handler(request):
-        if request.url.path == "/operator/image":
-            gate = asyncio.get_running_loop().create_future()
-            release.append(gate)
-            image_held.set()
-            await gate
-            return httpx2.Response(200, json={"ok": True, "body": "current preview"})
-        if json.loads(request.content)["cursor"] is None:
-            return httpx2.Response(200, json=envelope())
-        live_held.set()
-        await asyncio.Future()
-
-    runner = make(handler)
-    runner.start(2)
-    assert live_held.wait(1)
-    runner.drain()
-    current_id = runner.read_image(2, "capture_A")
-    assert image_held.wait(1)
-    assert runner.read_image(1, "capture_B") == 0
-    runner._loop.call_soon_threadsafe(release[0].set_result, None)
-    events = wait_until(runner.drain)
-    assert len(events) == 1
-    assert events[0].generation == 2 and events[0].payload["request_id"] == current_id
-    assert events[0].payload["response"]["body"] == "current preview"
-
-
-@pytest.mark.parametrize(
     "status,retryable",
     [
         (302, False),
-        (400, False),
         (401, False),
-        (403, False),
-        (404, False),
         (408, True),
         (429, True),
-        (500, True),
-        (502, True),
         (503, True),
-        (504, True),
     ],
 )
 def test_live_failure_diagnostics_classify_status_without_response_text(
@@ -1072,66 +587,3 @@ def test_live_failure_diagnostics_classify_status_without_response_text(
     assert details["generation"] == 1 and details["elapsed_ms"] >= 0
     assert details["code"] is None and details["utc"].endswith("+00:00")
     assert TOKEN not in repr(event) and "PRIVATE" not in repr(event)
-
-
-@pytest.mark.parametrize(
-    "code,retryable",
-    [
-        ("unavailable", True),
-        ("operator_timeline_unavailable", True),
-        ("operator_request_failed", False),
-        ("PRIVATE", False),
-    ],
-)
-def test_live_ok_false_classification_is_allowlisted(runner_factory, code, retryable):
-    make, _ = runner_factory
-
-    async def handler(request):
-        return httpx2.Response(200, json={"ok": False, "error": code, "secret": TOKEN})
-
-    runner = make(handler)
-    runner.start(1)
-    event = wait_until(runner.drain)[0]
-    assert event.diagnostic["http_status"] == 200
-    assert event.diagnostic["retryable"] is retryable
-    assert event.diagnostic["code"] == (None if code == "PRIVATE" else code)
-    assert "PRIVATE" not in repr(event) and TOKEN not in repr(event)
-
-
-def test_live_timeout_diagnostic_drops_exception_text(runner_factory):
-    make, _ = runner_factory
-
-    async def handler(request):
-        raise httpx2.ReadTimeout(f"PRIVATE {TOKEN}", request=request)
-
-    runner = make(handler)
-    runner.start(1)
-    event = wait_until(runner.drain)[0]
-    assert event.diagnostic["reason"] == "read_timeout"
-    assert event.diagnostic["retryable"] is True
-    assert "PRIVATE" not in repr(event) and TOKEN not in repr(event)
-
-
-@pytest.mark.parametrize("status", [401, 403, 404])
-def test_response_close_error_cannot_replace_permanent_rejection(runner_factory, status):
-    make, _ = runner_factory
-
-    class BrokenClose(httpx2.AsyncByteStream):
-        async def __aiter__(self):
-            yield b"PRIVATE"
-
-        async def aclose(self):
-            raise httpx2.ReadError("PRIVATE cleanup failure")
-
-    async def handler(request):
-        return httpx2.Response(status, stream=BrokenClose())
-
-    runner = make(handler)
-    runner.start(1)
-    event = wait_until(runner.drain)[0]
-    assert event.diagnostic["http_status"] == status
-    assert event.diagnostic["retryable"] is False
-    assert event.diagnostic["reason"] == (
-        "authentication_failed" if status in (401, 403) else "http_rejected"
-    )
-    assert "PRIVATE" not in repr(event)

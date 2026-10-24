@@ -113,45 +113,57 @@ async def test_authenticated_mock_binds_all_session_actions_to_origin(
 ) -> None:
     url, resident = authenticated_mock
     async with connect(url, LOCAL) as local, connect(url, REMOTE) as remote:
-        status = await call(local, "device_status")
+        status = await call(local, "status", {"view": "device"})
         assert status["backend"] == "mock"
         assert status["hardware_connected"] is False
         assert status["tunnel"] == "external_lifecycle_unknown"
-        spoof = await call(remote, "acquire_session", {"owner": "local_cli"})
+        spoof = await call(
+            remote, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 30}
+        )
         assert spoof == {"ok": False, "error": "authenticated_owner_mismatch"}
-        lease = await call(local, "acquire_session", {"owner": "local_cli"})
+        lease = await call(
+            local, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 30}
+        )
         session = lease["session"]
         prepared = await call(
-            local, "prepare_test", {"session": session, "job_id": "authenticated-mock"}
+            local,
+            "submit",
+            {"kind": "diagnostics", "session": session, "job_id": "authenticated-mock"},
         )
         assert prepared["ok"]
         actions = {
-            "renew_session": {},
-            "release_session": {},
-            "prepare_test": {"job_id": "wrong-origin"},
-            "execute_test": {"plan_hash": prepared["plan_hash"]},
-            "cancel_job": {"job_id": "authenticated-mock"},
+            "session:renew": ("session", {"action": "renew"}),
+            "session:release": ("session", {"action": "release"}),
+            "submit": ("submit", {"kind": "diagnostics", "job_id": "wrong-origin"}),
+            "execute": ("execute", {"op": "run", "plan_hash": prepared["plan_hash"]}),
+            "cancel": ("cancel", {"target": "job", "job_id": "authenticated-mock"}),
         }
-        for tool, fields in actions.items():
+        for label, (tool, fields) in actions.items():
             stolen = await call(remote, tool, {"session": session, **fields})
-            assert stolen == {"ok": False, "error": "authenticated_owner_mismatch"}, tool
-        assert (await call(local, "renew_session", {"session": session}))["renewed"]
+            assert stolen == {"ok": False, "error": "authenticated_owner_mismatch"}, label
+        assert (await call(local, "session", {"action": "renew", "session": session}))["renewed"]
         executed = await call(
-            local, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+            local, "execute", {"op": "run", "session": session, "plan_hash": prepared["plan_hash"]}
         )
         assert executed["ok"]
         await resident.queue.join()
-        done = await call(remote, "job_status", {"job_id": "authenticated-mock"})
+        done = await call(remote, "status", {"view": "job", "job_id": "authenticated-mock"})
         assert done["state"] == "succeeded"
-        logs = await call(remote, "read_logs", {})
+        logs = await call(remote, "status", {"view": "logs", "stream": "broker"})
         for credential in (LOCAL, REMOTE, session):
             assert credential not in str(status) + str(logs) + str(done)
-        assert (await call(local, "release_session", {"session": session}))["released"]
-        acquired = await call(remote, "acquire_session", {"owner": "remote_mcp"})
+        assert (await call(local, "session", {"action": "release", "session": session}))["released"]
+        acquired = await call(
+            remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         assert acquired["ok"]
-        rejected = await call(local, "release_session", {"session": acquired["session"]})
+        rejected = await call(
+            local, "session", {"action": "release", "session": acquired["session"]}
+        )
         assert rejected["error"] == "authenticated_owner_mismatch"
-        assert (await call(remote, "release_session", {"session": acquired["session"]}))["released"]
+        assert (
+            await call(remote, "session", {"action": "release", "session": acquired["session"]})
+        )["released"]
 
 
 async def test_authenticated_mock_missing_environment_fails_closed(
@@ -172,7 +184,7 @@ async def test_authenticated_mock_missing_environment_fails_closed(
     assert not (settings.state_dir / "runtime-auth.json").exists()
 
 
-@pytest.mark.parametrize("options", [[], ["--auth-source", "none"]])
+@pytest.mark.parametrize("options", [["--auth-source", "none"]])
 def test_cli_require_auth_needs_explicit_source(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], options: list[str]
 ) -> None:
@@ -188,9 +200,20 @@ def test_cli_require_auth_needs_explicit_source(
     run.assert_not_called()
 
 
-@pytest.mark.parametrize("source", ["environment", "file"])
+@pytest.mark.parametrize(
+    ("argv", "require_auth", "source"),
+    [
+        (["--auth-source", "environment", "serve", "--require-auth"], True, "environment"),
+        (["--auth-source", "file", "serve", "--require-auth"], True, "file"),
+        (["serve"], False, "environment"),
+    ],
+)
 def test_cli_require_auth_passes_explicit_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    require_auth: bool,
+    source: str,
 ) -> None:
     settings = Settings(state_dir=tmp_path / "state")
     create = Mock(return_value=object())
@@ -198,14 +221,12 @@ def test_cli_require_auth_passes_explicit_source(
     monkeypatch.setattr(cli, "load_settings", lambda _: settings)
     monkeypatch.setattr(cli, "create_app", create)
     monkeypatch.setattr(cli.uvicorn, "run", run)
-    monkeypatch.setattr(
-        "sys.argv", ["cardputer", "--auth-source", source, "serve", "--require-auth"]
-    )
+    monkeypatch.setattr("sys.argv", ["cardputer", *argv])
     cli.main()
     create.assert_called_once_with(
         settings,
         serial_enabled=False,
-        require_auth=True,
+        require_auth=require_auth,
         key_registry_path=None,
         auth_source=source,
     )
@@ -213,30 +234,11 @@ def test_cli_require_auth_passes_explicit_source(
     assert run.call_args.kwargs["proxy_headers"] is False
 
 
-def test_cli_legacy_mock_remains_unauthenticated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    settings = Settings(state_dir=tmp_path / "state")
-    create = Mock(return_value=object())
-    monkeypatch.setattr(cli, "load_settings", lambda _: settings)
-    monkeypatch.setattr(cli, "create_app", create)
-    monkeypatch.setattr(cli.uvicorn, "run", Mock())
-    monkeypatch.setattr("sys.argv", ["cardputer", "serve"])
-    cli.main()
-    create.assert_called_once_with(
-        settings,
-        serial_enabled=False,
-        require_auth=False,
-        key_registry_path=None,
-        auth_source="environment",
-    )
-
-
 async def test_status_reports_default_ingress_disabled_but_external_lifecycle_unknown(
     authenticated_mock,
 ):
     url, _ = authenticated_mock
     async with connect(url, REMOTE) as client:
-        status = await call(client, "device_status")
+        status = await call(client, "status", {"view": "device"})
     assert status["tunnel_ingress_enabled"] is False
     assert status["tunnel"] == "external_lifecycle_unknown"

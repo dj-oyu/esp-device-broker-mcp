@@ -1,5 +1,11 @@
 # Verification
 
+Note: records below that name `client_identity`, `device_status`, `read_logs`,
+`execute_test` or a count of 17 tools describe runs against the earlier 25-tool
+surface and are kept as historical evidence. They map to `status(view=identity)`,
+`status(view=device)`, `status(view=logs, stream=broker)`, `execute`/`flash` and
+the current six-tool surface; those runs do not verify the six-tool surface itself.
+
 ## Explicit client operations (cloud verification)
 
 The product approval, image delivery decision, policy/arming, keyword and local
@@ -50,7 +56,7 @@ passed for 119 Python files; strict mypy passed for 40 source modules. Frozen
 offline uv sync and wheel/source-distribution builds passed. Package version is
 0.12.0; dependency versions did not change.
 
-An explicit `execute_test(wait_for_approval=true)` request can create an inert
+Historical (retired; the current surface has no approval argument): an explicit former `execute_test(wait_for_approval=true)` request could create an inert
 `awaiting_approval` job. The local GUI reviews its immutable plan and execution
 intent together; **Approve & start** atomically consumes approval and queues the
 exact submitted job. No further client call or approval polling is needed.

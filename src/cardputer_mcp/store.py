@@ -121,6 +121,22 @@ class Store:
             principal_id TEXT NOT NULL, scopes TEXT NOT NULL, state TEXT NOT NULL,
             reason TEXT, created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS continuation_tickets (
+            ticket_id TEXT PRIMARY KEY, parent_job_id TEXT NOT NULL UNIQUE,
+            principal_id TEXT NOT NULL, epoch TEXT NOT NULL, state TEXT NOT NULL,
+            reason TEXT, hold TEXT, consumed_by_job TEXT, chain_started REAL NOT NULL,
+            chain_total INTEGER, fence_seq INTEGER, created REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS deferred_jobs (
+            job_id TEXT PRIMARY KEY, plan_hash TEXT NOT NULL, parent_job_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL, origin TEXT NOT NULL, epoch TEXT NOT NULL,
+            ticket_id TEXT, wait_id TEXT,
+            state TEXT NOT NULL, reason TEXT, resolved_plan_hash TEXT, created REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS device_writes (
+            id INTEGER PRIMARY KEY CHECK (id=1), seq INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO device_writes(id,seq) VALUES(1,0);
         CREATE TABLE IF NOT EXISTS device_requests (
             id TEXT PRIMARY KEY, session_id TEXT, lease_id TEXT,
             state TEXT NOT NULL, lease_seconds INTEGER NOT NULL,
@@ -625,6 +641,8 @@ class Store:
                     (job_id, principal, payload),
                 )
             if promotion is not None:
+                # One device-wide write sequence, committed with the LKG selection.
+                self.db.execute("UPDATE device_writes SET seq=seq+1 WHERE id=1")
                 self.db.execute(
                     "INSERT OR IGNORE INTO firmware_lkg_history VALUES (?,?,?,?,?,?)",
                     (
@@ -667,6 +685,9 @@ class Store:
         except BaseException:
             self.db.rollback()
             raise
+
+    def device_write_seq(self) -> int:
+        return int(self.db.execute("SELECT seq FROM device_writes WHERE id=1").fetchone()[0])
 
     def set_stage(self, job_id: str, stage: str) -> None:
         self.db.execute("UPDATE jobs SET stage=? WHERE id=?", (stage, job_id))

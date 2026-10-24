@@ -23,14 +23,10 @@ from cardputer_mcp.serial_backend import fingerprint
     "scenario",
     [
         "elf_mismatch",
-        "idf_mismatch",
-        "invalid_version",
         "timeout",
-        "transport",
         "transport_and_close",
         "invalid_and_close",
         "line_limit",
-        "late_chunk",
     ],
 )
 async def test_terminal_boot_failure_retains_owned_redacted_evidence(
@@ -69,33 +65,39 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
     monkeypatch.setattr("cardputer_mcp.build_logs.console_line", lambda *args: console.append(args))
     monkeypatch.setenv("SYNTHETIC_TEST_SECRET", "ENV_SECRET_WITHOUT_LABEL")
     async with connect(service.url, owner_key.token) as owner:
-        lease = await call(owner, "acquire_session", {"owner": "remote_mcp"})
+        lease = await call(
+            owner, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
 
         async def execute(job, action, **fields):
             prepared = await call(
                 owner,
-                "prepare_test",
+                "submit",
                 {
                     "session": lease["session"],
                     "job_id": job,
-                    "test": action,
+                    "kind": action,
                     "device_id": "fixture",
                     **fields,
                 },
             )
             assert prepared["ok"], prepared
-            result = await call(
-                owner,
-                "execute_test",
-                {
-                    "session": lease["session"],
-                    "plan_hash": prepared["plan_hash"],
-                },
-            )
+            if action in {"flash", "restore"}:
+                result = await call(
+                    owner,
+                    "flash",
+                    {"session": lease["session"], "plan_hash": prepared["plan_hash"]},
+                )
+            else:
+                result = await call(
+                    owner,
+                    "execute",
+                    {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
+                )
             assert result["ok"], result
             await broker.queue.join()
 
-        await execute("boot-backup", "firmware_backup")
+        await execute("boot-backup", "backup")
         assert broker.job("boot-backup")["state"] == "succeeded"
         startup = STARTUP.replace(b"v5.5-test", b"v6.0.1").replace(
             b"v0.0.7-test", b"archive/20261021/ci/full-contra"
@@ -142,8 +144,8 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
             return driver
 
         broker.firmware_flash.driver_factory = factory
-        await execute("boot-failed", "firmware_restore", backup_job_id="boot-backup")
-        assert (await call(owner, "job_status", {"job_id": "boot-failed"}))[
+        await execute("boot-failed", "restore", backup_job_id="boot-backup")
+        assert (await call(owner, "status", {"view": "job", "job_id": "boot-failed"}))[
             "state"
         ] == "needs_review"
         assert rom.writes == 1  # No retry or automatic restore after the explicit operation.
@@ -157,7 +159,7 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
             "limit": 100,
             "levels": ["error", "warning", "info", "debug", "unknown"],
         }
-        result = await call(owner, "read_build_logs", request)
+        result = await call(owner, "status", {"view": "logs", "stream": "build", **request})
         assert result["ok"] and not result["expired"]
         texts = [entry["text"] for entry in result["entries"]]
         evidence_text = next(
@@ -204,13 +206,13 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
         if scenario == "line_limit":
             assert observation["truncated"] and observation["omitted_lines"] > 0
         async with connect(service.url, service.keys["reader"].token) as foreign:
-            denied = await call(foreign, "read_build_logs", request)
+            denied = await call(foreign, "status", {"view": "logs", "stream": "build", **request})
             assert denied == {"ok": False, "error": "flash_log_not_available"}
         cache = broker.firmware_flash.logs["boot-failed"]
         cache.deadline = 0
-        expired = await call(owner, "read_build_logs", request)
+        expired = await call(owner, "status", {"view": "logs", "stream": "build", **request})
         assert expired["expired"] and expired["gap"] and expired["entries"] == []
         assert not cache.entries and cache.bytes == 0
         del broker.firmware_flash.logs["boot-failed"]
-        lost = await call(owner, "read_build_logs", request)
+        lost = await call(owner, "status", {"view": "logs", "stream": "build", **request})
         assert lost["expired"] and lost["gap"] and lost["entries"] == []

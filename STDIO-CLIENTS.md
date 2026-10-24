@@ -90,16 +90,16 @@ project scope は `.mcp.json` を使い、対話セッションではプロジ�
 Claude Code と Codex が登録された stdio コマンドを起動します。adapter を手入力で実行しても
 対話 UI は出ず、MCP の標準入力を待つプログラムです。
 
-初回は mock broker に対して `client_identity`、`device_status`、`read_logs` を確認します。
+初回は mock broker に対して `status(view=identity)`、`status(view=device)`、`status(view=logs, stream=broker)` を確認します。
 接続だけでは実機操作しません。読み取り権限だけのキーは機器を取得できません。
 
 MCP の transport セッションと、broker の作業セッションは別です。各作業は
-`create_work_session` で固有の resume capability を受け取り、`request_device` で待ち行列へ入ります。
-終了時は安全に `close_work_session` します。2クライアントで同じキーを共有しても作業セッションは
+`session(action=open)` で固有の resume capability を受け取り、`session(action=request)` で待ち行列へ入ります。
+終了時は安全に `session(action=close)` します。2クライアントで同じキーを共有しても作業セッションは
 別に作れますが、セキュリティ上の本人は同じ principal です。個人や端末の識別は保証しません。
 
 CLI/GUI/Tunnel と同じ broker の lease・FIFO・job ID を使います。
-必要なscopeを持つ認証済みclientが、prepareした正確なplan_hashを明示executeします。
+必要なscopeを持つ認証済みclientが、submitした正確なplan_hashを明示的に(flash/restoreのplanはflash、それ以外はexecute)積み込みます。
 ローカル承認・撮影許可ルール・画像送信判断は廃止しました。取得元principalは保持期限内に
 有効なread権限で自分の画像を取得できます。
 stdio の接続や切断では、自動で作業セッションを作ったり所有権を解放したりしません。
@@ -111,7 +111,7 @@ stdio の接続や切断では、自動で作業セッションを作ったり�
 - `stdio_adapter_authentication_failed`: 対象 registry とキーの有効期限・失効状態を確認
 - `stdio_adapter_remote_read_key_required`: local operator key ではなく remote/read キーが必要
 - `stdio_adapter_tool_outcome_unknown`: 要求の結果が不明。実行済みの可能性があるため、同じ job ID を
-  `job_status` で確認し、adapter が自動再実行したとは考えない
+  `status(view=job)` で確認し、adapter が自動再実行したとは考えない
 
 adapter は失敗した呼び出しを再送しません。後から明示された別の要求では、新しい HTTP 接続を
 使えます。各要求の待ち時間は接続待ちを含め最大30秒、並列接続は4個までです。

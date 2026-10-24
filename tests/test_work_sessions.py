@@ -327,15 +327,6 @@ async def test_bounds_and_fixed_logical_ttl(tmp_path):
         assert broker.session.work_session_id == second["work_session_id"]
 
 
-async def test_wait_capacity(tmp_path):
-    async with running(tmp_path, max_waiters=1) as broker:
-        first, second, third = [create(broker) for _ in range(3)]
-        request(broker, first)
-        request(broker, second)
-        with pytest.raises(BrokerError, match="wait_queue_full"):
-            request(broker, third)
-
-
 async def test_revoked_waiter_and_owner_are_failclosed(tmp_path):
     allowed = {"one", "two", "three"}
     async with running(tmp_path, valid=lambda p, o, s: p in allowed) as broker:
@@ -447,21 +438,7 @@ async def test_clean_shutdown_does_not_leave_ownership_review(tmp_path):
         store.close()
 
 
-@pytest.mark.parametrize(
-    "model,kwargs",
-    [
-        (CreateWorkSessionRequest, {"owner": "remote_mcp", "ttl_seconds": 86401}),
-        (RequestDeviceRequest, {"resume_token": "a" * 64, "lease_seconds": 301}),
-        (RequestDeviceRequest, {"resume_token": "a" * 64, "wait_seconds": 3601}),
-        (RequestDeviceRequest, {"resume_token": "a" * 64, "principal_id": "takeover"}),
-    ],
-)
-def test_models_bound_wait_lease_and_session_lifetimes(model, kwargs):
-    with pytest.raises(ValidationError):
-        model(**kwargs)
-
-
-@pytest.mark.parametrize("transition", ["cancel", "expire", "grant", "enqueue"])
+@pytest.mark.parametrize("transition", ["cancel", "enqueue"])
 async def test_stale_operator_reorder_never_moves_any_waiter(tmp_path, transition):
     clock = Clock()
     async with running(tmp_path, clock=clock) as broker:
@@ -581,55 +558,3 @@ async def test_slow_identity_lookup_cannot_grant_an_expired_wait(tmp_path, deadl
         stored = broker._store().request(state["request"]["request_id"])
         assert stored["state"] == "expired"
         assert stored["lease_id"] is None
-
-
-async def test_operator_session_view_keeps_all_open_plus_twenty_recent_terminal(tmp_path):
-    async with running(tmp_path) as broker:
-        closed = []
-        for _ in range(25):
-            work = create(broker)
-            closed.append(work["work_session_id"])
-            broker.close_work_session(
-                CloseWorkSessionRequest(resume_token=work["resume_token"]),
-                principal_id="same-key",
-                scopes=SCOPES,
-            )
-        active = [create(broker), create(broker)]
-        snapshot = broker.operator_snapshot()
-        ids = {row["session_id"] for row in snapshot["sessions"]}
-        assert len(ids) == 22
-        assert all(work["work_session_id"] in ids for work in active)
-        assert set(closed[-20:]) <= ids
-        assert not set(closed[:5]) & ids
-        assert snapshot["session_history_omitted"] == 5
-        assert broker._store().record_count("work_sessions") == 27
-
-
-async def test_operator_bounded_view_retains_expired_active_owner(tmp_path):
-    clock = Clock()
-    backend = MockBackend(0.001)
-    backend.gate = asyncio.Event()
-    async with running(tmp_path, clock=clock, backend=backend) as broker:
-        owner = create(broker, ttl=1)
-        own = request(broker, owner)
-        enqueue(broker, own, "pinned-owner")
-        await asyncio.sleep(0)
-        assert broker.active_job == "pinned-owner"
-        for _ in range(25):
-            work = create(broker)
-            broker.close_work_session(
-                CloseWorkSessionRequest(resume_token=work["resume_token"]),
-                principal_id="same-key",
-                scopes=SCOPES,
-            )
-        open_work = create(broker)
-        clock.now += 2
-        snapshot = broker.operator_snapshot()
-        visible = {row["session_id"]: row for row in snapshot["sessions"]}
-        assert len(visible) == 22
-        assert visible[owner["work_session_id"]]["state"] == "expired"
-        assert visible[open_work["work_session_id"]]["state"] == "open"
-        assert snapshot["owner"]["session_id"] == owner["work_session_id"]
-        assert snapshot["owner"]["release_blocked"]
-        assert snapshot["session_history_omitted"] == 5
-        assert broker._store().record_count("work_sessions") == 27

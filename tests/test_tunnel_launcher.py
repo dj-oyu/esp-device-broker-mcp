@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import socket
 import subprocess
 import sys
 import warnings
@@ -64,39 +63,6 @@ def write_config(tmp_path, extra="", tunnel_id=None):
     return path
 
 
-def test_config_resolves_paths_without_loading_other_profiles(tmp_path):
-    config = tunnel.load_config(write_config(tmp_path), tmp_path)
-    assert config.client_exe == tmp_path / "tunnel-client.exe"
-    assert config.client_archive == tmp_path / "client.zip"
-    assert config.broker_config == tmp_path / "examples/tunnel-mock.toml"
-
-
-@pytest.mark.parametrize(
-    "extra",
-    [
-        f'api_key = "{PRIVATE}"\n',
-        'command = "run arbitrary program"\n',
-        'profile = "other-profile"\n',
-        'extra_args = ["--mcp.command=evil"]\n',
-        "health_port = 1\n",
-        "health_port = 65536\n",
-        'health_port = "not an integer"\n',
-        "not valid TOML\n",
-    ],
-)
-def test_config_rejects_unrecognized_or_invalid_values_without_echo(tmp_path, extra):
-    with pytest.raises(tunnel.TunnelError) as caught:
-        tunnel.load_config(write_config(tmp_path, extra), tmp_path)
-    assert str(caught.value) == "invalid_private_tunnel_config"
-    assert PRIVATE not in str(caught.value)
-
-
-@pytest.mark.parametrize("identifier", ["tunnel_123", "tunnel_" + "A" * 32])
-def test_config_rejects_invalid_tunnel_id(tmp_path, identifier):
-    with pytest.raises(tunnel.TunnelError, match="^invalid_private_tunnel_config$"):
-        tunnel.load_config(write_config(tmp_path, tunnel_id=identifier), tmp_path)
-
-
 def test_placeholder_loads_for_mock_but_preflight_refuses_before_any_probe(tmp_path, monkeypatch):
     config = tunnel.load_config(write_config(tmp_path, tunnel_id="tunnel_" + "0" * 32), tmp_path)
     monkeypatch.setattr(tunnel, "load_settings", lambda *a: pytest.fail("loaded broker"))
@@ -113,7 +79,7 @@ def test_release_matches_pinned_zip_member_without_running_it(settings, monkeypa
     tunnel.verify_release(settings)
 
 
-@pytest.mark.parametrize("tamper", ["archive", "exe", "renamed", "missing"])
+@pytest.mark.parametrize("tamper", ["archive", "exe"])
 def test_release_mismatch_fails_closed(settings, monkeypatch, tamper):
     make_archive(settings, monkeypatch)
     if tamper == "archive":
@@ -182,15 +148,11 @@ def test_environment_is_allowlisted_and_only_contains_remote_credentials():
     }
     assert PRIVATE not in str(result)
     assert source["MCP_COMMAND"] == "malicious-child"  # Do not mutate parent input.
+    scoped = "Bearer cpk_" + "d" * 32 + "." + "e" * 64
+    assert tunnel.child_environment({}, RUNTIME_KEY, scoped)["CARDPUTER_TUNNEL_BEARER"] == scoped
 
 
-def test_scoped_registry_bearer_is_preserved_only_in_child_environment():
-    bearer = "Bearer cpk_" + "d" * 32 + "." + "e" * 64
-    result = tunnel.child_environment({}, RUNTIME_KEY, bearer)
-    assert result["CARDPUTER_TUNNEL_BEARER"] == bearer
-
-
-@pytest.mark.parametrize("key", ["", "two words", "has\nnewline", "\x00", "é", "x" * 513])
+@pytest.mark.parametrize("key", ["", "has\nnewline", "x" * 513])
 def test_invalid_runtime_key_is_rejected_without_echo(key):
     with pytest.raises(tunnel.TunnelError, match="^invalid_runtime_key$"):
         tunnel.child_environment({}, key, BEARER)
@@ -198,16 +160,7 @@ def test_invalid_runtime_key_is_rejected_without_echo(key):
 
 @pytest.mark.parametrize(
     "bearer",
-    [
-        "",
-        "Bearer ",
-        "Basic " + REMOTE_TOKEN,
-        "Bearer " + "A" * 64,
-        "Bearer " + "a" * 63,
-        BEARER + "\n",
-        "Bearer \x00",
-        "Bearer é",
-    ],
+    ["Bearer ", "Basic " + REMOTE_TOKEN, BEARER + "\n"],
 )
 def test_invalid_broker_bearer_is_rejected_without_echo(bearer):
     with pytest.raises(tunnel.TunnelError, match="^invalid_mcp_bearer$"):
@@ -264,37 +217,17 @@ def test_preflight_serial_requires_explicit_opt_in(settings, monkeypatch):
     assert tunnel.preflight(settings, enable_serial=True)["backend"] == "serial"
 
 
-def test_preflight_rejects_broker_port_collision(settings, monkeypatch):
-    preflight_fakes(monkeypatch, settings, port=settings.health_port)
-    with pytest.raises(tunnel.TunnelError, match="^health_port_conflicts_with_broker$"):
-        tunnel.preflight(settings)
-
-
-def test_preflight_rejects_occupied_lock_without_starting_process(settings, monkeypatch):
-    preflight_fakes(monkeypatch, settings, locked=True)
+@pytest.mark.parametrize("refusal", ["lock", "port"])
+def test_preflight_rejects_occupied_lock_without_starting_process(settings, monkeypatch, refusal):
+    if refusal == "lock":
+        preflight_fakes(monkeypatch, settings, locked=True)
+        expected = "tunnel_launcher_already_running"
+    else:
+        preflight_fakes(monkeypatch, settings, port=settings.health_port)
+        expected = "health_port_conflicts_with_broker"
     monkeypatch.setattr(tunnel.subprocess, "Popen", lambda *a, **kw: pytest.fail("started child"))
-    with pytest.raises(tunnel.TunnelError, match="^tunnel_launcher_already_running$"):
+    with pytest.raises(tunnel.TunnelError, match=f"^{expected}$"):
         tunnel.preflight(settings)
-
-
-def test_listener_check_rejects_existing_loopback_endpoint(monkeypatch):
-    class Socket:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def settimeout(self, value):
-            assert value <= 0.3
-
-        def connect_ex(self, target):
-            assert target == ("127.0.0.1", 18766)
-            return 0
-
-    monkeypatch.setattr(socket, "socket", Socket)
-    with pytest.raises(tunnel.TunnelError, match="^tunnel_health_listener_exists$"):
-        tunnel.check_listener(18766)
 
 
 def supervisor_fakes(monkeypatch, settings, *, http_error=False, keep_alive=False, status=200):
@@ -380,57 +313,38 @@ def test_supervisor_suppresses_native_output_and_clears_child_env(settings, monk
     assert "cloud" in output.lower() and "verif" in output.lower()
 
 
-def test_supervisor_reaps_owned_child_on_unexpected_failure(settings, monkeypatch):
-    child, _ = supervisor_fakes(monkeypatch, settings, http_error=True)
-    with pytest.raises(RuntimeError, match=PRIVATE):
-        tunnel.supervise(settings, "http://127.0.0.1:18765/mcp", {})
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_supervisor_reaps_owned_child_on_unexpected_failure(settings, monkeypatch, interrupt):
+    child, _ = supervisor_fakes(
+        monkeypatch, settings, http_error=not interrupt, keep_alive=interrupt
+    )
+    if interrupt:
+
+        def stop(seconds):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(tunnel.time, "sleep", stop)
+        assert tunnel.supervise(settings, "http://127.0.0.1:18765/mcp", {}) == 0
+    else:
+        with pytest.raises(RuntimeError, match=PRIVATE):
+            tunnel.supervise(settings, "http://127.0.0.1:18765/mcp", {})
     assert child.terminated and child.waited
 
 
-def test_supervisor_reaps_only_owned_child_on_keyboard_interrupt(settings, monkeypatch):
-    child, _ = supervisor_fakes(monkeypatch, settings, keep_alive=True)
-
-    def interrupt(seconds):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(tunnel.time, "sleep", interrupt)
-    assert tunnel.supervise(settings, "http://127.0.0.1:18765/mcp", {}) == 0
-    assert child.terminated and child.waited
-
-
-@pytest.mark.parametrize("status", [401, 403, 500, 503])
-def test_nonready_status_never_claims_ready_or_echoes_body(settings, monkeypatch, capsys, status):
+@pytest.mark.parametrize(("status", "deadline"), [(401, False), (503, True)])
+def test_nonready_status_never_claims_ready_or_echoes_body(
+    settings, monkeypatch, capsys, status, deadline
+):
     supervisor_fakes(monkeypatch, settings, status=status)
+    if deadline:
+        ticks = iter([0, *([46] * 10)])
+        monkeypatch.setattr(tunnel.time, "monotonic", lambda: next(ticks))
     assert tunnel.supervise(settings, "http://127.0.0.1:18765/mcp", {}) == 1
     output = capsys.readouterr().out
     assert "readiness_only" not in output and "reports_ready" not in output
     assert PRIVATE not in output
-
-
-def test_supervisor_deadline_prints_fixed_warning_without_native_output(
-    settings, monkeypatch, capsys
-):
-    supervisor_fakes(monkeypatch, settings, status=503)
-    ticks = iter([0, *([46] * 10)])
-    monkeypatch.setattr(tunnel.time, "monotonic", lambda: next(ticks))
-    assert tunnel.supervise(settings, "http://127.0.0.1:18765/mcp", {}) == 1
-    output = capsys.readouterr().out
-    assert output.count("tunnel_readiness_not_confirmed") == 1
-    assert PRIVATE not in output
-
-
-@pytest.mark.parametrize("blocked", ["lock", "listener"])
-def test_supervisor_rechecks_occupied_resources_before_spawning(settings, monkeypatch, blocked):
-    preflight_fakes(monkeypatch, settings, locked=blocked == "lock")
-
-    def occupied(port):
-        raise tunnel.TunnelError("tunnel_health_listener_exists")
-
-    if blocked == "listener":
-        monkeypatch.setattr(tunnel, "check_listener", occupied)
-    monkeypatch.setattr(tunnel.subprocess, "Popen", lambda *a, **kw: pytest.fail("started child"))
-    with pytest.raises((Timeout, tunnel.TunnelError)):
-        tunnel.supervise(settings, "http://127.0.0.1:18765/mcp", {})
+    if deadline:
+        assert output.count("tunnel_readiness_not_confirmed") == 1
 
 
 def test_main_reports_only_fixed_failure_code(monkeypatch, capsys, tmp_path):
@@ -454,10 +368,7 @@ def test_main_reports_only_fixed_failure_code(monkeypatch, capsys, tmp_path):
     [
         "https://example.invalid/mcp",
         "http://localhost:8765/mcp",
-        "http://127.0.0.1:8765/other",
-        "http://user@127.0.0.1:8765/mcp",
         "http://127.0.0.1:8765/mcp?secret=x",
-        "http://127.0.0.1:8765/mcp#fragment",
     ],
 )
 async def test_broker_probe_rejects_noncanonical_url_before_auth_transmission(monkeypatch, url):

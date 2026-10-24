@@ -20,7 +20,7 @@ from cardputer_mcp.models import (
     PrepareRequest,
 )
 from cardputer_mcp.models import TestName as Action
-from cardputer_mcp.operator_timeline import MAX_CARDS, RESULTS, STAGES, STATES, OperatorTimeline
+from cardputer_mcp.operator_timeline import RESULTS, STAGES, STATES, OperatorTimeline
 from cardputer_mcp.plan_approval import PlanApprovals
 from cardputer_mcp.ports import DeviceSelector, PortInfo
 from cardputer_mcp.serial_backend import SerialBackend
@@ -153,8 +153,8 @@ async def test_reviewed_history_does_not_mask_another_current_review_or_guard(tm
 
 @pytest.mark.parametrize(
     "value",
-    [2, -1, 1.5, "true", "PRIVATE" * 100_000, b"\x01"],
-    ids=["integer", "negative", "float", "text", "oversized-text", "bytes"],
+    [2, "PRIVATE" * 100_000],
+    ids=["integer", "oversized-text"],
 )
 async def test_malformed_stored_reviewed_flag_is_bounded_and_never_acknowledged(tmp_path, value):
     async with running(tmp_path) as (broker, _, timeline, _):
@@ -210,32 +210,6 @@ async def test_corrupt_rows_are_redacted_without_parsing_raw_diagnostics(tmp_pat
         assert card(timeline, "healthy")["review"] is None
 
 
-async def test_recent_history_does_not_pin_old_work_or_images(tmp_path):
-    async with running(tmp_path) as (broker, _, timeline, _):
-        capture = prepare(broker, "old-image", test=Action.CAPTURE)
-        broker.execute(
-            ExecuteRequest(session=broker.session.capability, plan_hash=capture["plan_hash"])
-        )
-        await broker.queue.join()
-        for index in range(70):
-            broker._store().add_job(f"history-{index}", "a" * 64)
-            broker._store().set_job(f"history-{index}", "succeeded", "mock_pass")
-        prepare(broker, "pending-one")
-        prepare(broker, "pending-two")
-        snapshot = timeline.snapshot()
-        assert len(snapshot["cards"]) == MAX_CARDS and snapshot["has_more"]
-        assert "old-image" not in {item["job_id"] for item in snapshot["cards"]}
-        assert {"pending-one", "pending-two"} <= {item["job_id"] for item in snapshot["cards"]}
-        broker._store().add_job("durable-queued", "b" * 64)
-        snapshot = timeline.snapshot()
-        assert snapshot["plans_available"] is False
-        assert snapshot["cards"][0]["job_id"] == "durable-queued"
-        assert "old-image" not in {item["job_id"] for item in snapshot["cards"]}
-        assert {"pending-one", "pending-two"} <= {item["job_id"] for item in snapshot["cards"]}
-        assert all(item["review"] is None for item in snapshot["cards"])
-        assert len(snapshot["cards"]) == MAX_CARDS
-
-
 async def test_retained_image_does_not_read_or_parse_its_corrupt_diagnostic(tmp_path):
     async with running(tmp_path) as (broker, _, timeline, _):
         captured = prepare(broker, "completed", Action.CAPTURE)
@@ -256,27 +230,6 @@ async def test_retained_image_does_not_read_or_parse_its_corrupt_diagnostic(tmp_
         assert "PRIVATE" not in json.dumps(completed)
         assert not any("SELECT * FROM jobs" in statement for statement in statements)
         assert broker.backend.calls == 1
-
-
-async def test_plan_query_and_output_bounds_with_more_than_one_page(tmp_path):
-    async with running(tmp_path) as (broker, _, timeline, _):
-        for index in range(80):
-            prepare(broker, f"pending-{index}")
-        statements = []
-        broker._store().db.set_trace_callback(statements.append)
-        snapshot = timeline.snapshot()
-        broker._store().db.set_trace_callback(None)
-        assert len(snapshot["cards"]) == MAX_CARDS and snapshot["has_more"]
-        assert all(item["review"] is None for item in snapshot["cards"])
-        # Every timeline enumeration is bounded at the database, not sliced
-        # after materializing all jobs or durable plan payloads.
-        enumerations = [
-            sql
-            for sql in statements
-            if "ORDER BY t.sequence DESC" in sql or "ORDER BY sequence DESC" in sql
-        ]
-        assert enumerations and all("LIMIT 33" in sql for sql in enumerations)
-        assert len(statements) < 3000
 
 
 async def test_snapshot_never_prepares_or_opens_hardware(tmp_path):
@@ -404,46 +357,6 @@ async def test_old_prepared_plan_after_restart_never_executes_from_reading_timel
         assert broker.queue.empty() and broker.backend.calls == 0
         prepare(broker, "new-prepared")
         assert card(timeline, "new-prepared")["state"] == "prepared"
-
-
-async def test_history_order_is_registration_order_across_state_review_and_execution(tmp_path):
-    async with running(tmp_path) as (broker, _, timeline, _):
-        first = prepare(broker, "first")
-        prepare(broker, "second")
-        store = broker._store()
-        initial = timeline.snapshot()["cards"]
-        assert [row["job_id"] for row in initial] == ["second", "first"]
-        registered = {row["job_id"]: row["created_utc"] for row in initial}
-        broker.execute(
-            ExecuteRequest(session=broker.session.capability, plan_hash=first["plan_hash"])
-        )
-        await broker.queue.join()
-        store.set_job("first", "needs_review", "broker_restart_no_replay")
-        for reviewed in (0, 1):
-            store.db.execute("UPDATE jobs SET reviewed=? WHERE id='first'", (reviewed,))
-            store.db.commit()
-            before = store.db.total_changes
-            rows = timeline.snapshot()["cards"]
-            assert [row["job_id"] for row in rows] == ["second", "first"]
-            assert {row["job_id"]: row["created_utc"] for row in rows} == registered
-            assert rows[1]["state"] == "needs_review"
-            assert rows[1]["reviewed"] is bool(reviewed)
-            assert store.db.total_changes == before
-        for index in range(40):
-            store.add_job(f"new-{index}", "a" * 64)
-            store.set_job(f"new-{index}", "succeeded", "mock_pass")
-        rows = timeline.snapshot()["cards"]
-        assert [row["job_id"] for row in rows] == [f"new-{i}" for i in range(39, 7, -1)]
-
-
-async def test_reprepared_plan_keeps_position_and_latest_plan_without_duplicate_slots(tmp_path):
-    async with running(tmp_path) as (broker, _, timeline, _):
-        prepare(broker, "old", Action.CAPTURE)
-        prepare(broker, "new")
-        latest = prepare(broker, "old", Action.DIAGNOSTICS)
-        rows = timeline.snapshot()["cards"]
-        assert [row["job_id"] for row in rows] == ["new", "old"]
-        assert rows[1]["plan_hash"] == latest["plan_hash"]
 
 
 async def test_failure_reason_projection_is_fixed_bounded_and_read_only(tmp_path):

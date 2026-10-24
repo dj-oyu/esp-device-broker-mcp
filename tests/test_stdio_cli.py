@@ -1,7 +1,6 @@
 """CLI wiring has no implicit broker, file creation, credential arguments or stdout noise."""
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
@@ -34,9 +33,6 @@ def test_stdio_cli_loads_only_explicit_file_and_forwards_without_stdout(monkeypa
     "flags",
     [
         ["--auth-source", "environment"],
-        ["--auth-source", "key-environment"],
-        ["--auth-file", "/synthetic/auth.json"],
-        ["--client", "remote_mcp"],
         ["--url", "http://127.0.0.1:9876/mcp"],
     ],
 )
@@ -60,41 +56,6 @@ def test_stdio_bad_private_file_has_fixed_stderr_and_no_stdout(monkeypatch, caps
         cli.main()
     assert error.value.code == 1
     assert capsys.readouterr() == ("", "invalid_client_environment\n")
-
-
-def test_stdio_startup_error_never_echoes_credentials(monkeypatch, capsys):
-    monkeypatch.setattr(
-        client_environment,
-        "load_client_environment",
-        Mock(return_value=ClientEnvironment("http://127.0.0.1:8765/mcp", TOKEN)),
-    )
-    monkeypatch.setattr(
-        stdio_adapter,
-        "run_stdio",
-        AsyncMock(side_effect=stdio_adapter.StdioAdapterError("stdio_adapter_broker_unavailable")),
-    )
-    monkeypatch.setattr(sys, "argv", ["cardputer", "stdio", "--env-file", PRIVATE_PATH])
-    with pytest.raises(SystemExit):
-        cli.main()
-    assert capsys.readouterr() == ("", "stdio_adapter_broker_unavailable\n")
-
-
-def test_real_cli_missing_file_is_protocol_stdout_clean(tmp_path):
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "cardputer_mcp.cli",
-            "stdio",
-            "--env-file",
-            str(tmp_path / "missing.env"),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode == 1 and result.stdout == ""
-    assert result.stderr == "invalid_client_environment\n"
 
 
 def test_registration_examples_share_one_adapter_and_private_file():

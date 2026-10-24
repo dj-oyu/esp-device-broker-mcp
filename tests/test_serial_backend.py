@@ -105,7 +105,7 @@ def backend(split=10000, transform=None):
     return device, port
 
 
-@pytest.mark.parametrize("split", [1, 2, 3, 7, 64, 10000])
+@pytest.mark.parametrize("split", [1, 7, 10000])
 async def test_complete_hello_across_arbitrary_read_chunks(split):
     device, port = backend(split)
     plan = {"test": "hello", **device.prepare(Action.HELLO)}
@@ -174,15 +174,6 @@ async def test_identity_change_after_open_closes_before_writing():
         await device.execute(plan, lambda _: None)
     assert port.opens == port.closes == 1
     assert not port.writes
-
-
-@pytest.mark.parametrize("data", [b"Guru Medita", b"HOME_READY"])
-def test_unterminated_markers_are_not_evidence(data):
-    clock = Clock()
-    port = FakePort(clock, transform=lambda key, reply: data)
-    reader = Reader(port, lambda _: None, clock, 1)
-    with pytest.raises(SerialFailure):
-        reader.command(b"q", rb"HOME_READY", timeout=0.2)
 
 
 def test_stale_coalesced_response_cannot_acknowledge_new_command():

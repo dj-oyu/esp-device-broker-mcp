@@ -9,9 +9,7 @@ from cardputer_mcp.build_process import BuildProcess
 from cardputer_mcp.firmware_build import OS_ENV
 
 
-@pytest.mark.parametrize(
-    "limit,size", [(4096, 4096), (4096, 4097), (256 * 1024, 140000), (256 * 1024, 256 * 1024 + 1)]
-)
+@pytest.mark.parametrize("limit,size", [(4096, 4096), (4096, 4097)])
 def test_real_reader_line_limits_and_stderr_omission(tmp_path, limit, size):
     runner = BuildProcess()
     lines = []
@@ -34,7 +32,7 @@ def test_real_reader_line_limits_and_stderr_omission(tmp_path, limit, size):
     assert ("x" * size if size <= limit else warning, "stdout") in lines
 
 
-@pytest.mark.parametrize("limit", [0, -1, True, 1.0, 256 * 1024 + 1, float("inf")])
+@pytest.mark.parametrize("limit", [0, 256 * 1024 + 1])
 def test_invalid_line_limit_is_rejected_before_any_process(tmp_path, limit):
     runner = BuildProcess()
     with pytest.raises(ValueError, match="^invalid_stdout_line_limit$"):

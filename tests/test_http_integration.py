@@ -84,48 +84,45 @@ async def test_real_mcp_http_disconnect_retry_handover(authenticated_service):
     async with connect(service, LOCAL) as first, connect(service, REMOTE) as second:
         advertised = await first.list_tools()
         names = {tool.name for tool in advertised.tools}
-        assert names == {
-            "client_identity",
-            "list_registered_targets",
-            "device_status",
-            "read_logs",
-            "acquire_session",
-            "renew_session",
-            "release_session",
-            "prepare_test",
-            "execute_test",
-            "job_status",
-            "read_capture",
-            "read_device_logs",
-            "read_build_logs",
-            "read_source_resources",
-            "cancel_job",
-            "request_home_recovery",
-            "cancel_home_recovery",
-            "create_work_session",
-            "resume_work_session",
-            "request_device",
-            "cancel_device_request",
-            "close_work_session",
-            "list_apps",
-            "app_command",
-            "read_app_events",
-        }
-        app_tools = {tool.name: tool for tool in advertised.tools}
-        catalog = app_tools["list_apps"]
-        assert catalog.annotations.read_only_hint is True
-        assert catalog.annotations.destructive_hint is False
-        assert catalog.annotations.open_world_hint is False
-        assert catalog.input_schema["type"] == "object"
-        assert catalog.input_schema.get("properties", {}) == {}
-        for name, model, read_only, fields in (
+        assert names == {"status", "submit", "execute", "flash", "cancel", "session"}
+        tools = {tool.name: tool for tool in advertised.tools}
+        for name, tool in tools.items():
+            assert tool.annotations.open_world_hint is False, name
+        # status is the only read-only tool; flash is the only destructive one.
+        assert tools["status"].annotations.read_only_hint is True
+        assert tools["status"].annotations.destructive_hint is False
+        for name in ("submit", "execute", "cancel", "session"):
+            assert tools[name].annotations.read_only_hint is False, name
+            assert tools[name].annotations.destructive_hint is False, name
+        assert tools["flash"].annotations.read_only_hint is False
+        assert tools["flash"].annotations.destructive_hint is True
+        for name, model, fields, required in (
             (
-                "app_command",
-                "AppCommandRequest",
-                False,
+                "status",
+                "StatusRequest",
                 {
+                    "view",
+                    "project_id",
+                    "job_id",
+                    "resume_token",
+                    "stream",
+                    "cursor",
+                    "limit",
+                    "levels",
+                    "context",
+                    "include_source_cache",
+                },
+                {"view"},
+            ),
+            (
+                "execute",
+                "ExecuteToolRequest",
+                {
+                    "op",
+                    "plan_hash",
                     "session",
                     "job_id",
+                    "source_job_id",
                     "boot_id",
                     "run_id",
                     "control_session",
@@ -133,104 +130,109 @@ async def test_real_mcp_http_disconnect_retry_handover(authenticated_service):
                     "seq",
                     "operation",
                     "action",
+                    "continues",
+                    "chain_total_hint",
                 },
+                {"op"},
             ),
-            ("read_app_events", "AppEventsRequest", True, {"job_id", "cursor", "limit"}),
+            (
+                "flash",
+                "FlashToolRequest",
+                {"plan_hash", "session", "continues", "chain_total_hint"},
+                {"plan_hash"},
+            ),
+            (
+                "cancel",
+                "CancelToolRequest",
+                {
+                    "target",
+                    "job_id",
+                    "session",
+                    "plan_hash",
+                    "resume_token",
+                    "request_id",
+                    "ticket",
+                },
+                {"target"},
+            ),
+            (
+                "session",
+                "SessionRequest",
+                {
+                    "action",
+                    "owner",
+                    "ttl_seconds",
+                    "lease_seconds",
+                    "wait_seconds",
+                    "after",
+                    "resume_token",
+                    "session",
+                },
+                {"action"},
+            ),
         ):
-            app_tool = app_tools[name]
-            assert app_tool.annotations.read_only_hint is read_only
-            assert app_tool.annotations.destructive_hint is False
-            assert app_tool.annotations.open_world_hint is False
-            app_schema = app_tool.input_schema["$defs"][model]
-            assert set(app_schema["properties"]) == fields
-            assert app_schema["additionalProperties"] is False
-        command_schema = app_tools["app_command"].input_schema["$defs"]["AppCommandRequest"]
-        assert set(command_schema["required"]) == {
-            "session",
-            "job_id",
-            "boot_id",
-            "run_id",
-            "control_session",
-            "operation",
-        }
-        assert set(command_schema["properties"]["operation"]["enum"]) == {
+            shape = tools[name].input_schema["$defs"][model]
+            assert set(shape["properties"]) == fields, name
+            assert set(shape["required"]) == required, name
+            assert shape["additionalProperties"] is False, name
+        status_shape = tools["status"].input_schema["$defs"]["StatusRequest"]
+        assert set(status_shape["properties"]["limit"].get("anyOf", [{}])[0]) >= {"maximum"}
+        assert status_shape["properties"]["limit"]["anyOf"][0]["maximum"] == 100
+        command_shape = tools["execute"].input_schema["$defs"]["ExecuteToolRequest"]
+        assert set(command_shape["properties"]["operation"]["anyOf"][0]["enum"]) == {
             "action.tap",
             "status",
             "suspend",
             "resume",
             "stop",
         }
-        event_schema = app_tools["read_app_events"].input_schema["$defs"]["AppEventsRequest"]
-        assert event_schema["properties"]["limit"]["maximum"] == 100
-        assert set(event_schema["required"]) == {"job_id"}
-        build_logs = next(tool for tool in advertised.tools if tool.name == "read_build_logs")
-        assert build_logs.annotations.read_only_hint is True
-        tool_data = build_logs.model_dump()
-        schema = tool_data.get("input_schema", tool_data.get("inputSchema"))
-        build_request = schema["$defs"]["BuildLogRequest"]
-        assert set(build_request["properties"]) == {
+        assert set(tools["submit"].input_schema["$defs"]["SubmitRequest"]["required"]) == {
+            "kind",
             "job_id",
-            "include_source_cache",
-            "cursor",
-            "levels",
-            "context",
-            "limit",
         }
-        assert build_request["additionalProperties"] is False
-        resources = next(tool for tool in advertised.tools if tool.name == "read_source_resources")
-        assert resources.annotations.read_only_hint is True
-        assert resources.annotations.destructive_hint is False
-        resource_schema = resources.input_schema["$defs"]["SourceResourcesRequest"]
-        assert set(resource_schema["properties"]) == {"project_id"}
-        assert resource_schema["additionalProperties"] is False
-        for name, model, fields in (
-            ("request_home_recovery", "RequestHomeRecovery", {"job_id", "source_job_id"}),
-            ("cancel_home_recovery", "CancelHomeRecovery", {"job_id", "plan_hash"}),
-        ):
-            tool = next(tool for tool in advertised.tools if tool.name == name)
-            assert tool.annotations.read_only_hint is False
-            data = tool.model_dump()
-            shape = data.get("input_schema", data.get("inputSchema"))["$defs"][model]
-            assert set(shape["properties"]) == fields and shape["additionalProperties"] is False
-        acquired = await call(first, "acquire_session", {"owner": "local_cli"})
+        acquired = await call(
+            first, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 30}
+        )
         token = acquired["session"]
-        busy = await call(second, "acquire_session", {"owner": "remote_mcp"})
+        busy = await call(
+            second, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         assert busy["error"] == "device_busy"
         prepared = await call(
-            first,
-            "prepare_test",
-            {"session": token, "job_id": "http-reconnect", "test": "firmware_workflow"},
+            first, "submit", {"session": token, "job_id": "http-reconnect", "kind": "workflow"}
         )
         executed = await call(
-            first, "execute_test", {"session": token, "plan_hash": prepared["plan_hash"]}
+            first, "execute", {"op": "run", "session": token, "plan_hash": prepared["plan_hash"]}
         )
         assert executed["state"] in ("queued", "running")
     # Transport disconnect is not device-workflow cancellation.
     async with connect(service, LOCAL) as later:
         async with asyncio.timeout(5):
             while True:
-                finished = await call(later, "job_status", {"job_id": "http-reconnect"})
+                finished = await call(later, "status", {"view": "job", "job_id": "http-reconnect"})
                 if finished["state"] not in ("queued", "running"):
                     break
                 await asyncio.sleep(0.02)
         assert finished["state"] == "succeeded"
         repeated = await call(
-            later, "execute_test", {"session": token, "plan_hash": prepared["plan_hash"]}
+            later, "execute", {"op": "run", "session": token, "plan_hash": prepared["plan_hash"]}
         )
         assert repeated["deduplicated"]
         assert repeated["id"] == finished["id"]
-        status = await call(later, "device_status")
+        status = await call(later, "status", {"view": "device"})
         assert status["owner"] == "local_cli"
         assert status["hardware_connected"] is False
-        logs = await call(later, "read_logs", {})
+        logs = await call(later, "status", {"view": "logs", "stream": "broker"})
         stages = [entry["stage"] for entry in logs["entries"] if entry["stage"]]
         assert stages == ["mock_flash", "mock_boot", "mock_test"]
         assert token not in str(status) + str(logs)
-        await call(later, "release_session", {"session": token})
+        await call(later, "session", {"action": "release", "session": token})
     async with connect(service, REMOTE) as remote:
-        acquired = await call(remote, "acquire_session", {"owner": "remote_mcp"})
+        acquired = await call(
+            remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         assert acquired["ok"]
-        await call(remote, "release_session", {"session": acquired["session"]})
+        await call(remote, "session", {"action": "release", "session": acquired["session"]})
 
 
 async def test_real_http_invalid_origin_and_oversize(authenticated_service):

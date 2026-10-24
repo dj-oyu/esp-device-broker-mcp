@@ -13,6 +13,7 @@ from .broker import BrokerError, digest_plan
 from .build_locations import BuildLocationError
 from .build_process import ProcessDeadlineExpired
 from .config import Settings
+from .continuation import TicketError
 from .firmware_build import BuildPreflightFailure, hash_file
 from .logs import Event
 from .models import CancelRequest, ExecuteRequest, Origin, PrepareRequest, TestName
@@ -180,6 +181,8 @@ class ProfileJobs:
         if request.test.value not in PROFILE_TESTS or request.project_id is None:
             raise BrokerError("registered_build_project_required")
         registration = self._registration(request.project_id)
+        if request.after is not None:
+            return self._prepare_deferred(request, principal, origin, registration)
         if _source is not None:
             if request.test != TestName.SOURCE or not self._source_current(_source):
                 raise BrokerError("profile_or_principal_no_longer_valid")
@@ -277,6 +280,159 @@ class ProfileJobs:
         store.put_plan(digest, plan)
         return dict(plan_hash=digest, plan=plan, storage=storage, approval_required=False)
 
+    def _prepare_deferred(
+        self, request: PrepareRequest, principal: str, origin: str, registration: str
+    ) -> dict[str, Any]:
+        """Plan a build that continues a source fetch which may still be running."""
+        broker, store = self.broker, self.broker._store()
+        assert request.after is not None and request.project_id is not None
+        try:
+            ticket = broker.tickets.peek(request.after, principal)
+        except TicketError as exc:
+            raise BrokerError(str(exc)) from None
+        parent_id = str(ticket["parent_job_id"])
+        parent = store.job(parent_id)
+        parent_plan = store.plan(parent["plan_hash"]) if parent is not None else None
+        if (
+            parent is None
+            or parent_plan is None
+            or parent_plan.get("test") != TestName.SOURCE.value
+            or parent_plan.get("source_principal") != principal
+            or parent_plan.get("project_id") != request.project_id
+        ):
+            raise BrokerError("ticket_invalid")
+        if parent["state"] not in ("awaiting_approval", "queued", "running", "succeeded"):
+            raise BrokerError("chain_broken")
+        plan: dict[str, Any] = dict(
+            version=2,
+            execution_context="registered_project_deferred",
+            broker_epoch=broker.epoch,
+            job_id=request.job_id,
+            test=TestName.BUILD.value,
+            principal_id=principal,
+            origin=origin,
+            project_id=request.project_id,
+            registration_sha256=registration,
+            continues={"parent_job_id": parent_id},
+        )
+        if request.derby_detail_mode is not None:
+            plan["derby_detail_mode"] = request.derby_detail_mode.value
+        if request.derby_dma_mode is not None:
+            plan["derby_dma_mode"] = request.derby_dma_mode.value
+        digest = digest_plan(plan)
+        existing = store.job(request.job_id)
+        waiting = broker.deferred.get(request.job_id)
+        if (existing and existing["plan_hash"] != digest) or (
+            waiting and waiting["plan_hash"] != digest
+        ):
+            raise BrokerError("job_id_conflict")
+        if store.plan(digest) is None and store.record_count("plans") >= 10000:
+            raise BrokerError("history_full_archive_offline")
+        store.put_plan(digest, plan)
+        return dict(plan_hash=digest, plan=plan, storage={}, approval_required=False)
+
+    def _execute_deferred(
+        self, request: ExecuteRequest, plan: dict[str, Any], principal: str, origin: str
+    ) -> dict[str, Any]:
+        """Accept the owner's explicit request now; queue it when the parent succeeds."""
+        broker, store = self.broker, self.broker._store()
+        if (
+            digest_plan(plan) != request.plan_hash
+            or plan.get("principal_id") != principal
+            or plan.get("origin") != origin
+            or plan.get("test") != TestName.BUILD.value
+        ):
+            raise BrokerError("owned_registered_project_plan_required")
+        waiting = broker.deferred.get(plan["job_id"])
+        existing = store.job(plan["job_id"])
+        if existing is not None or waiting is not None:
+            if (existing or waiting or {}).get("plan_hash") not in (
+                request.plan_hash,
+                (waiting or {}).get("plan_hash"),
+            ) or (waiting is not None and waiting["plan_hash"] != request.plan_hash):
+                raise BrokerError("job_id_conflict")
+            if waiting is not None:
+                return {**broker.deferred.view(waiting), "deduplicated": True}
+            assert existing is not None
+            return {**existing, "deduplicated": True}
+        if plan["broker_epoch"] != broker.epoch or not self._authorized(principal, origin):
+            raise BrokerError("profile_or_principal_no_longer_valid")
+        if store.record_count("jobs") >= 10000:
+            raise BrokerError("history_full_archive_offline")
+        parent_id = str(plan["continues"]["parent_job_id"])
+        ticket = broker.tickets.row_for_parent(parent_id)
+        if ticket is None:
+            raise BrokerError("ticket_invalid")
+        try:
+            broker.deferred.add(
+                plan["job_id"],
+                request.plan_hash,
+                parent_id,
+                principal,
+                origin,
+                str(ticket["ticket_id"]),
+            )
+            try:
+                broker.tickets.consume(str(ticket["ticket_id"]), principal)
+                broker.tickets.note_consumer(str(ticket["ticket_id"]), plan["job_id"])
+            except TicketError:
+                broker.deferred.remove(plan["job_id"])
+                raise
+        except TicketError as exc:
+            raise BrokerError(str(exc)) from None
+        row = broker.deferred.get(plan["job_id"])
+        assert row is not None
+        return {**broker.deferred.view(row), "deduplicated": False}
+
+    def promote(self, row: dict[str, Any]) -> None:
+        """Queue a waiting build once its source fetch succeeded; cancel it if that failed."""
+        broker, store = self.broker, self.broker._store()
+        job_id = str(row["job_id"])
+
+        def cancel(reason: str) -> None:
+            broker.deferred.finish(job_id, "cancelled", reason)
+
+        parent = store.job(str(row["parent_job_id"]))
+        if parent is None:
+            return cancel("chain_broken")
+        if parent["state"] in ("awaiting_approval", "queued", "running"):
+            return
+        if parent["state"] != "succeeded":
+            return cancel("chain_broken")
+        plan = store.plan(str(row["plan_hash"]))
+        if plan is None or digest_plan(plan) != row["plan_hash"]:
+            return cancel("plan_not_found_or_changed")
+        receipt = ((parent.get("diagnostic") or {}).get("source") or {}).get("source_receipt")
+        if not isinstance(receipt, str):
+            return cancel("chain_broken")
+        modes = {k: plan[k] for k in ("derby_detail_mode", "derby_dma_mode") if k in plan}
+        try:
+            prepared = self.prepare(
+                PrepareRequest(
+                    job_id=job_id,
+                    test=TestName.BUILD,
+                    project_id=plan["project_id"],
+                    source_receipt=receipt,
+                    **modes,
+                ),
+                str(row["principal_id"]),
+                str(row["origin"]),
+            )
+            self.execute(
+                ExecuteRequest(plan_hash=prepared["plan_hash"]),
+                str(row["principal_id"]),
+                str(row["origin"]),
+            )
+        except BrokerError as exc:
+            if str(exc) == "queue_full":
+                return  # transient: the lane is full; keep waiting
+            return cancel(str(exc))
+        except SourceError as exc:
+            return cancel(exc.code)
+        except ValueError:
+            return cancel("chain_broken")
+        broker.deferred.finish(job_id, "promoted", None, prepared["plan_hash"])
+
     def _plan(self, digest: str, principal: str, origin: str) -> dict[str, Any]:
         plan = self.broker._store().plan(digest)
         if (
@@ -321,6 +477,9 @@ class ProfileJobs:
     def execute(self, request: ExecuteRequest, principal: str, origin: str) -> dict[str, Any]:
         if not self._authorized(principal, origin):
             raise BrokerError("principal_not_authorized")
+        stored = self.broker._store().plan(request.plan_hash)
+        if stored is not None and stored.get("execution_context") == "registered_project_deferred":
+            return self._execute_deferred(request, stored, principal, origin)
         plan = self._plan(request.plan_hash, principal, origin)
         store = self.broker._store()
         existing = store.job(plan["job_id"])

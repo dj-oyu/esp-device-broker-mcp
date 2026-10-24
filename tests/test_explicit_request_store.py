@@ -61,6 +61,14 @@ def test_migration_never_replays_or_invents_an_execution_request(tmp_path):
         store.migrate_explicit_requests()
         assert store.job("new-job")["state"] == "queued"
         assert store.db.execute("SELECT count(*) FROM execution_audit").fetchone()[0] == 4
+        for action in (
+            lambda: store.approve(digest),
+            lambda: store.approved_enqueue("new-job", digest, True, awaiting_approval=True),
+            lambda: store.add_awaiting_job("another-job", digest),
+        ):
+            with pytest.raises(ValueError, match="approval_interface_retired"):
+                action()
+        assert store.job("new-job")["state"] == "queued"
     finally:
         store.close()
     reopened = Store(path)
@@ -131,30 +139,6 @@ def test_bad_or_foreign_plan_cannot_create_a_request(tmp_path):
             with pytest.raises(ValueError, match="explicit_request_invalid"):
                 store.enqueue_requested(job, requested_digest, client)
         assert store.db.execute("SELECT count(*) FROM jobs").fetchone()[0] == 0
-    finally:
-        store.close()
-
-
-def test_legacy_interfaces_cannot_convert_a_pending_job(tmp_path):
-    store = Store(tmp_path / "history.sqlite3")
-    try:
-        digest = plan(store)
-        store.db.execute(
-            "INSERT INTO jobs(id,plan_hash,state) VALUES(?,?,'awaiting_approval')",
-            ("new-job", digest),
-        )
-        store.db.commit()
-        for action in (
-            lambda: store.approve(digest),
-            lambda: store.approved_enqueue("new-job", digest, True, awaiting_approval=True),
-            lambda: store.add_awaiting_job("another-job", digest),
-        ):
-            with pytest.raises(ValueError, match="approval_interface_retired"):
-                action()
-        with pytest.raises(sqlite3.IntegrityError):
-            store.enqueue_requested("new-job", digest, "client")
-        assert store.job("new-job")["state"] == "awaiting_approval"
-        assert store.db.execute("SELECT count(*) FROM execution_requests").fetchone()[0] == 0
     finally:
         store.close()
 

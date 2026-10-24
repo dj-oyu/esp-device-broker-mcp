@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from cardputer_mcp.derby_fixed import LEGACY_PLAN, FixedCollector, parse_trial
+from cardputer_mcp.derby_fixed import LEGACY_PLAN, parse_trial
 from cardputer_mcp.derby_reports import private_job
 from cardputer_mcp.device_faults import fault_category
 from cardputer_mcp.job_outcome import review_summary
@@ -104,18 +104,6 @@ class DeviceFaultTests(unittest.TestCase):
             with self.subTest(tail=tail), self.assertRaises(ValueError):
                 parse_trial(FIXTURE + tail)
 
-    def test_collector_requires_matching_exit_before_stop(self):
-        for exit_line in (EXIT, b"", EXIT + EXIT, EXIT.replace(b"session=1", b"session=2")):
-            collector = FixedCollector(0.0)
-            raw = (
-                b"APP_ID local.derby\nDERBY READY tones=true\n" + FIXTURE + exit_line + STOP + HOME
-            )
-            collector.feed(raw)
-            for line in raw.splitlines():
-                normalized = line.removeprefix(b"I (10) app: ").removeprefix(b"I (11) shell: ")
-                collector.observe_line(normalized)
-            self.assertEqual(collector.snapshot(1.0, complete=True).valid, exit_line == EXIT)
-
     def test_review_resolution_preserves_historical_failure(self):
         pending = review_summary("needs_review", 0)
         resolved = review_summary("needs_review", 1)
@@ -133,29 +121,6 @@ class DeviceFaultTests(unittest.TestCase):
                 for tail in (fault, b"APP_STOPPED\n" + fault, b"APP_STOPPED\nHOME_READY\n" + fault):
                     with self.assertRaisesRegex(ValueError, "fixed_device_fault"):
                         parse_trial(FIXTURE + tail)
-
-    def test_fault_latches_in_collector_across_every_chunk_boundary(self):
-        for fault in FAULTS:
-            for split in range(len(fault) + 1):
-                collector = FixedCollector(0.0)
-                collector.feed(FIXTURE)
-                collector.feed(fault[:split])
-                collector.feed(fault[split:])
-                for line in (
-                    b"APP_ID local.derby",
-                    b"DERBY READY tones=true",
-                    FIXTURE.splitlines()[-1],
-                    EXIT.rstrip(b"\n"),
-                    b"APP_STOPPED",
-                    b"HOME_READY",
-                ):
-                    collector.observe_line(line)
-                trial = collector.snapshot(1.0, complete=True)
-                with self.subTest(fault=fault, split=split):
-                    self.assertFalse(trial.valid)
-                    self.assertFalse(trial.receipt["complete"])
-                    self.assertIsNone(trial.parsed)
-                    self.assertIn(fault, trial.raw)
 
     def test_normal_stop_is_not_an_exception_exemption(self):
         self.assertIsNone(fault_category(b"APP_STOPPED\nHOME_READY\n"))

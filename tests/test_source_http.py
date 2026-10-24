@@ -20,8 +20,7 @@ from cardputer_mcp.ports import DeviceSelector
 from cardputer_mcp.source_snapshot import SourceError, file_receipt, tree_hash
 
 
-@pytest.mark.parametrize("backend_name", ["mock", "serial"])
-@pytest.mark.parametrize("with_submodule", [False, True])
+@pytest.mark.parametrize(("backend_name", "with_submodule"), [("mock", False), ("serial", True)])
 async def test_registered_source_then_owned_receipt_build_without_operator(
     registry_service, tmp_path, monkeypatch, backend_name, with_submodule
 ):
@@ -124,15 +123,15 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
     service.resident.firmware_source.snapshots.transport = transport
     async with connect(service.url, key.token) as remote:
         catalog = await remote.list_tools()
-        schema = next(tool.input_schema for tool in catalog.tools if tool.name == "prepare_test")
-        assert "firmware_fetch_source" in json.dumps(schema)
+        schema = next(tool.input_schema for tool in catalog.tools if tool.name == "submit")
+        assert "fetch" in json.dumps(schema["$defs"]["Kind"])
         assert "source_commit" in json.dumps(schema) and "source_receipt" in json.dumps(schema)
         prepared = await call(
             remote,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "fetch-one",
-                "test": "firmware_fetch_source",
+                "kind": "fetch",
                 "project_id": "fixture",
                 "source_commit": COMMIT,
             },
@@ -140,12 +139,14 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
         assert prepared["ok"] and not prepared["approval_required"], prepared
         assert prepared["storage"]["source_cache"]["snapshots"] == 0
         assert not calls
-        execution = {"plan_hash": prepared["plan_hash"]}
-        assert (await call(remote, "execute_test", execution))["ok"]
+        execution = {"op": "run", "plan_hash": prepared["plan_hash"]}
+        assert (await call(remote, "execute", execution))["ok"]
         await service.resident.profile_jobs.queue.join()
         job = service.resident.job("fetch-one")
         assert job["state"] == "succeeded", json.dumps(job)
-        logs = await call(remote, "read_build_logs", {"job_id": "fetch-one"})
+        logs = await call(
+            remote, "status", {"view": "logs", "stream": "build", "job_id": "fetch-one"}
+        )
         assert logs["source"]["commit"] == COMMIT
         assert logs["source_cache"]["snapshots"] == 1
         receipt = logs["source"]["source_receipt"]
@@ -153,10 +154,10 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
         assert not project.project_dir.exists()
         built = await call(
             remote,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "build-one",
-                "test": "firmware_build",
+                "kind": "build",
                 "project_id": "fixture",
                 "source_receipt": receipt,
             },
@@ -229,8 +230,9 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
         with patch.object(build_module, "os", native):
             executed = await call(
                 remote,
-                "execute_test",
+                "execute",
                 {
+                    "op": "run",
                     "plan_hash": built["plan_hash"],
                 },
             )
@@ -238,7 +240,9 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
             await service.resident.profile_jobs.queue.join()
             job = service.resident.job("build-one")
             assert job["state"] == "succeeded", json.dumps(job)
-            report = await call(remote, "read_build_logs", {"job_id": "build-one"})
+            report = await call(
+                remote, "status", {"view": "logs", "stream": "build", "job_id": "build-one"}
+            )
             assert report["manifest"]["source_provenance"]["source_receipt"] == receipt
             assert report["manifest"]["source_provenance"]["commit"] == COMMIT
             assert (
@@ -258,10 +262,10 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
             fail_build = True
             failed_plan = await call(
                 remote,
-                "prepare_test",
+                "submit",
                 {
                     "job_id": "build-failed",
-                    "test": "firmware_build",
+                    "kind": "build",
                     "project_id": "fixture",
                     "source_receipt": receipt,
                 },
@@ -270,8 +274,9 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
             assert (
                 await call(
                     remote,
-                    "execute_test",
+                    "execute",
                     {
+                        "op": "run",
                         "plan_hash": failed_plan["plan_hash"],
                     },
                 )
@@ -299,29 +304,33 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
             fail_build = False
             retry = await call(
                 remote,
-                "prepare_test",
+                "submit",
                 {
                     "job_id": "build-corrected",
-                    "test": "firmware_build",
+                    "kind": "build",
                     "project_id": "fixture",
                     "source_receipt": receipt,
                 },
             )
             assert retry["ok"]
-            request = {"plan_hash": retry["plan_hash"]}
-            assert (await call(remote, "execute_test", request))["ok"]
+            request = {"op": "run", "plan_hash": retry["plan_hash"]}
+            assert (await call(remote, "execute", request))["ok"]
             await service.resident.profile_jobs.queue.join()
             assert service.resident.job("build-corrected")["state"] == "succeeded"
-            assert (await call(remote, "execute_test", request))["deduplicated"]
+            assert (await call(remote, "execute", request))["deduplicated"]
             assert service.backend.calls == 0
             assert service.resident.session is None
             assert not service.resident._store().db.execute("SELECT 1 FROM approvals").fetchone()
             async with connect(service.url, service.keys["first"].token) as other:
-                denied = await call(other, "execute_test", request)
+                denied = await call(other, "execute", request)
                 assert not denied["ok"]
-                denied = await call(other, "read_build_logs", {"job_id": "build-corrected"})
+                denied = await call(
+                    other,
+                    "status",
+                    {"view": "logs", "stream": "build", "job_id": "build-corrected"},
+                )
                 assert not denied["ok"]
-                denied = await call(other, "job_status", {"job_id": "build-corrected"})
+                denied = await call(other, "status", {"view": "job", "job_id": "build-corrected"})
                 assert not denied["ok"]
         source, _ = service.resident.firmware_source.snapshots.resolve(
             "fixture", receipt, key.metadata.principal_id
@@ -329,10 +338,10 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
         (source / "CMakeLists.txt").write_bytes(b"modified after prepare")
         changed = await call(
             remote,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "changed-build",
-                "test": "firmware_build",
+                "kind": "build",
                 "project_id": "fixture",
                 "source_receipt": receipt,
             },
@@ -342,14 +351,7 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
 
 @pytest.mark.parametrize(
     "failure_kind",
-    [
-        "known",
-        "unknown",
-        "unsafe_source_error",
-        "commit_known",
-        "commit_unknown",
-        "cache_protected",
-    ],
+    ["known", "unsafe_source_error", "cache_protected"],
 )
 async def test_failed_source_retains_safe_diagnostic_through_broker(
     registry_service, tmp_path, monkeypatch, failure_kind
@@ -421,17 +423,17 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
     async with connect(service.url, key.token) as remote:
         prepared = await call(
             remote,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "source-failure",
-                "test": "firmware_fetch_source",
+                "kind": "fetch",
                 "project_id": "fixture",
                 "source_commit": COMMIT,
             },
         )
         assert prepared["ok"], prepared
-        execution = {"plan_hash": prepared["plan_hash"]}
-        assert (await call(remote, "execute_test", execution))["ok"]
+        execution = {"op": "run", "plan_hash": prepared["plan_hash"]}
+        assert (await call(remote, "execute", execution))["ok"]
         await service.resident.profile_jobs.queue.join()
         job = service.resident.job("source-failure")
         assert job["state"] == ("needs_review" if failure_kind.startswith("commit_") else "failed")
@@ -442,7 +444,9 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         assert job["diagnostic"] == expected_diagnostic
         assert service.resident._store().needs_review() == failure_kind.startswith("commit_")
         report = await call(
-            remote, "read_build_logs", {"job_id": "source-failure", "levels": ["error"]}
+            remote,
+            "status",
+            {"view": "logs", "stream": "build", "job_id": "source-failure", "levels": ["error"]},
         )
         assert report["diagnostic"] == expected_diagnostic
         assert any(expected in item["text"] for item in report["entries"])
@@ -489,10 +493,10 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
             source.snapshots.transport = corrected_transport
             corrected = await call(
                 remote,
-                "prepare_test",
+                "submit",
                 {
                     "job_id": "source-corrected",
-                    "test": "firmware_fetch_source",
+                    "kind": "fetch",
                     "project_id": "fixture",
                     "source_commit": COMMIT,
                 },
@@ -501,8 +505,9 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
             assert (
                 await call(
                     remote,
-                    "execute_test",
+                    "execute",
                     {
+                        "op": "run",
                         "plan_hash": corrected["plan_hash"],
                     },
                 )

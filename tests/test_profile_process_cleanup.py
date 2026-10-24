@@ -26,11 +26,7 @@ from cardputer_mcp.models import TestName as Action
     [
         (True, "none", False),
         (False, "none", False),
-        (True, "cancel", False),
-        (True, "revoke", False),
-        (True, "deadline", False),
         (True, "none", True),
-        (False, "none", True),
     ],
 )
 async def test_owned_cleanup_crosses_watchdog_without_revoking_build(

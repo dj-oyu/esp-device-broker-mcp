@@ -12,9 +12,15 @@ from cardputer_mcp.config import SourceRepository
 from cardputer_mcp.models import AcquireRequest, LeaseRequest, Origin
 
 
-@pytest.mark.parametrize("operation", ["firmware_fetch_source", "firmware_build"])
-@pytest.mark.parametrize("boundary", ["prepare", "execute"])
-@pytest.mark.parametrize("blocker", ["device_job", "device_request"])
+# Operation, boundary and blocker kind are independent axes; this orthogonal subset
+# puts every pair of axis values in at least one case.
+@pytest.mark.parametrize(
+    "operation,boundary,blocker",
+    [
+        ("firmware_fetch_source", "prepare", "device_job"),
+        ("firmware_build", "execute", "device_job"),
+    ],
+)
 async def test_unrelated_device_review_does_not_gate_explicit_profile_job(
     registry_service, tmp_path, monkeypatch, operation, boundary, blocker
 ):
@@ -53,12 +59,13 @@ async def test_unrelated_device_review_does_not_gate_explicit_profile_job(
     monkeypatch.setattr(broker.firmware_source, "commit_success", commit_source)
     monkeypatch.setattr(broker.firmware_build, "execute", build)
     monkeypatch.setattr(broker.firmware_build, "commit_deferred", commit_build)
-    request = {"job_id": "profile-candidate", "test": operation, "project_id": "fixture"}
+    kind = {"firmware_fetch_source": "fetch", "firmware_build": "build"}[operation]
+    request = {"job_id": "profile-candidate", "kind": kind, "project_id": "fixture"}
     if operation == "firmware_fetch_source":
         request["source_commit"] = "a" * 40
 
     async with connect(service.url, service.keys["second"].token) as remote:
-        prepared = await call(remote, "prepare_test", request)
+        prepared = await call(remote, "submit", request)
         assert prepared["ok"] and prepared["approval_required"] is False
         store = broker._store()
         if blocker == "device_job":
@@ -80,12 +87,12 @@ async def test_unrelated_device_review_does_not_gate_explicit_profile_job(
         broker.release(LeaseRequest(session=lease["session"]))
         if boundary == "prepare":
             request["job_id"] = "later-profile"
-            prepared = await call(remote, "prepare_test", request)
+            prepared = await call(remote, "submit", request)
             assert prepared["ok"] and prepared["approval_required"] is False
         await asyncio.sleep(0)
         assert effects == [] and broker.profile_jobs.queue.empty()
         assert store.job(request["job_id"]) is None
-        result = await call(remote, "execute_test", {"plan_hash": prepared["plan_hash"]})
+        result = await call(remote, "execute", {"op": "run", "plan_hash": prepared["plan_hash"]})
         assert result["ok"] is True
         await asyncio.wait_for(broker.profile_jobs.queue.join(), 3)
         assert store.job(request["job_id"])["state"] == "succeeded"

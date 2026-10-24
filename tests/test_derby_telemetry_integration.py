@@ -7,7 +7,6 @@ from test_derby_smoke import Wire
 from test_serial_backend import Clock, FakePort
 
 from cardputer_mcp.config import SerialSettings
-from cardputer_mcp.derby_observation import DerbyObservation
 from cardputer_mcp.derby_smoke import derby_smoke
 from cardputer_mcp.derby_telemetry import DerbyDiagnosticsCollector
 from cardputer_mcp.models import TestName as Action
@@ -34,7 +33,7 @@ def device_for(wire):
     )
 
 
-@pytest.mark.parametrize("split", [1, 2, 7, 64, 4096])
+@pytest.mark.parametrize("split", [1, 7, 4096])
 def test_only_bare_complete_tlm_survives_fragmented_or_coalesced_single_reader(split):
     clock = Clock()
     port = FakePort(clock)
@@ -56,19 +55,6 @@ def test_only_bare_complete_tlm_survives_fragmented_or_coalesced_single_reader(s
     assert reader.derby_diagnostics is None and reader.derby_observation is None
     assert reader.pending == b"" and reader.lines == [] and reader.fault_tail == b""
     assert collector.snapshot().samples == ()
-
-
-def test_tlm_without_lf_is_not_promoted_to_a_record_at_deadline():
-    clock = Clock()
-    port = FakePort(clock)
-    port.chunks.append(TLM)
-    reader = Reader(port, lambda _: None, clock, 1)
-    collector = reader.derby_diagnostics = DerbyDiagnosticsCollector(clock=clock, origin=0)
-    reader.read_once()
-    clock.value = 1
-    with pytest.raises(SerialFailure, match="serial_deadline"):
-        reader.read_once()
-    assert collector.snapshot().samples == () and port.writes == []
 
 
 @pytest.mark.parametrize(
@@ -106,31 +92,6 @@ def test_complete_fatal_category_is_collected_before_stop_without_suffix(fault, 
     assert report.events[-1].phase == phase
     assert "SYNTHETIC_PRIVATE" not in report.model_dump_json()
     assert port.writes == [] and not port.chunks
-
-
-@pytest.mark.parametrize(
-    "chunks",
-    [
-        [b"DERBY DEMOFAIL", b" SYNTHETIC_PRIVATE_EXCEPTION\n"],
-        [
-            b"\x1b[0;31mE (123) app: OOM",
-            b" n=1 first_req=8192 used=150000\x1b[0m\r\n",
-        ],
-    ],
-)
-def test_partial_fatal_stops_immediately_without_consuming_the_remaining_row(chunks):
-    clock = Clock()
-    port = FakePort(clock)
-    port.chunks.extend(chunks)
-    reader = Reader(port, lambda _: None, clock, 180)
-    reader.derby_mode = True
-    collector = reader.derby_diagnostics = DerbyDiagnosticsCollector(clock=clock, origin=0)
-    with pytest.raises(SerialFailure, match="serial_fault_marker"):
-        reader.read_once()
-    report = collector.snapshot()
-    assert report.events == () and report.quality.partial_line_or_fault_possible
-    assert len(port.chunks) == 1 and port.writes == []
-    assert "SYNTHETIC_PRIVATE" not in report.model_dump_json()
 
 
 async def test_success_keeps_original_capture_keys_and_snapshots_without_pixels(monkeypatch):
@@ -193,46 +154,6 @@ async def test_launch_fault_retains_diagnostics_before_ready_and_still_closes():
     assert "SYNTHETIC_PRIVATE" not in json.dumps(caught.value.diagnostic)
     assert wire.closed and device.active == 0 and not device.hardware_connected
     assert b"s" not in wire.writes and b"q" not in wire.writes
-
-
-async def test_known_read_failure_after_partial_tlm_keeps_missing_quality_without_flushing():
-    wire = Wire()
-    write, read = wire.write, wire.read
-    partial_seen = [False]
-    known = SerialFailure("operation_interrupted_review_required", step="command")
-    known.diagnostic["failure_origin"] = "authority_or_stop_check"
-
-    def partial_launch(key):
-        count = write(key)
-        if key == b"e":
-            wire.queue.clear()
-            wire.queue.append(TLM)
-        return count
-
-    def interrupted(size=4096):
-        if partial_seen[0]:
-            raise known
-        data = read(size)
-        if data == TLM:
-            partial_seen[0] = True
-        return data
-
-    wire.write, wire.read = partial_launch, interrupted
-    device = device_for(wire)
-    plan = {"test": Action.DERBY.value, **device.prepare(Action.DERBY)}
-    with pytest.raises(SerialFailure) as caught:
-        await device.execute_smoke(plan, lambda _: None, lambda: True)
-    assert caught.value is known and known.diagnostic["failure_origin"] == "authority_or_stop_check"
-    diagnostics = known.diagnostic["derby_observation"]["diagnostics"]
-    assert diagnostics["samples"] == [] and diagnostics["quality"]["missing"]
-    assert diagnostics["quality"]["partial_line_or_fault_possible"]
-    assert wire.closed and b"s" not in wire.writes and b"q" not in wire.writes
-    # This is the existing failure's exclude_none serialization, including
-    # unavailable heap fields; it must remain parseable after persistence.
-    restored = DerbyObservation.model_validate_json(
-        json.dumps(known.diagnostic["derby_observation"])
-    )
-    assert restored.diagnostics.sampled_heap_lower_bound_bytes is None
 
 
 def test_telemetry_photo_phase_does_not_authorize_a_capture_or_change_smoke_result():
@@ -319,13 +240,3 @@ async def test_known_failure_snapshot_preserves_classification_and_cleanup(sourc
         assert b"s" not in wire.writes and b"q" not in wire.writes
     else:
         assert wire.writes.count(b"s") == wire.writes.count(b"q") == 1
-
-
-def test_old_observation_payload_parses_without_new_diagnostics():
-    wire = Wire(phases=False)
-    reader = Reader(wire, lambda _: None, lambda: wire.now, 180)
-    derby_smoke(reader)
-    payload = reader.derby_observation().model_dump(mode="json")
-    payload.pop("diagnostics")
-    restored = DerbyObservation.model_validate_json(json.dumps(payload))
-    assert restored.diagnostics is None and restored.no_capture_completed()

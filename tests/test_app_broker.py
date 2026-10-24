@@ -81,15 +81,23 @@ async def test_mcp_app_tools_metadata_and_same_host_client_for_registered_apps(r
     service = registry_service
     async with connect(service.url, service.keys["second"].token) as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-        for name in ("list_apps", "app_command", "read_app_events"):
-            assert name in tools
-        assert tools["list_apps"].annotations.read_only_hint is True
-        assert tools["read_app_events"].annotations.read_only_hint is True
-        assert tools["app_command"].annotations.read_only_hint is False
-        schema = json.dumps(tools["prepare_test"].input_schema)
+        assert set(tools) == {"status", "submit", "execute", "flash", "cancel", "session"}
+        assert tools["status"].annotations.read_only_hint is True
+        assert tools["execute"].annotations.read_only_hint is False
+        assert tools["execute"].annotations.destructive_hint is False
+        status_schema = json.dumps(tools["status"].input_schema)
+        for view in ("apps", "logs"):
+            assert view in status_schema
+        for stream in ("app",):
+            assert stream in status_schema
+        execute_schema = json.dumps(tools["execute"].input_schema)
+        assert "app_input" in execute_schema
+        schema = json.dumps(tools["submit"].input_schema)
         assert "app_session" in schema and "AppSessionOptions" in schema
         for index, app_id in enumerate(("local.hello", "local.stress")):
-            lease = await call(client, "acquire_session", {"owner": "remote_mcp"})
+            lease = await call(
+                client, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+            )
             assert lease["ok"]
             api = AppSessionClient(client)
             started = await api.start(
@@ -102,5 +110,5 @@ async def test_mcp_app_tools_metadata_and_same_host_client_for_registered_apps(r
             assert terminal["state"] == "succeeded"
             catalog = await api.list_apps()
             assert catalog["fresh"] is True
-            await call(client, "release_session", {"session": lease["session"]})
+            await call(client, "session", {"action": "release", "session": lease["session"]})
     assert service.backend.max_active == 1 and service.backend.calls == 2

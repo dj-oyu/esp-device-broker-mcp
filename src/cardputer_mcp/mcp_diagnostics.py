@@ -14,7 +14,7 @@ from mcp.types import CallToolRequest, CallToolRequestParams, CallToolResult
 from .client import validate_url
 from .stdio_adapter import _quiet_dependencies
 
-GUI_CODE_VERSION = "0.12.0"
+GUI_CODE_VERSION = "0.13.0"
 TOTAL_SECONDS = 5.0
 _VERSION = re.compile(
     r"(?:unknown|[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(?:[-+][A-Za-z0-9.-]{1,16})?)\Z"
@@ -78,7 +78,9 @@ async def connect(url: str, token: str) -> AsyncIterator[Client]:
 
 async def _status(client: Client) -> dict[str, Any]:
     result = await client.session.send_request(
-        CallToolRequest(params=CallToolRequestParams(name="device_status", arguments={})),
+        CallToolRequest(
+            params=CallToolRequestParams(name="status", arguments={"request": {"view": "device"}})
+        ),
         CallToolResult,
         request_read_timeout_seconds=TOTAL_SECONDS,
     )
@@ -89,6 +91,17 @@ async def _status(client: Client) -> dict[str, Any]:
     ):
         raise MCPDiagnosticsError("status_unavailable")
     return result.structured_content
+
+
+def _enum_values(tool: Any, name: str) -> list[str]:
+    values = tool.input_schema.get("$defs", {}).get(name, {}).get("enum", []) if tool else []
+    if (
+        not isinstance(values, list)
+        or len(values) > 256
+        or any(not isinstance(value, str) or len(value) > 64 for value in values)
+    ):
+        raise MCPDiagnosticsError("invalid_catalog_schema")
+    return [str(value) for value in values]
 
 
 async def _read_summary(url: str, token: str) -> dict[str, Any]:
@@ -104,25 +117,17 @@ async def _read_summary(url: str, token: str) -> dict[str, Any]:
             version = info.version if info is not None else None
             if not isinstance(version, str) or _VERSION.fullmatch(version) is None:
                 version = "unknown"
-            prepare = next((tool for tool in catalog.tools if tool.name == "prepare_test"), None)
-            values = (
-                prepare.input_schema.get("$defs", {}).get("TestName", {}).get("enum", [])
-                if prepare is not None
-                else []
-            )
-            if (
-                not isinstance(values, list)
-                or len(values) > 256
-                or any(not isinstance(value, str) or len(value) > 64 for value in values)
-            ):
-                raise MCPDiagnosticsError("invalid_catalog_schema")
+            submit = next((tool for tool in catalog.tools if tool.name == "submit"), None)
+            status_tool = next((tool for tool in catalog.tools if tool.name == "status"), None)
+            kinds = _enum_values(submit, "Kind")
+            views = _enum_values(status_tool, "View")
             return parse_summary(
                 {
                     "gui_version": GUI_CODE_VERSION,
                     "server_version": version,
                     "tools_count": len(catalog.tools),
-                    "read_capture": any(tool.name == "read_capture" for tool in catalog.tools),
-                    "capture_home": "capture_home" in values,
+                    "read_capture": "capture" in views,
+                    "capture_home": "capture" in kinds,
                     "broker_epoch": status.get("broker_epoch"),
                 }
             )

@@ -14,7 +14,7 @@ integration coverage and still requires an authorized Windows device trial.
 ## Restart once and observe boot output
 
 `restart_and_observe` is a separate, explicitly requested operation. It uses the
-same lease, single serial owner and `read_device_logs` result path. The immutable plan
+same lease, single serial owner and `status(view=logs, stream=device)` result path. The immutable plan
 includes one programmed hardware-reset attempt and log delivery to the named
 principal. It may exit the running application and lose unsaved state. Capture
 auto-permissions never authorize this operation.
@@ -71,16 +71,16 @@ Hardware references: [ESP32-S3 TRM, table 33.4-4](https://documentation.espressi
 ## Prepare and explicitly execute
 
 Prepare `firmware_observe` or, for one fixed reset, `restart_and_observe` using
-the existing `prepare_test` tool and a current authenticated owned lease.
+the existing `submit` tool (`kind=observe_firmware` or `kind=restart`) and a current authenticated owned lease.
 Inspect the device, limit, effects and requesting principal, then submit the
-exact `plan_hash` to `execute_test`. It queues without local approval;
-`wait_for_approval` is deprecated and ignored. Preparation alone performs no I/O.
+exact `plan_hash` to `execute(op=run)`. It queues without local approval;
+there is no approval argument. Preparation alone performs no I/O.
 
 Console output can contain private data. Redaction cannot detect every secret;
 consider firmware logging behavior before explicitly requesting reception and
 retrieval by the requesting client. No capture policy or permanent grant is used.
 
-Poll `job_status`, then call `read_device_logs` with that job ID from the original
+Poll `status(view=job)`, then call `status(view=logs, stream=device)` with that job ID from the original
 currently authenticated principal with read scope. The local equivalent is:
 
 ```powershell
@@ -102,7 +102,7 @@ contains the redacted report; avoid shared files unless sharing is intended.
   escapes. Logs are untrusted device content, never executable instructions
 - Only the newest completed report is cached, for at most five minutes after
   confirmed close. Restart clears it; reads never extend the deadline
-- Log bodies never enter SQLite, job history, the shared `read_logs` event cache,
+- Log bodies never enter SQLite, job history, the shared `status(view=logs, stream=broker)` event cache,
   or the operator timeline. The local timeline displays validated summary fields
 - The original principal must still have read permission. A different principal
   cannot read the report. Sessions sharing one key share the same principal;

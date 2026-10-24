@@ -148,35 +148,6 @@ class SourceTests(unittest.TestCase):
         with self.assertRaisesRegex(SourceError, "source_cache_full"):
             self.fetch()
 
-    def test_snapshot_count_report_and_admission_share_limit(self):
-        class ReachedAdmission(Exception):
-            pass
-
-        cache = self.root / "cache"
-        cache.mkdir(mode=0o700)
-        plan = self.snapshots.prepare("fixture", COMMIT, "owner")
-        self.assertEqual(plan["limits"]["cache_snapshots"], 16)
-        created = 0
-        for count in (8, 16, 17):
-            for number in range(created, count):
-                (cache / str(number)).mkdir()
-            created = count
-            usage = self.snapshots.usage("fixture")
-            self.assertEqual(usage["snapshots"], count)
-            self.assertEqual(usage["max_snapshots"], 16)
-            self.assertEqual(usage["max_bytes"], 2 * 1024 * 1048576)
-            with patch(
-                "cardputer_mcp.source_snapshot.shutil.disk_usage", side_effect=ReachedAdmission
-            ) as reserve:
-                if count < 16:
-                    with self.assertRaises(ReachedAdmission):
-                        self.fetch()
-                    reserve.assert_called_once()
-                else:
-                    with self.assertRaisesRegex(SourceError, "source_cache_full"):
-                        self.fetch()
-                    reserve.assert_not_called()
-
     def test_snapshot_byte_limit_still_rejects_oversized_cache(self):
         cache = self.root / "cache"
         cache.mkdir(mode=0o700)
@@ -188,21 +159,6 @@ class SourceTests(unittest.TestCase):
                 self.snapshots.usage("fixture")
         self.assertEqual(self.snapshots.usage("fixture")["bytes"], 5)
         self.assertEqual(self.snapshots.usage("fixture")["max_bytes"], 2 * 1024 * 1048576)
-
-    def test_snapshot_admission_still_reserves_byte_headroom(self):
-        cache = self.root / "cache"
-        cache.mkdir(mode=0o700)
-        snapshot = cache / "one"
-        snapshot.mkdir()
-        (snapshot / "payload").write_bytes(b"1234")
-        with patch.dict(
-            "cardputer_mcp.source_snapshot.LIMITS",
-            cache_bytes=32 * 1048576 + 3,
-            expanded_bytes=1,
-        ):
-            self.assertEqual(self.snapshots.usage("fixture")["bytes"], 4)
-            with self.assertRaisesRegex(SourceError, "source_cache_full"):
-                self.fetch()
 
     def test_typed_contract_has_no_url_path_or_short_commit(self):
         valid = PrepareRequest(

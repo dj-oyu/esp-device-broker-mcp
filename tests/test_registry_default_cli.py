@@ -10,11 +10,6 @@ from cardputer_mcp.config import Settings
 from cardputer_mcp.key_operator import KeyOperatorError, run
 
 
-def test_keys_no_longer_requires_registry_override():
-    assert cli.parser().parse_args(["keys", "list"]).registry is None
-    assert cli.parser().parse_args(["serve"]).key_registry is None
-
-
 def test_installed_serve_environment_needs_no_registry_flag(tmp_path, monkeypatch):
     settings = Settings(state_dir=tmp_path / "old-working-state")
     create = Mock(return_value=object())

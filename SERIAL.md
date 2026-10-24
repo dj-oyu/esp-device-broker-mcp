@@ -225,7 +225,7 @@ Only observed START, ordered gate/race/photo/res and END support the cycle resul
 missing/out-of-order signals yield an image/time observation with limits, never
 an inferred cycle success. Capture traffic can overlap phase text.
 
-`job_status.diagnostic.derby_observation` separates `demo_cycle_observed`,
+`status(view=job).diagnostic.derby_observation` separates `demo_cycle_observed`,
 `photo_context_correlation`, and `image_acquired`. At most 64 structured events
 record host milliseconds since the serial operation started, observed phase/race/
 seed, photo observation, s request/completed write, received CAPTURE_BEGIN/END,

@@ -54,10 +54,6 @@ class BuildTests(unittest.TestCase):
             with self.assertRaises(FixedDiagnosticFailure) as caught:
                 builder._execute_inner({}, lambda _: None)
             self.assertIsNone(caught.exception.subprocess)
-
-    def test_public_failure_status_has_fixed_keys_and_numeric_bounds(self):
-        from cardputer_mcp.firmware_build import FixedDiagnosticFailure
-
         failure = FixedDiagnosticFailure("idf_build_failed_needs_review")
         for value in (-(2**31), -1, 0, 17, 2**32 - 1):
             failure.subprocess = {"idf_build": value, "private-path": "token=synthetic-secret"}
@@ -116,6 +112,15 @@ class BuildTests(unittest.TestCase):
             logs.read("bob", request())
         cursor = SimpleNamespace(**first["next_cursor"])
         self.assertEqual([], logs.read("alice", request(cursor))["entries"])
+        builder = FirmwareBuild(SimpleNamespace())
+        logs = BuildLogs("alice")
+        logs.redactions = ("abcdefgh-secret",)
+        logs.deadline = 0
+        builder.logs["job"] = logs
+        req = SimpleNamespace(job_id="job", **vars(request()))
+        self.assertTrue(builder.read_logs(req, "alice")["expired"])
+        logs.append("warning: abcdefgh-secret")
+        self.assertNotIn("abcdefgh-secret", str(builder.read_logs(req, "alice")))
 
     def test_large_output_gap_expiry_restart(self):
         logs = BuildLogs("alice", max_lines=8, max_bytes=1000)
@@ -144,6 +149,46 @@ class BuildTests(unittest.TestCase):
             (root / "CMakeLists.txt").write_text("two")
             self.assertNotEqual(before, source_fingerprint(root))
 
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "CMakeLists.txt").write_text("include(build-helpers/config.cmake)")
+            helper = root / "build-helpers/config.cmake"
+            helper.parent.mkdir()
+            helper.write_text("first code")
+            before = source_fingerprint(root)
+            helper.write_text("changed code")
+            self.assertNotEqual(before, source_fingerprint(root))
+            nested = root / "components/build-helper/CMakeLists.txt"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("nested code")
+            before = source_fingerprint(root)
+            nested.write_text("changed nested code")
+            self.assertNotEqual(before, source_fingerprint(root))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            profile = root / "profile.ps1"
+            profile.write_text("return")
+            registrations = {}
+            for name in ("first", "second"):
+                project = root / name
+                project.mkdir()
+                (project / "CMakeLists.txt").write_text("identical bytes")
+                registrations[name] = SimpleNamespace(
+                    project_dir=project,
+                    trusted_profile=profile,
+                    expected_idf="6.0.1",
+                    target="esp32s3",
+                )
+            builder = FirmwareBuild(SimpleNamespace(build_projects=registrations))
+            first = builder.prepare("first", "alice")["fingerprint"]
+            second = builder.prepare("second", "alice")["fingerprint"]
+            self.assertNotEqual(first, second)
+            # Even the same registration ID in another broker config cannot alias roots.
+            other = FirmwareBuild(
+                SimpleNamespace(build_projects={"first": registrations["second"]})
+            )
+            self.assertNotEqual(first, other.prepare("first", "alice")["fingerprint"])
+
     def test_registered_plan_no_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -165,23 +210,6 @@ class BuildTests(unittest.TestCase):
             self.assertEqual("6.0.1", plan["expected_idf"])
             with self.assertRaises(ValueError):
                 FirmwareBuild(settings).prepare("unknown", "alice")
-
-    @unittest.skipIf(sys.platform == "win32", "POSIX runner; Windows uses owned job API")
-    def test_process_bounded_streams_and_stderr_not_error(self):
-        process = BuildProcess()
-        lines = []
-        script = 'import sys;print("x"*100000);print("note: text",file=sys.stderr)'
-        code = process.run(
-            [sys.executable, "-c", script],
-            {},
-            Path("/tmp"),
-            lambda line, stream: lines.append((line, stream)),
-            timeout=10,
-        )
-        self.assertEqual(code, 0)
-        self.assertFalse(process.active)
-        self.assertLessEqual(max((len(line) for line, stream in lines)), 4096)
-        self.assertIn(("note: text", "stderr"), lines)
 
     @unittest.skipIf(sys.platform == "win32", "POSIX runner; Windows uses owned job API")
     def test_interruption_stops_owned_process(self):
@@ -315,6 +343,7 @@ class WindowsOwnedBuildTests(unittest.TestCase):
 class FirmwareVerticalTests(unittest.TestCase):
     def test_successful_idf_exit_then_source_mutation_is_not_published(self):
         self._exercise_build(mutate_during_build=True)
+        self._exercise_build(mutate_during_diagnostics=True)
 
     def _exercise_build(
         self,
@@ -678,9 +707,6 @@ class FirmwareVerticalTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 builder.read_logs(SimpleNamespace(job_id="job", **vars(request())), "bob")
 
-    def test_compiler_cache_preserves_source_artifact_and_config_identity(self):
-        self._exercise_build(cache_mode="on", source_mode=True)
-
     def test_missing_and_old_cache_use_explicit_uncached_build(self):
         for mode in ("missing", "old"):
             with self.subTest(mode=mode):
@@ -692,10 +718,10 @@ class FirmwareVerticalTests(unittest.TestCase):
                 self._exercise_build(cache_mode=mode)
 
     def test_source_receipt_build_records_provenance_and_keeps_config_out_of_source(self):
-        self._exercise_build(source_mode=True)
+        self._exercise_build(source_mode=True, cache_mode="on")
 
     def test_profile_diagnostics_build_manifest_and_reader_boundary(self):
-        self._exercise_build()
+        self._exercise_build(node_mode="registered")
 
     def test_cancel_during_post_build_fingerprint(self):
         self._exercise_build("fingerprint")
@@ -705,44 +731,19 @@ class FirmwareVerticalTests(unittest.TestCase):
 
     def test_local_policy_opt_in_only(self):
         self._exercise_build(policy="RemoteSigned")
-
-    def test_profile_policy_rejection_has_fixed_private_diagnostic(self):
         self._exercise_build(profile_denied=True)
 
     def test_idf_failure_retains_bounded_redacted_diagnostics(self):
         self._exercise_build(idf_failed=True)
-
-    def test_toolchain_failure_prevents_build(self):
         self._exercise_build(toolchain_failed=True)
 
-    def test_diagnostic_time_source_change_prevents_build(self):
-        self._exercise_build(mutate_during_diagnostics=True)
-
-    def test_registered_node_version_recorded(self):
-        self._exercise_build(node_mode="registered")
-
     def test_wrong_registered_node_version_blocks_build(self):
-        self._exercise_build(node_mode="wrong_version")
-
-    def test_ambiguous_node_resolution_blocks_build(self):
-        self._exercise_build(node_mode="ambiguous")
-
-    def test_unregistered_node_on_profile_path_blocks_build(self):
-        self._exercise_build(node_mode="unregistered")
+        for mode in ("wrong_version", "ambiguous", "unregistered"):
+            with self.subTest(node_mode=mode):
+                self._exercise_build(node_mode=mode)
 
 
 class BuildLifecycleRegressionTests(unittest.TestCase):
-    def test_expired_poll_preserves_live_redaction(self):
-        builder = FirmwareBuild(SimpleNamespace())
-        logs = BuildLogs("alice")
-        logs.redactions = ("abcdefgh-secret",)
-        logs.deadline = 0
-        builder.logs["job"] = logs
-        req = SimpleNamespace(job_id="job", **vars(request()))
-        self.assertTrue(builder.read_logs(req, "alice")["expired"])
-        logs.append("warning: abcdefgh-secret")
-        self.assertNotIn("abcdefgh-secret", str(builder.read_logs(req, "alice")))
-
     def test_preexisting_stop_never_launches(self):
         from unittest.mock import patch
 
@@ -759,49 +760,6 @@ class BuildLifecycleRegressionTests(unittest.TestCase):
         launch.assert_not_called()
         win_api.assert_not_called()
         self.assertFalse(runner.active)
-
-    def test_build_named_source_is_hashed(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            (root / "CMakeLists.txt").write_text("include(build-helpers/config.cmake)")
-            helper = root / "build-helpers/config.cmake"
-            helper.parent.mkdir()
-            helper.write_text("first code")
-            before = source_fingerprint(root)
-            helper.write_text("changed code")
-            self.assertNotEqual(before, source_fingerprint(root))
-            nested = root / "components/build-helper/CMakeLists.txt"
-            nested.parent.mkdir(parents=True)
-            nested.write_text("nested code")
-            before = source_fingerprint(root)
-            nested.write_text("changed nested code")
-            self.assertNotEqual(before, source_fingerprint(root))
-
-    def test_identical_checkouts_have_distinct_build_fingerprints(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            profile = root / "profile.ps1"
-            profile.write_text("return")
-            registrations = {}
-            for name in ("first", "second"):
-                project = root / name
-                project.mkdir()
-                (project / "CMakeLists.txt").write_text("identical bytes")
-                registrations[name] = SimpleNamespace(
-                    project_dir=project,
-                    trusted_profile=profile,
-                    expected_idf="6.0.1",
-                    target="esp32s3",
-                )
-            builder = FirmwareBuild(SimpleNamespace(build_projects=registrations))
-            first = builder.prepare("first", "alice")["fingerprint"]
-            second = builder.prepare("second", "alice")["fingerprint"]
-            self.assertNotEqual(first, second)
-            # Even the same registration ID in another broker config cannot alias roots.
-            other = FirmwareBuild(
-                SimpleNamespace(build_projects={"first": registrations["second"]})
-            )
-            self.assertNotEqual(first, other.prepare("first", "alice")["fingerprint"])
 
 
 if __name__ == "__main__":

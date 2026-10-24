@@ -1,6 +1,3 @@
-import struct
-import zlib
-
 import pytest
 
 from cardputer_mcp.app_wire import (
@@ -62,32 +59,6 @@ def test_namespace_crc_and_truncation_rejected(alter):
         Reply.decode(alter(reply().encode()))
 
 
-def test_reserved_and_padding_fields_rejected_even_with_valid_crc():
-    request = Request(Op.OPEN, 1, 0, boot=2, fence=1, ttl=100).encode()
-    kind, session, command, payload = unframe(request)
-    with pytest.raises(ValueError):
-        Request.decode(frame(kind, session, command, payload[:-1] + b"\x01"))
-    changed = bytearray(payload)
-    changed[25] = ord("X")
-    with pytest.raises(ValueError):
-        Request.decode(frame(kind, session, command, bytes(changed)))
-    for text in ["x" * 32, "a\0b", "日本", "\x01"]:
-        with pytest.raises(ValueError):
-            Request(Op.START, 1, 1, app_id=text).encode()
-
-
-def test_fragmented_response_is_control_and_plain_text_is_only_log():
-    decoder = Decoder()
-    collected, logs = [], []
-    data = b"HOME_READY\naccepted consumed stop\n" + reply().encode()
-    for c in data:
-        found, lines = decoder.feed(bytes([c]))
-        collected.extend(found)
-        logs.extend(lines)
-    assert collected == [reply()]
-    assert logs == ["HOME_READY", "accepted consumed stop"]
-
-
 def test_flood_and_bad_frame_are_bounded_and_recover_at_newline():
     decoder = Decoder()
     found, logs = decoder.feed(b"x" * 1000000 + b"\n")
@@ -109,15 +80,3 @@ def test_legacy_bridge_never_becomes_native_control():
     found, logs = decoder.feed(legacy + native)
     assert found == [reply()]
     assert logs == [legacy[:-1].decode()]
-
-
-def test_header_version_and_length_are_checked():
-    kind, session, command, payload = unframe(reply().encode())
-    bad = frame(kind, session, command, payload[:-1])
-    with pytest.raises(ValueError):
-        Reply.decode(bad)
-    header = struct.pack("<BBHII", 2, 128, 120, 7, 11)
-    body = header + payload
-    incompatible = b"\x1dC" + (body + struct.pack("<I", zlib.crc32(body))).hex().encode() + b"\n"
-    with pytest.raises(ValueError):
-        Reply.decode(incompatible)

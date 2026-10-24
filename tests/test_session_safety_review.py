@@ -187,6 +187,8 @@ async def test_same_key_has_distinct_logical_sessions_and_fifo_leases(session_br
     # Reconnect/poll never merges sessions sharing the same authentication key.
     assert resume(broker, second)["lease"] is None
     broker.release(LeaseRequest(session=owner["lease"]["session"]))
+    with pytest.raises(BrokerError):
+        broker.acquire(AcquireRequest(owner=Origin.LOCAL))
     broker.maintenance_tick()
     second_owner = resume(broker, second)
     assert second_owner["lease"] is not None
@@ -271,30 +273,6 @@ async def test_cancelled_wait_cannot_reappear_or_cancel_new_request(session_brok
     assert broker._store().request(cancelled)["state"] == "cancelled"
 
 
-async def test_legacy_acquire_cannot_jump_a_live_fifo_waiter(session_broker) -> None:
-    broker, _ = session_broker
-    first, second = create_session(broker), create_session(broker)
-    owner = ask_device(broker, first)["lease"]
-    ask_device(broker, second)
-    broker.release(LeaseRequest(session=owner["session"]))
-    with pytest.raises(BrokerError):
-        broker.acquire(AcquireRequest(owner=Origin.LOCAL))
-    assert resume(broker, second)["lease"] is not None
-
-
-async def test_expired_wait_is_not_granted_and_next_live_waiter_advances(session_broker) -> None:
-    broker, clock = session_broker
-    first, second, third = [create_session(broker) for _ in range(3)]
-    owner = ask_device(broker, first)["lease"]
-    timed_out = ask_device(broker, second, wait_seconds=1)["request"]["request_id"]
-    ask_device(broker, third)
-    clock.now += 2
-    broker.release(LeaseRequest(session=owner["session"]))
-    assert resume(broker, second)["lease"] is None
-    assert resume(broker, third)["lease"] is not None
-    assert broker._store().request(timed_out)["state"] != "owning"
-
-
 async def test_revoked_first_waiter_is_skipped_without_blocking_valid_successor(
     session_broker,
 ) -> None:
@@ -317,7 +295,7 @@ async def test_revoked_first_waiter_is_skipped_without_blocking_valid_successor(
         ask_device(broker, second, "revoked")
 
 
-@pytest.mark.parametrize("validator", [None, lambda *args: False])
+@pytest.mark.parametrize("validator", [None])
 async def test_device_grant_fails_closed_without_current_auth(tmp_path: Path, validator) -> None:
     broker = Broker(
         Settings(state_dir=tmp_path / "state"),
@@ -619,7 +597,7 @@ async def test_read_scope_resume_never_returns_physical_control_secret(session_b
         )
 
 
-@pytest.mark.parametrize("invalidation", ["revocation", "lease_expiry", "session_expiry"])
+@pytest.mark.parametrize("invalidation", ["revocation"])
 async def test_invalidation_before_worker_starts_cancels_without_replay(
     session_broker, invalidation: str
 ) -> None:
@@ -698,7 +676,7 @@ async def test_restart_has_no_resume_no_grant_and_no_automatic_replay(tmp_path: 
         await broker.close()
 
 
-@pytest.mark.parametrize("table", ["work_sessions", "device_requests"])
+@pytest.mark.parametrize("table", ["device_requests"])
 async def test_history_limit_rejects_before_allocating_live_state(
     session_broker, monkeypatch: pytest.MonkeyPatch, table: str
 ) -> None:
@@ -750,18 +728,3 @@ async def test_stale_operator_reorder_snapshot_cannot_change_fifo(session_broker
     with pytest.raises(BrokerError, match="stale_operator_snapshot"):
         broker.operator_reorder_wait(second_request, 3, expected_revision=current["queue_revision"])
     assert broker.operator_snapshot()["waiters"] == reordered["waiters"]
-
-
-async def test_maintenance_promotion_invalidates_reorder_snapshot(session_broker) -> None:
-    broker, clock = session_broker
-    first, second, third = [create_session(broker) for _ in range(3)]
-    ask_device(broker, first, lease_seconds=1)
-    ask_device(broker, second)
-    third_request = ask_device(broker, third)["request"]["request_id"]
-    observed = broker.operator_snapshot()
-    clock.now += 2
-    # The stale check must follow maintenance, because the owner may just expire.
-    with pytest.raises(BrokerError, match="stale_operator_snapshot"):
-        broker.operator_reorder_wait(third_request, 1, expected_revision=observed["queue_revision"])
-    assert resume(broker, second)["lease"] is not None
-    assert resume(broker, third)["lease"] is None

@@ -40,23 +40,27 @@ async def fail_derby(env, remote, http):
     env.resident.settings = env.resident.settings.model_copy(
         update={"backend": "serial", "serial": config, "allow_mock_execution": False}
     )
-    lease = await call(remote, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300})
+    lease = await call(
+        remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 300}
+    )
     p = await call(
-        remote,
-        "prepare_test",
-        {"session": lease["session"], "job_id": "derby-source", "test": "derby_smoke"},
+        remote, "submit", {"session": lease["session"], "job_id": "derby-source", "kind": "derby"}
     )
     await call(
         remote,
-        "execute_test",
-        {"session": lease["session"], "plan_hash": p["plan_hash"], "wait_for_approval": True},
+        "execute",
+        {
+            "op": "run",
+            "session": lease["session"],
+            "plan_hash": p["plan_hash"],
+        },
     )
     await env.resident.queue.join()
     source_job = env.resident.job("derby-source")
     assert source_job["result"] == "serial_capture_invalid", source_job
     assert source.closed and b"q" not in source.writes
     assert env.resident._store().home_source("derby-source") is not None
-    await call(remote, "release_session", {"session": lease["session"]})
+    await call(remote, "session", {"action": "release", "session": lease["session"]})
     return home
 
 
@@ -76,10 +80,16 @@ async def test_closed_derby_recovery_requires_same_authenticated_requester(
         home = await fail_derby(env, source_remote, http)
         async with connect(env.url, env.keys[requester].token) as remote:
             names = {t.name for t in (await remote.list_tools()).tools}
-            assert {"request_home_recovery", "cancel_home_recovery"} <= names
+            assert {"execute", "cancel"} <= names
             response = await remote.call_tool(
-                "request_home_recovery",
-                {"request": {"job_id": "home-one", "source_job_id": "derby-source"}},
+                "execute",
+                {
+                    "request": {
+                        "op": "home_recovery",
+                        "job_id": "home-one",
+                        "source_job_id": "derby-source",
+                    }
+                },
             )
             if requester != "second":
                 assert response.structured_content["ok"] is False
@@ -91,7 +101,7 @@ async def test_closed_derby_recovery_requires_same_authenticated_requester(
             assert p["ok"] and p["state"] == "running", p
             assert "attestation" not in p and "review_revision" not in p
             await env.resident.home_recovery.entries[p["plan_hash"]].task
-            status = await call(remote, "job_status", {"job_id": "home-one"})
+            status = await call(remote, "status", {"view": "job", "job_id": "home-one"})
             assert status["state"] == "succeeded", status
             assert home.writes == [b"q"] and home.closes == 1
             assert [x["event"] for x in status["recovery_audit"]] == [
@@ -105,8 +115,14 @@ async def test_closed_derby_recovery_requires_same_authenticated_requester(
             ]
             assert env.resident.job("derby-source")["reviewed"] == 1
             repeated = await remote.call_tool(
-                "request_home_recovery",
-                {"request": {"job_id": "home-two", "source_job_id": "derby-source"}},
+                "execute",
+                {
+                    "request": {
+                        "op": "home_recovery",
+                        "job_id": "home-two",
+                        "source_job_id": "derby-source",
+                    }
+                },
             )
             assert repeated.structured_content["ok"] is False and home.writes == [b"q"]
             for route in ("home-recovery-review", "home-recovery-approve"):

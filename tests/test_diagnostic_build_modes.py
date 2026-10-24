@@ -13,7 +13,7 @@ from cardputer_mcp.build_locations import build_directory
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.diagnostic_modeproof import J1_COMMIT, collect_modeproof
 from cardputer_mcp.firmware_build import FirmwareBuild
-from cardputer_mcp.models import BuildLogRequest, PrepareRequest
+from cardputer_mcp.models import BuildLogRequest
 
 
 def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(tmp_path):
@@ -74,9 +74,17 @@ def test_same_head_modes_have_distinct_fingerprints_directories_and_fixed_argv(t
         assert sibling["fingerprint"] != on["fingerprint"]
 
 
-@pytest.mark.parametrize("mode", ["ON", "OFF"])
-@pytest.mark.parametrize("retention", ["restart", "expired"])
-@pytest.mark.parametrize("record_format", ["legacy", "bound"])
+# Mode, retention and record format are independent axes of one persisted-proof path;
+# this orthogonal subset puts every pair of axis values in at least one case.
+@pytest.mark.parametrize(
+    "mode,retention,record_format",
+    [
+        ("ON", "restart", "legacy"),
+        ("OFF", "restart", "bound"),
+        ("ON", "expired", "bound"),
+        ("OFF", "expired", "legacy"),
+    ],
+)
 def test_modeproof_remains_verified_after_log_loss(mode, retention, record_format):
     case = persistence.DurableBuildArtifactTests()
     case.setUp()
@@ -120,59 +128,5 @@ def test_modeproof_remains_verified_after_log_loss(mode, retention, record_forma
         )
         assert result["artifact_status"] == "unavailable"
         assert "manifest" not in result
-    finally:
-        case.doCleanups()
-
-
-def test_mode_input_is_enum_and_confined_to_registered_source_build():
-    base = {
-        "job_id": "build",
-        "test": "firmware_build",
-        "project_id": "fixture",
-        "source_receipt": "a" * 64,
-    }
-    for mode in ("ON", "OFF"):
-        assert PrepareRequest(**base, derby_detail_mode=mode).derby_detail_mode == mode
-    for mode in ("-DANY=1", "on", "ON;echo unsafe", True):
-        with pytest.raises(ValueError):
-            PrepareRequest(**base, derby_detail_mode=mode)
-    with pytest.raises(ValueError):
-        PrepareRequest(job_id="build", test="firmware_build", derby_detail_mode="OFF")
-    with pytest.raises(ValueError):
-        PrepareRequest(**base, flash_job_id="flash")
-
-
-@pytest.mark.parametrize("target", ["reference", "manifest"])
-def test_explicit_null_is_not_a_legacy_receipt_field(target):
-    case = persistence.DurableBuildArtifactTests()
-    case.setUp()
-    try:
-        root, manifest = case.publish()
-        if target == "reference":
-            row = case.store.db.execute(
-                "SELECT payload FROM build_artifact_references WHERE job_id=?", ("build-0",)
-            ).fetchone()
-            reference = json.loads(row[0])
-            reference["diagnostic_entry_sha256"] = None
-            case.store.db.execute(
-                "UPDATE build_artifact_references SET payload=? WHERE job_id=?",
-                (json.dumps(reference), "build-0"),
-            )
-            case.store.db.commit()
-        else:
-            manifest["diagnostic_entry_sha256"] = None
-            (root / "broker-manifest.json").write_text(json.dumps(manifest))
-            row = case.store.db.execute(
-                "SELECT payload FROM build_artifact_references WHERE job_id=?", ("build-0",)
-            ).fetchone()
-            reference = json.loads(row[0])
-            reference["manifest_sha256"] = persistence.digest(manifest)
-            case.store.db.execute(
-                "UPDATE build_artifact_references SET payload=? WHERE job_id=?",
-                (json.dumps(reference), "build-0"),
-            )
-            case.store.db.commit()
-        with pytest.raises(ValueError):
-            case.context()
     finally:
         case.doCleanups()

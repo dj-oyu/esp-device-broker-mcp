@@ -118,8 +118,6 @@ class ManifestExportTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "invalid_manifest_export"),
             ):
                 validate_manifest_export(bad)
-
-    def test_duplicate_keys_at_every_level_and_size_nonfinite_reject(self):
         raw = canonical_json(make_manifest_export(self.manifest()))
         for bad in (
             b'{"schema_version":1,' + raw[1:],

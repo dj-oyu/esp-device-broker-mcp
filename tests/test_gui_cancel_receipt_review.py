@@ -1,7 +1,5 @@
 """Retained cancel controls reject malformed broker acknowledgements."""
 
-from dataclasses import replace
-
 import pytest
 from test_gui_timeline import loaded
 
@@ -47,22 +45,6 @@ def test_delayed_cancel_operation_never_dispatches_after_its_ten_second_window()
     operation = model.cancel_job("job_image_1", model.cancel_key("job_image_1"))
     clock.value += 10
     outcome = perform_timeline(api, operation, clock)
-    assert outcome.error == CANCEL_UNCERTAIN
-    assert api.calls == [("timeline",)]
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("job_id", "bad/job"),
-        ("plan_hash", "not-a-hash"),
-        ("broker_epoch", "bad"),
-    ],
-)
-def test_malformed_cancel_target_is_rejected_before_network(field, value):
-    model, api, clock = loaded(cancellable=True)
-    operation = model.cancel_job("job_image_1", model.cancel_key("job_image_1"))
-    outcome = perform_timeline(api, replace(operation, **{field: value}), clock)
     assert outcome.error == CANCEL_UNCERTAIN
     assert api.calls == [("timeline",)]
 

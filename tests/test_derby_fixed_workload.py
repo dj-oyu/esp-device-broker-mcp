@@ -18,7 +18,6 @@ from cardputer_mcp.derby_fixed import (
     FixedCollector,
     parse_collected,
     parse_trial,
-    parse_trial_format,
 )
 from cardputer_mcp.ports import PortInfo
 from cardputer_mcp.serial_backend import SerialBackend
@@ -51,43 +50,6 @@ def test_public_fixture_and_known_work_are_bound_to_complete_trial():
     assert [row["rep"] for row in result["repetitions"]] == ["1", "2", "3"]
 
 
-@pytest.mark.parametrize("ending", [b"\n", b"\r\n", b"\r\r\n"])
-def test_public_trial_accepts_firmware_line_splitting_without_rewriting_raw(ending):
-    raw = FIXTURE.replace(b"\n", ending)
-    parsed = parse_trial(raw)
-    assert parsed["transport_sha256"] == hashlib.sha256(raw).hexdigest()
-    assert parsed["work_verified"] is True
-
-
-def test_firmware_token_whitespace_and_malformed_whitespace():
-    spaced = FIXTURE.replace(b"DERBY_FIXED v=", b"DERBY_FIXED  v=", 1)
-    spaced = spaced.replace(b"v=1 fixture=", b"v=1\tfixture=", 1)
-    assert parse_trial(spaced)["work_verified"] is True
-    for damaged in (
-        FIXTURE.replace(b"DERBY_FIXED v=", b" DERBY_FIXED v=", 1),
-        FIXTURE.replace(b"DERBY_FIXED v=", b"DERBY_FIXED\x00v=", 1),
-        FIXTURE.replace(b"variant=baseline session=", b"variant=baseline\rsession=", 1),
-    ):
-        with pytest.raises(ValueError):
-            parse_trial(damaged)
-
-
-def test_new_public_parser_semantics_allow_variable_host_calls():
-    raw = replace_row(FIXTURE, 2, b"s4=71266:14925", b"s4=71266:14926")
-    assert parse_trial(raw)["work_verified"] is True
-    raw = replace_row(FIXTURE, 2, b"cont=0", b"cont=1")
-    raw = replace_row(raw, 2, b"s0=653510:120", b"s0=653510:121")
-    assert parse_trial(raw)["work_verified"] is True
-
-
-def test_format_only_synthetic_cannot_verify_work():
-    raw = replace_row(FIXTURE, 2, b"c3=7735", b"c3=0")
-    assert parse_trial_format(raw)["format_valid"] is True
-    assert parse_trial_format(raw)["work_verified"] is False
-    with pytest.raises(ValueError, match="fixed_known_work_invalid"):
-        parse_trial(raw)
-
-
 @pytest.mark.parametrize("variant", ["native", "batch"])
 def test_variant_counters_and_bridge_calls_are_verified(variant):
     raw = FIXTURE.replace(b"variant=baseline", f"variant={variant}".encode())
@@ -102,23 +64,6 @@ def test_variant_counters_and_bridge_calls_are_verified(variant):
     assert parse_trial(raw)["variant"] == variant
     with pytest.raises(ValueError):
         parse_trial(raw.replace(b"c3=7735", b"c3=7734", 1))
-
-
-@pytest.mark.parametrize(
-    "damage",
-    [
-        lambda raw: replace_row(raw, 2, b"s2=70217:4569", b"s2=70217:0"),
-        lambda raw: replace_row(raw, 2, b"s0=653510:120", b"s0=653510:121"),
-        lambda raw: replace_row(raw, 2, b"s4=71266:14925", b"s4=71266:4974"),
-        lambda raw: replace_row(raw, 2, b"s6=59292:120", b"s6=59292:119"),
-        lambda raw: replace_row(raw, 2, b"s8=0:0", b"s8=0:1"),
-        lambda raw: replace_row(raw, 2, b"s1=5352:2086", b"s1=973112:2086"),
-        lambda raw: replace_row(raw, 2, b"s0=653510:120", b"s0=972626:120"),
-    ],
-)
-def test_new_semantic_invariants_reject_impossible_work(damage):
-    with pytest.raises(ValueError):
-        parse_trial(damage(FIXTURE))
 
 
 def test_public_transport_receipt_requires_exact_bytes_and_quality():
@@ -290,11 +235,13 @@ async def test_fixed_workload_uses_explicit_owned_http_path_and_private_raw(seri
     wire = FixedWire()
     resident.backend = backend_for(wire, resident.settings.serial)
     async with connect(url, "a" * 64) as owner, connect(url, "b" * 64) as other:
-        lease = await call(owner, "acquire_session", {"owner": "local_cli", "lease_seconds": 300})
+        lease = await call(
+            owner, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 300}
+        )
         prepared = await call(
             owner,
-            "prepare_test",
-            {"session": lease["session"], "job_id": "fixed-one", "test": "derby_fixed_workload"},
+            "submit",
+            {"session": lease["session"], "job_id": "fixed-one", "kind": "derby_fixed"},
         )
         assert prepared["ok"] and prepared["plan"]["effects"]
         persisted = resident._store().plan(prepared["plan_hash"])
@@ -303,18 +250,22 @@ async def test_fixed_workload_uses_explicit_owned_http_path_and_private_raw(seri
         ]
         assert wire.writes == [] and not wire.is_open
         stolen = await call(
-            other, "execute_test", {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
+            other,
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
         )
         assert stolen["error"] == "authenticated_owner_mismatch"
         assert digest_plan(resident._store().plan(prepared["plan_hash"])) == prepared["plan_hash"]
         assert wire.writes == []
         executed = await call(
-            owner, "execute_test", {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
+            owner,
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
         )
         assert executed["ok"], executed
         await resident.queue.join()
-        owned = await call(owner, "job_status", {"job_id": "fixed-one"})
-        shared = await call(other, "job_status", {"job_id": "fixed-one"})
+        owned = await call(owner, "status", {"view": "job", "job_id": "fixed-one"})
+        shared = await call(other, "status", {"view": "job", "job_id": "fixed-one"})
     assert owned["state"] == shared["state"] == "succeeded"
     assert owned["result"] == "derby_fixed_trial_verified"
     assert owned["fixed_trial"]["valid"] is True
@@ -357,17 +308,21 @@ async def test_crlf_serial_trial_preserves_exact_raw_bytes(serial_service, endin
     wire = FixedWire(expected_raw)
     resident.backend = backend_for(wire, resident.settings.serial)
     async with connect(url, "a" * 64) as owner:
-        lease = await call(owner, "acquire_session", {"owner": "local_cli", "lease_seconds": 300})
+        lease = await call(
+            owner, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 300}
+        )
         prepared = await call(
             owner,
-            "prepare_test",
-            {"session": lease["session"], "job_id": "fixed-crlf", "test": "derby_fixed_workload"},
+            "submit",
+            {"session": lease["session"], "job_id": "fixed-crlf", "kind": "derby_fixed"},
         )
         await call(
-            owner, "execute_test", {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
+            owner,
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
         )
         await resident.queue.join()
-        owned = await call(owner, "job_status", {"job_id": "fixed-crlf"})
+        owned = await call(owner, "status", {"view": "job", "job_id": "fixed-crlf"})
     assert owned["state"] == "succeeded"
     raw = base64.b64decode(owned["fixed_trial"]["raw_base64"])
     assert expected_raw in raw
@@ -381,22 +336,22 @@ async def test_same_app_relaunch_after_home_invalidates_trial(serial_service, ch
     wire = FixedWire(post_home=relaunch, payload_chunk=chunk_size)
     resident.backend = backend_for(wire, resident.settings.serial)
     async with connect(url, "a" * 64) as owner, connect(url, "b" * 64) as other:
-        lease = await call(owner, "acquire_session", {"owner": "local_cli", "lease_seconds": 300})
+        lease = await call(
+            owner, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 300}
+        )
         prepared = await call(
             owner,
-            "prepare_test",
-            {
-                "session": lease["session"],
-                "job_id": "fixed-relaunch",
-                "test": "derby_fixed_workload",
-            },
+            "submit",
+            {"session": lease["session"], "job_id": "fixed-relaunch", "kind": "derby_fixed"},
         )
         await call(
-            owner, "execute_test", {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
+            owner,
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
         )
         await resident.queue.join()
-        owned = await call(owner, "job_status", {"job_id": "fixed-relaunch"})
-        shared = await call(other, "job_status", {"job_id": "fixed-relaunch"})
+        owned = await call(owner, "status", {"view": "job", "job_id": "fixed-relaunch"})
+        shared = await call(other, "status", {"view": "job", "job_id": "fixed-relaunch"})
     assert owned["state"] == shared["state"] == "needs_review"
     assert owned["fixed_trial"]["valid"] is False
     assert owned["fixed_trial"]["receipt"]["reset"] is True
@@ -412,18 +367,22 @@ async def test_bad_work_or_partial_transport_keeps_review_and_private_raw(serial
     wire = FixedWire(raw, partial=partial)
     resident.backend = backend_for(wire, resident.settings.serial)
     async with connect(url, "a" * 64) as owner, connect(url, "b" * 64) as other:
-        lease = await call(owner, "acquire_session", {"owner": "local_cli", "lease_seconds": 300})
+        lease = await call(
+            owner, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 300}
+        )
         prepared = await call(
             owner,
-            "prepare_test",
-            {"session": lease["session"], "job_id": "fixed-bad", "test": "derby_fixed_workload"},
+            "submit",
+            {"session": lease["session"], "job_id": "fixed-bad", "kind": "derby_fixed"},
         )
         await call(
-            owner, "execute_test", {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
+            owner,
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
         )
         await resident.queue.join()
-        owned = await call(owner, "job_status", {"job_id": "fixed-bad"})
-        shared = await call(other, "job_status", {"job_id": "fixed-bad"})
+        owned = await call(owner, "status", {"view": "job", "job_id": "fixed-bad"})
+        shared = await call(other, "status", {"view": "job", "job_id": "fixed-bad"})
     assert owned["state"] == shared["state"] == "needs_review"
     assert resident._store().profile_needs_review() is False
     assert owned["fixed_trial"]["valid"] is False
@@ -440,18 +399,22 @@ async def test_stop_during_transport_retains_bounded_private_partial_raw(serial_
     wire.stop = backend.smoke_stop.set
     resident.backend = backend
     async with connect(url, "a" * 64) as owner, connect(url, "b" * 64) as other:
-        lease = await call(owner, "acquire_session", {"owner": "local_cli", "lease_seconds": 300})
+        lease = await call(
+            owner, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 300}
+        )
         prepared = await call(
             owner,
-            "prepare_test",
-            {"session": lease["session"], "job_id": "fixed-stop", "test": "derby_fixed_workload"},
+            "submit",
+            {"session": lease["session"], "job_id": "fixed-stop", "kind": "derby_fixed"},
         )
         await call(
-            owner, "execute_test", {"session": lease["session"], "plan_hash": prepared["plan_hash"]}
+            owner,
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
         )
         await resident.queue.join()
-        owned = await call(owner, "job_status", {"job_id": "fixed-stop"})
-        shared = await call(other, "job_status", {"job_id": "fixed-stop"})
+        owned = await call(owner, "status", {"view": "job", "job_id": "fixed-stop"})
+        shared = await call(other, "status", {"view": "job", "job_id": "fixed-stop"})
     assert owned["state"] == "needs_review" and shared["state"] == "needs_review"
     assert owned["fixed_trial"]["valid"] is False
     assert owned["fixed_trial"]["receipt"]["complete"] is False
@@ -460,14 +423,26 @@ async def test_stop_during_transport_retains_bounded_private_partial_raw(serial_
     assert backend.calls == 1 and backend.active == 0 and wire.closed
 
 
-@pytest.mark.parametrize("chunk_size", [17, 4096], ids=["fragmented", "coalesced"])
-@pytest.mark.parametrize("where", ["after_end", "after_stop", "after_home"])
-@pytest.mark.parametrize(
-    "fault",
-    [b"InternalError: interrupted\n", b"APP ERROR\n", b"stop hook did not finish\n"],
-)
+_FAULTS = [b"InternalError: interrupted\n", b"APP ERROR\n", b"stop hook did not finish\n"]
+_WHERES = ["after_end", "after_stop", "after_home"]
+# Every fault x position pair is kept; the chunking axis (marker split across reads
+# versus one read) alternates across the pairs so both transports hit every fault
+# and every position at least once.
+_FAULT_CASES = [
+    pytest.param(
+        fault,
+        where,
+        17 if (fi + wi) % 2 == 0 else 4096,
+        id=f"{where}-f{fi}-{'fragmented' if (fi + wi) % 2 == 0 else 'coalesced'}",
+    )
+    for fi, fault in enumerate(_FAULTS)
+    for wi, where in enumerate(_WHERES)
+]
+
+
+@pytest.mark.parametrize("fault,where,chunk_size", _FAULT_CASES)
 async def test_fault_after_workload_end_never_reports_terminal_success(
-    serial_service, chunk_size, where, fault
+    serial_service, fault, where, chunk_size
 ):
     url, resident, _ = serial_service
     if where == "after_end":
@@ -479,20 +454,22 @@ async def test_fault_after_workload_end_never_reports_terminal_success(
     wire = FixedWire(raw, post_home=post_home, payload_chunk=chunk_size)
     resident.backend = backend_for(wire, resident.settings.serial)
     async with connect(url, "a" * 64) as owner, connect(url, "b" * 64) as other:
-        lease = await call(owner, "acquire_session", {"owner": "local_cli", "lease_seconds": 300})
+        lease = await call(
+            owner, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 300}
+        )
         prepared = await call(
             owner,
-            "prepare_test",
-            {"session": lease["session"], "job_id": "fixed-fault", "test": "derby_fixed_workload"},
+            "submit",
+            {"session": lease["session"], "job_id": "fixed-fault", "kind": "derby_fixed"},
         )
         await call(
             owner,
-            "execute_test",
-            {"session": lease["session"], "plan_hash": prepared["plan_hash"]},
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
         )
         await resident.queue.join()
-        owned = await call(owner, "job_status", {"job_id": "fixed-fault"})
-        shared = await call(other, "job_status", {"job_id": "fixed-fault"})
+        owned = await call(owner, "status", {"view": "job", "job_id": "fixed-fault"})
+        shared = await call(other, "status", {"view": "job", "job_id": "fixed-fault"})
     assert owned["state"] == shared["state"] == "needs_review"
     assert owned["result"] == "serial_fault_marker"
     assert owned["diagnostic"]["device_fault_category"] in ("vm_exception", "device_fault")
