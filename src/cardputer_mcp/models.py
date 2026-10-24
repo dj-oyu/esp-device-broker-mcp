@@ -256,6 +256,11 @@ class ResumeWorkSessionRequest(StrictModel):
 class RequestDeviceRequest(ResumeWorkSessionRequest):
     lease_seconds: int = Field(default=30, ge=1, le=300)
     wait_seconds: int = Field(default=300, ge=1, le=3600)
+    after: str | None = Field(
+        default=None,
+        pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
+        description="Single-use continuation ticket of your previous device job.",
+    )
 
 
 class CancelDeviceRequest(ResumeWorkSessionRequest):
