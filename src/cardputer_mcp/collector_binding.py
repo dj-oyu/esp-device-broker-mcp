@@ -98,7 +98,7 @@ def _owned_flash(broker: "Broker", flash_job_id: str, principal: str) -> tuple[A
     plan = store.plan(job["plan_hash"]) if job else None
     plan = verify_owned_flash(DiagnosticContext(principal), flash_job_id, job, plan)
     summary = store.firmware_summary(flash_job_id, principal)
-    current = store.firmware_current(plan["device_id"], principal)
+    current = store.firmware_current(plan["device_id"])
     if (
         not isinstance(summary, dict)
         or any(
@@ -136,8 +136,9 @@ def resolve_collector(broker: "Broker", flash_job_id: str, principal: str) -> di
     ):
         raise ValueError("collector_device_binding_invalid")
     broker.firmware_flash.settings = broker.settings
+    # `current` was already checked to be the caller's own verified flash job.
     _, metadata, files = broker.firmware_flash._known(
-        registration, flash["device_id"], principal, current["receipt"]
+        registration, flash["device_id"], current["receipt"]
     )
     manifest = metadata.get("manifest")
     if (

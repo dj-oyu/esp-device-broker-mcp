@@ -18,7 +18,13 @@ from cardputer_mcp.firmware_flash import operation_from_plan
 from cardputer_mcp.flash_backup import BackupStore
 from cardputer_mcp.flash_lifecycle import FlashLifecycle
 from cardputer_mcp.flash_models import FlashDevice, UnattendedFlash
-from cardputer_mcp.models import AcquireRequest, ExecuteRequest, Origin, PrepareRequest
+from cardputer_mcp.models import (
+    AcquireRequest,
+    ExecuteRequest,
+    LeaseRequest,
+    Origin,
+    PrepareRequest,
+)
 from cardputer_mcp.models import TestName as Action
 
 
@@ -188,7 +194,7 @@ async def env(tmp_path, request):
         execute(initial)
         await broker.queue.join()
         assert broker.job("flash-one")["state"] == "succeeded"
-        selected = store.firmware_current("fixture", "alice")["receipt"]
+        selected = store.firmware_current("fixture")["receipt"]
         policy = UnattendedFlash(
             enabled=True,
             principal_id="alice",
@@ -245,9 +251,9 @@ async def test_exact_owned_source_receipt_auto_flash_commits_lkg_once(env):
     assert not env.execute(prepared)["deduplicated"]
     await env.broker.queue.join()
     assert env.broker.job("automatic")["state"] == "succeeded", env.broker.job("automatic")
-    assert env.store.firmware_current("fixture", "alice")["completed_job"] == "automatic"
+    assert env.store.firmware_current("fixture")["completed_job"] == "automatic"
     assert env.store.db.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
-    assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
+    assert env.store.firmware_current("fixture")["receipt"] == env.selected
     assert env.execute(prepared)["deduplicated"]
     assert not env.broker._execution_intents and env.driver.closed
 
@@ -338,7 +344,7 @@ async def test_queued_authorization_is_rechecked_before_device_writes(env, chang
     await env.broker.queue.join()
     assert env.broker.job("queued")["state"] in ("cancelled", "needs_review")
     assert env.driver.writes == before
-    assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
+    assert env.store.firmware_current("fixture")["receipt"] == env.selected
     assert not env.broker._execution_intents
 
 
@@ -384,7 +390,7 @@ async def test_failed_or_late_revoked_flash_preserves_lkg_and_current_guards(env
     env.execute(prepared)
     await env.broker.queue.join()
     assert env.broker.job("uncertain")["state"] == "needs_review"
-    assert env.store.firmware_current("fixture", "alice")["receipt"] == env.selected
+    assert env.store.firmware_current("fixture")["receipt"] == env.selected
     assert env.driver.closed and env.store.needs_review()
     if late_revoke:
         assert env.broker.status()["execution_uncertain"] is True
@@ -426,7 +432,7 @@ async def test_second_atomic_commit_guard_rechecks_registration_and_rolls_back(e
     env.configure()
     prepared = env.prepare("atomic-revoke", build_job_id="build-one")
     original = env.store.finish_firmware
-    previous = env.store.firmware_current("fixture", "alice")
+    previous = env.store.firmware_current("fixture")
     calls = 0
 
     def finish(job_id, result, promotion, guard, *args):
@@ -444,7 +450,7 @@ async def test_second_atomic_commit_guard_rechecks_registration_and_rolls_back(e
     await env.broker.queue.join()
     assert calls == 2
     assert env.broker.job("atomic-revoke")["state"] == "needs_review"
-    assert env.store.firmware_current("fixture", "alice") == previous
+    assert env.store.firmware_current("fixture") == previous
 
 
 @pytest.mark.parametrize("phase", ["dispatch", "prewrite", "commit"])
@@ -454,7 +460,7 @@ async def test_last_auth_callback_cannot_replace_owned_fetch_receipt(env, phase,
     prepared = env.prepare("receipt-revoke", build_job_id="build-one")
     env.execute(prepared)
     before = env.driver.writes
-    previous = env.store.firmware_current("fixture", "alice")
+    previous = env.store.firmware_current("fixture")
     fetch_hash = env.store.job("fetch-one")["plan_hash"]
     calls = 0
     changed = False
@@ -499,10 +505,58 @@ async def test_last_auth_callback_cannot_replace_owned_fetch_receipt(env, phase,
     assert changed
     expected = "cancelled" if phase == "dispatch" else "needs_review"
     assert env.broker.job("receipt-revoke")["state"] == expected, env.broker.job("receipt-revoke")
-    assert env.store.firmware_current("fixture", "alice") == previous
+    assert env.store.firmware_current("fixture") == previous
     if phase != "commit":
         assert env.driver.writes == before
     else:
         assert guard_calls == 2
         assert env.store.job("fetch-one")["diagnostic"]["source"]["source_receipt"] == env.receipt
     assert env.driver.closed and not env.broker._execution_intents
+
+
+@pytest.mark.parametrize("kind", ["artifact_bundle", "full_backup"])
+async def test_another_principal_restores_the_device_lkg(env, kind):
+    """LKG is a fact about the device; flash authority, not who installed it, gates use."""
+    broker, store = env.broker, env.store
+    if kind == "full_backup":
+        # Only a restore from alice's own full backup records a full_backup LKG.
+        restored = env.prepare("alice-restore", Action.RESTORE, backup_job_id="backup-one")
+        env.execute(restored)
+        await broker.queue.join()
+        assert broker.job("alice-restore")["state"] == "succeeded", broker.job("alice-restore")
+    broker.release(LeaseRequest(session=broker.session.capability))
+    session = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="bob")["session"]
+    row = store.db.execute(
+        "SELECT receipt,principal FROM firmware_lkg_history WHERE device_id=? AND kind=?",
+        ("fixture", kind),
+    ).fetchone()
+    assert row is not None and row[1] == "alice"
+    before = env.driver.writes
+    prepared = broker.prepare(
+        PrepareRequest(
+            session=session,
+            job_id="bob-restore",
+            test=Action.RESTORE,
+            device_id="fixture",
+            lkg_receipt=row[0],
+        )
+    )
+    assert prepared["plan"]["flash_principal"] == "bob"
+    assert prepared["plan"]["lkg_receipt"] == row[0]
+    broker.execute(ExecuteRequest(session=session, plan_hash=prepared["plan_hash"]))
+    await broker.queue.join()
+    assert broker.job("bob-restore")["state"] == "succeeded", broker.job("bob-restore")
+    assert env.driver.writes > before
+    current = store.firmware_current("fixture")
+    assert current["receipt"] == row[0] and current["principal"] == "bob"
+    # The other principal's backup bytes stay owned; only their own job can name them.
+    with pytest.raises(BrokerError):
+        broker.prepare(
+            PrepareRequest(
+                session=session,
+                job_id="bob-backup-reference",
+                test=Action.RESTORE,
+                device_id="fixture",
+                backup_job_id="backup-one",
+            )
+        )

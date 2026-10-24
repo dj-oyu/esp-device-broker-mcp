@@ -191,7 +191,7 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
                     remote, "flash", {"session": session, "plan_hash": prepared["plan_hash"]}
                 )
                 assert replay["deduplicated"]
-            current = store.firmware_current("fixture", principal)
+            current = store.firmware_current("fixture")
             assert current["kind"] == "full_backup"
             # First full restore made its exact rescue target current. A new
             # successful flash replaces it with the immutable firmware bundle.
@@ -199,7 +199,7 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
             await call(remote, "flash", {"session": session, "plan_hash": prepared["plan_hash"]})
             await service.resident.queue.join()
             assert service.resident.job("flash-two")["state"] == "succeeded"
-            current = store.firmware_current("fixture", principal)
+            current = store.firmware_current("fixture")
             assert current["kind"] == "artifact_bundle"
             selected = current["receipt"]
             reads = []
@@ -215,14 +215,14 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
             await service.resident.queue.join()
             assert service.resident.job("flash-three")["state"] == "succeeded"
             assert registration.flash_bytes not in reads
-            assert store.firmware_current("fixture", principal)["receipt"] == selected
+            assert store.firmware_current("fixture")["receipt"] == selected
             # Build retention cannot remove the private recovery bytes.
             service.resident.firmware_build.artifacts._records.clear()
             prepared = await approve("restore-bundle", "restore", lkg_receipt=selected)
             await call(remote, "flash", {"session": session, "plan_hash": prepared["plan_hash"]})
             await service.resident.queue.join()
             assert service.resident.job("restore-bundle")["state"] == "succeeded"
-            assert store.firmware_current("fixture", principal)["receipt"] == selected
+            assert store.firmware_current("fixture")["receipt"] == selected
             prepared = await approve("cancel-one", "restore", lkg_receipt=selected)
             entered = threading.Event()
 
@@ -242,7 +242,7 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
             await service.resident.queue.join()
             assert service.resident.job("cancel-one")["state"] == "needs_review"
             assert driver.closed and not service.resident.firmware_flash.active
-            assert store.firmware_current("fixture", principal)["receipt"] == selected
+            assert store.firmware_current("fixture")["receipt"] == selected
     finally:
         release.set()
         fixture.doCleanups()

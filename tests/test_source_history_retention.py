@@ -151,7 +151,7 @@ class SourceHistoryRetentionTests(HistoryFixture, unittest.TestCase):
                 self.payload(source).parent / "receipt.json"
             ).read_bytes()
             binaries[receipt] = image
-            histories[receipt] = self.store.firmware_known("fixture", "owner", receipt)
+            histories[receipt] = self.store.firmware_known("fixture", receipt)
             references[number] = self.artifacts.reference(f"build-{number}", "owner", "fixture")
             self.assertLessEqual(self.snapshots.usage("fixture")["snapshots"], 16)
             if number == 9:
@@ -164,7 +164,7 @@ class SourceHistoryRetentionTests(HistoryFixture, unittest.TestCase):
 
         self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 16)
         self.assertEqual(self.snapshots.usage("fixture")["evidence_snapshots"], 19)
-        self.assertEqual(self.store.firmware_current("fixture", "owner")["receipt"], receipt)
+        self.assertEqual(self.store.firmware_current("fixture")["receipt"], receipt)
         self.assertEqual(len(self.evidence()["provenance"]), 19)
         self.assertEqual(
             self.evidence()["protected"],
@@ -175,9 +175,7 @@ class SourceHistoryRetentionTests(HistoryFixture, unittest.TestCase):
                 (self.root / "cache" / source_receipt / "receipt.json").read_bytes(), raw
             )
         for receipt, image in binaries.items():
-            self.assertEqual(
-                self.store.firmware_known("fixture", "owner", receipt), histories[receipt]
-            )
+            self.assertEqual(self.store.firmware_known("fixture", receipt), histories[receipt])
             metadata, files = self.binaries.load(receipt)
             bundle = bundle_from_record(metadata["bundle"])
             self.assertEqual(files[bundle.segments[0].name], image)
