@@ -170,7 +170,10 @@ class FirmwareSource:
         if self.stop.is_set() or live() is not True or self.active:
             raise SourceError("source_final_commit_not_authorized")
         summary = self.results.pop(plan["job_id"])
-        self.store().set_job(plan["job_id"], "succeeded", result, {"source": summary})
+        if not self.store().ledger.transition(
+            plan["job_id"], "succeeded", result, {"source": summary}
+        ):
+            raise SourceError("source_final_commit_not_authorized")
         self.committed = plan["job_id"]
 
     def read_logs(

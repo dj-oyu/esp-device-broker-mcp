@@ -34,8 +34,8 @@ def acknowledge_recovery(
             job = store.job(job_id)
             if not job or job["state"] != "needs_review":
                 raise ValueError("job_does_not_need_review")
-            store.db.execute("UPDATE jobs SET reviewed=1 WHERE id=?", (job_id,))
-            store.db.commit()
+            if not store.ledger.mark_reviewed(job_id):
+                raise ValueError("job_does_not_need_review")
             return {"reviewed": True, "job_id": job_id, "replayed": False}
         finally:
             store.close()

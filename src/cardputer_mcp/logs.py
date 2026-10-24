@@ -21,6 +21,7 @@ class Event(StrEnum):
     FAILED = "job_failed"
     REVIEW = "job_needs_review"
     CANCELLED = "job_cancelled"
+    TRANSITION_REFUSED = "job_transition_refused"
     STOPPED = "broker_stopped"
 
 
