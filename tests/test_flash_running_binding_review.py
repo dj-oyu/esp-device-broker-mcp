@@ -7,7 +7,7 @@ from test_flash_policy import env as env
 @pytest.mark.parametrize("mutation", ["job_state", "plan_hash", "active_job", "broker_epoch"])
 async def test_running_flash_rechecks_job_identity_after_authentication_callback(env, mutation):
     prepared = env.prepare("running-identity-review", build_job_id="build-one")
-    previous = env.store.firmware_current("fixture", "alice")
+    previous = env.store.firmware_current("fixture")
     before = env.driver.writes
     probed = False
     changed = False
@@ -45,7 +45,7 @@ async def test_running_flash_rechecks_job_identity_after_authentication_callback
     assert env.driver.writes == before
     assert env.driver.closed
     assert env.broker.job("running-identity-review")["state"] == "needs_review"
-    assert env.store.firmware_current("fixture", "alice") == previous
+    assert env.store.firmware_current("fixture") == previous
 
 
 @pytest.mark.parametrize(
@@ -53,7 +53,7 @@ async def test_running_flash_rechecks_job_identity_after_authentication_callback
 )
 async def test_final_authentication_callback_cannot_commit_detached_flash_result(env, mutation):
     prepared = env.prepare("final-identity-review", build_job_id="build-one")
-    previous = env.store.firmware_current("fixture", "alice")
+    previous = env.store.firmware_current("fixture")
     before = env.driver.writes
     original = env.store.finish_firmware
     calls = 0
@@ -107,7 +107,7 @@ async def test_final_authentication_callback_cannot_commit_detached_flash_result
     assert env.driver.closed
     assert env.broker.job("final-identity-review")["state"] == "needs_review"
     assert env.broker.job("final-identity-review")["plan_hash"] == prepared["plan_hash"]
-    assert env.store.firmware_current("fixture", "alice") == previous
+    assert env.store.firmware_current("fixture") == previous
     assert (
         env.store.db.execute(
             "SELECT count(*) FROM firmware_job_summaries WHERE job_id=?", ("final-identity-review",)

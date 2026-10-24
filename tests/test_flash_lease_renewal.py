@@ -69,7 +69,7 @@ async def test_running_renewal_crosses_original_expiry_and_both_atomic_guards(en
     await env.broker.queue.join()
     assert guards == [("running", 31.0, True), ("succeeded", 32.0, True)]
     assert env.broker.job("renewed")["state"] == "succeeded"
-    assert env.store.firmware_current("fixture", "alice")["completed_job"] == "renewed"
+    assert env.store.firmware_current("fixture")["completed_job"] == "renewed"
     assert env.driver.closed
     # Renewing ownership after completion cannot revive the old authorization.
     env.broker.renew(RenewRequest(session=env.broker.session.capability, lease_seconds=30))
@@ -80,7 +80,7 @@ async def test_running_flash_expires_at_current_deadline_and_cannot_be_revived(e
     clock = setup(env)
     prepared = env.prepare("expired", build_job_id="build-one")
     original = env.broker.firmware_flash.execute
-    previous = env.store.firmware_current("fixture", "alice")
+    previous = env.store.firmware_current("fixture")
 
     async def execute(plan, stage, live):
         if renewed:
@@ -97,7 +97,7 @@ async def test_running_flash_expires_at_current_deadline_and_cannot_be_revived(e
     token = env.broker.session
     await env.broker.queue.join()
     assert env.broker.job("expired")["state"] == "needs_review"
-    assert env.store.firmware_current("fixture", "alice") == previous
+    assert env.store.firmware_current("fixture") == previous
     with pytest.raises(BrokerError, match="invalid_session|lease_expired"):
         env.broker.renew(RenewRequest(session=token.capability, lease_seconds=300))
 
@@ -120,7 +120,7 @@ async def test_renewal_preserves_authority_at_both_commit_guards(env, guard_numb
     prepared = env.prepare("changed", build_job_id="build-one")
     original_execute = env.broker.firmware_flash.execute
     original_finish = env.store.finish_firmware
-    previous = env.store.firmware_current("fixture", "alice")
+    previous = env.store.firmware_current("fixture")
     calls = 0
 
     async def execute(plan, stage, live):
@@ -172,7 +172,7 @@ async def test_renewal_preserves_authority_at_both_commit_guards(env, guard_numb
     await env.broker.queue.join()
     assert calls == guard_number
     assert env.broker.job("changed")["state"] == "needs_review"
-    assert env.store.firmware_current("fixture", "alice") == previous
+    assert env.store.firmware_current("fixture") == previous
 
 
 async def test_queued_unattended_authorization_keeps_original_deadline(env):
@@ -194,7 +194,7 @@ async def test_renewal_cannot_revive_cancelled_running_flash(env, guard_number):
     clock = setup(env)
     prepared = env.prepare("cancel-renew", build_job_id="build-one")
     original = env.store.finish_firmware
-    previous = env.store.firmware_current("fixture", "alice")
+    previous = env.store.firmware_current("fixture")
     calls = 0
 
     def finish(job_id, result, promotion, guard, *args):
@@ -217,7 +217,7 @@ async def test_renewal_cannot_revive_cancelled_running_flash(env, guard_number):
     await env.broker.queue.join()
     assert calls == guard_number
     assert env.broker.job("cancel-renew")["state"] == "needs_review"
-    assert env.store.firmware_current("fixture", "alice") == previous
+    assert env.store.firmware_current("fixture") == previous
 
 
 async def test_renewal_cannot_revive_explicitly_cancelled_queued_flash(env):
@@ -239,7 +239,7 @@ async def test_reentrant_renewal_cannot_bypass_binding_after_auth_callback(env, 
     clock = setup(env, work=True)
     prepared = env.prepare("reentrant-renew", build_job_id="build-one")
     original = env.broker.firmware_flash.execute
-    previous = env.store.firmware_current("fixture", "alice")
+    previous = env.store.firmware_current("fixture")
     changed = False
 
     def current(*args):
@@ -266,4 +266,4 @@ async def test_reentrant_renewal_cannot_bypass_binding_after_auth_callback(env, 
     assert changed
     assert env.broker.job("reentrant-renew")["state"] == "needs_review"
     assert env.driver.writes == before
-    assert env.store.firmware_current("fixture", "alice") == previous
+    assert env.store.firmware_current("fixture") == previous

@@ -152,7 +152,7 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
         assert len(created) == 1 and all(not port.writes for port in ports)
         assert ports[0].closes == 1 and ports[1].opens == 0
         assert drivers[0].last_observation is drivers[0].last_boot_attempt is None
-        assert broker._store().firmware_current("fixture", owner_key.metadata.principal_id) is None
+        assert broker._store().firmware_current("fixture") is None
         assert "SYNTHETIC_BOOT_NOTE" not in "\n".join(broker._store().db.iterdump())
         request = {
             "job_id": "boot-failed",

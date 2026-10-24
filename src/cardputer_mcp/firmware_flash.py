@@ -267,11 +267,12 @@ class FirmwareFlash:
             windows_private_acl_confirmed=registration.private_backup_acl_confirmed,
         )
 
-    def _known(self, registration: Any, device_id: str, principal: str, receipt: str | None) -> Any:
+    def _known(self, registration: Any, device_id: str, receipt: str | None) -> Any:
+        """The device's verified firmware; any principal with flash authority may build on it."""
         row = (
-            self.store().firmware_known(device_id, principal, receipt)
+            self.store().firmware_known(device_id, receipt)
             if receipt
-            else self.store().firmware_current(device_id, principal)
+            else self.store().firmware_current(device_id)
         )
         if row is None:
             raise FlashFailure("verified_lkg_or_initial_backup_required")
@@ -279,7 +280,7 @@ class FirmwareFlash:
         selector = hashlib.sha256(registration.selector.model_dump_json().encode()).hexdigest()
         if (
             metadata["device_id"] != device_id
-            or metadata["principal"] != principal
+            or metadata["principal"] != row["principal"]
             or metadata["selector_sha256"] != selector
             or metadata["flash_bytes"] != registration.flash_bytes
         ):
@@ -362,7 +363,6 @@ class FirmwareFlash:
                 row, metadata, files = self._known(
                     registration,
                     request.device_id,
-                    principal,
                     getattr(request, "lkg_receipt", None),
                 )
                 known = metadata, files
@@ -482,11 +482,11 @@ class FirmwareFlash:
         recovery = None
         snapshot_files = {}
         metadata = None
-        current = self.store().firmware_current(plan["device_id"], plan["flash_principal"])
+        current = self.store().firmware_current(plan["device_id"])
         baseline = current["baseline"] if current else plan["backup_job_id"]
         if plan["lkg_receipt"] is not None:
             row, metadata, snapshot_files = self._known(
-                registration, plan["device_id"], plan["flash_principal"], plan["lkg_receipt"]
+                registration, plan["device_id"], plan["lkg_receipt"]
             )
             known = metadata, snapshot_files
             baseline = row["baseline"]
@@ -497,9 +497,9 @@ class FirmwareFlash:
                     tuple(snapshot_files[item.name] for item in old_bundle.segments),
                 )
             else:
-                _, backup = self._backup(
-                    registration, metadata["backup_job_id"], plan["flash_principal"]
-                )
+                # The baseline backup stays owned by whoever took it; it is used
+                # internally here and never delivered to the caller.
+                _, backup = self._backup(registration, metadata["backup_job_id"], row["principal"])
         elif plan["flash_operation"] != "backup":
             _, backup = self._backup(registration, plan["backup_job_id"], plan["flash_principal"])
         if plan["flash_operation"] == "flash":
@@ -522,9 +522,7 @@ class FirmwareFlash:
             snapshot_files[elf_name] = _file(root, elf, 67108864)
             compat = compatibility(manifest, bundle, snapshot_files, registration.flash_bytes)
             if current is not None and known is None:
-                _, previous, _ = self._known(
-                    registration, plan["device_id"], plan["flash_principal"], current["receipt"]
-                )
+                _, previous, _ = self._known(registration, plan["device_id"], current["receipt"])
                 if previous.get("compat") is not None:
                     same_layout(previous["compat"], compat)
             if known is not None and known[0].get("compat") is not None:

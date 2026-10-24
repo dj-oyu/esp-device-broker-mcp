@@ -597,17 +597,20 @@ class Store:
         except Exception:
             pass
 
-    def firmware_current(self, device_id: str, principal: str) -> dict[str, Any] | None:
+    def firmware_current(self, device_id: str) -> dict[str, Any] | None:
+        """The device's current verified firmware, whichever principal installed it.
+
+        `principal` on the row records who installed it; it does not scope the lookup.
+        """
         row = self.db.execute(
-            "SELECT * FROM firmware_lkg WHERE device_id=? AND principal=?",
-            (device_id, principal),
+            "SELECT * FROM firmware_lkg WHERE device_id=?", (device_id,)
         ).fetchone()
         return dict(row) if row else None
 
-    def firmware_known(self, device_id: str, principal: str, receipt: str) -> dict[str, Any] | None:
+    def firmware_known(self, device_id: str, receipt: str) -> dict[str, Any] | None:
         row = self.db.execute(
-            "SELECT * FROM firmware_lkg_history WHERE device_id=? AND principal=? AND receipt=?",
-            (device_id, principal, receipt),
+            "SELECT * FROM firmware_lkg_history WHERE device_id=? AND receipt=?",
+            (device_id, receipt),
         ).fetchone()
         return dict(row) if row else None
 
