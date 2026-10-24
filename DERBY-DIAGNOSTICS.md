@@ -5,7 +5,7 @@ fixed camera/error categories through its existing single serial reader. There
 is no extra mode, key, read loop, retry, reset or firmware operation. Missing
 telemetry does not change the smoke's phase/capture/exit result.
 
-Use the existing `job_status` with the observed job ID. The requesting principal,
+Use the existing `status(view=job)` with the observed job ID. The requesting principal,
 with current read authority, receives `derby_diagnostics` when a new report was
 persisted. Other readers retain the existing shared job state and earlier bounded
 phase summary. The new details are removed from shared diagnostics, execute

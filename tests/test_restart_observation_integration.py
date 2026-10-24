@@ -594,19 +594,19 @@ async def http_restart(tmp_path, monkeypatch):
 
 
 async def http_observe(env):
-    lease = (await rpc(env, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300}))[
-        "structuredContent"
-    ]
+    lease = (
+        await rpc(env, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 300})
+    )["structuredContent"]
     plan = (
         await rpc(
             env,
-            "prepare_test",
-            {"session": lease["session"], "job_id": JOB, "test": "restart_and_observe"},
+            "submit",
+            {"session": lease["session"], "job_id": JOB, "kind": "restart"},
         )
     )["structuredContent"]
     assert plan["ok"] and not plan["approval_required"]
-    request = {"session": lease["session"], "plan_hash": plan["plan_hash"]}
-    assert (await rpc(env, "execute_test", request))["structuredContent"]["ok"]
+    request = {"op": "run", "session": lease["session"], "plan_hash": plan["plan_hash"]}
+    assert (await rpc(env, "execute", request))["structuredContent"]["ok"]
     await asyncio.wait_for(env.broker.queue.join(), timeout=5)
     return lease["session"], plan
 
@@ -618,13 +618,15 @@ async def test_authenticated_mcp_restart_requires_explicit_request_and_exact_rep
     catalog = await rpc_response(env, "tools/list", {}, token=env.keys["owner"].token)
     assert catalog.status_code == 200
     tools = catalog.json()["result"]["tools"]
-    preparation = next(item for item in tools if item["name"] == "prepare_test")
-    assert "restart_and_observe" in json.dumps(preparation["inputSchema"])
-    reader = next(item for item in tools if item["name"] == "read_device_logs")
+    preparation = next(item for item in tools if item["name"] == "submit")
+    assert "restart" in json.dumps(preparation["inputSchema"]["$defs"]["Kind"])
+    reader = next(item for item in tools if item["name"] == "status")
     assert reader["annotations"]["readOnlyHint"] is True
     assert not any("approv" in item["name"] or "operator" in item["name"] for item in tools)
     session, plan = await http_observe(env)
-    report = (await rpc(env, "read_device_logs", {"job_id": JOB}))["structuredContent"]
+    report = (await rpc(env, "status", {"view": "logs", "stream": "device", "job_id": JOB}))[
+        "structuredContent"
+    ]
     assert report["ok"] and LOG_LINE in report["logs"]
     assert report["reset_sequence_issued"] is True and report["capture_gap"] is False
     payload = {
@@ -635,27 +637,35 @@ async def test_authenticated_mcp_restart_requires_explicit_request_and_exact_rep
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
     assert hashlib.sha256(canonical).hexdigest() == report["sha256"]
     for token in (LOCAL, REMOTE, env.keys["other"].token, env.keys["reader"].token):
-        assert (await rpc(env, "read_device_logs", {"job_id": JOB}, token=token))[
-            "structuredContent"
-        ] == {"ok": False, "error": "device_logs_not_available"}
+        assert (
+            await rpc(
+                env, "status", {"view": "logs", "stream": "device", "job_id": JOB}, token=token
+            )
+        )["structuredContent"] == {"ok": False, "error": "device_logs_not_available"}
     for _ in range(3):
         assert (
-            await rpc(env, "execute_test", {"session": session, "plan_hash": plan["plan_hash"]})
+            await rpc(
+                env,
+                "execute",
+                {"op": "run", "session": session, "plan_hash": plan["plan_hash"]},
+            )
         )["structuredContent"]["deduplicated"]
-    assert (await rpc(env, "release_session", {"session": session}))["structuredContent"][
-        "released"
-    ]
+    assert (await rpc(env, "session", {"action": "release", "session": session}))[
+        "structuredContent"
+    ]["released"]
     for _ in range(3):
-        assert (await rpc(env, "read_device_logs", {"job_id": JOB}))["structuredContent"] == report
+        assert (await rpc(env, "status", {"view": "logs", "stream": "device", "job_id": JOB}))[
+            "structuredContent"
+        ] == report
     assert reset_count(env) == env.backend.calls == 1 and len(env.created) == 1
     assert env.ports[0].opens == env.ports[0].closes == 1 and env.ports[0].writes == []
     assert plan["plan"]["log_delivery"]["principal_id"] == env.keys["owner"].metadata.principal_id
     timeline = await env.http.get("/operator/timeline")
     assert timeline.status_code == 200 and LOG_LINE not in timeline.text
     for tool, request in (
-        ("device_status", None),
-        ("read_logs", {}),
-        ("job_status", {"job_id": JOB}),
+        ("status", {"view": "device"}),
+        ("status", {"view": "logs", "stream": "broker"}),
+        ("status", {"view": "job", "job_id": JOB}),
     ):
         public = await rpc(env, tool, request, token=env.keys["reader"].token)
         assert LOG_LINE not in json.dumps(public)
@@ -667,20 +677,30 @@ async def test_mcp_revalidates_key_after_restart_completion(http_restart, invali
     env = http_restart
     await http_observe(env)
     key = env.keys["owner"]
-    assert (await rpc(env, "read_device_logs", {"job_id": JOB}))["structuredContent"]["ok"]
+    assert (await rpc(env, "status", {"view": "logs", "stream": "device", "job_id": JOB}))[
+        "structuredContent"
+    ]["ok"]
     if invalidate == "revoke":
         assert env.registry.revoke(key.metadata.key_id)
     elif invalidate == "expire":
         env.key_clock.now += 11
     else:
         replacement = env.registry.rotate(key.metadata.key_id)
-        assert (await rpc(env, "read_device_logs", {"job_id": JOB}, token=replacement.token))[
-            "structuredContent"
-        ] == {"ok": False, "error": "device_logs_not_available"}
+        assert (
+            await rpc(
+                env,
+                "status",
+                {"view": "logs", "stream": "device", "job_id": JOB},
+                token=replacement.token,
+            )
+        )["structuredContent"] == {"ok": False, "error": "device_logs_not_available"}
     response = await rpc_response(
         env,
         "tools/call",
-        {"name": "read_device_logs", "arguments": {"request": {"job_id": JOB}}},
+        {
+            "name": "status",
+            "arguments": {"request": {"view": "logs", "stream": "device", "job_id": JOB}},
+        },
         token=key.token,
     )
     assert response.status_code == 401 and response.json() == {"error": "authentication_required"}
@@ -695,11 +715,16 @@ async def test_mcp_invalid_controls_and_read_arguments_are_rejected_without_usb(
     response = await rpc_response(
         env,
         "tools/call",
-        {"name": "read_device_logs", "arguments": {"request": {"job_id": JOB}}},
+        {
+            "name": "status",
+            "arguments": {"request": {"view": "logs", "stream": "device", "job_id": JOB}},
+        },
         token="invalid",
     )
     assert response.status_code == 401 and response.json() == {"error": "authentication_required"}
-    lease = (await rpc(env, "acquire_session", {"owner": "remote_mcp"}))["structuredContent"]
+    lease = (
+        await rpc(env, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30})
+    )["structuredContent"]
     for extra in (
         {"method": "generic_reset"},
         {"attempts": 2},
@@ -708,18 +733,19 @@ async def test_mcp_invalid_controls_and_read_arguments_are_rejected_without_usb(
     ):
         result = await rpc(
             env,
-            "prepare_test",
-            {"session": lease["session"], "job_id": JOB, "test": "restart_and_observe", **extra},
+            "submit",
+            {"session": lease["session"], "job_id": JOB, "kind": "restart", **extra},
         )
         assert result["isError"] is True
         assert "/private/fake-port" not in json.dumps(result)
         assert lease["session"] not in json.dumps(result)
+    base = {"view": "logs", "stream": "device", "job_id": JOB}
     for request in (
-        {"job_id": JOB, "principal_id": PRINCIPAL},
-        {"job_id": LOG_LINE + "\n"},
-        {"job_id": JOB, "session": LOCAL},
+        {**base, "principal_id": PRINCIPAL},
+        {**base, "job_id": LOG_LINE + "\n"},
+        {**base, "session": LOCAL},
     ):
-        result = await rpc(env, "read_device_logs", request)
+        result = await rpc(env, "status", request)
         assert result["isError"] is True
         assert LOG_LINE not in json.dumps(result) and LOCAL not in json.dumps(result)
     assert not env.created and reset_count(env) == 0 and env.backend.calls == 0

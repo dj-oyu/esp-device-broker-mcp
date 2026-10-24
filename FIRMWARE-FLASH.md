@@ -5,8 +5,8 @@ ESP-IDF 6.0.1 build profile. Register an external Python executable with its SHA
 and exact version, and a dedicated esptool 5.1.0 package directory with its SHA.
 An existing IDF Python environment need not be downgraded. No SDK is bundled.
 
-MCP `prepare_test` accepts `firmware_backup`, `firmware_flash`, and
-`firmware_restore`, a registered `device_id`, and successful owned job references.
+MCP `submit` accepts `kind=backup`, `kind=flash`, and
+`kind=restore`, a registered `device_id`, and successful owned job references.
 It accepts no executable path, serial command, offset, or arbitrary arguments.
 Every operation requires authenticated explicit execution of its exact prepared
 plan. No local approval, unattended grant or mock opt-in is required. Backup bytes stay in a private local directory.
@@ -61,7 +61,7 @@ progress for 60 s stops the owned process. Probe and write stay at 300 s.
 The worker suppresses native output and emits only advancing byte counts/total.
 The principal-bound shared log records start limits, counts, elapsed seconds,
 returned native exit code, and explicit deadline/stall/cancel/authority stop codes.
-Use `read_build_logs` with the `info` level to see numeric progress. Logs remain
+Use `status(view=logs, stream=build)` with the `info` level to see numeric progress. Logs remain
 bounded/redacted; backup bytes and tool paths are not delivered. A complete
 verified read is still required before retaining a backup receipt.
 
@@ -116,17 +116,17 @@ readback plus boot prefix. These fields survive shared-log expiry and broker res
 alone is not authenticated identity or cryptographic proof. No raw boot log is
 retained, and no verification criterion or USB behavior changes.
 
-## MCP prepare input and safe diagnostics
+## MCP submit input and safe diagnostics
 
-All prepare fields are nested under request. firmware_flash requires job_id,
-test=firmware_flash, the caller's live owned session, registered device_id and a
+All submit fields are nested under request. kind=flash requires job_id,
+the flash kind, the caller's live owned session, registered device_id and a
 successful owned build_job_id. Do not pass project_id: the registered device
 selects its project. The public schema expresses these conditional requirements.
 Optional project_id=null remains accepted. backup_job_id and lkg_receipt are
 mutually exclusive; leaving both absent may select a retained verified LKG, and
 preflight rejects unavailable recovery. No URL, port, path or raw argv is accepted.
-firmware_backup requires session/device_id and no build/recovery inputs;
-firmware_restore requires session/device_id and verified recovery, no build_job_id.
+kind=backup requires session/device_id and no build/recovery inputs;
+kind=restore requires session/device_id and verified recovery, no build_job_id.
 Current principal/device/security checks, static registered operation capabilities,
 exclusive ownership and verified readback still apply.
 
@@ -144,14 +144,14 @@ whose source receipt lacks a matching successful owned fetch returns the fixed
 successful_owned_source_fetch_required code rather than invalid_request. Source
 errors expose only the existing fixed allowlist; arbitrary ValueError stays masked.
 
-The tools/list descriptions and prepare schema change. After a separately
+The tools/list descriptions and submit schema change. Flash and restore plans are queued only by the `flash` tool; every other plan by `execute`. After a separately
 coordinated deployment, refresh the ChatGPT connection metadata and verify it in a
 new conversation as documented in AGENTS.md. A server-side catalog test does not
 prove that an existing host conversation refreshed its imported tool definitions.
 
 ## Failed boot observation evidence
 
-`read_build_logs` retains bounded, redacted boot lines and a `boot_diagnostic`
+`status(view=logs, stream=build)` retains bounded, redacted boot lines and a `boot_diagnostic`
 entry after a failed flash/restore, including when serial transport or close
 fails. The entry records the fixed operation/primary failure categories, startup
 parse or ELF/IDF mismatch reason, actual UTC attempt times, attempt duration,

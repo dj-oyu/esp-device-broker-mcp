@@ -271,9 +271,11 @@ async def test_delivery_http_immediate_read_and_retired_decisions_without_recapt
     ):
         assert (await operator.get(base + "/images")).json()["images"] == []
         tools = {tool.name for tool in (await remote.list_tools()).tools}
-        assert "read_capture" in tools
+        assert tools == {"status", "submit", "execute", "flash", "cancel", "session"}
         assert not any("approv" in tool or "operator" in tool for tool in tools)
-        lease = await call(remote, "acquire_session", {"owner": "remote_mcp"})
+        lease = await call(
+            remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         plan = await capture(remote, "http-review", lease["session"])
         await service.resident.queue.join()
         pixels = assert_image(await read_capture(remote, "http-review"))
@@ -297,11 +299,8 @@ async def test_delivery_http_immediate_read_and_retired_decisions_without_recapt
             assert assert_image(await read_capture(remote, "http-review")) == pixels
         replay = await call(
             remote,
-            "execute_test",
-            {
-                "session": lease["session"],
-                "plan_hash": plan["plan_hash"],
-            },
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": plan["plan_hash"]},
         )
         assert replay["deduplicated"] and service.backend.calls == 1
         public = json.dumps(
@@ -331,7 +330,9 @@ async def test_delivery_http_rechecks_recipient_credential_on_every_read(
     monkeypatch.setattr(server_module, "time", lambda: service.now[0])
     key = service.keys["first"]
     async with connect(service.url, key.token) as remote:
-        lease = await call(remote, "acquire_session", {"owner": "remote_mcp"})
+        lease = await call(
+            remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         await capture(remote, "changed-recipient", lease["session"])
         await service.resident.queue.join()
         assert_image(await read_capture(remote, "changed-recipient"))

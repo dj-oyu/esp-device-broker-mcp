@@ -38,9 +38,10 @@ from cardputer_mcp.stdio_adapter import (
 KEY = "cpk_" + "a" * 32 + "." + "b" * 64
 UNKNOWN_KEY = "cpk_" + "c" * 32 + "." + "d" * 64
 SECRET = "synthetic-exception-private-marker"
+IDENTITY_CALL = ("status", {"request": {"view": "identity"}})
 TOOLS = [
     Tool(
-        name="client_identity",
+        name="status",
         description="Authenticate this connection",
         input_schema={"type": "object"},
     ),
@@ -107,7 +108,7 @@ async def synthetic_service() -> AsyncIterator[SyntheticService]:
 
     async def call_tool(ctx, params):
         service.calls.append((params.name, params.arguments))
-        if params.name == "client_identity":
+        if params.name == "status":
             return CallToolResult(content=[], structured_content=dict(service.identity))
         service.active += 1
         service.peak = max(service.peak, service.active)
@@ -247,9 +248,9 @@ async def test_catalog_and_results_are_lossless(synthetic_service):
     assert result.is_error is False
     assert result.meta["synthetic/result"] == "kept"
     assert service.calls == [
-        ("client_identity", {}),
-        ("client_identity", {}),
-        ("client_identity", {}),
+        IDENTITY_CALL,
+        IDENTITY_CALL,
+        IDENTITY_CALL,
         ("mixed", {"line": "a\nb"}),
     ]
     assert "DELETE" not in service.methods
@@ -261,8 +262,11 @@ async def test_pagination_and_catalog_metadata_are_forwarded(synthetic_service):
     catalog = await HTTPBrokerAdapter(service.url, KEY).list_tools(params)
     assert catalog.next_cursor == "page-three"
     assert catalog.meta["synthetic/page"] == "kept"
-    assert service.catalog_params[0].cursor == params.cursor
-    assert service.catalog_params[0].meta["synthetic/request"] == "kept"
+    # The SDK may list tools once while resolving the identity call; the caller's
+    # own request is the last upstream tools/list and must be forwarded unchanged.
+    forwarded = service.catalog_params[-1]
+    assert forwarded.cursor == params.cursor
+    assert forwarded.meta["synthetic/request"] == "kept"
 
 
 @pytest.mark.parametrize("mode", ["legacy", "auto"])
@@ -332,7 +336,7 @@ async def test_identity_must_prove_authenticated_remote_read_scope(synthetic_ser
     synthetic_service.identity.update(change)
     with pytest.raises(StdioAdapterError, match="^stdio_adapter_remote_read_key_required$"):
         await HTTPBrokerAdapter(synthetic_service.url, KEY).check_broker()
-    assert synthetic_service.calls == [("client_identity", {})]
+    assert synthetic_service.calls == [IDENTITY_CALL]
 
 
 async def test_invalid_auth_and_offline_broker_are_fixed_errors(synthetic_service):
@@ -385,7 +389,9 @@ async def test_actual_broker_catalog_matches_and_connections_do_not_acquire(regi
         expected = await upstream.list_tools()
     actual = await adapter.list_tools()
     assert actual.tools == expected.tools
-    status = await adapter.call_tool(CallToolRequestParams(name="device_status", arguments={}))
+    status = await adapter.call_tool(
+        CallToolRequestParams(name="status", arguments={"request": {"view": "device"}})
+    )
     assert status.structured_content["ok"]
     assert service.resident.session is None and service.resident.active_job is None
     assert service.resident.work_sessions == {}
@@ -418,7 +424,7 @@ async def test_cancelled_request_does_not_issue_cancel_release_or_replay(synthet
     service.gate.set()
     await adapter.list_tools()
     assert [name for name, _ in service.calls].count("mixed") == 1
-    assert {name for name, _ in service.calls} == {"client_identity", "mixed"}
+    assert {name for name, _ in service.calls} == {"status", "mixed"}
     assert "DELETE" not in service.methods
 
 
@@ -547,7 +553,7 @@ async def test_real_stdio_frames_are_clean_and_eof_has_no_side_effects(synthetic
         assert tail == b""
         assert KEY.encode() not in errors and SECRET.encode() not in errors
         assert b"Bearer" not in errors
-        assert {name for name, _ in service.calls} == {"client_identity", "mixed"}
+        assert {name for name, _ in service.calls} == {"status", "mixed"}
         assert "DELETE" not in service.methods
     finally:
         if process.returncode is None:
@@ -681,10 +687,16 @@ async def test_stdio_eof_keeps_resident_job_and_ownership(registry_service):
         return result["result"]["structuredContent"]
 
     try:
-        lease = await call("acquire_session", {"owner": "remote_mcp"})
+        lease = await call(
+            "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         session = lease["session"]
-        plan = await call("prepare_test", {"session": session, "job_id": "stdio-eof"})
-        executed = await call("execute_test", {"session": session, "plan_hash": plan["plan_hash"]})
+        plan = await call(
+            "submit", {"kind": "diagnostics", "session": session, "job_id": "stdio-eof"}
+        )
+        executed = await call(
+            "execute", {"op": "run", "session": session, "plan_hash": plan["plan_hash"]}
+        )
         assert executed["ok"]
         process.stdin.close()
         tail, errors = await asyncio.wait_for(process.communicate(), timeout=10)
@@ -695,7 +707,9 @@ async def test_stdio_eof_keeps_resident_job_and_ownership(registry_service):
         service.backend.gate.set()
         await asyncio.wait_for(service.resident.queue.join(), timeout=5)
         result = await HTTPBrokerAdapter(service.url, key).call_tool(
-            CallToolRequestParams(name="job_status", arguments={"request": {"job_id": "stdio-eof"}})
+            CallToolRequestParams(
+                name="status", arguments={"request": {"view": "job", "job_id": "stdio-eof"}}
+            )
         )
         assert result.structured_content["state"] == "succeeded"
         assert service.resident.session is not None

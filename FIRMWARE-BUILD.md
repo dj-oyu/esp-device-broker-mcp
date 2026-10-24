@@ -35,13 +35,13 @@ Neither fixed diagnostic contains native stderr or private paths.
 Only an explicit environment allowlist reaches the
 child. Ambient credentials and arbitrary exported variables are excluded.
 
-Call `prepare_test` with `test="firmware_build"`,
+Call `submit` with `kind="build"`,
 `project_id="cardputer"`, a fresh `job_id` and optionally an owned source_receipt.
 A current authenticated control principal is required. Omit session: build and
 source fetch do not acquire a USB lease. The existing local project/profile
 registration authorizes execution within those registered inputs; no additional
 grant, approval screen or per-job APPROVE is required. Execute the exact returned
-plan_hash. wait_for_approval has no effect on these registered-profile jobs.
+plan_hash with `execute(op=run)`. There is no approval argument for these registered-profile jobs.
 No remote API can register projects, change paths/tools or expand repositories.
 
 Registering a build project trusts its scripts to run as the broker's local OS
@@ -82,7 +82,7 @@ expected target is fixed through IDF_TARGET and checked against the generated
 project description. Diagnostics require the actual `idf.py --version` to report
 exactly ESP-IDF v6.0.1 and require a registered-environment ESP32-S3 compiler.
 
-`read_build_logs` requires current read authorization and the original job
+`status(view=logs, stream=build)` requires current read authorization and the original job
 principal. Default output is progress plus warnings/errors, with two lines of
 context. Explicit levels: error, warning, info, debug, unknown. Stderr is a stream,
 not an error severity. Notes and multiline text remain available through context
@@ -96,7 +96,7 @@ ambient secret values are removed; arbitrary application secrets cannot be
 universally recognized, so the explicit execution request includes log delivery.
 
 Cancellation of a running build requests termination and returns before shutdown
-is confirmed; poll `job_status`. Confirmed termination results in cancelled, never
+is confirmed; poll `status(view=job)`. Confirmed termination results in cancelled, never
 success/replay; unconfirmed termination remains needs_review.
 Windows assigns the suspended child atomically to a kill-on-close owned Job Object
 and inherits only NUL plus the two output pipes. Leader exit does not establish
@@ -298,7 +298,7 @@ Python/ESP-IDF platform.machine() detection; ambient PATH/SYSTEM_PATH remains
 excluded. A regression asserts the architecture variables reach the profile and
 all diagnostic/build subprocess calls while unrelated values are absent.
 
-The remaining Tunnel transport expected tool catalog includes read_build_logs.
+The remaining Tunnel transport expected tool catalog includes status(view=logs, stream=build).
 Fifteen changed src/tests files were formatted by lockfile-matched Ruff 0.16.10 in
 cloud Actions run 38299610752. The formatter's post-format check passed and cloud
 import verified AST equivalence for every returned file. That temporary formatter
@@ -453,7 +453,7 @@ project/output registrations across upgrades. ESP-IDF remains external 6.0.1.
 
 ## Durable receipt reads independent of log retention
 
-For a successful owned build, `read_build_logs` revalidates the persisted build
+For a successful owned build, `status(view=logs, stream=build)` revalidates the persisted build
 reference and returns its public `manifest` even after log expiry, eviction or
 broker restart. The result still reports `expired=true`, `gap=true`, empty entries
 and the existing missing-history reason when RAM output is gone. It does not
@@ -483,8 +483,8 @@ and hash checks are reused; no native build, USB or production DB is involved.
 
 ## Fixed diagnostic recipes and ON/OFF comparison
 
-`prepare_test.request.derby_detail_mode` accepts only `ON` or `OFF` for a
-`firmware_build` with a registered project's owned `source_receipt`. An explicit
+`submit.request.derby_detail_mode` accepts only `ON` or `OFF` for a
+`kind=build` (`firmware_build`) with a registered project's owned `source_receipt`. An explicit
 single detail selector chooses the built-in `j1-fixed-v1` recipe. Supplying both
 `derby_detail_mode` and `derby_dma_mode` chooses `derby-dma-diagnostic-v1`.
 The latter requires both typed axes; it does not infer missing values or fall
@@ -517,7 +517,7 @@ this field in legacy records. Present wrong/null digests are rejected. Unknown
 contracts are unsupported, known-contract evidence can be incompatible, and an
 unavailable requested feature is not inferred from a source commit.
 
-Successful manifests retain proof and canonical hashes. `read_build_logs` can
+Successful manifests retain proof and canonical hashes. `status(view=logs, stream=build)` can
 revalidate retained exact bytes after log expiry/restart, independently of missing
 RAM output. Changed or missing artifacts make evidence unavailable; expiry/gap
 still describe lost logs. Artifact verification does not mean CI or hardware pass.
@@ -525,7 +525,7 @@ Raw CMake cache remains private and bounded to 128 KiB; export v1 publishes only
 bounded cache hash/size and commits the projection through the immutable flash
 plan. Existing original-manifest, export, owner and success-plan checks remain.
 
-For a receipt-bound trial, `prepare_test(test="derby_fixed_workload", flash_job_id=... )`
+For a receipt-bound trial, `submit(kind="derby_fixed", flash_job_id=... )`
 uses the principal's successful verified flash that remains the registered device's
 current firmware receipt. Retained build/source/proof/artifact identities select
 the comparison, not a caller hash or configured expected hash. Existing leases,
@@ -632,7 +632,7 @@ The pinned FW consumer from commit `824e9f91b52069c08df68e967d83b44e9f7d5240`
 is retained unchanged as `tests/fixtures/derby_manifest_export_pr38.py.txt`
 (original blob `7f4c42db24c69855c10c4b03304d62792b7a7ef1`, SHA256
 `fb275ee8e763e89a59d5deea132529e9d18787d731fae0f27b84acd06f1fc726`).
-Tests pass unmodified producer and durable `read_logs` responses through its
+Tests pass unmodified producer and durable `status(view=logs, stream=broker)` responses through its
 `read_export_response` and `bind_export` functions for all four detail/DMA choices,
 including fresh logs, restart, log expiry and fixed-anchor tampering refusals.
 The dedicated pinned-FW junction workflow also checks out that exact FW head and
@@ -652,7 +652,7 @@ and `build_artifacts_missing`. Unknown exceptions remain `firmware_build_failed`
 native exception text, command arguments, environment values and paths are never
 copied into persisted diagnostics.
 
-For recognized build failures, `job_status.diagnostic.subprocess_exit_codes`
+For recognized build failures, `status(view=job).diagnostic.subprocess_exit_codes`
 contains at most three numeric entries: `profile_export`, `build_diagnostic`
 (the latest completed diagnostic command), and `idf_build`. Entries appear only
 when that subprocess returned a status; a missing entry does not imply zero.

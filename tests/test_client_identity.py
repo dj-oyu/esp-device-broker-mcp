@@ -14,7 +14,7 @@ async def test_identity_reports_request_principal_without_acquiring(authenticate
     url, resident = authenticated_mock
     for token, expected in ((LOCAL, "local_cli"), (REMOTE, "remote_mcp")):
         async with connect(url, token) as client:
-            result = await call(client, "client_identity")
+            result = await call(client, "status", {"view": "identity"})
         assert result == {
             "ok": True,
             "authenticated": True,
@@ -22,6 +22,7 @@ async def test_identity_reports_request_principal_without_acquiring(authenticate
             "principal_id": f"ephemeral:{expected}",
             "scopes": ["control", "read"],
             "tunnel_ingress_enabled": False,
+            "tool_set_version": 2,
         }
         assert token not in json.dumps(result)
     assert resident.active_job is None and resident.session is None
@@ -30,7 +31,7 @@ async def test_identity_reports_request_principal_without_acquiring(authenticate
 
 async def test_identity_remains_auth_required_on_legacy_mock(service):  # noqa: F811
     async with connect(service) as client:
-        assert await call(client, "client_identity") == {
+        assert await call(client, "status", {"view": "identity"}) == {
             "ok": False,
             "error": "authentication_required",
         }
@@ -40,7 +41,7 @@ async def test_identity_read_key_and_revocation(registry_service):  # noqa: F811
     svc = registry_service
     key = svc.keys["reader"]
     async with connect(svc.url, key.token) as client:
-        result = await call(client, "client_identity")
+        result = await call(client, "status", {"view": "identity"})
         assert result["origin"] == "remote_mcp"
         assert result["principal_id"] == key.metadata.principal_id
         assert result["scopes"] == ["read"]

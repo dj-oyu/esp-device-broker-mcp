@@ -60,36 +60,48 @@ async def test_authenticated_serial_http_explicit_execution_and_owner_binding(se
         assert rejected.status_code == 401
     assert port.opens == 0
     async with connect(url, "a" * 64) as local, connect(url, "b" * 64) as remote:
-        status = await call(local, "device_status")
+        status = await call(local, "status", {"view": "device"})
         assert status["backend"] == "serial" and not status["hardware_connected"]
-        spoof = await call(remote, "acquire_session", {"owner": "local_cli"})
+        spoof = await call(
+            remote, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 30}
+        )
         assert spoof["error"] == "authenticated_owner_mismatch"
-        lease = await call(local, "acquire_session", {"owner": "local_cli"})
+        lease = await call(
+            local, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 30}
+        )
         token = lease["session"]
         prepared = await call(
-            local, "prepare_test", {"session": token, "job_id": "serial-http", "test": "hello"}
+            local,
+            "submit",
+            {"kind": "hello", "session": token, "job_id": "serial-http"},
         )
         assert prepared["ok"] and not prepared["approval_required"]
         assert port.opens == 0
         stolen = await call(
-            remote, "execute_test", {"session": token, "plan_hash": prepared["plan_hash"]}
+            remote,
+            "execute",
+            {"op": "run", "session": token, "plan_hash": prepared["plan_hash"]},
         )
         assert stolen["error"] == "authenticated_owner_mismatch"
         assert port.opens == 0
         executed = await call(
-            local, "execute_test", {"session": token, "plan_hash": prepared["plan_hash"]}
+            local,
+            "execute",
+            {"op": "run", "session": token, "plan_hash": prepared["plan_hash"]},
         )
         assert executed["ok"]
         await resident.queue.join()
-        job = await call(remote, "job_status", {"job_id": "serial-http"})
+        job = await call(remote, "status", {"view": "job", "job_id": "serial-http"})
         assert job["state"] == "succeeded"
         assert job["result"] == "hello_markers_passed_physical_checks_not_assessed"
         assert port.opens == port.closes == 1
-        logs = await call(remote, "read_logs", {})
+        logs = await call(remote, "status", {"view": "logs", "stream": "broker"})
         assert "serial_identity_hello" in str(logs)
         for credential in ("a" * 64, "b" * 64, token):
             assert credential not in str(logs) + str(status)
-        await call(local, "release_session", {"session": token})
-        other = await call(remote, "acquire_session", {"owner": "remote_mcp"})
+        await call(local, "session", {"action": "release", "session": token})
+        other = await call(
+            remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         assert other["ok"]
-        await call(remote, "release_session", {"session": other["session"]})
+        await call(remote, "session", {"action": "release", "session": other["session"]})

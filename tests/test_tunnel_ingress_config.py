@@ -15,7 +15,7 @@ from test_tunnel_manager import BEARER, KEY, URL
 from test_tunnel_manager import configured as configured
 
 from cardputer_mcp import tunnel
-from cardputer_mcp.client import validate_url
+from cardputer_mcp.client import SURFACE_TOOLS, validate_url
 from cardputer_mcp.config import Settings, load_settings
 from cardputer_mcp.gui_tunnel import TunnelController, perform_tunnel
 
@@ -206,20 +206,20 @@ def console_probe(monkeypatch):
 
     class Client:
         async def list_tools(self):
-            return SimpleNamespace(
-                tools=[SimpleNamespace(name=name) for name in ("client_identity", "device_status")]
-            )
+            return SimpleNamespace(tools=[SimpleNamespace(name=name) for name in SURFACE_TOOLS])
 
     @asynccontextmanager
     async def connection(url, token):
         assert url == URL and token == BEARER.removeprefix("Bearer ")
         yield Client()
 
-    async def call(client, tool):
-        calls.append(tool)
-        if tool == "client_identity":
+    async def call(client, tool, request):
+        # Only the read-only status tool is ever used by the console probe.
+        assert tool == "status"
+        calls.append(request["view"])
+        if request["view"] == "identity":
             return identity
-        assert tool == "device_status"
+        assert request == {"view": "device"}
         return {"ok": True, "backend": "mock"}
 
     monkeypatch.setattr(tunnel, "connect", connection)
@@ -233,7 +233,7 @@ async def test_console_matching_mode_is_checked_on_direct_route(console_probe, e
     identity["tunnel_ingress_enabled"] = enabled
     result = await tunnel.check_broker(URL, BEARER, ingress_enabled=enabled)
     assert result["ok"] is True and result["cloud_verified"] is False
-    assert calls == ["client_identity", "device_status"]
+    assert calls == ["identity", "device"]
 
 
 @pytest.mark.parametrize("runtime", [None, 1, 0, "true", False])
@@ -242,7 +242,7 @@ async def test_console_unknown_or_stale_mode_fails_before_further_probes(console
     identity["tunnel_ingress_enabled"] = runtime
     with pytest.raises(tunnel.TunnelError, match="^tunnel_broker_ingress_mismatch$"):
         await tunnel.check_broker(URL, BEARER, ingress_enabled=True)
-    assert calls == ["client_identity"]
+    assert calls == ["identity"]
 
 
 @pytest.mark.parametrize(
@@ -262,7 +262,7 @@ async def test_console_requires_remote_read_identity_before_child(console_probe,
     identity.update(change)
     with pytest.raises(tunnel.TunnelError, match="^" + code + "$"):
         await tunnel.check_broker(URL, BEARER)
-    assert calls == ["client_identity"]
+    assert calls == ["identity"]
 
 
 @pytest.mark.parametrize("runtime", [False, True])

@@ -26,7 +26,7 @@ Save はコメント・書式を再生成しますが、broker/serial の設定�
 **Connect...** で OpenAI Tunnel runtime API key を非表示入力します。
 Cardputer の発行済み remote key を使う場合は、同じダイアログの別欄に入力します。
 空欄なら、その broker 起動時の一時 remote token を使います。
-接続前の読み取り専用 client_identity で remote_mcp の権限を確認し、local_cli key を拒否します。
+接続前の読み取り専用 status(view=identity) で remote_mcp の権限を確認し、local_cli key を拒否します。
 キー入力は1回限りで、保存・表示・引数への埋込み・自動再利用をしません。
 同一 OS ユーザー/管理者からのプロセスメモリー隔離は保証しません。
 
@@ -68,7 +68,7 @@ uv sync --frozen
 ```
 
 別コンソールに認証付き mock broker を起動し、元のウィンドウから remote 用認証で
-MCP tools/list と device_status を確認します。ここまで API キーや公式 Tunnel client は不要です。
+MCP tools/list と status(view=device) を確認します。ここまで API キーや公式 Tunnel client は不要です。
 ローカル用コマンドは元のウィンドウで使います。二重クリックや別の powershell -File 経由では
 親ウィンドウに認証環境変数が戻らないため、この実行方法を使ってください。
 
@@ -160,7 +160,7 @@ GUI・ローカル CLI・接続前の broker 確認は引き続き `http://127.0
 （port は同じ broker TOML の値）。別の URL を設定するフィールドはありません。
 通常入口 `/mcp` とローカル管理入口の転送ヘッダー拒否は維持します。
 
-接続前に `client_identity` の `tunnel_ingress_enabled` と選択中の値を照合します。
+接続前に `status(view=identity)` の `tunnel_ingress_enabled` と選択中の値を照合します。
 古い broker、設定変更後に再起動していない broker、不明な値は
 `tunnel_broker_ingress_mismatch` で拒否し、公式 client を起動しません。
 GUI の Manual restart は Tunnel client だけを再起動するため、この設定の反映には不十分です。
@@ -199,7 +199,7 @@ mock のまま、既存の idle broker を停止してから実行します。
 127.0.0.1 のみ。外部公開・Tunnel の別チャンネル・汎用 HTTP プロキシとして設定しません。
 
 「local readiness」は OpenAI への認証・poll 成功を意味しません。実際の対象アプリで tools/list と
-読み取り専用 device_status を成功させるまで、クラウド接続確認済みとは扱いません。
+読み取り専用 status(view=device) を成功させるまで、クラウド接続確認済みとは扱いません。
 この dot での利用可否・ユーザーアカウントの権限・実際のヘッダー転送は未検証です。
 
 ## 4. Cardputer 用の発行済みキーを使う場合
@@ -237,9 +237,9 @@ mock とクラウド側の読み取り確認後にのみ検討してください
 / [ヘッダー適用実装](https://github.com/openai/tunnel-client/blob/v0.0.15/pkg/mcpclient/fxmodule.go)
 / [readiness 実装](https://github.com/openai/tunnel-client/blob/v0.0.15/pkg/runtimehealth/health.go)
 
-### broker の device_status と Tunnel の死活表示
+### broker の status(view=device) と Tunnel の死活表示
 
-`device_status.tunnel` は `external_lifecycle_unknown` です。broker は外部の
+`status(view=device).tunnel` は `external_lifecycle_unknown` です。broker は外部の
 Tunnel client / クラウドの接続状態を管理していないため、未設定や接続成功とは断定しません。
 `tunnel_ingress_enabled` はその broker の専用入口の設定値だけを示します。
 接続状態は GUI の owned-client 表示と、実際のクラウド側での読み取り確認で別々に確認します。
@@ -289,5 +289,5 @@ mock 検証に serial 設定を流用しないでください。
 同じ broker に接続できます。API key / Tunnel はローカル stdio 接続に不要です。
 `examples/codex-project-config.toml` の Python と cwd をこの clone に合わせ、
 private env ファイルは AppData に置きます。発行済み local client key と registry が必要です。
-初回は mock で client_identity/device_status/read_logs を確認し、作業セッションと
+初回は mock で status(view=identity)/status(view=device)/status(view=logs, stream=broker) を確認し、作業セッションと
 FIFO を試せます。実機 flash、USB、IDF ビルドの検証にはなりません。

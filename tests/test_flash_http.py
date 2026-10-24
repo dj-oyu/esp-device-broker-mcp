@@ -118,19 +118,22 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
             connect(service.url, key.token) as remote,
         ):
             advertised = await remote.list_tools()
-            execute = next(tool for tool in advertised.tools if tool.name == "execute_test")
-            assert execute.annotations.destructive_hint is True
-            lease = await call(remote, "acquire_session", {"owner": "remote_mcp"})
+            tools = {tool.name: tool for tool in advertised.tools}
+            assert tools["flash"].annotations.destructive_hint is True
+            assert tools["execute"].annotations.destructive_hint is False
+            lease = await call(
+                remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+            )
             session = lease["session"]
 
             async def approve(job, action, **references):
                 prepared = await call(
                     remote,
-                    "prepare_test",
+                    "submit",
                     {
                         "session": session,
                         "job_id": job,
-                        "test": action,
+                        "kind": action,
                         "device_id": "fixture",
                         **references,
                     },
@@ -145,9 +148,11 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
                 assert response.json() == {"error": "request_rejected"}
                 return prepared
 
-            backup = await approve("backup-one", "firmware_backup")
+            backup = await approve("backup-one", "backup")
             executed = await call(
-                remote, "execute_test", {"session": session, "plan_hash": backup["plan_hash"]}
+                remote,
+                "execute",
+                {"op": "run", "session": session, "plan_hash": backup["plan_hash"]},
             )
             assert executed["ok"], executed
             await service.resident.queue.join()
@@ -155,19 +160,21 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
             for job, action, references in (
                 (
                     "flash-one",
-                    "firmware_flash",
+                    "flash",
                     {"build_job_id": "build-one", "backup_job_id": "backup-one"},
                 ),
-                ("restore-one", "firmware_restore", {"backup_job_id": "backup-one"}),
+                ("restore-one", "restore", {"backup_job_id": "backup-one"}),
             ):
                 prepared = await approve(job, action, **references)
                 result = await call(
-                    remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+                    remote, "flash", {"session": session, "plan_hash": prepared["plan_hash"]}
                 )
                 assert result["ok"], result
                 await service.resident.queue.join()
                 assert service.resident.job(job)["state"] == "succeeded"
-                logs = await call(remote, "read_build_logs", {"job_id": job})
+                logs = await call(
+                    remote, "status", {"view": "logs", "stream": "build", "job_id": job}
+                )
                 assert logs["ok"] and logs["flash_summary"]["boot_observed"], logs
                 summary = logs["flash_summary"]
                 assert summary["boot_log_matches_expected_artifact"] is True
@@ -176,20 +183,20 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
                 assert 8 <= len(summary["observed_elf_sha256_prefix"]) <= 16
                 service.resident.firmware_flash.logs.pop(job)
                 service.resident.firmware_flash.results.pop(job)
-                retained = await call(remote, "read_build_logs", {"job_id": job})
+                retained = await call(
+                    remote, "status", {"view": "logs", "stream": "build", "job_id": job}
+                )
                 assert retained["expired"] and retained["flash_summary"] == summary
                 replay = await call(
-                    remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+                    remote, "flash", {"session": session, "plan_hash": prepared["plan_hash"]}
                 )
                 assert replay["deduplicated"]
             current = store.firmware_current("fixture", principal)
             assert current["kind"] == "full_backup"
             # First full restore made its exact rescue target current. A new
             # successful flash replaces it with the immutable firmware bundle.
-            prepared = await approve("flash-two", "firmware_flash", build_job_id="build-one")
-            await call(
-                remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
-            )
+            prepared = await approve("flash-two", "flash", build_job_id="build-one")
+            await call(remote, "flash", {"session": session, "plan_hash": prepared["plan_hash"]})
             await service.resident.queue.join()
             assert service.resident.job("flash-two")["state"] == "succeeded"
             current = store.firmware_current("fixture", principal)
@@ -203,24 +210,20 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
                 return original_read(offset, size)
 
             driver.read = tracked_read
-            prepared = await approve("flash-three", "firmware_flash", build_job_id="build-one")
-            await call(
-                remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
-            )
+            prepared = await approve("flash-three", "flash", build_job_id="build-one")
+            await call(remote, "flash", {"session": session, "plan_hash": prepared["plan_hash"]})
             await service.resident.queue.join()
             assert service.resident.job("flash-three")["state"] == "succeeded"
             assert registration.flash_bytes not in reads
             assert store.firmware_current("fixture", principal)["receipt"] == selected
             # Build retention cannot remove the private recovery bytes.
             service.resident.firmware_build.artifacts._records.clear()
-            prepared = await approve("restore-bundle", "firmware_restore", lkg_receipt=selected)
-            await call(
-                remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
-            )
+            prepared = await approve("restore-bundle", "restore", lkg_receipt=selected)
+            await call(remote, "flash", {"session": session, "plan_hash": prepared["plan_hash"]})
             await service.resident.queue.join()
             assert service.resident.job("restore-bundle")["state"] == "succeeded"
             assert store.firmware_current("fixture", principal)["receipt"] == selected
-            prepared = await approve("cancel-one", "firmware_restore", lkg_receipt=selected)
+            prepared = await approve("cancel-one", "restore", lkg_receipt=selected)
             entered = threading.Event()
 
             def block_read(phase):
@@ -229,12 +232,10 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
                     assert release.wait(5)
 
             driver.callback = block_read
-            await call(
-                remote, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
-            )
+            await call(remote, "flash", {"session": session, "plan_hash": prepared["plan_hash"]})
             assert await asyncio.wait_for(asyncio.to_thread(entered.wait, 3), 4)
             cancelled = await call(
-                remote, "cancel_job", {"session": session, "job_id": "cancel-one"}
+                remote, "cancel", {"target": "job", "session": session, "job_id": "cancel-one"}
             )
             assert cancelled["ok"], cancelled
             release.set()

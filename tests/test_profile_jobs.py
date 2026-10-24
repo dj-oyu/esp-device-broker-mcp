@@ -77,18 +77,18 @@ async def test_running_profile_stop_is_terminal_without_review(
     async with connect(service.url, key.token) as remote:
         plan = await call(
             remote,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "stopped",
-                "test": "firmware_build",
+                "kind": "build",
                 "project_id": "fixture",
             },
         )
         assert plan["ok"] and not plan["approval_required"]
-        assert (await call(remote, "execute_test", {"plan_hash": plan["plan_hash"]}))["ok"]
+        assert (await call(remote, "execute", {"op": "run", "plan_hash": plan["plan_hash"]}))["ok"]
         await asyncio.wait_for(started.wait(), 2)
         if stop == "cancel":
-            result = await call(remote, "cancel_job", {"job_id": "stopped"})
+            result = await call(remote, "cancel", {"target": "job", "job_id": "stopped"})
             assert result["stop_requested"] and not result["requires_review"]
         elif stop == "revoke":
             service.registry.revoke(key.metadata.key_id)
@@ -207,10 +207,10 @@ async def test_queue_cancel_read_scope_config_and_old_review_boundaries(
     async with connect(service.url, service.keys["reader"].token) as reader:
         denied = await call(
             reader,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "read-denied",
-                "test": "firmware_build",
+                "kind": "build",
                 "project_id": "fixture",
             },
         )
@@ -297,14 +297,14 @@ async def test_transport_disconnect_and_expired_device_lease_do_not_end_build(
     async with connect(service.url, service.keys["second"].token) as remote:
         plan = await call(
             remote,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "long-build",
-                "test": "firmware_build",
+                "kind": "build",
                 "project_id": "fixture",
             },
         )
-        assert (await call(remote, "execute_test", {"plan_hash": plan["plan_hash"]}))["ok"]
+        assert (await call(remote, "execute", {"op": "run", "plan_hash": plan["plan_hash"]}))["ok"]
         await asyncio.wait_for(started.wait(), 2)
     # Client transport has closed; no cancellation or implicit replay.
     broker.acquire(
@@ -354,10 +354,10 @@ async def test_source_pending_cleanup_refusal_is_durable_uncertainty(
     async with connect(service.url, key.token) as remote:
         prepared = await call(
             remote,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "cleanup-refused",
-                "test": "firmware_fetch_source",
+                "kind": "fetch",
                 "project_id": "fixture",
                 "source_commit": "a" * 40,
             },
@@ -368,8 +368,9 @@ async def test_source_pending_cleanup_refusal_is_durable_uncertainty(
             assert (
                 await call(
                     remote,
-                    "execute_test",
+                    "execute",
                     {
+                        "op": "run",
                         "plan_hash": prepared["plan_hash"],
                     },
                 )
@@ -387,10 +388,10 @@ async def test_source_pending_cleanup_refusal_is_durable_uncertainty(
         assert str(cache) not in json.dumps(job)
         denied = await call(
             remote,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "cannot-follow-cleanup",
-                "test": "firmware_fetch_source",
+                "kind": "fetch",
                 "project_id": "fixture",
                 "source_commit": "b" * 40,
             },
@@ -643,10 +644,10 @@ async def test_registered_profile_forwards_explicit_source_mode(
     async with connect(service.url, key.token) as remote:
         prepared = await call(
             remote,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "mode-build",
-                "test": "firmware_build",
+                "kind": "build",
                 "project_id": "fixture",
                 "source_receipt": "c" * 64,
                 "derby_detail_mode": mode,

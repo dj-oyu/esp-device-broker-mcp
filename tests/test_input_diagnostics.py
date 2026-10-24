@@ -5,8 +5,9 @@ import unittest
 
 from pydantic import ValidationError
 
-from cardputer_mcp.input_diagnostics import validate_arguments
+from cardputer_mcp.input_diagnostics import REQUEST_MODELS, validate_arguments
 from cardputer_mcp.models import PrepareRequest
+from cardputer_mcp.surface import SubmitRequest
 
 
 class InputDiagnosticTests(unittest.TestCase):
@@ -20,32 +21,67 @@ class InputDiagnosticTests(unittest.TestCase):
             **changes,
         )
 
-    def test_field_and_model_failures_use_only_fixed_reasons_and_fields(self):
-        valid = self.flash()
+    def submit(self, **changes):
+        return dict(
+            {
+                "kind": "flash",
+                "job_id": "synthetic-job",
+                "session": "a" * 64,
+                "device_id": "synthetic-device",
+                "build_job_id": "synthetic-build",
+            },
+            **changes,
+        )
+
+    def test_field_failures_use_only_fixed_reasons_and_fields(self):
+        valid = self.submit()
         cases = [
-            ({**valid, "session": None}, "device_session_required", ["session"]),
-            ({**valid, "device_id": None}, "registered_flash_device_required", ["device_id"]),
             (
-                {**valid, "project_id": "SYNTHETIC_PRIVATE"},
-                "project_id_not_allowed_for_flash_operations",
-                ["project_id"],
-            ),
-            ({**valid, "build_job_id": None}, "successful_build_job_required", ["build_job_id"]),
-            (
+                "submit",
                 {**valid, "job_id": "https://SYNTHETIC_SECRET.invalid"},
                 "invalid_field_format",
                 ["job_id"],
             ),
-            ({**valid, "test": "SYNTHETIC_SECRET"}, "invalid_field_value", ["test"]),
             (
+                "submit",
+                {**valid, "session": "https://SYNTHETIC_SECRET.invalid"},
+                "invalid_field_format",
+                ["session"],
+            ),
+            ("submit", {**valid, "kind": "SYNTHETIC_SECRET"}, "invalid_field_value", ["kind"]),
+            (
+                "submit",
                 {**valid, "SYNTHETIC_SECRET_FIELD": "SYNTHETIC_SECRET_VALUE"},
                 "unexpected_field",
                 ["request"],
             ),
+            (
+                "submit",
+                {key: value for key, value in valid.items() if key != "job_id"},
+                "required_field",
+                ["job_id"],
+            ),
+            ("flash", {"session": "a" * 64}, "required_field", ["plan_hash"]),
+            (
+                "flash",
+                {"plan_hash": "SYNTHETIC_SECRET"},
+                "invalid_field_format",
+                ["plan_hash"],
+            ),
+            ("status", {"view": "SYNTHETIC_SECRET"}, "invalid_field_value", ["view"]),
+            ("status", {"view": "logs", "limit": 0}, "field_out_of_range", ["limit"]),
+            ("execute", {"op": "SYNTHETIC_SECRET"}, "invalid_field_value", ["op"]),
+            ("cancel", {"target": "SYNTHETIC_SECRET"}, "invalid_field_value", ["target"]),
+            (
+                "session",
+                {"action": "open", "owner": "remote_mcp", "ttl_seconds": 10**9},
+                "field_out_of_range",
+                ["ttl_seconds"],
+            ),
         ]
-        for request, reason, fields in cases:
-            with self.subTest(reason=reason):
-                result = validate_arguments("prepare_test", {"request": request})
+        for tool, request, reason, fields in cases:
+            with self.subTest(tool=tool, reason=reason, fields=fields):
+                result = validate_arguments(tool, {"request": request})
                 self.assertEqual(
                     result,
                     dict(
@@ -58,36 +94,53 @@ class InputDiagnosticTests(unittest.TestCase):
                 self.assertNotIn("SYNTHETIC", json.dumps(result))
                 self.assertNotIn("https://", json.dumps(result))
 
-    def test_other_tools_and_missing_request_have_safe_field_diagnostics(self):
-        self.assertEqual(validate_arguments("prepare_test", {})["fields"], ["request"])
+    def test_request_models_cover_exactly_the_six_surface_tools(self):
+        self.assertEqual(
+            set(REQUEST_MODELS), {"status", "submit", "execute", "flash", "cancel", "session"}
+        )
+        for old in ("prepare_test", "execute_test", "read_build_logs", "cancel_job"):
+            self.assertIsNone(validate_arguments(old, {"request": {"SYNTHETIC": 1}}))
+
+    def test_missing_request_and_nested_names_have_safe_field_diagnostics(self):
+        for tool in REQUEST_MODELS:
+            with self.subTest(tool=tool):
+                self.assertEqual(validate_arguments(tool, {})["fields"], ["request"])
         result = validate_arguments(
-            "read_build_logs",
+            "status",
             {
                 "request": {
+                    "view": "logs",
+                    "stream": "build",
                     "job_id": "safe",
-                    "cursor": {"epoch": "SYNTHETIC_PRIVATE", "sequence": 0},
+                    "levels": ["SYNTHETIC_PRIVATE"],
                 }
             },
         )
-        self.assertEqual(result["fields"], ["cursor", "epoch"])
+        self.assertEqual(result["fields"], ["levels"])
         self.assertNotIn("SYNTHETIC", json.dumps(result))
 
     def test_diagnostics_do_not_change_valid_optional_nulls_or_model_admission(self):
+        for kind in ("flash", "backup", "restore"):
+            request = self.submit(kind=kind)
+            if kind != "flash":
+                request.pop("build_job_id")
+            for null_project in (False, True):
+                with self.subTest(kind=kind, null_project=null_project):
+                    candidate = {**request, **({"project_id": None} if null_project else {})}
+                    SubmitRequest.model_validate(candidate)
+                    self.assertIsNone(validate_arguments("submit", {"request": candidate}))
+                    try:
+                        import jsonschema
+                    except ModuleNotFoundError:
+                        continue
+                    jsonschema.validate(candidate, SubmitRequest.model_json_schema())
+        # The legacy plan model still refuses a project on flash operations.
         for test in ("firmware_flash", "firmware_backup", "firmware_restore"):
             request = self.flash()
             request["test"] = test
             if test != "firmware_flash":
                 request.pop("build_job_id")
-            for null_project in (False, True):
-                with self.subTest(test=test, null_project=null_project):
-                    candidate = {**request, **({"project_id": None} if null_project else {})}
-                    PrepareRequest.model_validate(candidate)
-                    self.assertIsNone(validate_arguments("prepare_test", {"request": candidate}))
-                    try:
-                        import jsonschema
-                    except ModuleNotFoundError:
-                        continue
-                    jsonschema.validate(candidate, PrepareRequest.model_json_schema())
+            PrepareRequest.model_validate(request)
         with self.assertRaises(ValidationError):
             PrepareRequest.model_validate(self.flash(project_id="not-permitted"))
 

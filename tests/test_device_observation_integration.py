@@ -750,24 +750,27 @@ async def rpc(env, tool, request=None, *, token=None):
     return response.json()["result"]
 
 
+DEVICE_LOGS = {"view": "logs", "stream": "device", "job_id": "firmware-report"}
+
+
 async def http_observe(env):
-    acquired = (await rpc(env, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300}))[
-        "structuredContent"
-    ]
+    acquired = (
+        await rpc(env, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 300})
+    )["structuredContent"]
     prepared = (
         await rpc(
             env,
-            "prepare_test",
+            "submit",
             {
                 "session": acquired["session"],
                 "job_id": "firmware-report",
-                "test": "firmware_observe",
+                "kind": "observe_firmware",
             },
         )
     )["structuredContent"]
     assert prepared["ok"] and not prepared["approval_required"]
-    request = {"session": acquired["session"], "plan_hash": prepared["plan_hash"]}
-    assert (await rpc(env, "execute_test", request))["structuredContent"]["ok"]
+    request = {"op": "run", "session": acquired["session"], "plan_hash": prepared["plan_hash"]}
+    assert (await rpc(env, "execute", request))["structuredContent"]["ok"]
     await asyncio.wait_for(env.broker.queue.join(), timeout=5)
     return acquired["session"], prepared
 
@@ -777,12 +780,13 @@ async def test_mcp_catalog_and_structured_report_obey_principal_boundary(http_ob
     catalog = await rpc_response(env, "tools/list", {}, token=env.keys["owner"].token)
     assert catalog.status_code == 200
     tools = catalog.json()["result"]["tools"]
-    descriptor = next(item for item in tools if item["name"] == "read_device_logs")
+    descriptor = next(item for item in tools if item["name"] == "status")
     assert descriptor["annotations"]["readOnlyHint"] is True
     assert "job_id" in json.dumps(descriptor["inputSchema"])
+    assert "device" in json.dumps(descriptor["inputSchema"])
     assert not any("approv" in item["name"] or "operator" in item["name"] for item in tools)
     session, plan = await http_observe(env)
-    result = await rpc(env, "read_device_logs", {"job_id": "firmware-report"})
+    result = await rpc(env, "status", DEVICE_LOGS)
     report = result["structuredContent"]
     assert report["ok"] and LOG_LINE in report["logs"]
     payload = {
@@ -791,25 +795,21 @@ async def test_mcp_catalog_and_structured_report_obey_principal_boundary(http_ob
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
     assert hashlib.sha256(canonical).hexdigest() == report["sha256"]
     for token in (LOCAL, REMOTE, env.keys["other"].token, env.keys["reader"].token):
-        denied = (await rpc(env, "read_device_logs", {"job_id": "firmware-report"}, token=token))[
-            "structuredContent"
-        ]
+        denied = (await rpc(env, "status", DEVICE_LOGS, token=token))["structuredContent"]
         assert denied == {"ok": False, "error": "device_logs_not_available"}
-    assert (await rpc(env, "release_session", {"session": session}))["structuredContent"][
-        "released"
-    ]
+    assert (await rpc(env, "session", {"action": "release", "session": session}))[
+        "structuredContent"
+    ]["released"]
     for _ in range(3):
-        assert (await rpc(env, "read_device_logs", {"job_id": "firmware-report"}))[
-            "structuredContent"
-        ] == report
+        assert (await rpc(env, "status", DEVICE_LOGS))["structuredContent"] == report
     timeline = await env.http.get("/operator/timeline")
     assert timeline.status_code == 200 and LOG_LINE not in timeline.text
-    for tool, request in (
-        ("device_status", None),
-        ("read_logs", {}),
-        ("job_status", {"job_id": "firmware-report"}),
+    for request in (
+        ({"view": "device"}),
+        ({"view": "logs", "stream": "broker"}),
+        ({"view": "job", "job_id": "firmware-report"}),
     ):
-        public = await rpc(env, tool, request, token=env.keys["reader"].token)
+        public = await rpc(env, "status", request, token=env.keys["reader"].token)
         assert LOG_LINE not in json.dumps(public)
     assert_no_public_or_durable_logs(env.broker, session, *(key.token for key in env.keys.values()))
     assert plan["plan"]["log_delivery"]["principal_id"] == env.keys["owner"].metadata.principal_id
@@ -821,24 +821,20 @@ async def test_mcp_rechecks_key_authority_after_device_completion(http_observati
     env = http_observation
     await http_observe(env)
     key = env.keys["owner"]
-    assert (await rpc(env, "read_device_logs", {"job_id": "firmware-report"}))["structuredContent"][
-        "ok"
-    ]
+    assert (await rpc(env, "status", DEVICE_LOGS))["structuredContent"]["ok"]
     if invalidate == "revoke":
         assert env.registry.revoke(key.metadata.key_id)
     elif invalidate == "expire":
         env.key_clock.now += 11
     else:
         replacement = env.registry.rotate(key.metadata.key_id)
-        assert (
-            await rpc(
-                env, "read_device_logs", {"job_id": "firmware-report"}, token=replacement.token
-            )
-        )["structuredContent"] == {"ok": False, "error": "device_logs_not_available"}
+        assert (await rpc(env, "status", DEVICE_LOGS, token=replacement.token))[
+            "structuredContent"
+        ] == {"ok": False, "error": "device_logs_not_available"}
     response = await rpc_response(
         env,
         "tools/call",
-        {"name": "read_device_logs", "arguments": {"request": {"job_id": "firmware-report"}}},
+        {"name": "status", "arguments": {"request": DEVICE_LOGS}},
         token=key.token,
     )
     assert response.status_code == 401
@@ -855,7 +851,10 @@ async def test_mcp_missing_auth_and_invalid_read_arguments_do_not_leak_or_open_u
     response = await rpc_response(
         env,
         "tools/call",
-        {"name": "read_device_logs", "arguments": {"request": {"job_id": "missing"}}},
+        {
+            "name": "status",
+            "arguments": {"request": {**DEVICE_LOGS, "job_id": "missing"}},
+        },
         token="invalid",
     )
     assert response.status_code == 401

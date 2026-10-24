@@ -29,7 +29,7 @@ from typing import Any, Protocol
 import httpx2
 from filelock import FileLock, Timeout
 
-from .client import call
+from .client import SURFACE_TOOLS, call
 from .client import connect as connect_mcp
 from .config import load_settings
 from .tunnel import (
@@ -83,11 +83,11 @@ def _new_lock() -> OwnershipLock:
 async def _broker_probe_async(url: str, bearer: str) -> dict[str, Any]:
     async with asyncio.timeout(BROKER_TIMEOUT_SECONDS):
         async with connect_mcp(url, bearer.removeprefix("Bearer ")) as client:
-            identity = await call(client, "client_identity")
-            status = await call(client, "device_status")
+            identity = await call(client, "status", {"view": "identity"})
+            status = await call(client, "status", {"view": "device"})
             catalog = await client.list_tools()
             names = {item.name for item in catalog.tools}
-            if not {"client_identity", "device_status"} <= names:
+            if not set(SURFACE_TOOLS) <= names:
                 raise TunnelError("tunnel_broker_discovery_failed")
     return {**identity, "backend": status.get("backend"), "status": status}
 

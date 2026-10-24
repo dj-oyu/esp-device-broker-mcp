@@ -15,7 +15,7 @@ from cardputer_mcp.source_snapshot import SourceError
 def flash(**changes):
     return {
         "job_id": "synthetic-flash",
-        "test": "firmware_flash",
+        "kind": "flash",
         "session": "a" * 64,
         "device_id": "synthetic-device",
         "build_job_id": "synthetic-build",
@@ -27,34 +27,40 @@ async def test_tools_list_discloses_flash_request_contract(registry_service):
     service = registry_service
     async with connect(service.url, service.keys["second"].token) as client:
         tools = (await client.list_tools()).tools
-    prepare = next(tool for tool in tools if tool.name == "prepare_test")
-    text = prepare.description or ""
-    for field in ("request.session", "request.device_id", "request.build_job_id", "project_id"):
-        assert field in text
-    assert "Do not pass project_id" in text
-    schema = json.dumps(prepare.input_schema)
-    assert "allOf" in schema and "firmware_flash" in schema
-    assert "Required successful owned firmware_build" in schema
-    assert "Registered source/build project" in schema
-    assert prepare.annotations.read_only_hint is False
-    assert prepare.annotations.destructive_hint is False
-    execute = next(tool for tool in tools if tool.name == "execute_test")
-    assert execute.annotations.destructive_hint is True
+    assert sorted(tool.name for tool in tools) == [
+        "cancel",
+        "execute",
+        "flash",
+        "session",
+        "status",
+        "submit",
+    ]
+    by_name = {tool.name: tool for tool in tools}
+    submit = by_name["submit"]
+    schema = json.dumps(submit.input_schema)
+    for field in ("session", "device_id", "build_job_id", "project_id", "kind"):
+        assert field in schema
+    assert "flash|restore" in schema and "fetch|build" in schema
+    assert "Live lease for device kinds" in schema
+    assert "flash" in json.dumps(submit.input_schema["$defs"]["Kind"])
+    assert "Nothing is queued" in (submit.description or "")
+    assert "execute_tool" in (submit.description or "")
+    assert submit.annotations.read_only_hint is False
+    assert submit.annotations.destructive_hint is False
+    assert by_name["status"].annotations.read_only_hint is True
+    for name in ("execute", "cancel", "session"):
+        assert by_name[name].annotations.read_only_hint is False
+        assert by_name[name].annotations.destructive_hint is False
+    assert by_name["flash"].annotations.read_only_hint is False
+    assert by_name["flash"].annotations.destructive_hint is True
+    assert [tool.name for tool in tools if tool.annotations.destructive_hint] == ["flash"]
 
 
 @pytest.mark.parametrize(
     "input_request,reason,fields",
     [
-        (flash(session=None), "device_session_required", ["session"]),
-        (flash(device_id=None), "registered_flash_device_required", ["device_id"]),
-        (
-            flash(project_id="SYNTHETIC_PRIVATE"),
-            "project_id_not_allowed_for_flash_operations",
-            ["project_id"],
-        ),
-        (flash(build_job_id=None), "successful_build_job_required", ["build_job_id"]),
         (flash(job_id="https://SYNTHETIC_SECRET.invalid"), "invalid_field_format", ["job_id"]),
-        (flash(test="SYNTHETIC_SECRET"), "invalid_field_value", ["test"]),
+        (flash(kind="SYNTHETIC_SECRET"), "invalid_field_value", ["kind"]),
         (flash(SYNTHETIC_SECRET_KEY="SYNTHETIC_SECRET_VALUE"), "unexpected_field", ["request"]),
     ],
 )
@@ -63,7 +69,7 @@ async def test_http_tool_validation_is_actionable_and_never_echoes_input(
 ):
     service = registry_service
     async with connect(service.url, service.keys["second"].token) as client:
-        result = await client.call_tool("prepare_test", {"request": input_request})
+        result = await client.call_tool("submit", {"request": input_request})
     assert result.is_error is True
     assert result.structured_content == dict(
         ok=False,
@@ -71,6 +77,34 @@ async def test_http_tool_validation_is_actionable_and_never_echoes_input(
         reason=reason,
         fields=fields,
     )
+    rendered = json.dumps(result.model_dump(mode="json"))
+    assert "SYNTHETIC" not in rendered and "https://" not in rendered and "a" * 64 not in rendered
+    assert service.resident.session is None and service.backend.calls == 0
+    assert service.resident._store().record_count("jobs") == 0
+
+
+@pytest.mark.parametrize(
+    "input_request,error,field",
+    [
+        (flash(session=None), "device_session_required", None),
+        (flash(device_id=None), "registered_flash_device_required", None),
+        (flash(project_id="SYNTHETIC_PRIVATE"), "argument_not_allowed", "project_id"),
+        (flash(build_job_id=None), "successful_build_job_required", None),
+        (flash(source_commit="a" * 40), "argument_not_allowed", "source_commit"),
+        (flash(backup_job_id="a-backup", lkg_receipt="b" * 64), "argument_conflict", "lkg_receipt"),
+    ],
+)
+async def test_http_submit_rule_failures_return_fixed_codes_and_never_echo_input(
+    registry_service, input_request, error, field
+):
+    service = registry_service
+    async with connect(service.url, service.keys["second"].token) as client:
+        result = await client.call_tool("submit", {"request": input_request})
+    assert result.is_error is False
+    expected = {"ok": False, "error": error}
+    if field is not None:
+        expected["field"] = field
+    assert result.structured_content == expected
     rendered = json.dumps(result.model_dump(mode="json"))
     assert "SYNTHETIC" not in rendered and "https://" not in rendered and "a" * 64 not in rendered
     assert service.resident.session is None and service.backend.calls == 0
@@ -105,10 +139,12 @@ async def test_http_flash_registration_and_operation_disabled_have_distinct_code
         )
         broker.firmware_flash.settings = broker.settings
     async with connect(service.url, service.keys["second"].token) as client:
-        lease = await call(client, "acquire_session", {"owner": "remote_mcp"})
+        lease = await call(
+            client, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         response = await call(
             client,
-            "prepare_test",
+            "submit",
             flash(
                 session=lease["session"],
                 device_id="disabled" if configured else "SYNTHETIC_UNREGISTERED",
@@ -141,10 +177,10 @@ async def test_http_source_receipt_requires_successful_owned_fetch_with_safe_cod
     async with connect(service.url, service.keys["second"].token) as client:
         result = await call(
             client,
-            "prepare_test",
+            "submit",
             {
                 "job_id": "source-bound-build",
-                "test": "firmware_build",
+                "kind": "build",
                 "project_id": "fixture",
                 "source_receipt": "c" * 64,
             },

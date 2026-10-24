@@ -70,23 +70,25 @@ async def probe():
         phase = 11
         catalog = await client.list_tools()
         names = {tool.name for tool in catalog.tools}
-        assert {'prepare_test', 'execute_test', 'read_build_logs'} <= names
+        assert {'status', 'submit', 'execute', 'flash', 'cancel', 'session'} <= names
         phase = 12
-        prepared_tool = next(tool for tool in catalog.tools if tool.name == 'prepare_test')
-        assert 'firmware_build' in json.dumps(prepared_tool.model_dump())
-        logs_tool = next(tool for tool in catalog.tools if tool.name == 'read_build_logs')
+        prepared_tool = next(tool for tool in catalog.tools if tool.name == 'submit')
+        assert 'build' in json.dumps(prepared_tool.model_dump())
+        logs_tool = next(tool for tool in catalog.tools if tool.name == 'status')
         assert logs_tool.annotations.read_only_hint is True
         phase = 13
-        identity = await call(client, 'client_identity')
+        identity = await call(client, 'status', {'view': 'identity'})
         assert identity['ok'] is True and identity['authenticated'] is True
         assert identity['origin'] == 'remote_mcp'
         phase = 14
-        logs = await call(client, 'read_build_logs', {'job_id': 'unstarted-smoke'})
+        logs = await call(client, 'status', {
+            'view': 'logs', 'stream': 'build', 'job_id': 'unstarted-smoke',
+        })
         assert logs['ok'] is False and logs['error'] == 'build_log_not_available'
         phase = 15
         assert 'session' not in prepared_tool.input_schema.get('required', [])
-        result = await call(client, 'prepare_test', {
-            'job_id': 'build-api-smoke', 'test': 'firmware_build',
+        result = await call(client, 'submit', {
+            'job_id': 'build-api-smoke', 'kind': 'build',
             'project_id': 'unregistered-smoke',
         })
         assert result['ok'] is False

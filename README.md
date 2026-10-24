@@ -30,13 +30,13 @@ were verified; cloud lifecycle remains external to broker status. Nothing opens 
 
 ## Explicit client operations
 
-Prepare persists an immutable, bounded plan and performs no device operation.
+`submit` persists an immutable, bounded plan and performs no device operation.
 An authenticated client with the required scopes explicitly submits its exact
-`plan_hash` to `execute_test`; the broker queues it immediately once current
+`plan_hash` to `execute` (or `flash` for flash/restore plans); the broker queues it immediately once current
 principal, lease, device, firmware configuration and plan checks pass.
-`wait_for_approval` is a deprecated compatibility field and is ignored.
+There is no approval argument.
 Preparation alone never starts work. Repeated execution returns the original job;
-connection loss never replays it. Inspect `job_status` after an uncertain reply.
+connection loss never replays it. Inspect `status(view=job)` after an uncertain reply.
 An explicitly requested DERBY smoke can retain [bounded numeric diagnostics](DERBY-DIAGNOSTICS.md)
 for its requesting principal through the same read operation.
 
@@ -88,8 +88,8 @@ alongside session and queue controls. It has no approval buttons, pending-approv
 badge or capture-permission panel. Submit execution through the authenticated
 client. Cancellation and safe ownership controls remain available.
 
-`firmware_observe` receives bounded console output without commands;
-`restart_and_observe` separately requests one fixed reset and bounded boot
+`submit kind=observe_firmware` receives bounded console output without commands;
+`kind=restart` separately requests one fixed reset and bounded boot
 observation. Neither happens at startup. See [device logs](DEVICE-LOGS.md).
 
 Run `& .\Start-CardputerGui.ps1` after `uv sync --frozen` for authenticated mock
@@ -229,8 +229,8 @@ This is the documented JSON/interactive-manager route; verify it against your
 installed CLI version. Actual Antigravity client compatibility has not been
 runtime-tested here.
 
-For all three clients, begin with `client_identity`, `device_status` and
-`read_logs`. Connection and registration do not grant device ownership or
+For all three clients, begin with `status(view=identity)`, `status(view=device)` and
+`status(view=logs, stream=broker)`. Connection and registration do not grant device ownership or
 change the broker's registered operation capabilities. Separate work sessions and
 shared-key identity are explained in [STDIO-CLIENTS.md](STDIO-CLIENTS.md).
 
@@ -280,7 +280,7 @@ Future authenticated Tunnel ingress (not connected) --------^
   shutdown. No process/lock is released until teardown is confirmed
 - Job IDs are unique within the retained database. Retries of one immutable plan
   return its original job; a conflicting reuse is rejected. After lease expiry,
-  read `job_status` instead of trying to execute an old capability
+  read `status(view=job)` instead of trying to execute an old capability
 - Restart cancels unstarted jobs and quarantines interrupted
   running jobs as needs_review. Nothing is replayed.
   Unacknowledged reviews remain diagnostic history; installation clears none
@@ -334,37 +334,48 @@ it does not rerun or mark the original action successful. Do not delete or manua
 alter the database to hide an interrupted operation. No acknowledgement is required
 solely to start a safe new job.
 
+## Tool surface
+
+The server exposes exactly six tools. Old tool names are removed with no alias.
+
+| Tool | Safety class |
+| --- | --- |
+| `status` | read-only |
+| `submit` | mutating, non-destructive |
+| `execute` | mutating, non-destructive |
+| `cancel` | mutating, non-destructive |
+| `session` | mutating, non-destructive |
+| `flash` | destructive: queues only flash and restore plans |
+
+`submit` returns `execute_tool`: use `flash` for flash/restore plans, `execute` otherwise.
+The broker derives the plan type from the stored plan and refuses a plan sent to the
+wrong tool (`wrong_execute_tool` / `wrong_flash_tool`) before changing any state.
+Backup, flash and restore remain separate explicit operations.
+
 ## MCP tools
 
 The endpoint is `http://127.0.0.1:8765/mcp`. Tools with arguments accept a nested
 `request` object. All request models reject extra fields.
 
-| Tool | Input summary | Effect |
+| Tool | Distinguishing argument | Effect |
 | --- | --- | --- |
-| `device_status` | none | Read backend/device/broker status |
-| `read_logs` | optional cursor, limit | Read shared cached events |
-| `read_device_logs` | job ID | Read your completed device log report from RAM |
-| `acquire_session` | owner, lease_seconds | Obtain private session capability |
-| `renew_session` | session, lease_seconds | Extend an unexpired lease |
-| `release_session` | session | Release idle ownership, cancel queued work |
-| `prepare_test` | session, job_id, test | Persist immutable allowlisted plan |
-| `execute_test` | plan_hash, optional session; deprecated wait_for_approval ignored | Queue the exact plan; device operations require an owned live lease |
-| `job_status` | job_id | Read durable job result |
-| `read_capture` | job_id | Read your completed PNG from five-minute memory cache |
-| `cancel_job` | session, job_id | Cancel queued work only |
-| `request_home_recovery` | job_id, source_job_id | Request one bounded DERBY exit after recorded capture failure/close |
-| `cancel_home_recovery` | job_id, plan_hash | Stop your bounded recovery, retaining ownership until confirmed close |
+| `status` | `view`: `identity`, `targets`, `source`, `device`, `session`, `job`, `logs` (with `stream`: `broker`, `build`, `device`, `app`), `capture`, `apps` | Read-only: backend/device/broker status, shared cached events, your completed device log report from RAM, durable job results, your completed PNG from the five-minute memory cache |
+| `submit` | `kind`: `fetch`, `build`, `backup`, `flash`, `restore`, `app_session`, `derby_fixed`, `derby`, `capture`, `restart`, `observe`, `observe_firmware`, `hello`, `diagnostics`, `workflow`; `job_id`, and `session` for device kinds | Persist an immutable allowlisted plan; performs no device operation |
+| `execute` | `op`: `run` (`plan_hash`, optional `session`), `app_input`, `home_recovery` (`job_id`, `source_job_id`) | Queue the exact plan (any plan except flash/restore); device operations require an owned live lease. `home_recovery` requests one bounded DERBY exit after recorded capture failure/close |
+| `flash` | `plan_hash`, optional `session` | Queue the exact flash or restore plan; refuses any other plan |
+| `cancel` | `target`: `job` (`job_id`, optional `session`, `plan_hash`), `request` | Cancel your job (a bounded recovery keeps ownership until confirmed close) or a waiting device request |
+| `session` | `action`: `open`, `request`, `renew`, `release`, `close` | Obtain a private session capability, request/renew/release the device lease (release cancels queued work), open/close logical work sessions |
 
 See [bounded HOME recovery](HOME-RECOVERY.md) for exact eligibility, authenticated execution,
 effects, freshness checks and single-use failure behavior. It does not clear other
 review barriers or grant capture/flash authority.
 
-Mock tests: `diagnostics`, `firmware_workflow`, `capture_home`. Serial tests:
-`passive_observe`, `firmware_observe`, `restart_and_observe`, `hello`, `capture_home`,
+Mock kinds: `diagnostics`, `workflow`, `capture`. Serial kinds:
+`observe`, `observe_firmware`, `restart`, `hello`, `capture`,
 with authentication and explicit execution. Capture requires an authenticated principal-bound lease even in
 mock mode. No generic shell, raw serial, arbitrary file path, command upload,
 or fault injection tool exists. Flash accepts only registered device IDs and
-successful owned build/backup jobs and a separate explicit execute request. Restart is a fixed, separately
+successful owned build/backup jobs and a separate explicit `flash` request. Restart is a fixed, separately
 requested job, not an arbitrary serial command tool. Domain failures use structured `{ok:false,error:...}`;
 SDK validation failures return a generic MCP tool error without reflecting inputs.
 
@@ -446,7 +457,7 @@ local build profiles; MCP never supplies arbitrary project/profile paths. Paths
 and output-root overrides stay in that private configuration.
 
 The capture API returns a bounded, authenticated MCP ImageContent after a
-`capture_home` job succeeds. Pixels remain only in the broker's bounded memory
+`capture` job (`capture_home` plan) succeeds. Pixels remain only in the broker's bounded memory
 cache for five minutes and are accessible to the requesting authenticated
 principal with current read permission. See [CAPTURE.md](CAPTURE.md) for the
 HOME-only behavior and render-buffer evidence limits. No synthetic bitmap is

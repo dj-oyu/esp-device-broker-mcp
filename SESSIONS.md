@@ -14,23 +14,23 @@ deadline; subsequent renewal does not silently extend it.
 
 ## New authenticated tools
 
-1. `create_work_session({owner, ttl_seconds})`: creates a logical session; returns
+1. `session(action=open, owner, ttl_seconds)`: creates a logical session; returns
    its public ID plus private `resume_token`. Default TTL 1h, maximum 24h
-2. `request_device({resume_token, lease_seconds, wait_seconds})`: joins the one
+2. `session(action=request, resume_token, lease_seconds, wait_seconds)`: joins the one
    authoritative physical-device FIFO. Default lease 30s/max 300s; wait 300s/max 3600s
-3. `resume_work_session({resume_token})`: reconnects within the SAME broker epoch
+3. `status(view=session, resume_token)`: reconnects within the SAME broker epoch
    and reads the request. With valid control scope, returns the current private
    physical lease under `lease.session` when owning
-4. Use existing prepare/execute/renew/release tools with that physical
+4. Use the existing submit/execute/flash/session(action=renew/release) tools with that physical
    lease. Every grant creates a new capability and lease generation
-5. `cancel_device_request({resume_token,request_id})` cancels WAITING only;
-   `close_work_session({resume_token})` closes an idle session, never interrupts active work
+5. `cancel(target=request, resume_token, request_id)` cancels WAITING only;
+   `session(action=close, resume_token)` closes an idle session, never interrupts active work
 
 Each MCP request still needs valid authentication/scope and matching principal.
 A resume token alone cannot authorize access. Read-only scope can inspect its
 existing logical session but cannot obtain the private physical lease.
 Repeated requests for an existing wait/ownership return the same request, do not
-jump FIFO, and do not extend either deadline. Legacy acquire_session stays
+jump FIFO, and do not extend either deadline. The former immediate acquire, `session(action=open)` with `wait_seconds=0`, stays
 immediate-only and cannot jump an existing waiting queue.
 
 The background grant rechecks current key expiry/revocation/scopes from metadata.

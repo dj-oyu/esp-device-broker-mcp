@@ -42,33 +42,7 @@ LOCAL = "a" * 64
 REMOTE = "b" * 64
 MODERN = LATEST_MODERN_VERSION
 CLIENT_INFO = {"name": "synthetic-tunnel-contract", "version": "0.0.0"}
-EXPECTED_TOOLS = {
-    "client_identity",
-    "list_registered_targets",
-    "device_status",
-    "read_logs",
-    "acquire_session",
-    "renew_session",
-    "release_session",
-    "prepare_test",
-    "execute_test",
-    "job_status",
-    "read_capture",
-    "read_device_logs",
-    "read_build_logs",
-    "read_source_resources",
-    "cancel_job",
-    "request_home_recovery",
-    "cancel_home_recovery",
-    "create_work_session",
-    "resume_work_session",
-    "request_device",
-    "cancel_device_request",
-    "close_work_session",
-    "list_apps",
-    "app_command",
-    "read_app_events",
-}
+EXPECTED_TOOLS = {"status", "submit", "execute", "flash", "cancel", "session"}
 
 
 def wire_request(
@@ -229,7 +203,7 @@ async def test_modern_self_contained_discovery_and_fixed_status(tunnel_contract,
         if method == "tools/list":
             assert {tool["name"] for tool in response.json()["result"]["tools"]} == EXPECTED_TOOLS
         assert "mcp-session-id" not in response.headers
-    status = await service.tool(route, "device_status")
+    status = await service.tool(route, "status", {"view": "device"})
     assert status["ok"] is True
     assert status["backend"] == "mock"
     assert status["device"] == "mock-cardputer"
@@ -276,7 +250,7 @@ async def test_legacy_initialize_negotiation_and_header_preservation(
     listed = await service.post(route, *wire_request("tools/list", version=version))
     assert listed.status_code == 200
     assert {tool["name"] for tool in listed.json()["result"]["tools"]} == EXPECTED_TOOLS
-    status = await service.tool(route, "device_status", version=version)
+    status = await service.tool(route, "status", {"view": "device"}, version=version)
     assert status["backend"] == "mock" and status["hardware_connected"] is False
     assert service.received_versions == [version] * 4
     assert service.backend.calls == 0
@@ -343,7 +317,9 @@ async def test_relay_does_not_turn_hostile_origin_or_forwarding_into_local_trust
 
 
 async def test_remote_bearer_cannot_claim_local_owner(tunnel_contract):
-    spoofed = await tunnel_contract.tool("relay", "acquire_session", {"owner": "local_cli"})
+    spoofed = await tunnel_contract.tool(
+        "relay", "session", {"action": "open", "owner": "local_cli", "lease_seconds": 30}
+    )
     assert spoofed == {"ok": False, "error": "authenticated_owner_mismatch"}
     assert tunnel_contract.broker.session is None
     assert tunnel_contract.backend.calls == 0
@@ -354,7 +330,12 @@ async def test_direct_and_relay_compete_for_one_broker_and_keep_owner_boundary(t
     actors = [("direct", LOCAL, "local_cli"), ("relay", REMOTE, "remote_mcp")]
     leases = await asyncio.gather(
         *(
-            service.tool(route, "acquire_session", {"owner": owner}, token=token)
+            service.tool(
+                route,
+                "session",
+                {"action": "open", "owner": owner, "lease_seconds": 30},
+                token=token,
+            )
             for route, token, owner in actors
         )
     )
@@ -366,46 +347,57 @@ async def test_direct_and_relay_compete_for_one_broker_and_keep_owner_boundary(t
     other_route, other_token, other_owner = actors[loser]
     session = leases[winner]["session"]
     prepared = await service.tool(
-        route, "prepare_test", {"session": session, "job_id": "synthetic-relay"}, token=token
+        route,
+        "submit",
+        {"kind": "diagnostics", "session": session, "job_id": "synthetic-relay"},
+        token=token,
     )
     assert prepared["approval_required"] is False
     digest = prepared["plan_hash"]
     for name, request in (
-        ("renew_session", {"session": session}),
-        ("release_session", {"session": session}),
-        ("prepare_test", {"session": session, "job_id": "synthetic-stolen"}),
-        ("execute_test", {"session": session, "plan_hash": digest}),
-        ("cancel_job", {"session": session, "job_id": "synthetic-relay"}),
+        ("session", {"action": "renew", "session": session}),
+        ("session", {"action": "release", "session": session}),
+        ("submit", {"kind": "diagnostics", "session": session, "job_id": "synthetic-stolen"}),
+        ("execute", {"op": "run", "session": session, "plan_hash": digest}),
+        ("cancel", {"target": "job", "session": session, "job_id": "synthetic-relay"}),
     ):
         stolen = await service.tool(other_route, name, request, token=other_token)
         assert stolen == {"ok": False, "error": "authenticated_owner_mismatch"}
     accepted = await service.tool(
-        route, "execute_test", {"session": session, "plan_hash": digest}, token=token
+        route, "execute", {"op": "run", "session": session, "plan_hash": digest}, token=token
     )
     assert accepted["ok"] is True
     async with asyncio.timeout(5):
         await service.broker.queue.join()
     repeated = await service.tool(
-        route, "execute_test", {"session": session, "plan_hash": digest}, token=token
+        route, "execute", {"op": "run", "session": session, "plan_hash": digest}, token=token
     )
     assert repeated["deduplicated"] is True
     assert repeated["state"] == "succeeded"
     assert service.backend.calls == service.backend.max_active == 1
-    status = await service.tool(other_route, "device_status", token=other_token)
-    logs = await service.tool(other_route, "read_logs", {}, token=other_token)
+    status = await service.tool(other_route, "status", {"view": "device"}, token=other_token)
+    logs = await service.tool(
+        other_route, "status", {"view": "logs", "stream": "broker"}, token=other_token
+    )
     assert status["owner"] == owner and status["hardware_connected"] is False
     assert status["tunnel"] == "external_lifecycle_unknown"
     public = json.dumps([status, logs, repeated])
     persisted = "\n".join(service.broker._store().db.iterdump())
     for secret in (LOCAL, REMOTE, session):
         assert secret not in public + persisted
-    await service.tool(route, "release_session", {"session": session}, token=token)
+    await service.tool(route, "session", {"action": "release", "session": session}, token=token)
     handover = await service.tool(
-        other_route, "acquire_session", {"owner": other_owner}, token=other_token
+        other_route,
+        "session",
+        {"action": "open", "owner": other_owner, "lease_seconds": 30},
+        token=other_token,
     )
     assert handover["ok"] is True and handover["owner"] == other_owner
     await service.tool(
-        other_route, "release_session", {"session": handover["session"]}, token=other_token
+        other_route,
+        "session",
+        {"action": "release", "session": handover["session"]},
+        token=other_token,
     )
 
 
@@ -415,8 +407,14 @@ async def test_relay_rejected_input_is_not_echoed_or_persisted(tunnel_contract, 
     body, headers = wire_request(
         "tools/call",
         params={
-            "name": "prepare_test",
-            "arguments": {"request": {"session": "c" * 64, "job_id": f"https://{marker}"}},
+            "name": "submit",
+            "arguments": {
+                "request": {
+                    "kind": "diagnostics",
+                    "session": "c" * 64,
+                    "job_id": f"https://{marker}",
+                }
+            },
         },
     )
     rejected = await service.relay.post(body, headers)
@@ -427,8 +425,8 @@ async def test_relay_rejected_input_is_not_echoed_or_persisted(tunnel_contract, 
     malformed = await service.relay.post(body, headers)
     assert malformed.status_code == 400
     assert malformed.json() == {"error": "request_rejected"}
-    status = await service.tool("relay", "device_status")
-    logs = await service.tool("relay", "read_logs", {})
+    status = await service.tool("relay", "status", {"view": "device"})
+    logs = await service.tool("relay", "status", {"view": "logs", "stream": "broker"})
     persisted = "\n".join(service.broker._store().db.iterdump())
     visible = rejected.text + malformed.text + json.dumps([status, logs]) + caplog.text + persisted
     for secret in (marker, LOCAL, REMOTE):
@@ -438,27 +436,35 @@ async def test_relay_rejected_input_is_not_echoed_or_persisted(tunnel_contract, 
 
 async def test_remote_relay_explicit_execute_rejects_legacy_approval_fields(tunnel_contract):
     service = tunnel_contract
-    acquired = await service.tool("relay", "acquire_session", {"owner": "remote_mcp"})
+    acquired = await service.tool(
+        "relay", "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+    )
     session = acquired["session"]
     prepared = await service.tool(
-        "relay", "prepare_test", {"session": session, "job_id": "synthetic-explicit"}
+        "relay",
+        "submit",
+        {"kind": "diagnostics", "session": session, "job_id": "synthetic-explicit"},
     )
     assert prepared["approval_required"] is False
-    request = {"session": session, "plan_hash": prepared["plan_hash"]}
+    request = {"op": "run", "session": session, "plan_hash": prepared["plan_hash"]}
     # Retired approval tools and extra grant fields remain invalid inputs.
     for tool, arguments in (
         ("approve_plan", {"plan_hash": prepared["plan_hash"]}),
-        ("execute_test", {"request": {**request, "approved": True}}),
+        ("execute", {"request": {**request, "approved": True}}),
+        (
+            "flash",
+            {"request": {"session": session, "plan_hash": prepared["plan_hash"], "approved": True}},
+        ),
     ):
         body, headers = wire_request("tools/call", params={"name": tool, "arguments": arguments})
         rejected = await service.relay.post(body, headers)
         assert rejected.status_code == 200
         assert rejected.json()["result"]["isError"] is True
     assert service.backend.calls == 0
-    accepted = await service.tool("relay", "execute_test", request)
+    accepted = await service.tool("relay", "execute", request)
     assert accepted["ok"] is True
     async with asyncio.timeout(5):
         await service.broker.queue.join()
     assert service.backend.calls == service.backend.max_active == 1
     assert service.broker.queue.empty()
-    await service.tool("relay", "release_session", {"session": session})
+    await service.tool("relay", "session", {"action": "release", "session": session})

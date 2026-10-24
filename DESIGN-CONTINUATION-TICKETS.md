@@ -1,6 +1,52 @@
 # 設計: ジョブの自由な積み込みと継続チケット
 
-状態: 設計提案(実装なし)。この文書は `src/` を変更しない。
+状態: **実装済み**(0.13.0 向け。ただし先積みの実装方式は、本文の方式 A と異なる。下の「実装状況」を参照)。
+
+## 実装状況(実装後に追記)
+
+実装したもの:
+
+- **チケット**(`continuation.py`、表 `continuation_tickets`): 単回の消費、親と同じ principal のみ、存在しない・他の
+  principal は同じ `ticket_invalid`、親の失敗・取り消しで void、再起動で void。親の ID は表のリンクで、plan に
+  入る(先積みの plan。下記)。チェーンの位置・長さ・予算は、親子のリンクをたどって導く。
+- **保持**(`Broker.hold`、メモリ上): 親のデバイスジョブが成功し、キューが空で、不確実でないとき、保守処理が
+  リースを予約に替える。60 秒、予算 30 分(最初のチケットの発行からの経過。保持のアイドルを含む)。
+  `acquire` と他の principal の要求は、保持中は枠を取れない。継続優先は、チケットを消費した後続。
+- **fetch → build の `waiting_parent`**: `submit(kind=build, after=チケット)` の plan(`registered_project_deferred`)を、
+  所有者の明示的な `execute` で受け付け、親の fetch の成功後に、fetch が返した receipt で、ブローカーが
+  通常の準備と積み込みを行う。失敗・再起動・取り消しは、固定コードで取り消し。
+- **デバイスジョブの先積み**: 下記の方式で実装した。
+- **フェンシング**: flash / restore のコミットごとに増える、デバイス全体の書き込み連番(表 `device_writes`)を、
+  親の終了時点の値と比べる。違えば `device_state_changed`。
+- **進捗**: `status(view=job)` の `chain`(`chain_position`、`chain_jobs_known`、`chain_open`、`chain_state`、
+  `chain_total`、`hold_expires_in_seconds`、`chain_budget_remaining_seconds`)と、待機中の `device_queue_position`。
+
+**先積みの実装方式(§5 の方式 A からの変更)**:
+
+- plan の版 3、`plan_bindings`、`plan_resolutions` は**使わない**。plan とリースの結び付き(`session_id`)の不変条件は
+  変えていない。
+- 先積みの plan(`execution_context = "device_deferred"`)は、意図(種類、入力、principal、origin、
+  `lease_seconds`、親のジョブ ID)だけを持つ。所有者の明示的な `execute` / `flash` で、チケットを消費して、
+  表 `deferred_jobs` に受け付けられる(ジョブ表には入らない)。
+- 親が成功したら、デバイスの待ち行列に、ジョブに結び付く待ちエントリが入る(保持中のチェーンの後続は先頭)。
+  枠が空いたら、ブローカーが、そのジョブだけのリース(capability は返さない)を作り、**通常の準備と積み込みを、
+  そのリースの下で行う**。実行される plan は、従来の版 1 の plan で、`plan_hash` は、決定後に決まり、
+  `deferred_jobs.resolved_plan_hash` に記録する。
+- リースは、ジョブの終了で終わる。後続を宣言していれば、保持になる。
+- 取り消し: 待機中は `cancel(target=job)` で、実行中は所有者の identity で、ジョブ専用リースを通して行う。
+- 再起動: 待機中のジョブは `broker_restart` で取り消し。何も自動では再開しない。
+
+設計と違う点・未実装・未検証:
+
+- ファームウェアのハッシュの照合は、していない。フェンシングは、ブローカーが見える書き込み(flash / restore の
+  コミット)の連番だけ。外部のツールによる書き込みは検出しない。
+- 実機で通したのは、書き込みなしの `hello` → `observe` の連鎖だけ。flash / restore を含む連鎖は、実機では
+  未検証(モックのバックエンドで、準備・待機・昇格・取り消し・フェンシングを確認)。
+- 非デバイスの親のチケットの有効期限は、発行から 30 分(決めてよいとした値。§12 の 2)。
+- 先積みの待ちの上限は 1800 秒(`DEVICE_WAIT_SECONDS`)。
+- operator による保持の解除は、実装していない。待ちの取り消しと並べ替えは、既存のまま、ジョブの待ちも対象。
+- `session`(`action=request`)の `after`(方式 B の足場)は、残してある。
+
 
 関連文書: MCP のツール面(5 本への作り直し)は `DESIGN-MCP-SURFACE.md` にある。この文書は、
 その新しいツール面で表現する: 旧 `prepare_test` → `submit`、旧 `execute_test` →

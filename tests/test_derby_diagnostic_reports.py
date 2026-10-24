@@ -66,8 +66,8 @@ async def test_actual_job_status_preserves_shared_summary_and_restricts_new_deta
     store, job, plan, details = retained(broker, state=state)
     original = deepcopy(job)
     async with connect(url, REMOTE) as owner, connect(url, LOCAL) as other:
-        owned = await call(owner, "job_status", {"job_id": job["id"]})
-        shared = await call(other, "job_status", {"job_id": job["id"]})
+        owned = await call(owner, "status", {"view": "job", "job_id": job["id"]})
+        shared = await call(other, "status", {"view": "job", "job_id": job["id"]})
     assert owned["ok"] and owned["state"] == shared["state"] == state
     assert owned["result"] == shared["result"] == "synthetic_fixed_result"
     assert owned["derby_diagnostics"]["available"]
@@ -133,7 +133,7 @@ async def test_persisted_history_keeps_legacy_anonymous_summary_and_owned_restar
         await broker.close()
     async with _service(tmp_path, authenticated) as url:
         async with connect(url, REMOTE if authenticated else None) as client:
-            result = await call(client, "job_status", {"job_id": job["id"]})
+            result = await call(client, "status", {"view": "job", "job_id": job["id"]})
     assert result["ok"] and result["state"] == "succeeded"
     assert "diagnostics" not in result["diagnostic"]["derby_observation"]
     assert PROVENANCE_KEY not in result["diagnostic"]
@@ -182,7 +182,8 @@ async def test_actual_job_status_rechecks_authority_and_owned_row_before_private
         response = await client.session.send_request(
             CallToolRequest(
                 params=CallToolRequestParams(
-                    name="job_status", arguments={"request": {"job_id": job["id"]}}
+                    name="status",
+                    arguments={"request": {"view": "job", "job_id": job["id"]}},
                 )
             ),
             CallToolResult,
@@ -239,26 +240,28 @@ async def test_single_reader_to_owned_http_report_on_success_and_failure(derby_s
         update={"backend": "serial", "serial": config, "allow_mock_execution": False}
     )
     async with connect(service.url, REMOTE) as owner, connect(service.url, LOCAL) as other:
-        lease = await call(owner, "acquire_session", {"owner": "remote_mcp", "lease_seconds": 300})
+        lease = await call(
+            owner, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 300}
+        )
         prepared = await call(
             owner,
-            "prepare_test",
-            {"session": lease["session"], "job_id": "observed-cycle", "test": "derby_smoke"},
+            "submit",
+            {"session": lease["session"], "job_id": "observed-cycle", "kind": "derby"},
         )
         assert prepared["ok"] and not device.writes
         executed = await call(
             owner,
-            "execute_test",
-            {"session": lease["session"], "plan_hash": prepared["plan_hash"]},
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
         )
         assert executed["ok"]
         await resident.queue.join()
-        result = await call(owner, "job_status", {"job_id": "observed-cycle"})
-        shared = await call(other, "job_status", {"job_id": "observed-cycle"})
+        result = await call(owner, "status", {"view": "job", "job_id": "observed-cycle"})
+        shared = await call(other, "status", {"view": "job", "job_id": "observed-cycle"})
         replay = await call(
             owner,
-            "execute_test",
-            {"session": lease["session"], "plan_hash": prepared["plan_hash"]},
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": prepared["plan_hash"]},
         )
     assert result["state"] == ("needs_review" if fault else "succeeded")
     assert result["result"] == (

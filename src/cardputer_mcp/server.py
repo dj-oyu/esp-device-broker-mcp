@@ -62,10 +62,12 @@ from .models import (
     TestName,
 )
 from .operator_api import OperatorAPI
+from .public_reasons import public_reason
 from .registry_defaults import LiveKeyRegistry, default_key_registry_path
 from .source_preflight import settings_identity, source_inventory, source_usage
 from .source_resources import resource_report
 from .source_snapshot import SourceError
+from .surface import register_surface
 
 
 class Authenticator(Protocol):
@@ -450,8 +452,8 @@ def _result(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
     except SourceError as exc:
         return {"ok": False, **exc.public()}
-    except ValueError:
-        return {"ok": False, "error": "invalid_request"}
+    except ValueError as exc:
+        return {"ok": False, "error": public_reason(exc)}
 
 
 def create_server(
@@ -566,7 +568,7 @@ def create_server(
 
     server: MCPServer[Any] = SafeMCPServer(
         "Cardputer Device Broker",
-        version="0.12.0",
+        version="0.13.0",
         lifespan=lifespan,
         instructions=(
             "Single-owner Cardputer broker. Mock mode is the default. Explicit serial mode "
@@ -589,6 +591,12 @@ def create_server(
     mutating = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
     execution = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
     identifier = TypeAdapter(Identifier)
+    ops: dict[str, Any] = {}
+
+    def op(handler: Any) -> Any:
+        """Keep a handler as an internal operation; only the six surface tools are MCP tools."""
+        ops[handler.__name__] = handler
+        return handler
 
     def registered_ids(registrations: dict[str, Any]) -> list[str]:
         ids = []
@@ -600,7 +608,7 @@ def create_server(
                 continue
         return sorted(ids)
 
-    @server.tool(annotations=read_only)
+    @op
     async def client_identity(ctx: Context[Any, Any]) -> dict[str, Any]:
         """Inspect this request's principal/scopes; never return credentials or capabilities."""
 
@@ -618,7 +626,7 @@ def create_server(
 
         return _result(identify)
 
-    @server.tool(annotations=read_only)
+    @op
     async def list_registered_targets(ctx: Context[Any, Any]) -> dict[str, Any]:
         """List current addressable registered IDs with read scope; no hardware access.
 
@@ -644,7 +652,7 @@ def create_server(
 
         return _result(targets)
 
-    @server.tool(annotations=read_only)
+    @op
     async def read_source_resources(
         request: SourceResourcesRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
@@ -698,35 +706,35 @@ def create_server(
             return {"ok": False, **exc.public()}
         except BrokerError as exc:
             return {"ok": False, "error": str(exc)}
-        except ValueError:
-            return {"ok": False, "error": "invalid_request"}
+        except ValueError as exc:
+            return {"ok": False, "error": public_reason(exc)}
 
-    @server.tool(annotations=read_only)
+    @op
     async def device_status(ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read broker state without opening hardware. Never returns session capabilities."""
         return _result(lambda: read(ctx, resident.status))
 
-    @server.tool(annotations=read_only)
+    @op
     async def read_logs(request: LogRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read bounded cached events using a cursor; does not acquire or read a serial port."""
         return _result(lambda: read(ctx, lambda: resident.read_logs(request)))
 
-    @server.tool(annotations=mutating)
+    @op
     async def acquire_session(request: AcquireRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Reserve a workflow; authenticated mode binds ownership to the client identity."""
         return _result(lambda: acquire_owned(request, ctx))
 
-    @server.tool(annotations=mutating)
+    @op
     async def renew_session(request: RenewRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Extend a live lease using its in-memory bearer capability."""
         return _result(lambda: owned(request, ctx, lambda: resident.renew(request)))
 
-    @server.tool(annotations=mutating)
+    @op
     async def release_session(request: LeaseRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Release an idle session. Active work cannot be cancelled or released this way."""
         return _result(lambda: owned(request, ctx, lambda: resident.release(request)))
 
-    @server.tool(annotations=mutating)
+    @op
     async def prepare_test(request: PrepareRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Prepare an immutable plan; serial preflight enumerates without opening USB.
 
@@ -774,6 +782,12 @@ def create_server(
         """
 
         def prepare() -> dict[str, Any]:
+            if request.after is not None and request.test not in (
+                TestName.BUILD,
+                TestName.SOURCE,
+            ):
+                waiter = principal(ctx, "control")
+                return resident.prepare_deferred(request, waiter.principal_id, waiter.origin.value)
             if request.test in (TestName.BUILD, TestName.SOURCE):
                 owner = principal(ctx, "control")
                 return resident.profile_jobs.prepare(
@@ -813,11 +827,11 @@ def create_server(
                 return {"ok": False, "error": str(exc)}
             except SourceError as exc:
                 return {"ok": False, **exc.public()}
-            except ValueError:
-                return {"ok": False, "error": "invalid_request"}
+            except ValueError as exc:
+                return {"ok": False, "error": public_reason(exc)}
         return _result(prepare)
 
-    @server.tool(annotations=execution)
+    @op
     async def execute_test(request: ExecuteRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Request execution of an exact plan; repeated requests never replay a job.
 
@@ -860,11 +874,14 @@ def create_server(
                 return resident.profile_jobs.execute(
                     request, owner.principal_id, owner.origin.value
                 )
+            if plan is not None and plan.get("execution_context") == "device_deferred":
+                waiter = principal(ctx, "control")
+                return resident.execute_deferred(request, waiter.principal_id, waiter.origin.value)
             return owned(request, ctx, lambda: resident.execute(request))
 
         return _result(lambda: shared_job(execute()))
 
-    @server.tool(annotations=mutating)
+    @op
     async def request_home_recovery(
         request: RequestHomeRecovery, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
@@ -881,7 +898,7 @@ def create_server(
 
         return _result(submit)
 
-    @server.tool(annotations=mutating)
+    @op
     async def cancel_home_recovery(
         request: CancelHomeRecovery, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
@@ -890,7 +907,7 @@ def create_server(
             lambda: resident.home_recovery.cancel(request, principal(ctx, "control").principal_id)
         )
 
-    @server.tool(annotations=read_only)
+    @op
     async def job_status(request: JobRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read persisted job state after reconnecting. Interrupted work is never replayed."""
 
@@ -947,7 +964,7 @@ def create_server(
 
         return _result(lambda: read(ctx, get_job))
 
-    @server.tool(annotations=read_only)
+    @op
     async def read_build_logs(request: BuildLogRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read bounded shared build output by job and current authenticated principal.
 
@@ -1074,10 +1091,10 @@ def create_server(
             return {"ok": False, "error": str(exc)}
         except SourceError as exc:
             return {"ok": False, **exc.public()}
-        except ValueError:
-            return {"ok": False, "error": "invalid_request"}
+        except ValueError as exc:
+            return {"ok": False, "error": public_reason(exc)}
 
-    @server.tool(annotations=read_only)
+    @op
     async def list_apps(ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read the cached app-control catalog and freshness; never opens USB.
 
@@ -1090,7 +1107,7 @@ def create_server(
 
         return _result(read_catalog)
 
-    @server.tool(annotations=mutating)
+    @op
     async def app_command(request: AppCommandRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Queue typed input inside one exact app_session plan; status never replays.
 
@@ -1107,7 +1124,7 @@ def create_server(
 
         return _result(command)
 
-    @server.tool(annotations=read_only)
+    @op
     async def read_app_events(request: AppEventsRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read private bounded control ACKs and redacted observed_during_run logs.
 
@@ -1120,7 +1137,7 @@ def create_server(
 
         return _result(events)
 
-    @server.tool(annotations=read_only)
+    @op
     async def read_device_logs(request: JobRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Read your completed firmware_observe or restart_and_observe report from RAM.
 
@@ -1137,7 +1154,7 @@ def create_server(
 
         return _result(get_report)
 
-    @server.tool(annotations=read_only)
+    @op
     async def read_capture(request: JobRequest, ctx: Context[Any, Any]) -> CallToolResult:
         """Read your completed capture from five-minute memory cache; never opens USB.
 
@@ -1169,7 +1186,7 @@ def create_server(
             structured_content=metadata,
         )
 
-    @server.tool(annotations=mutating)
+    @op
     async def cancel_job(request: CancelRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
         """Cancel owned work. Source/build stops wait for confirmed worker/process exit.
 
@@ -1190,14 +1207,14 @@ def create_server(
 
         return _result(lambda: shared_job(cancel()))
 
-    @server.tool(annotations=mutating)
+    @op
     async def create_work_session(
         request: CreateWorkSessionRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
         """Create an authenticated logical workflow; does not reserve the device."""
         return _result(lambda: create_work_owned(request, ctx))
 
-    @server.tool(annotations=read_only)
+    @op
     async def resume_work_session(
         request: ResumeWorkSessionRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
@@ -1212,7 +1229,7 @@ def create_server(
             )
         )
 
-    @server.tool(annotations=mutating)
+    @op
     async def request_device(
         request: RequestDeviceRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
@@ -1227,7 +1244,7 @@ def create_server(
             )
         )
 
-    @server.tool(annotations=mutating)
+    @op
     async def cancel_device_request(
         request: CancelDeviceRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
@@ -1242,7 +1259,7 @@ def create_server(
             )
         )
 
-    @server.tool(annotations=mutating)
+    @op
     async def close_work_session(
         request: CloseWorkSessionRequest, ctx: Context[Any, Any]
     ) -> dict[str, Any]:
@@ -1257,6 +1274,16 @@ def create_server(
             )
         )
 
+    register_surface(
+        server,
+        ops=ops,
+        resident=resident,
+        principal=principal,
+        auth_required=auth_required,
+        read_only=read_only,
+        mutating=mutating,
+        destructive=execution,
+    )
     return server
 
 

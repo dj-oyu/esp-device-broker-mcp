@@ -1,6 +1,6 @@
 [project]
 name = "cardputer-device-mcp"
-version = "0.12.0"
+version = "0.13.0"
 description = "A single-owner, mock-first Cardputer device broker over MCP"
 readme = "README.md"
 requires-python = ">=3.11"
