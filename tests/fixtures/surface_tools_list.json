@@ -1,0 +1,1210 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read broker, job, log or session state. view selects what; no side effects.\n\nview=job adds `chain` for your own chained jobs, like git log from that job:\nchain_position, chain_jobs_known, chain_open (the tip still accepts a child).\n",
+    "inputSchema": {
+      "$defs": {
+        "StatusRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "context": {
+              "anyOf": [
+                {
+                  "maximum": 10,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "logs build",
+              "title": "Context"
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "logs: broker/build {epoch,sequence}; app {epoch,control,log}",
+              "title": "Cursor"
+            },
+            "include_source_cache": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "logs build",
+              "title": "Include Source Cache"
+            },
+            "job_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "view=job|capture; logs build|device|app",
+              "title": "Job Id"
+            },
+            "levels": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "error",
+                      "warning",
+                      "info",
+                      "debug",
+                      "unknown"
+                    ],
+                    "type": "string"
+                  },
+                  "maxItems": 5,
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "logs build",
+              "title": "Levels"
+            },
+            "limit": {
+              "anyOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "logs",
+              "title": "Limit"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "view=source",
+              "title": "Project Id"
+            },
+            "resume_token": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "view=session",
+              "title": "Resume Token"
+            },
+            "stream": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stream"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "view=logs: broker|build|device|app"
+            },
+            "view": {
+              "$ref": "#/$defs/View",
+              "description": "What to read; each view lists its own arguments."
+            }
+          },
+          "required": [
+            "view"
+          ],
+          "title": "StatusRequest",
+          "type": "object"
+        },
+        "Stream": {
+          "enum": [
+            "broker",
+            "build",
+            "device",
+            "app"
+          ],
+          "title": "Stream",
+          "type": "string"
+        },
+        "View": {
+          "enum": [
+            "identity",
+            "targets",
+            "source",
+            "device",
+            "session",
+            "job",
+            "logs",
+            "capture",
+            "apps"
+          ],
+          "title": "View",
+          "type": "string"
+        }
+      },
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/StatusRequest"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "title": "statusArguments",
+      "type": "object"
+    },
+    "name": "status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Prepare an immutable plan for one operation (kind). Nothing is queued.\n\nDevice kinds need a live session lease. Queue the plan with the tool named\nin execute_tool: flash for flash and restore, otherwise execute.\n",
+    "inputSchema": {
+      "$defs": {
+        "AppSessionOptions": {
+          "additionalProperties": false,
+          "properties": {
+            "allowed_actions": {
+              "items": {
+                "enum": [
+                  "accept",
+                  "back",
+                  "up",
+                  "right",
+                  "down",
+                  "left"
+                ],
+                "type": "string"
+              },
+              "maxItems": 6,
+              "title": "Allowed Actions",
+              "type": "array"
+            },
+            "app_id": {
+              "pattern": "^[A-Za-z0-9_.-]{1,31}$",
+              "title": "App Id",
+              "type": "string"
+            },
+            "duration_ms": {
+              "default": 30000,
+              "maximum": 90000,
+              "minimum": 1000,
+              "title": "Duration Ms",
+              "type": "integer"
+            },
+            "end": {
+              "const": "stop",
+              "default": "stop",
+              "title": "End",
+              "type": "string"
+            },
+            "expected_boot": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Expected Boot"
+            },
+            "expected_run": {
+              "anyOf": [
+                {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Expected Run"
+            },
+            "log_bytes": {
+              "default": 262144,
+              "maximum": 262144,
+              "minimum": 1024,
+              "title": "Log Bytes",
+              "type": "integer"
+            },
+            "max_commands": {
+              "default": 32,
+              "maximum": 59,
+              "minimum": 1,
+              "title": "Max Commands",
+              "type": "integer"
+            },
+            "rate_per_second": {
+              "default": 10,
+              "maximum": 10,
+              "minimum": 1,
+              "title": "Rate Per Second",
+              "type": "integer"
+            },
+            "start": {
+              "default": "fresh",
+              "enum": [
+                "fresh",
+                "resume"
+              ],
+              "title": "Start",
+              "type": "string"
+            }
+          },
+          "required": [
+            "app_id"
+          ],
+          "title": "AppSessionOptions",
+          "type": "object"
+        },
+        "DiagnosticMode": {
+          "enum": [
+            "ON",
+            "OFF"
+          ],
+          "title": "DiagnosticMode",
+          "type": "string"
+        },
+        "Kind": {
+          "enum": [
+            "fetch",
+            "build",
+            "backup",
+            "flash",
+            "restore",
+            "app_session",
+            "derby_fixed",
+            "derby",
+            "capture",
+            "restart",
+            "observe",
+            "observe_firmware",
+            "hello",
+            "diagnostics",
+            "workflow"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "SubmitRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "after": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9A-HJKMNP-TV-Z]{8}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Continue the job named by this ticket (the chain tip) without waiting for the device: build after fetch (omit source_receipt), or a device kind (omit session). Queue it with execute/flash; it waits for its parent and the device. One ticket, one child. Not for backup or app_session.",
+              "title": "After"
+            },
+            "app": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AppSessionOptions"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "app_session"
+            },
+            "backup_job_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "flash|restore",
+              "title": "Backup Job Id"
+            },
+            "build_job_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "flash",
+              "title": "Build Job Id"
+            },
+            "derby_detail_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DiagnosticMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "build"
+            },
+            "derby_dma_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DiagnosticMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "build"
+            },
+            "device_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "backup|flash|restore",
+              "title": "Device Id"
+            },
+            "flash_job_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "derby_fixed",
+              "title": "Flash Job Id"
+            },
+            "job_id": {
+              "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+              "title": "Job Id",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/Kind",
+              "description": "Operation to prepare; creates an immutable plan, no effect."
+            },
+            "lease_seconds": {
+              "anyOf": [
+                {
+                  "maximum": 300,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "with after, device kinds: lease length",
+              "title": "Lease Seconds"
+            },
+            "lkg_receipt": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "flash|restore",
+              "title": "Lkg Receipt"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "fetch|build",
+              "title": "Project Id"
+            },
+            "session": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Live lease for device kinds.",
+              "title": "Session"
+            },
+            "source_commit": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{40}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "fetch",
+              "title": "Source Commit"
+            },
+            "source_receipt": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "build",
+              "title": "Source Receipt"
+            }
+          },
+          "required": [
+            "kind",
+            "job_id"
+          ],
+          "title": "SubmitRequest",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/SubmitRequest"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "title": "submitArguments",
+      "type": "object"
+    },
+    "name": "submit",
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "submitDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Queue a prepared plan (op=run), send typed app input, or request home recovery.\n\nPlans of kind flash and restore are refused here; use the flash tool.\n",
+    "inputSchema": {
+      "$defs": {
+        "ExecuteToolRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "accept",
+                    "back",
+                    "up",
+                    "right",
+                    "down",
+                    "left"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "app_input operation=action.tap",
+              "title": "Action"
+            },
+            "boot_id": {
+              "anyOf": [
+                {
+                  "maximum": 18446744073709551615,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "app_input",
+              "title": "Boot Id"
+            },
+            "chain_total_hint": {
+              "anyOf": [
+                {
+                  "maximum": 64,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Display-only chain length hint; needs continues",
+              "title": "Chain Total Hint"
+            },
+            "command_id": {
+              "anyOf": [
+                {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "app_input",
+              "title": "Command Id"
+            },
+            "continues": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "op=run: like a commit that expects a child; returns a single-use continuation_ticket. The child is still queued by its own explicit request.",
+              "title": "Continues"
+            },
+            "control_session": {
+              "anyOf": [
+                {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "app_input",
+              "title": "Control Session"
+            },
+            "job_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "app_input|home_recovery",
+              "title": "Job Id"
+            },
+            "op": {
+              "$ref": "#/$defs/Op",
+              "description": "run: queue a non-flash plan; app_input; home_recovery."
+            },
+            "operation": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "action.tap",
+                    "status",
+                    "suspend",
+                    "resume",
+                    "stop"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "app_input",
+              "title": "Operation"
+            },
+            "plan_hash": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "op=run",
+              "title": "Plan Hash"
+            },
+            "run_id": {
+              "anyOf": [
+                {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "app_input",
+              "title": "Run Id"
+            },
+            "seq": {
+              "anyOf": [
+                {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "app_input",
+              "title": "Seq"
+            },
+            "session": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "op=run|app_input",
+              "title": "Session"
+            },
+            "source_job_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "home_recovery",
+              "title": "Source Job Id"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "title": "ExecuteToolRequest",
+          "type": "object"
+        },
+        "Op": {
+          "enum": [
+            "run",
+            "app_input",
+            "home_recovery"
+          ],
+          "title": "Op",
+          "type": "string"
+        }
+      },
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/ExecuteToolRequest"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "title": "executeArguments",
+      "type": "object"
+    },
+    "name": "execute",
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "executeDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Queue a prepared flash or restore plan; these overwrite device flash.\n\nPlans of any other kind are refused here; use the execute tool.\n",
+    "inputSchema": {
+      "$defs": {
+        "FlashToolRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "chain_total_hint": {
+              "anyOf": [
+                {
+                  "maximum": 64,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Display-only chain length hint; needs continues",
+              "title": "Chain Total Hint"
+            },
+            "continues": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Like a commit that expects a child; returns a single-use continuation_ticket. The child is still queued by its own explicit request.",
+              "title": "Continues"
+            },
+            "plan_hash": {
+              "description": "Plan prepared with kind=flash or kind=restore.",
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Plan Hash",
+              "type": "string"
+            },
+            "session": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Live lease of the plan.",
+              "title": "Session"
+            }
+          },
+          "required": [
+            "plan_hash"
+          ],
+          "title": "FlashToolRequest",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/FlashToolRequest"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "title": "flashArguments",
+      "type": "object"
+    },
+    "name": "flash",
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "flashDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Cancel a job (target=job) or a waiting device request (target=request).",
+    "inputSchema": {
+      "$defs": {
+        "CancelToolRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "job_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "target=job",
+              "title": "Job Id"
+            },
+            "plan_hash": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "target=job; required for home recovery",
+              "title": "Plan Hash"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "target=request",
+              "title": "Request Id"
+            },
+            "resume_token": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "target=request",
+              "title": "Resume Token"
+            },
+            "session": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "target=job (device job)",
+              "title": "Session"
+            },
+            "target": {
+              "$ref": "#/$defs/Target",
+              "description": "job or request."
+            },
+            "ticket": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9A-HJKMNP-TV-Z]{8}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "target=ticket: close the chain at its tip; no child can be appended",
+              "title": "Ticket"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "title": "CancelToolRequest",
+          "type": "object"
+        },
+        "Target": {
+          "enum": [
+            "job",
+            "request",
+            "ticket"
+          ],
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/CancelToolRequest"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "title": "cancelArguments",
+      "type": "object"
+    },
+    "name": "cancel",
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "cancelDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Open, request, renew, release or close a work session and its device lease.\n\nopen without lease_seconds creates a work session. open with lease_seconds\nand wait_seconds=0 (or omitted) reserves the device at once or fails with\ndevice_busy; wait_seconds>=1 creates a work session and queues for the device.\n",
+    "inputSchema": {
+      "$defs": {
+        "Origin": {
+          "enum": [
+            "local_cli",
+            "remote_mcp"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "SessionAction": {
+          "enum": [
+            "open",
+            "request",
+            "renew",
+            "release",
+            "close"
+          ],
+          "title": "SessionAction",
+          "type": "string"
+        },
+        "SessionRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/SessionAction",
+              "description": "open|request|renew|release|close."
+            },
+            "after": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9A-HJKMNP-TV-Z]{8}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "request: append to your chain. Spend the ticket of your previous device job (the chain tip) to take the device first. One ticket, one child: no branches, no merges.",
+              "title": "After"
+            },
+            "lease_seconds": {
+              "anyOf": [
+                {
+                  "maximum": 300,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "open|request|renew",
+              "title": "Lease Seconds"
+            },
+            "owner": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Origin"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "open"
+            },
+            "resume_token": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "request|close",
+              "title": "Resume Token"
+            },
+            "session": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "renew|release",
+              "title": "Session"
+            },
+            "ttl_seconds": {
+              "anyOf": [
+                {
+                  "maximum": 86400,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "open",
+              "title": "Ttl Seconds"
+            },
+            "wait_seconds": {
+              "anyOf": [
+                {
+                  "maximum": 3600,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "open|request",
+              "title": "Wait Seconds"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "title": "SessionRequest",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/SessionRequest"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "title": "sessionArguments",
+      "type": "object"
+    },
+    "name": "session",
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "sessionDictOutput",
+      "type": "object"
+    }
+  }
+]
