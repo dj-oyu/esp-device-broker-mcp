@@ -18,6 +18,7 @@ import cardputer_mcp.broker as broker_module
 from cardputer_mcp.broker import Broker, BrokerError
 from cardputer_mcp.continuation import Deferred, Tickets
 from cardputer_mcp.job_ledger import JobLedger
+from cardputer_mcp.lease_manager import LeaseManager
 from cardputer_mcp.models import LogRequest
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.store import Store
@@ -461,6 +462,13 @@ SYNCHRONOUS = [
     (Tickets, "set_hold"),
     (Deferred, "add"),
     (Deferred, "finish"),
+    # Stage 2c: the device lease has one writer.
+    (Broker, "renew"),
+    (LeaseManager, "grant"),
+    (LeaseManager, "end"),
+    (LeaseManager, "shorten"),
+    (LeaseManager, "renew"),
+    (LeaseManager, "overwrite"),
 ]
 
 

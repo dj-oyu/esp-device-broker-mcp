@@ -43,6 +43,8 @@ from .flash_binding import FlashBinding, live_binding, prepare_binding, validate
 from .flash_lifecycle import FlashFailure, _bounded_read_diagnostic
 from .flash_manifest import FlashAdmissionError
 from .job_logs import DeviceLogTap, JobLog, JobLogStore
+from .lease_manager import LeaseManager, ReleaseRefused
+from .lease_manager import Session as Session  # re-exported: callers import it from here
 from .logs import Event, LogBook
 from .models import (
     FLASH_TESTS,
@@ -88,19 +90,6 @@ _TERMINAL_LOG_STATES = frozenset({"succeeded", "failed", "needs_review", "cancel
 
 class BrokerError(ValueError):
     """Public, fixed-string errors. Do not include exceptions or request content."""
-
-
-@dataclass
-class Session:
-    capability: str = field(repr=False)
-    id: str
-    owner: str
-    deadline: float
-    principal_id: str | None = None
-    work_session_id: str | None = None
-    request_id: str | None = None
-    chain_ticket: str | None = None
-    job_id: str | None = None
 
 
 @dataclass
@@ -219,7 +208,8 @@ class Broker:
             raise BrokerError("backend_configuration_mismatch")
         self.clock = clock
         self.epoch = uuid4().hex
-        self.session: Session | None = None
+        # The only writer of the device lease and its deadline (jobs.md section 3).
+        self.leases = LeaseManager(lambda: self._physical_busy())
         self.principal_valid = principal_valid
         self.app_sessions = AppSessions()
         self.work_sessions: dict[str, WorkSession] = {}
@@ -593,20 +583,35 @@ class Broker:
             self._queue_sequence += 1
             self.operator_changes.notify()
 
+    @property
+    def session(self) -> Session | None:
+        """The current device lease; `self.leases` is its only writer."""
+        return self.leases.current
+
+    @session.setter
+    def session(self, value: Session | None) -> None:
+        # Test seam only. Production code grants through `leases.grant` and releases
+        # through `_end_ownership`.
+        self.leases.overwrite(value)
+
     def _end_ownership(self, state: str, reason: str) -> None:
-        session = self.session
-        if session is None:
+        """The only release path; refused while physically busy (jobs.md section 3.2)."""
+
+        def finalize(session: Session) -> None:
+            for intent in tuple(self._execution_intents.values()):
+                self._cancel_execution_intent(intent, reason)
+            if session.request_id is not None:
+                self._store().set_request(session.request_id, state, reason)
+                request = self.device_requests.get(session.request_id)
+                if request is not None:
+                    request.state = state
+
+        try:
+            ended = self.leases.end(finalize)
+        except ReleaseRefused:
+            raise BrokerError("active_job_cannot_release") from None
+        if ended is None:
             return
-        if self._physical_busy():
-            raise BrokerError("active_job_cannot_release")
-        for intent in tuple(self._execution_intents.values()):
-            self._cancel_execution_intent(intent, reason)
-        if session.request_id is not None:
-            self._store().set_request(session.request_id, state, reason)
-            request = self.device_requests.get(session.request_id)
-            if request is not None:
-                request.state = state
-        self.session = None
         self._queue_sequence += 1
         self.operator_changes.notify()
         self.logs.append(Event.EXPIRED if state == "expired" else Event.RELEASED)
@@ -644,7 +649,7 @@ class Broker:
             if owning_work is not None and (
                 owning_work.state != "open" or not self._principal_live(owning_work)
             ):
-                session.deadline = min(session.deadline, now)
+                self.leases.shorten(session, now)
             if (
                 owning_work is None
                 and session.principal_id is not None
@@ -657,7 +662,7 @@ class Broker:
                 except Exception:
                     live = False
                 if live is not True:
-                    session.deadline = min(session.deadline, now)
+                    self.leases.shorten(session, now)
             if now >= session.deadline:
                 self._cancel_queued("lease_expired")
                 if not self._physical_busy():
@@ -716,7 +721,7 @@ class Broker:
         if self.hold is not None and self.hold.ticket_id == request.ticket_id:
             self.hold = None
             self.tickets.set_hold(request.ticket_id or "", "ended")
-        self.session = lease
+        self.leases.grant(lease)
         self._queue_sequence += 1
         self.operator_changes.notify()
         self.logs.append(Event.ACQUIRED)
@@ -837,10 +842,12 @@ class Broker:
         if self.hold is not None and self.hold.ticket_id == request.ticket_id:
             self.hold = None
             self.tickets.set_hold(request.ticket_id or "", "ended")
-        self.session = lease
+        self.leases.grant(lease)
         self._queue_sequence += 1
         self.operator_changes.notify()
         self.logs.append(Event.ACQUIRED)
+        # Kept re-entrant on purpose: prepare/execute -> _lease -> _expire runs a nested
+        # maintenance_tick under the new lease (see lease_manager.py).
         try:
             prepared = self.prepare(
                 PrepareRequest(
@@ -1332,12 +1339,12 @@ class Broker:
             request_id, None, request.lease_seconds, state="owning", lease_id=lease.id
         )
         lease.request_id = request_id
-        self.session = lease
+        self.leases.grant(lease)
         self._queue_sequence += 1
         self.operator_changes.notify()
         self.logs.append(Event.ACQUIRED)
         return {
-            "session": self.session.capability,
+            "session": lease.capability,
             "lease_seconds": request.lease_seconds,
             "owner": request.owner.value,
         }
@@ -1353,10 +1360,9 @@ class Broker:
 
     def renew(self, request: RenewRequest) -> dict[str, Any]:
         session = self._lease(request.session)
-        session.deadline = self.clock() + request.lease_seconds
+        until = self.clock() + request.lease_seconds
         work = self.work_sessions.get(session.work_session_id or "")
-        if work is not None:
-            session.deadline = min(session.deadline, work.deadline)
+        self.leases.renew(session, until, work.deadline if work is not None else None)
         self._queue_sequence += 1
         self.operator_changes.notify()
         return {"renewed": True, "lease_seconds": request.lease_seconds}
