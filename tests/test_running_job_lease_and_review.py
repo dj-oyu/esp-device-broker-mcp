@@ -407,7 +407,9 @@ async def test_device_failure_outcome_through_the_broker(tmp_path, close, kind, 
 async def test_flash_failure_outcome_through_the_broker(env, close, phase, write):
     env.configure()
     previous = env.store.firmware_current("fixture")
-    first = env.prepare("first", build_job_id="build-one")
+    # Name the LKG so the pre-write fence read exists: a flash without a named
+    # baseline has no pre-write read (decision 2026-10-25, PR #98).
+    first = env.prepare("first", build_job_id="build-one", lkg_receipt=env.selected)
     second = env.prepare("second", Action.BACKUP)
     seen = set()
 

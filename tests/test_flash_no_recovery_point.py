@@ -551,4 +551,6 @@ async def test_an_explicitly_named_recovery_point_keeps_the_prewrite_fence(env, 
         if named == "lkg_receipt"
         else "flash_backup_stale_needs_review"
     )
-    characterization._assert_terminal(env, "fenced", code, before, 0)
+    # The fence refuses before any write with the close confirmed, so the job is
+    # `failed`, not needs_review (running-job lease and review classification fix).
+    characterization._assert_terminal(env, "fenced", code, before, 0, "failed")
