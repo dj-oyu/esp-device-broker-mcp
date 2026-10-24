@@ -1,9 +1,14 @@
+import ast
 import re
 from pathlib import Path
 
 import pytest
 
+from cardputer_mcp.app_wire import Result
+from cardputer_mcp.broker import BrokerError
+from cardputer_mcp.public_errors import to_public
 from cardputer_mcp.public_reasons import (
+    BROKER_REASON_CODES,
     PUBLIC_REASON_CODES,
     SUPPRESSED_REASON_CODES,
     public_reason,
@@ -83,3 +88,61 @@ def test_source_error_keeps_its_own_public_form():
     assert _result(_raiser(SourceError("source_cache_protected")))["error"] == (
         "source_cache_protected"
     )
+
+
+# Modules whose ValueError text the broker re-wraps as BrokerError(str(exc)).
+REWRAPPED_MODULES = (
+    "app_events",
+    "app_models",
+    "app_sessions",
+    "app_transport",
+    "app_wire",
+    "build_locations",
+    "build_logs",
+    "continuation",
+    "firmware_build",
+    "firmware_flash",
+    "flash_lifecycle",
+    "flash_manifest",
+)
+
+
+def _raised_codes(path: Path, only: set[str] | None = None) -> set[str]:
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not (isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call) and node.exc.args):
+            continue
+        func = node.exc.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        first = node.exc.args[0]
+        if (only is None or name in only) and isinstance(first, ast.Constant):
+            if isinstance(first.value, str) and re.fullmatch(r"[a-z0-9_]+", first.value):
+                found.add(first.value)
+    return found
+
+
+def test_every_code_that_can_reach_a_client_as_broker_error_is_in_the_vocabulary():
+    required = {result.name.lower() for result in Result}
+    for path in SOURCE.glob("*.py"):
+        required |= _raised_codes(path, {"BrokerError"})
+    for name in REWRAPPED_MODULES:
+        required |= _raised_codes(SOURCE / f"{name}.py")
+    missing = required - BROKER_REASON_CODES - PUBLIC_REASON_CODES
+    assert not missing, sorted(missing)
+    for code in BROKER_REASON_CODES:
+        assert re.fullmatch(r"[a-z][a-z0-9_]{1,80}", code)
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (BrokerError("ticket_invalid"), {"error": "ticket_invalid"}),
+        (BrokerError("cursor_ahead"), {"error": "cursor_ahead"}),
+        (BrokerError("C:/Users/SYNTHETIC_PRIVATE/secret"), {"error": "invalid_request"}),
+        (BrokerError("a" * 64), {"error": "invalid_request"}),
+        (ValueError("SYNTHETIC free text"), {"error": "invalid_request"}),
+        (RuntimeError("not public"), None),
+    ],
+)
+def test_one_gate_maps_failures_to_fixed_public_codes(exc, expected):
+    assert to_public(exc) == expected

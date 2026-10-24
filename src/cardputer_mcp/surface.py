@@ -57,7 +57,7 @@ from .models import (
     StrictModel,
     TestName,
 )
-from .public_reasons import public_reason
+from .public_reasons import public_broker_reason, public_reason
 
 TOOL_SET_VERSION = 2
 
@@ -494,7 +494,7 @@ def register_surface(
             try:
                 body["continuation_ticket"] = resident.issue_ticket(body["id"], hint)
             except BrokerError as exc:
-                body["continuation_error"] = str(exc)
+                body["continuation_error"] = public_broker_reason(exc)
         return body
 
     @server.tool(annotations=read_only)
@@ -712,7 +712,7 @@ def register_surface(
                     **resident.cancel_ticket(_req(request.ticket), owner.principal_id),
                 }
             except BrokerError as exc:
-                return _refuse(str(exc))
+                return _refuse(public_broker_reason(exc))
         if request.target is Target.REQUEST:
             assert request.resume_token is not None and request.request_id is not None
             model, error = _convert(
@@ -736,7 +736,7 @@ def register_surface(
                     request.job_id, principal(ctx, "control").principal_id
                 )
             except BrokerError as exc:
-                return _refuse(str(exc))
+                return _refuse(public_broker_reason(exc))
             if running is not None:
                 return {"ok": True, **shared_job(running)}
         job = resident._store().job(request.job_id)
