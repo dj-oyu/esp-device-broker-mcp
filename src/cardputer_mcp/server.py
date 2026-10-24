@@ -104,41 +104,6 @@ class RequestAuth:
             return None
         return Principal(key.principal_id, key.origin, key.scopes)
 
-    def list_principals(self) -> list[dict[str, Any]]:
-        """Local policy options expose current key metadata, never bearer secrets."""
-        result: list[dict[str, Any]] = []
-        registry = self.registry[0]
-        if registry is not None:
-            for key in registry.list_keys():
-                result.append(
-                    {
-                        "principal_id": key.principal_id,
-                        "key_id": key.key_id,
-                        "origin": key.origin.value,
-                        "scopes": sorted(key.scopes),
-                        "label": key.label,
-                        "issued_at": key.issued_at,
-                        "expires_at": key.expires_at,
-                        "revoked_at": key.revoked_at,
-                        "kind": "issued",
-                    }
-                )
-        if self.ephemeral[0] is not None:
-            for origin in Origin:
-                result.append(
-                    {
-                        "principal_id": f"ephemeral:{origin.value}",
-                        "origin": origin.value,
-                        "scopes": ["read", "control"],
-                        "label": "Shared ephemeral identity",
-                        "issued_at": 0.0,
-                        "expires_at": None,
-                        "revoked_at": None,
-                        "kind": "ephemeral",
-                    }
-                )
-        return result
-
     def principal_valid(
         self, principal_id: str, origin: str, required_scopes: frozenset[str]
     ) -> bool:

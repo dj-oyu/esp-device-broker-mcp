@@ -1,4 +1,4 @@
-"""Only intact device history is unrelated to the non-USB profile lane."""
+"""Unreviewed history survives restart for every plan shape, intact or not."""
 
 import pytest
 
@@ -29,13 +29,11 @@ def test_review_scope_is_conservative_and_survives_restart(tmp_path, kind):
     store.add_job("historical", digest)
     store.set_job("historical", "needs_review", "interrupted")
     before = store.job("historical")
-    assert store.profile_needs_review() is (kind != "device")
     store.close()
     reopened = Store(path)
     try:
         reopened.recover()
         assert reopened.needs_review()
-        assert reopened.profile_needs_review() is (kind != "device")
         assert reopened.job("historical") == before
     finally:
         reopened.close()

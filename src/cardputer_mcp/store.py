@@ -201,43 +201,6 @@ class Store:
             ).fetchone()
         )
 
-    def profile_needs_review(self) -> bool:
-        """Classify historical reviews for diagnostics, never execution admission."""
-        rows = self.db.execute(
-            """SELECT jobs.id, jobs.plan_hash, plans.payload FROM jobs
-            LEFT JOIN plans ON jobs.plan_hash=plans.hash
-            WHERE jobs.state='needs_review' AND jobs.reviewed=0"""
-        )
-        device_tests = {
-            "diagnostics",
-            "firmware_workflow",
-            "passive_observe",
-            "firmware_observe",
-            "restart_and_observe",
-            "firmware_backup",
-            "firmware_flash",
-            "firmware_restore",
-            "hello",
-            "capture_home",
-            "derby_smoke",
-            "derby_fixed_workload",
-        }
-        for job_id, digest, payload in rows:
-            try:
-                plan = json.loads(payload)
-                canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
-                if (
-                    not isinstance(plan, dict)
-                    or hashlib.sha256(canonical).hexdigest() != digest
-                    or plan.get("job_id") != job_id
-                    or plan.get("test") not in device_tests
-                    or plan.get("execution_context") is not None
-                ):
-                    return True
-            except (TypeError, ValueError):
-                return True
-        return False
-
     def home_source(self, source_job: str) -> dict[str, Any] | None:
         row = self.db.execute(
             "SELECT * FROM home_closed_sources WHERE source_job=?", (source_job,)
@@ -417,9 +380,6 @@ class Store:
             "INSERT INTO jobs (id,plan_hash,state) VALUES (?,?,'queued')", (job_id, digest)
         )
         self.db.commit()
-
-    def add_awaiting_job(self, job_id: str, digest: str) -> None:
-        raise ValueError("approval_interface_retired")
 
     def enqueue_requested(self, job_id: str, digest: str, principal_id: str) -> None:
         """Commit one explicit request and its audit without consulting legacy grants.
@@ -702,20 +662,6 @@ class Store:
     def close(self) -> None:
         self.db.close()
 
-    def approve(self, digest: str) -> None:
-        raise ValueError("approval_interface_retired")
-
-    def approved_enqueue(
-        self,
-        job_id: str,
-        digest: str,
-        allow_mock: bool,
-        *,
-        policy_authorized: bool = False,
-        awaiting_approval: bool = False,
-    ) -> None:
-        raise ValueError("approval_interface_retired")
-
     def record_count(self, table: str) -> int:
         if table not in ("jobs", "plans", "work_sessions", "device_requests"):
             raise ValueError("invalid_table")
@@ -797,15 +743,6 @@ class Store:
             raise ValueError("request_does_not_need_review")
         self.db.execute("UPDATE device_requests SET reviewed=1 WHERE id=?", (request_id,))
         self.db.commit()
-
-    def session_history(self, limit: int = 100) -> list[dict[str, Any]]:
-        if type(limit) is not int or not 1 <= limit <= 1000:
-            raise ValueError("invalid_session_limit")
-        rows = self.db.execute(
-            "SELECT * FROM work_sessions ORDER BY created DESC,id LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [{**dict(row), "scopes": json.loads(row["scopes"])} for row in rows]
 
     def firmware_summary(self, job_id: str, principal: str) -> dict[str, Any] | None:
         row = self.db.execute(

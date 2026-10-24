@@ -344,7 +344,6 @@ async def test_capture_shutdown_drops_retained_bytes_before_service_close_await(
             gc.collect()
             assert retained() is None
             assert not broker.captures
-            assert not broker.capture_delivery_consents
             assert not broker.device_observations
             assert not closing.done() and backend.active == 1
             assert broker._device_lock.is_locked and broker._state_lock.is_locked

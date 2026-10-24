@@ -40,7 +40,7 @@ from .diagnostic_registry import (
     validate_entry_binding,
 )
 from .job_logs import attach
-from .manifest_export import export_response, public_manifest
+from .manifest_export import export_response
 from .models import DiagnosticMode
 
 ALLOWED_ENV = frozenset(
@@ -1225,11 +1225,6 @@ class FirmwareBuild:
                 or hash_file(path) != receipt.get("sha256")
             ):
                 raise BuildLocationError("build_output_identity_mismatch")
-
-    @staticmethod
-    def _public_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
-        """Keep raw CMake cache private; it can contain paths and cached credentials."""
-        return public_manifest(manifest)
 
     def read_logs(
         self,

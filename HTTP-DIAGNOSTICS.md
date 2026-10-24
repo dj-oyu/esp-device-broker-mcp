@@ -4,9 +4,7 @@ v0.5 向けの診断追加パッチです。依存パッケージの変更はあ
 配布 ZIP 内の `cardputer-device-mcp` の内容を、既存の同名プロジェクトに重ねて更新します。
 下記の安全な停止条件を確認してから更新し、元の private TOML と `.state` は残します。
 更新後にプロジェクト内で `uv sync --frozen` を実行し、従来の
-`Start-CardputerGui.ps1` で起動してください。差分 ZIP の正確なファイル一覧と SHA-256 は
-`HTTP-DIAGNOSTICS-PATCH.json` にあります。この一覧は v0.5.1 差分の記録であり、
-それ以降の全ソース版の検証一覧ではありません。v0.5.2 の専用入口については
+`Start-CardputerGui.ps1` で起動してください。v0.5.2 の専用入口については
 [TUNNEL-WINDOWS.md](TUNNEL-WINDOWS.md) を参照してください。
 
 GUI の **HTTP diagnostics** と `http-diagnostics` コマンドは、起動中の同じ broker が

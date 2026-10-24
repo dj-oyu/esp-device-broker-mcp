@@ -269,20 +269,6 @@ class LiveWindow:
         )
         self.detail_heading_label.configure(wraplength=max(1, event.width))
 
-    def _reveal_preview(self) -> None:
-        canvas = getattr(self, "_detail_canvas", None)
-        if canvas is None:
-            return
-        import tkinter as tk
-
-        try:
-            if self.preview_state.preview is not None:
-                self.root.update_idletasks()
-                canvas.configure(scrollregion=canvas.bbox("all"))
-                canvas.yview_moveto(1.0)
-        except tk.TclError:
-            pass  # The window may have closed before the idle callback.
-
     def _scroll_detail_key(self, key: str) -> str:
         canvas = self._detail_canvas
         if key == "Home":

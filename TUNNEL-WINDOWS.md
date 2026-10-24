@@ -225,7 +225,6 @@ mock とクラウド側の読み取り確認後にのみ検討してください
 非秘密の `[tunnel]` を置き、同じファイルを `-Config` に指定し、明示的に `-EnableSerial` を指定します。
 それだけでは USB を開きません。実行には認証・control 権限・session・ローカルの正確な
 正確なplan_hashの明示executeが必要です。既存 needs_review を消去したり、失敗した HELLO を再実行したりしません。
-現在の実機通信の未解決診断は [DIAGNOSTICS-UPDATE.md](DIAGNOSTICS-UPDATE.md) を参照してください。
 
 ## テストの意味
 
