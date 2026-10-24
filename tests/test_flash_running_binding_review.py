@@ -44,7 +44,16 @@ async def test_running_flash_rechecks_job_identity_after_authentication_callback
     assert changed
     assert env.driver.writes == before
     assert env.driver.closed
-    assert env.broker.job("running-identity-review")["state"] == "needs_review"
+    job = env.broker.job("running-identity-review")
+    if mutation == "job_state":
+        # Stage 2b (DESIGN-REDESIGN 2.1, JobLedger): the concurrently committed terminal
+        # outcome is kept; the late running->needs_review write is refused and recorded,
+        # and the review it would have required becomes the runtime latch.
+        assert (job["state"], job["result"]) == ("cancelled", "review_invalidation")
+        assert env.store.ledger.refusals == {("cancelled", "needs_review"): 1}
+        assert env.broker.execution_uncertain is True
+    else:
+        assert job["state"] == "needs_review"
     assert env.store.firmware_current("fixture") == previous
 
 

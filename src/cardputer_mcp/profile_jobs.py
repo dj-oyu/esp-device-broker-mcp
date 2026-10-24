@@ -510,7 +510,9 @@ class ProfileJobs:
             raise BrokerError("job_not_found")
         plan = self._plan(job["plan_hash"], principal, origin)
         if job["state"] == "queued":
-            self.broker._store().set_job(request.job_id, "cancelled", "client_cancelled")
+            self.broker._store().ledger.transition(
+                request.job_id, "cancelled", "client_cancelled", expect={"queued"}
+            )
         elif job["state"] == "running":
             self._stop(plan, "client_cancelled")
             return {**job, "stop_requested": True, "requires_review": False}
@@ -555,7 +557,7 @@ class ProfileJobs:
         ):
             raise BrokerError("registered_project_cancel_required")
         if job["state"] == "queued":
-            store.set_job(job_id, "cancelled", "operator_cancelled")
+            store.ledger.transition(job_id, "cancelled", "operator_cancelled", expect={"queued"})
         elif job["state"] == "running":
             self._stop(plan, "operator_cancelled")
             return {**job, "stop_requested": True, "requires_review": False}
@@ -610,15 +612,24 @@ class ProfileJobs:
                     continue
                 plan = store.plan(job["plan_hash"])
                 if plan is None or digest_plan(plan) != job["plan_hash"]:
-                    store.set_job(job_id, "needs_review", "profile_plan_inconsistent")
+                    store.ledger.transition(
+                        job_id, "needs_review", "profile_plan_inconsistent", expect={"queued"}
+                    )
                     continue
                 if not self._binding_live(plan) or self._uncertain():
-                    store.set_job(job_id, "cancelled", "profile_or_principal_no_longer_valid")
+                    store.ledger.transition(
+                        job_id,
+                        "cancelled",
+                        "profile_or_principal_no_longer_valid",
+                        expect={"queued"},
+                    )
                     continue
                 self._sync_settings()
                 self.active = job_id
                 self.deadline = broker.clock() + plan["execution_seconds"]
-                store.set_job(job_id, "running")
+                if not store.ledger.transition(job_id, "running"):
+                    # Unreachable after the synchronous check; keep the lane closed.
+                    raise RuntimeError("job_transition_refused")
                 watch = asyncio.create_task(self._watch(plan))
                 source = plan["test"] == TestName.SOURCE.value
 
@@ -655,7 +666,7 @@ class ProfileJobs:
                         broker.firmware_source.commit_success(plan, result, live)
                     else:
                         broker.firmware_build.commit_deferred(plan, live)
-                        store.set_job(job_id, "succeeded", result)
+                        store.ledger.transition(job_id, "succeeded", result)
                 except Exception as failure:
                     code = (
                         failure.code
@@ -715,7 +726,7 @@ class ProfileJobs:
                     if isinstance(failure, SourceError) and outcome == failure.code:
                         if "scan" in failure.public():
                             diagnostic["scan"] = failure.public()["scan"]
-                    store.set_job(job_id, state, outcome, diagnostic)
+                    store.ledger.transition(job_id, state, outcome, diagnostic)
                     if uncertain:
                         self.state_uncertain = True
                         broker.logs.append(Event.REVIEW)

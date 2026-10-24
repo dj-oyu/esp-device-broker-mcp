@@ -294,6 +294,7 @@ class Broker:
             )
             if os.name != "nt":
                 os.chmod(self.settings.state_dir / "history.sqlite3", 0o600)
+            self.store.ledger.on_refused = partial(self.logs.append, Event.TRANSITION_REFUSED)
             self.store.recover()
             self.tickets.void_stale()
             self.deferred.cancel_stale()
@@ -377,12 +378,27 @@ class Broker:
             else:
                 job = store.job(job_id)
                 if job and job["state"] == "queued":
-                    store.set_job(job_id, "cancelled", reason)
+                    cancelled = store.ledger.transition(
+                        job_id, "cancelled", reason, expect={"queued"}
+                    )
                     self._flash_bindings.pop(job_id, None)
                     self._execution_bindings.pop(job_id, None)
-                    self.logs.append(Event.CANCELLED)
+                    if cancelled:
+                        self.logs.append(Event.CANCELLED)
         if stopping:
             self.queue.put_nowait(None)
+
+    def _record_review(
+        self, job_id: str, result: str, diagnostic: dict[str, Any] | None = None
+    ) -> None:
+        """Move a running job to needs_review; never overwrite a committed outcome.
+
+        If the row already left `running`, the ledger refuses and records the write
+        (DESIGN-REDESIGN 2.1). The review it would have required becomes the runtime
+        latch, so the lane admits nothing more until restart and review.
+        """
+        if not self._store().ledger.transition(job_id, "needs_review", result, diagnostic):
+            self.execution_uncertain = True
 
     def _cancel_execution_intent(self, intent: ExecutionIntent, reason: str) -> None:
         job = self._store().job(intent.job_id)
@@ -391,8 +407,12 @@ class Broker:
             and job["plan_hash"] == intent.plan_hash
             and job["state"] in ("awaiting_approval", "queued")
         ):
-            self._store().set_job(intent.job_id, "cancelled", reason)
-            self.logs.append(Event.CANCELLED)
+            # Legacy awaiting_approval rows are cleared at startup and are not in the
+            # transition table; only a queued row is cancelled here.
+            if self._store().ledger.transition(
+                intent.job_id, "cancelled", reason, expect={"queued"}
+            ):
+                self.logs.append(Event.CANCELLED)
         self._execution_intents.pop(intent.job_id, None)
         self._execution_bindings.pop(intent.job_id, None)
         self._flash_bindings.pop(intent.job_id, None)
@@ -1943,9 +1963,11 @@ class Broker:
             return {**job, "stop_requested": accepted, "requires_review": accepted}
         if job["state"] != "queued":
             raise BrokerError("only_queued_jobs_can_be_cancelled")
-        self._store().set_job(request.job_id, "cancelled", "client_cancelled_queued")
+        if self._store().ledger.transition(
+            request.job_id, "cancelled", "client_cancelled_queued", expect={"queued"}
+        ):
+            self.logs.append(Event.CANCELLED)
         self._execution_intents.pop(request.job_id, None)
-        self.logs.append(Event.CANCELLED)
         return self.job(request.job_id)
 
     def _prune_captures(self) -> None:
@@ -2060,9 +2082,8 @@ class Broker:
                     and plan is not None
                     and plan.get("test") not in {test.value for test in FLASH_TESTS}
                 ):
-                    diagnostic = dict(job["diagnostic"] or {})
-                    diagnostic["job_log_unavailable"] = True
-                    store.set_job(job_id, job["state"], job["result"], diagnostic)
+                    # Same-state annotation: never changes the committed state/result.
+                    store.ledger.annotate(job_id, {"job_log_unavailable": True})
         except Exception:
             # Logging is never allowed to change the job outcome.
             pass
@@ -2298,7 +2319,9 @@ class Broker:
                     continue
                 queued_intent = self._execution_intents.get(job_id)
                 if queued_intent is None:
-                    store.set_job(job_id, "cancelled", "execution_intent_not_available")
+                    store.ledger.transition(
+                        job_id, "cancelled", "execution_intent_not_available", expect={"queued"}
+                    )
                     continue
                 requires_current_principal = (
                     queued_intent is not None or self.principal_valid is not None
@@ -2313,19 +2336,28 @@ class Broker:
                     or self.clock() >= self.session.deadline
                     or self.closing
                 ):
-                    store.set_job(job_id, "cancelled", "session_not_available")
+                    store.ledger.transition(
+                        job_id, "cancelled", "session_not_available", expect={"queued"}
+                    )
                     continue
                 plan = store.plan(job["plan_hash"])
                 if plan is None or plan["session_id"] != self.session.id:
-                    store.set_job(job_id, "needs_review", "plan_not_available")
+                    store.ledger.transition(
+                        job_id, "needs_review", "plan_not_available", expect={"queued"}
+                    )
                     self._cancel_queued("recovery_review_required")
                     continue
                 lease = self.session
                 if plan["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value) and plan.get(
                     "log_delivery"
                 ) != self._log_delivery(lease):
-                    store.set_job(job_id, "cancelled", "principal_or_lease_no_longer_valid")
-                    self.logs.append(Event.CANCELLED)
+                    if store.ledger.transition(
+                        job_id,
+                        "cancelled",
+                        "principal_or_lease_no_longer_valid",
+                        expect={"queued"},
+                    ):
+                        self.logs.append(Event.CANCELLED)
                     continue
                 if lease.principal_id is not None and self.principal_valid is not None:
                     try:
@@ -2339,8 +2371,15 @@ class Broker:
                         or self.session is not lease
                         or self.clock() >= lease.deadline
                     ):
-                        store.set_job(job_id, "cancelled", "principal_or_lease_no_longer_valid")
-                        self.logs.append(Event.CANCELLED)
+                        # The callback may already have committed a terminal reason;
+                        # the first committed reason is kept (DESIGN-REDESIGN 2.1).
+                        if store.ledger.transition(
+                            job_id,
+                            "cancelled",
+                            "principal_or_lease_no_longer_valid",
+                            expect={"queued"},
+                        ):
+                            self.logs.append(Event.CANCELLED)
                         continue
                 current_valid = self.principal_valid
                 current_binding = self._execution_bindings.get(job_id)
@@ -2415,7 +2454,9 @@ class Broker:
                     self.firmware_source.begin()
                 self.active_job = job_id
                 capture_principal = self.session.principal_id
-                store.set_job(job_id, "running")
+                if not store.ledger.transition(job_id, "running"):
+                    # Unreachable after the final synchronous check; never run unrecorded.
+                    raise RuntimeError("job_transition_refused")
                 result: str | BackendResult = ""
                 derby_scope = (
                     capture_provenance(self, plan, job_id, capture_principal or "")
@@ -2669,9 +2710,8 @@ class Broker:
                                 delivery_state="available",
                             )
                 except (FlashFailure, FlashAdmissionError) as failure:
-                    store.set_job(
+                    self._record_review(
                         job_id,
-                        "needs_review",
                         str(failure),
                         _bounded_read_diagnostic(failure.code, failure.diagnostic)
                         if isinstance(failure, FlashFailure)
@@ -2680,9 +2720,8 @@ class Broker:
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except (BuildPreflightFailure, BuildLocationError) as failure:
-                    store.set_job(
+                    self._record_review(
                         job_id,
-                        "needs_review",
                         failure.code,
                         failure.public_diagnostic()
                         if isinstance(failure, BuildPreflightFailure)
@@ -2693,9 +2732,9 @@ class Broker:
                 except SourceError as failure:
                     if plan["test"] == TestName.SOURCE.value:
                         self.firmware_source.record_failure(plan, failure.code)
-                        store.set_job(job_id, "needs_review", failure.code, {"code": failure.code})
+                        self._record_review(job_id, failure.code, {"code": failure.code})
                     else:
-                        store.set_job(job_id, "needs_review", "backend_error_no_retry")
+                        self._record_review(job_id, "backend_error_no_retry")
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except DeviceOperationFailure as failure:
@@ -2719,32 +2758,30 @@ class Broker:
                             )
                         except Exception:
                             self.execution_uncertain = True
-                            store.set_job(job_id, "needs_review", "fixed_trial_persist_failed")
+                            self._record_review(job_id, "fixed_trial_persist_failed")
                     else:
-                        store.set_job(
+                        self._record_review(
                             job_id,
-                            "needs_review",
                             failure.code,
                             derby_diagnostic(failure.diagnostic),
                         )
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except DeviceDisconnected:
-                    store.set_job(job_id, "needs_review", "device_disconnected_no_retry")
+                    self._record_review(job_id, "device_disconnected_no_retry")
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 except Exception:
                     # Never persist the exception string (may contain credentials).
                     if plan["test"] == TestName.SOURCE.value:
                         self.firmware_source.record_failure(plan, "source_fetch_failed")
-                        store.set_job(
+                        self._record_review(
                             job_id,
-                            "needs_review",
                             "source_fetch_failed",
                             {"code": "source_fetch_failed"},
                         )
                     else:
-                        store.set_job(job_id, "needs_review", "backend_error_no_retry")
+                        self._record_review(job_id, "backend_error_no_retry")
                     self.logs.append(Event.REVIEW)
                     self._cancel_queued("recovery_review_required")
                 else:
@@ -2760,7 +2797,7 @@ class Broker:
                                 if completed == "app_session_timeout"
                                 else "succeeded"
                             )
-                            store.set_job(job_id, terminal, completed)
+                            store.ledger.transition(job_id, terminal, completed)
                             terminal_event = {
                                 "succeeded": Event.PASSED,
                                 "failed": Event.FAILED,
@@ -2811,7 +2848,7 @@ class Broker:
                                 and plan["test"] == TestName.DERBY.value
                                 else None
                             )
-                            store.set_job(
+                            store.ledger.transition(
                                 job_id, "succeeded", completed, derby_diagnostic(diagnostic)
                             )
                     except Exception as failure:
@@ -2823,11 +2860,10 @@ class Broker:
                                 else "source_fetch_failed"
                             )
                             self.firmware_source.record_failure(plan, code)
-                            store.set_job(job_id, "needs_review", code, {"code": code})
+                            self._record_review(job_id, code, {"code": code})
                         else:
-                            store.set_job(
+                            self._record_review(
                                 job_id,
-                                "needs_review",
                                 "fixed_trial_persist_failed"
                                 if plan["test"] == TestName.DERBY_FIXED.value
                                 else "firmware_final_commit_failed",

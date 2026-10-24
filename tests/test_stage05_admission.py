@@ -17,6 +17,8 @@ from test_pending_execution import prepare, running, submit
 import cardputer_mcp.broker as broker_module
 from cardputer_mcp.broker import Broker, BrokerError
 from cardputer_mcp.continuation import Deferred, Tickets
+from cardputer_mcp.job_ledger import JobLedger
+from cardputer_mcp.models import LogRequest
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.store import Store
 
@@ -344,8 +346,13 @@ async def test_plan_not_available_cancels_the_rest_of_the_device_lane(tmp_path):
         assert broker.execution_uncertain is False  # history, not the runtime latch
 
 
-async def test_stale_principal_write_overwrites_a_concurrent_cancellation_reason(tmp_path):
-    """Pins jobs.md 1.4(2): the 2383 write does not reread the row after the callback."""
+async def test_stale_principal_write_keeps_a_concurrent_cancellation_reason(tmp_path):
+    """jobs.md 1.4(2): the callback committed a terminal reason before the stale write.
+
+    Stage 2b (DESIGN-REDESIGN 2.1, JobLedger): the first committed terminal reason is
+    kept. The late queued->cancelled write is refused in SQL and recorded, instead of
+    overwriting the reason with `principal_or_lease_no_longer_valid` as before.
+    """
     async with running(tmp_path) as (broker, clock):
         submit(broker, prepare(broker, JOB))
 
@@ -359,7 +366,32 @@ async def test_stale_principal_write_overwrites_a_concurrent_cancellation_reason
         after_admission_tick(broker, mutate)
         await broker.queue.join()
         job = broker._store().job(JOB)
-        assert (job["state"], job["result"]) == ("cancelled", "principal_or_lease_no_longer_valid")
+        assert (job["state"], job["result"]) == ("cancelled", "client_cancelled_queued")
+        assert broker._store().ledger.refusals == {("cancelled", "cancelled"): 1}
+        events = [entry["event"] for entry in broker.read_logs(LogRequest())["entries"]]
+        assert "job_transition_refused" in events
+
+
+async def test_a_failure_after_a_committed_success_cannot_overwrite_it(tmp_path):
+    """DESIGN-REDESIGN 2.1(3): the finish except branch used to rewrite a committed
+    success as needs_review. Stage 2b keeps the success, refuses and records the late
+    write, and still sets the runtime latch."""
+    async with running(tmp_path) as (broker, _):
+        ledger = broker._store().ledger
+        original = ledger.transition
+
+        def commit_then_fail(job_id, to, *args, **kwargs):
+            written = original(job_id, to, *args, **kwargs)
+            if to == "succeeded":
+                raise RuntimeError("synthetic failure after the commit")
+            return written
+
+        ledger.transition = commit_then_fail
+        submit(broker, prepare(broker, JOB))
+        await broker.queue.join()
+        assert broker._store().job(JOB)["state"] == "succeeded"
+        assert ledger.refusals == {("succeeded", "needs_review"): 1}
+        assert broker.execution_uncertain is True
 
 
 async def test_job_not_found_sets_the_execution_uncertain_latch(tmp_path):
@@ -411,6 +443,9 @@ SYNCHRONOUS = [
     (Broker, "cancel_ticket"),
     (Broker, "issue_ticket"),
     (Store, "set_job"),
+    (JobLedger, "transition"),
+    (JobLedger, "annotate"),
+    (JobLedger, "mark_reviewed"),
     (Store, "enqueue_requested"),
     (Store, "finish_firmware"),
     (Store, "finish_fixed_trial"),

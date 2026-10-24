@@ -266,7 +266,7 @@ class HomeRecovery:
             # worker. A lost response, cancellation or restart cannot re-arm it.
             s.consume_home_attempt(request.source_job_id, request.job_id, proof, digest, principal)
         except Exception:
-            s.set_job(request.job_id, "cancelled", "home_recovery_not_admitted")
+            s.ledger.transition(request.job_id, "cancelled", "home_recovery_not_admitted")
             raise
         e.state = "running"
         b.active_job = request.job_id
@@ -292,7 +292,9 @@ class HomeRecovery:
                 )
         if e.state == "queued":
             e.state = "cancelled"
-            self.broker._store().set_job(request.job_id, "cancelled", "home_recovery_cancelled")
+            self.broker._store().ledger.transition(
+                request.job_id, "cancelled", "home_recovery_cancelled", expect={"queued"}
+            )
         return dict(ok=True, stop_requested=True, state=e.state)
 
     def maintain(self) -> None:
@@ -302,7 +304,9 @@ class HomeRecovery:
             ):
                 e.stop.set()
                 e.state = "expired"
-                self.broker._store().set_job(e.plan["job_id"], "cancelled", "home_recovery_expired")
+                self.broker._store().ledger.transition(
+                    e.plan["job_id"], "cancelled", "home_recovery_expired", expect={"queued"}
+                )
                 with self.broker._store().db:
                     self.broker._store().home_audit(
                         e.plan["source_job_id"], e.plan["job_id"], "expired"
@@ -313,8 +317,8 @@ class HomeRecovery:
             e.stop.set()
             if e.state == "queued":
                 e.state = "cancelled"
-                self.broker._store().set_job(
-                    e.plan["job_id"], "cancelled", "home_recovery_shutdown"
+                self.broker._store().ledger.transition(
+                    e.plan["job_id"], "cancelled", "home_recovery_shutdown", expect={"queued"}
                 )
                 with self.broker._store().db:
                     self.broker._store().home_audit(
@@ -393,7 +397,7 @@ class HomeRecovery:
             if not e.backend.ownership_uncertain:
                 e.backend.active = 0
             e.state = "needs_review"
-            s.set_job(p["job_id"], "needs_review", "home_recovery_failed_no_retry")
+            s.ledger.transition(p["job_id"], "needs_review", "home_recovery_failed_no_retry")
             with s.db:
                 s.home_audit(p["source_job_id"], p["job_id"], "failed_no_retry")
         finally:
