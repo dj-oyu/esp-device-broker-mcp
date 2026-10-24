@@ -163,13 +163,6 @@ class OperatorClient:
             allow_refusal=True,
         )
 
-    def local_home_line(self, job_id: str, plan_hash: str, diagnostic_id: str) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            "/operator/local-home-line",
-            {"job_id": job_id, "plan_hash": plan_hash, "diagnostic_id": diagnostic_id},
-        )
-
     def images(self) -> dict[str, Any]:
         return self._request("GET", "/operator/images")
 

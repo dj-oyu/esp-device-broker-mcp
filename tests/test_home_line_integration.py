@@ -63,8 +63,6 @@ async def test_normal_explicit_capture_never_installs_raw_home_retention(tmp_pat
         await execute(env, prepared)
         assert env.broker.job("private-home")["state"] == "succeeded"
         assert env.port.writes == [b"\x1b", b"s"]
-        assert env.broker.local_home_diagnostic is None
-        assert env.broker.operator_home_line_metadata("private-home", prepared["plan_hash"]) is None
         assert_no_private(env.broker.status())
         assert_no_private(list(env.broker._store().db.iterdump()))
 
@@ -77,7 +75,6 @@ async def test_failed_home_wait_keeps_metadata_but_no_raw_wire_or_storage(tmp_pa
         assert job["state"] == "needs_review"
         assert job["diagnostic"]["receive_summary"]["after_command"]["home_ready_token_lines"] == 1
         assert env.port.writes == [b"\x1b"] and env.port.closes == 1
-        assert env.broker.local_home_diagnostic is None
         assert_no_private(job)
         assert_no_private(env.broker.read_logs(LogRequest()))
         assert_no_private(list(env.broker._store().db.iterdump()))

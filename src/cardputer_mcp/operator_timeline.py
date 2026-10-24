@@ -682,10 +682,6 @@ class OperatorTimeline:
                         card["device_observation"] = observation
                 except Exception:
                     pass
-            if card["plan_hash"] is not None:
-                home = broker.operator_home_line_metadata(card["job_id"], card["plan_hash"])
-                if home is not None and home["broker_epoch"] == epoch:
-                    card["local_home_line"] = home
         return {
             "broker_epoch": epoch,
             "cards": selected,

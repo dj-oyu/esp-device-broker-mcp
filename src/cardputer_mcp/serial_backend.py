@@ -23,7 +23,6 @@ from .derby_observation import DerbyObservation
 from .derby_telemetry import DerbyDiagnosticsCollector
 from .device_faults import fault_category, fault_detail
 from .device_observation import MAX_RECEIVE_BYTES, DeviceLogCollector, DeviceObservation
-from .home_line import HomeLineProbe
 from .job_logs import DeviceLogTap
 from .models import TestName
 from .ports import PortInfo, enumerate_ports, resolve_port
@@ -123,7 +122,6 @@ class Reader:
         emit: Callable[[str], None],
         clock: Callable[[], float],
         deadline: float,
-        local_home_probe: HomeLineProbe | None = None,
     ) -> None:
         self.port, self.emit, self.clock, self.deadline = port, emit, clock, deadline
         self.phase_observer: Callable[[bytes], None] | None = None
@@ -143,7 +141,6 @@ class Reader:
         self.capture_decoder: LegacyCaptureDecoder | None = None
         self.receive_diagnostics = ReceiveDiagnostics()
         self.diagnostic_pending_bytes = 0
-        self.local_home_probe = local_home_probe
         # Passive durable job log tee; it only sees bytes this reader already read.
         self.device_tap: DeviceLogTap | None = None
 
@@ -212,8 +209,6 @@ class Reader:
                     # Record bounded host-observed markers in wire order, even
                     # if a subsequent frame record fails decoder validation.
                     self.phase_observer(clean_line(diagnostic_line))
-                if self.local_home_probe is not None:
-                    self.local_home_probe.observe_line(diagnostic_line)
         if self.capture_guard and self.clock() >= self.deadline:
             raise self.failure("serial_capture_timeout")
         if not incoming:
@@ -316,8 +311,6 @@ class Reader:
         if written != len(key):
             raise self.failure("incomplete_serial_write")
         self.receive_diagnostics.write_completed()
-        if capture_escape and self.local_home_probe is not None:
-            self.local_home_probe.begin_window()
         self.emit("serial_wait_" + self.step)
         stop = min(self.clock() + timeout, self.deadline)
         examined = start
@@ -354,7 +347,6 @@ class Reader:
             self.derby_diagnostics = None
         self.fault_tail = b""
         self.capture_decoder = None
-        self.local_home_probe = None
 
     def capture_quiet_boundary(self) -> None:
         """Drain through the sole reader, requiring a quiet and empty boundary."""
@@ -383,11 +375,7 @@ def capture_home(reader: Reader) -> CapturedImage:
         reader.capture_quiet_boundary()
         # Esc is intentionally fixed, and used only for this exact HOME marker.
         # A modal/editor that does not reach HOME is a failure, never another Esc.
-        try:
-            reader.command(b"\x1b", rb"HOME_READY", step="capture_home")
-        finally:
-            if reader.local_home_probe is not None:
-                reader.local_home_probe.end_window()
+        reader.command(b"\x1b", rb"HOME_READY", step="capture_home")
         reader.capture_quiet_boundary()
         reader.capture_decoder = LegacyCaptureDecoder()
         reader.expected_marker = "CAPTURE_END"
@@ -721,18 +709,10 @@ class SerialBackend:
         self.smoke_stop.clear()
         return await self._execute(plan, stage, live=live)
 
-    async def execute_with_local_probe(
-        self, plan: dict[str, Any], stage: Callable[[str], None], probe: HomeLineProbe
-    ) -> str | BackendResult:
-        """Retired approval opt-in: never open USB or collect a raw HOME line."""
-        probe.clear()
-        raise SerialFailure("command_not_allowlisted")
-
     async def _execute(
         self,
         plan: dict[str, Any],
         stage: Callable[[str], None],
-        local_home_probe: HomeLineProbe | None = None,
         live: Callable[[], bool] | None = None,
     ) -> str | BackendResult:
         if self.active:
@@ -756,7 +736,6 @@ class SerialBackend:
             self._execute_sync,
             plan,
             emit,
-            local_home_probe,
             worker_live if live is not None else None,
         )
         interrupted = False
@@ -810,7 +789,6 @@ class SerialBackend:
         self,
         plan: dict[str, Any],
         emit: Callable[[str], None],
-        local_home_probe: HomeLineProbe | None = None,
         live: Callable[[], bool] | None = None,
     ) -> str | BackendResult:
         self.last_closed_plan = None
@@ -870,7 +848,6 @@ class SerialBackend:
                     if test == TestName.DERBY_FIXED
                     else 90
                 ),
-                local_home_probe,
             )
             reader.device_tap = self.device_log
             emit(test.value)

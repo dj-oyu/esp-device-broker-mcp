@@ -127,9 +127,6 @@ class OperatorLive:
         deadlines.extend(broker.device_requests[key].deadline for key in broker.waiters)
         if broker.session is not None:
             deadlines.append(broker.session.deadline)
-        home = broker.local_home_diagnostic
-        if home is not None and not home.invalidated:
-            deadlines.append(home.deadline)
         log_now = time.monotonic()
         for service in (broker.firmware_source, broker.firmware_build, broker.firmware_flash):
             deadlines.extend(now + log.deadline - log_now for log in tuple(service.logs.values()))

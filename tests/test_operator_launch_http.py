@@ -9,7 +9,14 @@ from cardputer_mcp.models import Origin
 from cardputer_mcp.operator_api import OperatorAPI
 
 # One representative retired route: authentication first (401), then terminal (410).
-_CASES = [("/operator/plans", None, 401), ("/operator/approve-plan", "local", 410)]
+# The retired local HOME-line preview follows the same fail-closed pattern.
+_CASES = [
+    ("/operator/plans", None, 401),
+    ("/operator/approve-plan", "local", 410),
+    ("/operator/local-home-line", None, 401),
+    ("/operator/local-home-line", "read", 403),
+    ("/operator/local-home-line", "local", 410),
+]
 
 
 @pytest.mark.parametrize("path,identity,status", _CASES)
