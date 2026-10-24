@@ -39,10 +39,9 @@ Independent review of the initial refactor found missing running-flash job bindi
 GUI retention clamps, observation result pairing and strict cancellation receipts.
 The follow-up restores these checks and adds 40 regression cases without deleting
 or newly skipping tests. The final Store transaction rereads state, plan hash and
-result after its last guard, so a detached job cannot select LKG. See
-[GUI security coverage review](GUI-SECURITY-COVERAGE.txt) for the deleted-test audit
-and retained-feature coverage; the original deletions were not all obsolete UI
-checks. The 238 environment-affected IDs and failure/error kinds are unchanged
+result after its last guard, so a detached job cannot select LKG. The
+deleted-test audit (GUI security coverage review) is kept in Git history; the
+original deletions were not all obsolete UI checks. The 238 environment-affected IDs and failure/error kinds are unchanged
 from the initial refactor's full run. Their bodies remain unverified; deployment
 readiness is not established by these supplemental results.
 
