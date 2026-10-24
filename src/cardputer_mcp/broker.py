@@ -2046,9 +2046,10 @@ class Broker:
         """
         if test in _NON_DEVICE_LOG_TESTS or not hasattr(self.backend, "device_log"):
             return None, None
+        if not principal_id:
+            self._job_log_failures.add(job_id)
+            return None, None
         try:
-            if not principal_id:
-                raise ValueError("job_log_principal_required")
             store = self._store()
             active = {
                 str(row[0])
