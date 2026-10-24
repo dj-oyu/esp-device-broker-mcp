@@ -121,6 +121,12 @@ class Store:
             principal_id TEXT NOT NULL, scopes TEXT NOT NULL, state TEXT NOT NULL,
             reason TEXT, created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS continuation_tickets (
+            ticket_id TEXT PRIMARY KEY, parent_job_id TEXT NOT NULL UNIQUE,
+            principal_id TEXT NOT NULL, epoch TEXT NOT NULL, state TEXT NOT NULL,
+            reason TEXT, hold TEXT, consumed_by_job TEXT, chain_started REAL NOT NULL,
+            chain_total INTEGER, created REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS device_requests (
             id TEXT PRIMARY KEY, session_id TEXT, lease_id TEXT,
             state TEXT NOT NULL, lease_seconds INTEGER NOT NULL,

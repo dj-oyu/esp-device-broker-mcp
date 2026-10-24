@@ -27,6 +27,7 @@ from .app_models import (
     AppEventsRequest,
     AppSessionOptions,
 )
+from .broker import BrokerError
 from .home_recovery import CancelHomeRecovery, RequestHomeRecovery
 from .models import (
     AcquireRequest,
@@ -112,6 +113,7 @@ class Op(StrEnum):
 class Target(StrEnum):
     JOB = "job"
     REQUEST = "request"
+    TICKET = "ticket"
 
 
 class SessionAction(StrEnum):
@@ -191,11 +193,23 @@ class ExecuteToolRequest(StrictModel):
         default=None, description="app_input"
     )
     action: Action | None = Field(default=None, description="app_input operation=action.tap")
+    continues: bool | None = Field(
+        default=None, description="op=run: declare a follow-up job; returns continuation_ticket"
+    )
+    chain_total_hint: int | None = Field(
+        default=None, ge=1, le=64, description="Display-only chain length hint; needs continues"
+    )
 
 
 class FlashToolRequest(StrictModel):
     plan_hash: Digest = Field(description="Plan prepared with kind=flash or kind=restore.")
     session: Capability | None = Field(default=None, description="Live lease of the plan.")
+    continues: bool | None = Field(
+        default=None, description="Declare a follow-up job; returns continuation_ticket"
+    )
+    chain_total_hint: int | None = Field(
+        default=None, ge=1, le=64, description="Display-only chain length hint; needs continues"
+    )
 
 
 class CancelToolRequest(StrictModel):
@@ -207,6 +221,9 @@ class CancelToolRequest(StrictModel):
     )
     resume_token: Capability | None = Field(default=None, description="target=request")
     request_id: Identifier | None = Field(default=None, description="target=request")
+    ticket: str | None = Field(
+        default=None, pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$", description="target=ticket"
+    )
 
 
 class SessionRequest(StrictModel):
@@ -215,6 +232,11 @@ class SessionRequest(StrictModel):
     ttl_seconds: int | None = Field(default=None, ge=1, le=86400, description="open")
     lease_seconds: int | None = Field(default=None, ge=1, le=300, description="open|request|renew")
     wait_seconds: int | None = Field(default=None, ge=0, le=3600, description="open|request")
+    after: str | None = Field(
+        default=None,
+        pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
+        description="request: continuation ticket of your previous device job",
+    )
     resume_token: Capability | None = Field(default=None, description="request|close")
     session: Capability | None = Field(default=None, description="renew|release")
 
@@ -318,7 +340,7 @@ for _kind in _DEVICE_KINDS - set(SUBMIT_RULES):
     SUBMIT_RULES[_kind] = ({"job_id", "session"}, set())
 
 EXECUTE_RULES: dict[Op, tuple[set[str], set[str]]] = {
-    Op.RUN: ({"plan_hash"}, {"session"}),
+    Op.RUN: ({"plan_hash"}, {"session", "continues", "chain_total_hint"}),
     Op.APP_INPUT: (
         {"session", "job_id", "boot_id", "run_id", "control_session", "operation"},
         {"command_id", "seq", "action"},
@@ -328,10 +350,11 @@ EXECUTE_RULES: dict[Op, tuple[set[str], set[str]]] = {
 CANCEL_RULES: dict[Target, tuple[set[str], set[str]]] = {
     Target.JOB: ({"job_id"}, {"session", "plan_hash"}),
     Target.REQUEST: ({"resume_token", "request_id"}, set()),
+    Target.TICKET: ({"ticket"}, set()),
 }
 SESSION_RULES: dict[SessionAction, tuple[set[str], set[str]]] = {
     SessionAction.OPEN: ({"owner"}, {"ttl_seconds", "lease_seconds", "wait_seconds"}),
-    SessionAction.REQUEST: ({"resume_token"}, {"lease_seconds", "wait_seconds"}),
+    SessionAction.REQUEST: ({"resume_token"}, {"lease_seconds", "wait_seconds", "after"}),
     SessionAction.RENEW: ({"session"}, {"lease_seconds"}),
     SessionAction.RELEASE: ({"session"}, set()),
     SessionAction.CLOSE: ({"resume_token"}, set()),
@@ -387,6 +410,29 @@ def register_surface(
             return _refuse("wrong_flash_tool", use="execute")
         return None
 
+    async def enqueue(
+        ctx: Context[Any, Any],
+        plan_hash: str,
+        session: str | None,
+        continues: bool | None,
+        hint: int | None,
+    ) -> dict[str, Any]:
+        """Queue one plan on its own explicit request; optionally issue its ticket."""
+        if hint is not None and not continues:
+            return _refuse("argument_required", "continues")
+        if continues:
+            plan = plan_for(plan_hash)
+            if plan is not None and "session_id" not in plan:
+                return _refuse("argument_not_allowed", "continues")
+        model, error = _convert(lambda: ExecuteRequest(plan_hash=plan_hash, session=session))
+        body: dict[str, Any] = error or await ops["execute_test"](model, ctx)
+        if continues and body.get("ok") and isinstance(body.get("id"), str):
+            try:
+                body["continuation_ticket"] = resident.issue_ticket(body["id"], hint)
+            except BrokerError as exc:
+                body["continuation_error"] = str(exc)
+        return body
+
     @server.tool(annotations=read_only)
     async def status(request: StatusRequest, ctx: Context[Any, Any]) -> CallToolResult:
         """Read broker, job, log or session state. view selects what; no side effects."""
@@ -416,6 +462,20 @@ def register_surface(
         elif view is View.JOB:
             assert request.job_id is not None
             body = await ops["job_status"](JobRequest(job_id=_req(request.job_id)), ctx)
+            if body.get("ok") and isinstance(body.get("plan_hash"), str):
+                plan = plan_for(body["plan_hash"])
+                try:
+                    caller = principal(ctx, "read").principal_id
+                except BrokerError:
+                    caller = None
+                if (
+                    plan is not None
+                    and caller is not None
+                    and resident.job_principal(_req(request.job_id)) == caller
+                ):
+                    chain = resident.chain_progress(_req(request.job_id))
+                    if chain is not None:
+                        body["chain"] = chain
         elif view is View.APPS:
             body = await ops["list_apps"](ctx)
         elif view is View.CAPTURE:
@@ -517,10 +577,13 @@ def register_surface(
                 wrong = wrong_tool(request.plan_hash, request.session, ctx, "execute")
                 if wrong is not None:
                     return wrong
-            model, error = _convert(
-                lambda: ExecuteRequest(plan_hash=_req(request.plan_hash), session=request.session)
+            return await enqueue(
+                ctx,
+                request.plan_hash,
+                request.session,
+                request.continues,
+                request.chain_total_hint,
             )
-            return error or await ops["execute_test"](model, ctx)
         if request.op is Op.APP_INPUT:
             fields = {
                 name: getattr(request, name) for name in request.model_fields_set if name != "op"
@@ -545,10 +608,9 @@ def register_surface(
             wrong = wrong_tool(request.plan_hash, request.session, ctx, "flash")
             if wrong is not None:
                 return wrong
-        model, error = _convert(
-            lambda: ExecuteRequest(plan_hash=_req(request.plan_hash), session=request.session)
+        return await enqueue(
+            ctx, request.plan_hash, request.session, request.continues, request.chain_total_hint
         )
-        return error or await ops["execute_test"](model, ctx)
 
     @server.tool(annotations=mutating)
     async def cancel(request: CancelToolRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -557,6 +619,15 @@ def register_surface(
         refused = _check(request, "target", required, optional)
         if refused is not None:
             return refused
+        if request.target is Target.TICKET:
+            try:
+                owner = principal(ctx, "control")
+                return {
+                    "ok": True,
+                    **resident.cancel_ticket(_req(request.ticket), owner.principal_id),
+                }
+            except BrokerError as exc:
+                return _refuse(str(exc))
         if request.target is Target.REQUEST:
             assert request.resume_token is not None and request.request_id is not None
             model, error = _convert(
@@ -645,6 +716,8 @@ def register_surface(
                 if request.wait_seconds < 1:
                     return _refuse("argument_invalid", "wait_seconds")
                 extra["wait_seconds"] = request.wait_seconds
+            if request.after is not None:
+                extra["after"] = request.after
             queued, error = _convert(
                 lambda: RequestDeviceRequest(resume_token=_req(request.resume_token), **extra)
             )
