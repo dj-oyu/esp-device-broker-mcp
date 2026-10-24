@@ -81,7 +81,7 @@ async def test_full_backup_lkg_with_compat_absent_or_null_is_a_flash_baseline(en
     env.execute(restored)
     await env.broker.queue.join()
     assert env.broker.job("restore-full")["state"] == "succeeded"
-    current = env.store.firmware_current("fixture", "alice")
+    current = env.store.firmware_current("fixture")
     assert (current["kind"], current["completed_job"]) == ("full_backup", "restore-full")
     metadata, files = snapshots.load(current["receipt"])
     # A restore-written full_backup snapshot carries an explicit null.
@@ -107,7 +107,7 @@ async def test_full_backup_lkg_with_compat_absent_or_null_is_a_flash_baseline(en
     env.execute(prepared)
     await env.broker.queue.join()
     assert env.broker.job("after-full")["state"] == "succeeded", env.broker.job("after-full")
-    after = env.store.firmware_current("fixture", "alice")
+    after = env.store.firmware_current("fixture")
     assert (after["kind"], after["completed_job"]) == ("artifact_bundle", "after-full")
     assert after["baseline"] == current["baseline"]
     assert env.store.device_write_seq() == seq + 1

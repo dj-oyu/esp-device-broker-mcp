@@ -194,7 +194,7 @@ def test_lkg_prewrite_fence_stops_at_first_changed_segment():
 def _durable(env):
     db = env.store.db
     return dict(
-        current=env.store.firmware_current("fixture", "alice"),
+        current=env.store.firmware_current("fixture"),
         history=[tuple(row) for row in db.execute("SELECT * FROM firmware_lkg_history ORDER BY 1")],
         seq=env.store.device_write_seq(),
         writes=env.driver.writes,

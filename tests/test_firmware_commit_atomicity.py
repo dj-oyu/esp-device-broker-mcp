@@ -132,7 +132,7 @@ def test_injected_failure_at_each_step_commits_nothing(store, tmp_path, step):
     )
     after = _durable(store)
     assert after["seq"] == before["seq"] + 1
-    assert store.firmware_current("fixture", "owner")["receipt"] == "b" * 64
+    assert store.firmware_current("fixture")["receipt"] == "b" * 64
 
 
 @pytest.mark.parametrize(
@@ -190,16 +190,17 @@ def test_history_keeps_first_completed_job_while_pointer_moves(store):
         "two", "firmware_flash_completed", PROMOTION | {"receipt": "a" * 64}, lambda: True,
         SUMMARY, "owner",
     )  # fmt: skip
-    assert store.firmware_known("fixture", "owner", "a" * 64)["completed_job"] == "one"
-    assert store.firmware_current("fixture", "owner")["completed_job"] == "two"
+    assert store.firmware_known("fixture", "a" * 64)["completed_job"] == "one"
+    assert store.firmware_current("fixture")["completed_job"] == "two"
 
 
 def test_pointer_is_keyed_by_device_only_across_principals(store):
-    # Pinned as-is (device_id PK); a different principal's success replaces the row.
+    # One current pointer per device; a different principal's success replaces it,
+    # every principal reads the same row, and the installer stays recorded.
     store.finish_firmware(
         "two", "firmware_flash_completed", PROMOTION | {"principal": "other"}, lambda: True,
         SUMMARY, "other",
     )  # fmt: skip
-    assert store.firmware_current("fixture", "owner") is None
-    assert store.firmware_current("fixture", "other")["receipt"] == "b" * 64
-    assert store.firmware_known("fixture", "owner", "a" * 64) is not None
+    current = store.firmware_current("fixture")
+    assert current["receipt"] == "b" * 64 and current["principal"] == "other"
+    assert store.firmware_known("fixture", "a" * 64)["principal"] == "owner"
