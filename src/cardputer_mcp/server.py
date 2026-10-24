@@ -29,6 +29,7 @@ from .auth import AuthState
 from .broker import Broker, BrokerError
 from .config import Settings
 from .derby_reports import binding_unchanged, private_job, shared_job
+from .firmware_flash import flash_readiness
 from .home_recovery import CancelHomeRecovery, RequestHomeRecovery
 from .http_diagnostics import (
     INGRESS_CONTEXT_KEY,
@@ -635,18 +636,28 @@ def create_server(
         or a physical connection. Paths, selectors and credentials stay private.
         Names outside the request ID format (1–64 letters/digits/underscore/hyphen)
         are omitted; they cannot be used in prepare_test.
+        Each device reports its enabled operations and flash_baseline: verified_lkg,
+        or initial_full_backup_required (back up first, then flash with backup_job_id).
         """
 
         def targets() -> dict[str, Any]:
             principal(ctx, "read")
             current = resident.settings
+            store = resident._store()
             return {
                 "build_projects": [
                     {"project_id": project_id}
                     for project_id in registered_ids(current.build_projects)
                 ],
                 "flash_devices": [
-                    {"device_id": device_id} for device_id in registered_ids(current.flash_devices)
+                    {
+                        "device_id": device_id,
+                        **flash_readiness(
+                            current.flash_devices[device_id],
+                            store.firmware_current(device_id) is not None,
+                        ),
+                    }
+                    for device_id in registered_ids(current.flash_devices)
                 ],
             }
 
