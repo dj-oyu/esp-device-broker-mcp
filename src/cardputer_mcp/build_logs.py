@@ -50,6 +50,9 @@ class BuildLogs:
         self.redactions: tuple[str, ...] = ()
         self.job_id = job_id
         self._console_progress_at = float("-inf")
+        # Optional durable tee (job_logs.JobLog); RAM behaviour is unchanged.
+        self.durable: Any = None
+        self.durable_stream = "build"
 
     def append(self, line: str, stream: str = "stdout", *, console_output: bool = True) -> None:
         with self._lock:
@@ -73,6 +76,11 @@ class BuildLogs:
         entry = dict(
             sequence=self.sequence, text=text, level=level, stream=stream, progress=progress
         )
+        if self.durable is not None:
+            try:
+                self.durable.append(self.durable_stream, text, level)
+            except Exception:
+                pass
         size = len(text.encode("utf-8"))
         if size <= self.max_bytes:
             self.entries.append(entry)

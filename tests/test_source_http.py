@@ -463,7 +463,12 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         recovered = source.read_logs(
             BuildLogRequest(job_id="source-failure"), key.metadata.principal_id
         )
-        assert recovered["expired"] and recovered["diagnostic"] == expected_diagnostic
+        # RAM output is gone; the owner's durable job log still serves it.
+        assert recovered["source"] == "durable_job_log" and not recovered["expired"]
+        assert recovered["diagnostic"] == expected_diagnostic
+        assert any(expected in item["text"] for item in recovered["entries"])
+        for value in (secret, key.token, private_path, "https://example.test/"):
+            assert value not in json.dumps(recovered)
 
         def unavailable_cache(project_id):
             raise RuntimeError(native_message)

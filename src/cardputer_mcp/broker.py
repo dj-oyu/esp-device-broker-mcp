@@ -243,6 +243,8 @@ class Broker:
         self.active_job: str | None = None
         self.operator_changes = OperatorNotifications()
         self.logs = LogBook(settings.log_capacity, on_change=self.operator_changes.notify)
+        self.job_logs = JobLogStore(settings.state_dir / "job-logs")
+        self._job_log_failures: set[str] = set()
         from .firmware_build import FirmwareBuild
 
         self.firmware_build = FirmwareBuild(settings, settings.state_dir / "history.sqlite3")
@@ -258,6 +260,9 @@ class Broker:
             settings, self.backend, self.firmware_build, self._store
         )
         self.firmware_build.on_logs_change = self.operator_changes.notify_logs
+        for module in (self.firmware_build, self.firmware_source, self.firmware_flash):
+            module.open_job_log = self._open_job_log
+            module.job_logs = self.job_logs
         self.firmware_source.on_logs_change = self.operator_changes.notify_logs
         self.firmware_flash.on_logs_change = self.operator_changes.notify_logs
         self.app_sessions.on_logs_change = self.operator_changes.notify_logs
@@ -269,8 +274,6 @@ class Broker:
         self.captures: dict[str, RetainedCapture] = {}
         self.capture_delivery_consents: dict[str, CaptureDeliveryConsent] = {}
         self.device_observations: dict[str, RetainedDeviceObservation] = {}
-        self.job_logs = JobLogStore(settings.state_dir / "job-logs")
-        self._job_log_failures: set[str] = set()
         self._flash_bindings: dict[str, FlashBinding] = {}
         self._execution_bindings: dict[str, str] = {}
         self._execution_intents: dict[str, ExecutionIntent] = {}
@@ -2015,6 +2018,24 @@ class Broker:
             raise BrokerError("device_logs_not_available")
         return retained
 
+    def _open_job_log(self, job_id: str, principal_id: str, kind: str) -> JobLog | None:
+        """Open one job's durable log; prune never removes queued/running jobs."""
+        if not principal_id:
+            self._job_log_failures.add(job_id)
+            return None
+        try:
+            store = self._store()
+            active = {
+                str(row[0])
+                for row in store.db.execute(
+                    "SELECT id FROM jobs WHERE state IN ('queued','running','awaiting_approval')"
+                )
+            }
+            return self.job_logs.begin(job_id, principal_id, kind, keep=active)
+        except Exception:
+            self._job_log_failures.add(job_id)
+            return None
+
     def _open_device_job_log(
         self, job_id: str, principal_id: str | None, test: str
     ) -> tuple[JobLog | None, DeviceLogTap | None]:
@@ -2025,26 +2046,14 @@ class Broker:
         """
         if test in _NON_DEVICE_LOG_TESTS or not hasattr(self.backend, "device_log"):
             return None, None
-        if not principal_id:
-            self._job_log_failures.add(job_id)
-            return None, None
-        try:
-            store = self._store()
-            active = {
-                str(row[0])
-                for row in store.db.execute(
-                    "SELECT id FROM jobs WHERE state IN ('queued','running','awaiting_approval')"
-                )
-            }
-            job_log = self.job_logs.begin(job_id, principal_id, test, keep=active)
-        except Exception:
-            self._job_log_failures.add(job_id)
+        job_log = self._open_job_log(job_id, principal_id or "", test)
+        if job_log is None:
             return None, None
         tap = DeviceLogTap(job_log)
         self.backend.device_log = tap
         return job_log, tap
 
-    def _close_device_job_log(
+    def _close_job_logs(
         self, job_id: str, job_log: JobLog | None, tap: DeviceLogTap | None
     ) -> None:
         try:
@@ -2052,15 +2061,27 @@ class Broker:
                 self.backend.device_log = None
             if tap is not None:
                 tap.finish()
-            if job_log is not None:
-                job_log.close()
-                if job_log.unavailable:
-                    self._job_log_failures.add(job_id)
+            durable_logs = [job_log] + [
+                getattr(module.logs.get(job_id), "durable", None)
+                for module in (self.firmware_build, self.firmware_source, self.firmware_flash)
+            ]
+            for durable in durable_logs:
+                if durable is not None:
+                    durable.close()
+                    if durable.unavailable:
+                        self._job_log_failures.add(job_id)
             if job_id in self._job_log_failures:
                 self._job_log_failures.discard(job_id)
                 store = self._store()
                 job = store.job(job_id)
-                if job is not None and job["state"] not in ("queued", "running"):
+                plan = store.plan(job["plan_hash"]) if job is not None else None
+                # Flash records are committed elsewhere and are left byte-identical.
+                if (
+                    job is not None
+                    and job["state"] not in ("queued", "running")
+                    and plan is not None
+                    and plan.get("test") not in {test.value for test in FLASH_TESTS}
+                ):
                     diagnostic = dict(job["diagnostic"] or {})
                     diagnostic["job_log_unavailable"] = True
                     store.set_job(job_id, job["state"], job["result"], diagnostic)
@@ -2874,7 +2895,7 @@ class Broker:
                         if fixed_review:
                             self._cancel_queued("recovery_review_required")
                 finally:
-                    self._close_device_job_log(job_id, job_log, device_tap)
+                    self._close_job_logs(job_id, job_log, device_tap)
                     job_log = device_tap = None
                     # Do not keep the last image alive in this suspended worker frame
                     # after the bounded cache expires or is cleared.

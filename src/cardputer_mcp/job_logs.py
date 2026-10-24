@@ -9,6 +9,7 @@ first line ``{"schema_version":1,"job_id","principal_id","kind","created"}``,
 then entries ``{"seq","t","stream","level","text"}``.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,9 @@ MAX_READ_LINES = 1000
 MAX_READ_BYTES = 256 * 1024
 MAX_DEVICE_LINE_BYTES = 4096
 TRUNCATION_MARKER = "[job log size limit reached; further output dropped]"
+_PROGRESS = re.compile(
+    r"\[\d+/\d+\]|(?:-- |Executing action|Build complete|info: ROM read \d+/\d+ bytes)"
+)
 _IDENT = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 _SUFFIX = ".jsonl"
 _REPARSE = 0x400
@@ -260,6 +264,61 @@ class JobLogStore:
             "partial_line_skipped": partial,
         }
 
+    @staticmethod
+    def epoch(job_id: str) -> str:
+        """Stable cursor epoch for one job's durable log; differs from RAM epochs."""
+        return hashlib.sha256(b"durable_job_log:" + job_id.encode()).hexdigest()[:32]
+
+    def build_read(
+        self, job_id: str, principal_id: str, stream: str, request: Any
+    ) -> dict[str, Any] | None:
+        """Serve a build/source/flash stream with the RAM reader's cursor/filter semantics."""
+        loaded = self.read(job_id, principal_id, stream)
+        if loaded is None or not loaded["entries"]:
+            return None
+        epoch = self.epoch(job_id)
+        items: list[dict[str, Any]] = [
+            dict(
+                sequence=int(entry.get("seq", 0)),
+                text=str(entry.get("text", "")),
+                level=str(entry.get("level", "unknown")),
+                stream=stream,
+                progress=bool(_PROGRESS.match(str(entry.get("text", "")))),
+            )
+            for entry in loaded["entries"]
+        ]
+        last = items[-1]["sequence"]
+        cursor = request.cursor
+        reset = cursor is not None and cursor.epoch != epoch
+        after = 0 if cursor is None or reset else cursor.sequence
+        if after > last:
+            raise ValueError("cursor_ahead")
+        selected: set[int] = set()
+        for index, item in enumerate(items):
+            if item["level"] in request.levels or item["progress"]:
+                selected.update(
+                    range(
+                        max(0, index - request.context),
+                        min(len(items), index + request.context + 1),
+                    )
+                )
+        result = [
+            item
+            for index, item in enumerate(items)
+            if index in selected and item["sequence"] > after
+        ][: request.limit]
+        sequence = result[-1]["sequence"] if len(result) == request.limit else last
+        return dict(
+            entries=result,
+            expired=False,
+            gap=reset,
+            oldest_sequence=items[0]["sequence"],
+            next_cursor=dict(epoch=epoch, sequence=sequence),
+            has_more=sequence < last,
+            source="durable_job_log",
+            size_limit_reached=loaded["truncated"],
+        )
+
     def device_report(self, job_id: str, principal_id: str) -> dict[str, Any] | None:
         loaded = self.read(job_id, principal_id, "device")
         if loaded is None or not loaded["entries"]:
@@ -399,3 +458,17 @@ def _level(text: str) -> str:
         if re.search(r"\b" + candidate + r"\b", text, re.I):
             return candidate
     return "unknown"
+
+
+def attach(logs: Any, opener: Any, job_id: str, principal_id: str, kind: str, stream: str) -> None:
+    """Tee a RAM ``BuildLogs`` into the durable store; never raises."""
+    if opener is None or getattr(logs, "durable", None) is not None:
+        return
+    try:
+        durable = opener(job_id, principal_id, kind)
+    except Exception:
+        durable = None
+    if durable is not None:
+        durable.redactions = tuple(getattr(logs, "redactions", ()))
+        logs.durable_stream = stream
+        logs.durable = durable
