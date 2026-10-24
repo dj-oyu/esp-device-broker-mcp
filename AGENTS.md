@@ -34,6 +34,9 @@ settings from this file.
   boot/confirmed close/final authority. Failure/cancel/crash keeps the prior target.
   Restore binds a prepared receipt and remains explicit. Keep the initial full
   backup separate; protect referenced recovery objects from build retention.
+  A flash does not require an LKG or a backup as a precondition; a pre-write
+  recovery fence applies only when a baseline (`lkg_receipt`/`backup_job_id`)
+  is explicitly named.
   Do not imply NVS/data compatibility or add implicit data/partition migrations.
 - Register projects and execution profiles locally. MCP must not accept arbitrary
   shell commands or unrestricted project/profile paths.
