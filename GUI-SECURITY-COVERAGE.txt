@@ -23,9 +23,11 @@ Removed tests and present coverage
 
 2. test_gui_home_line.py
    Approval-time raw HOME-line retention and its GUI have been retired.
-   The serial execute_with_local_probe entry point clears the probe and refuses
-   execution. test_home_line_boundary_regressions.py and the rewritten HOME-line
-   integration tests retain the no-arming/no-expanded-raw-retention boundary.
+   The HOME-line probe module, the serial execute_with_local_probe entry point
+   and the broker's in-memory diagnostic slot have since been removed;
+   /operator/local-home-line is a retired route (authentication first, then 410).
+   The rewritten HOME-line integration tests retain the no-expanded-raw-retention
+   boundary for explicit capture.
    These deleted raw-preview UI controls do not apply to the current GUI.
 
 3. test_gui_device_observation.py and test_gui_restart_observation.py

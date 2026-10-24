@@ -42,7 +42,6 @@ from .fixed_diagnostic import DiagnosticContext, finish_fixed_diagnostic
 from .flash_binding import FlashBinding, live_binding, prepare_binding, validate_binding
 from .flash_lifecycle import FlashFailure, _bounded_read_diagnostic
 from .flash_manifest import FlashAdmissionError
-from .home_line import HomeLineProbe
 from .job_logs import DeviceLogTap, JobLog, JobLogStore
 from .logs import Event, LogBook
 from .models import (
@@ -175,23 +174,6 @@ class RetainedDeviceObservation:
     deadline: float
 
 
-@dataclass(repr=False)
-class LocalHomeDiagnostic:
-    """One explicit local approval; neither this grant nor its probe is durable."""
-
-    diagnostic_id: str
-    epoch: str
-    job_id: str
-    plan_hash: str
-    principal_id: str
-    origin: str
-    lease_id: str
-    deadline: float
-    consumed: bool = False
-    invalidated: bool = False
-    probe: HomeLineProbe | None = field(default=None, repr=False)
-
-
 def digest_plan(payload: dict[str, Any]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest()
@@ -292,7 +274,6 @@ class Broker:
         self._flash_bindings: dict[str, FlashBinding] = {}
         self._execution_bindings: dict[str, str] = {}
         self._execution_intents: dict[str, ExecutionIntent] = {}
-        self.local_home_diagnostic: LocalHomeDiagnostic | None = None
         self._device_lock = FileLock(
             str(lock_path or device_lock_path(settings.backend)), timeout=0
         )
@@ -353,7 +334,6 @@ class Broker:
         await self.profile_jobs.close()
         self.firmware_build.request_stop()
         self.firmware_flash.request_stop()
-        self._clear_local_home_diagnostic()
         self._flash_bindings.clear()
         self._execution_bindings.clear()
         if self.maintenance:
@@ -629,7 +609,6 @@ class Broker:
         self._prune_device_observations()
         for app_run in self.app_sessions.jobs.values():
             app_run.events.expire()
-        self._prune_local_home_diagnostic()
         if self.store is None:
             return
         self.home_recovery.maintain()
@@ -2334,115 +2313,6 @@ class Broker:
     def read_logs(self, request: LogRequest) -> dict[str, Any]:
         return self.logs.read(request)
 
-    def _home_line_principal_live(self, entry: LocalHomeDiagnostic) -> bool:
-        try:
-            return (
-                self.principal_valid is not None
-                and self.principal_valid(
-                    entry.principal_id, entry.origin, frozenset({"read", "control"})
-                )
-                is True
-            )
-        except Exception:
-            return False
-
-    def _clear_local_home_diagnostic(self) -> None:
-        entry, self.local_home_diagnostic = self.local_home_diagnostic, None
-        if entry is not None and entry.probe is not None:
-            entry.probe.clear()
-
-    def _home_line_binding_live(self, entry: LocalHomeDiagnostic, lease: Session | None) -> bool:
-        """No callbacks: final time and identity check after principal validation."""
-        now = self.clock()
-        return bool(
-            not self.closing
-            and math.isfinite(now)
-            and now < entry.deadline
-            and entry.epoch == self.epoch
-            and lease is not None
-            and self.session is lease
-            and math.isfinite(lease.deadline)
-            and now < lease.deadline
-            and lease.id == entry.lease_id
-            and lease.principal_id == entry.principal_id
-            and lease.owner == entry.origin
-        )
-
-    def _prune_local_home_diagnostic(self) -> None:
-        entry = self.local_home_diagnostic
-        if entry is None:
-            return
-        if entry.probe is not None:
-            entry.probe.prune()
-            authorized = self._home_line_principal_live(entry)
-            if self.closing or entry.epoch != self.epoch or not authorized:
-                entry.probe.clear()
-            return
-        lease = self.session
-        authorized = self._home_line_principal_live(entry)
-        if not authorized or not self._home_line_binding_live(entry, lease):
-            entry.invalidated = True
-
-    def _make_local_home_diagnostic(
-        self, plan: dict[str, Any], lease: Session
-    ) -> LocalHomeDiagnostic:
-        raise BrokerError("approval_interface_retired")
-
-    def _take_local_home_probe(
-        self, plan: dict[str, Any], lease: Session, *, policy_authorized: bool
-    ) -> HomeLineProbe | None:
-        # The old approval opt-in is retired. Explicit execution never expands
-        # raw serial retention or silently inherits an old diagnostic grant.
-        self._clear_local_home_diagnostic()
-        return None
-
-    def operator_home_line_metadata(self, job_id: str, plan_hash: str) -> dict[str, Any] | None:
-        """Metadata only. This method is intentionally absent from MCP surfaces."""
-        self._prune_local_home_diagnostic()
-        entry = self.local_home_diagnostic
-        if (
-            entry is None
-            or entry.epoch != self.epoch
-            or entry.job_id != job_id
-            or entry.plan_hash != plan_hash
-        ):
-            return None
-        if entry.probe is not None:
-            metadata = entry.probe.metadata()
-        else:
-            metadata = {
-                "state": "expired" if entry.invalidated else "armed",
-                "remaining_seconds": 0
-                if entry.invalidated
-                else max(0.0, min(300.0, entry.deadline - self.clock())),
-                "wire_bytes": 0,
-                "limit_bytes": 1024,
-                "shape": None,
-            }
-        return {
-            "job_id": entry.job_id,
-            "plan_hash": entry.plan_hash,
-            "broker_epoch": entry.epoch,
-            "principal_id": entry.principal_id,
-            "diagnostic_id": entry.diagnostic_id,
-            **metadata,
-        }
-
-    def operator_home_line(self, job_id: str, plan_hash: str, diagnostic_id: str) -> dict[str, Any]:
-        """Private local preview only; callers must enforce operator authentication."""
-        metadata = self.operator_home_line_metadata(job_id, plan_hash)
-        entry = self.local_home_diagnostic
-        if (
-            metadata is None
-            or entry is None
-            or entry.diagnostic_id != diagnostic_id
-            or entry.probe is None
-        ):
-            raise BrokerError("local_home_diagnostic_not_available")
-        preview = entry.probe.preview()
-        # No raw data appears in metadata, ordinary job results, or history.
-        return {**metadata, **preview}
-
     async def _work(self) -> None:
         while True:
             job_id = await self.queue.get()
@@ -2499,7 +2369,6 @@ class Broker:
                         store.set_job(job_id, "cancelled", "principal_or_lease_no_longer_valid")
                         self.logs.append(Event.CANCELLED)
                         continue
-                local_home_probe = None
                 capture_target = ""
                 current_valid = self.principal_valid
                 current_binding = self._execution_bindings.get(job_id)
@@ -2531,7 +2400,7 @@ class Broker:
                         )
                     except Exception:
                         current_authorized = False
-                # Authentication, local-probe and policy callbacks above can
+                # Authentication and policy callbacks above can
                 # change the queued row, original intent, lease or clock. Keep
                 # the original intent requirement through every callback, and
                 # check the durable row again before any backend work starts.
@@ -2565,8 +2434,6 @@ class Broker:
                         queued_intent is not None and not self._execution_intent_live(queued_intent)
                     )
                 ):
-                    if local_home_probe is not None:
-                        local_home_probe.clear()
                     if queued_intent is not None:
                         self._cancel_execution_intent(
                             queued_intent, "execution_intent_not_available"
@@ -3009,9 +2876,6 @@ class Broker:
                 finally:
                     self._close_device_job_log(job_id, job_log, device_tap)
                     job_log = device_tap = None
-                    if local_home_probe is not None:
-                        local_home_probe.finish()
-                        local_home_probe = None
                     # Do not keep the last image alive in this suspended worker frame
                     # after the bounded cache expires or is cleared.
                     result = ""

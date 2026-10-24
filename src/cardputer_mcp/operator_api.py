@@ -29,6 +29,7 @@ RETIRED_ROUTES = frozenset(
         "/operator/policy-update",
         "/operator/policy-revoke",
         "/operator/capture-arm",
+        "/operator/local-home-line",
     }
 )
 
@@ -69,11 +70,6 @@ class ReleaseIdle(BaseModel):
 class PreviewImage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     job_id: Identifier
-
-
-class PreviewHomeLine(PreviewImage):
-    plan_hash: Digest
-    diagnostic_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -371,11 +367,6 @@ class OperatorAPI:
                     "state": cancelled["state"],
                     "stop_requested": cancelled.get("stop_requested", False),
                 }
-            elif path == "/operator/local-home-line":
-                home_line = PreviewHomeLine.model_validate(payload)
-                result = self.broker.operator_home_line(
-                    home_line.job_id, home_line.plan_hash, home_line.diagnostic_id
-                )
             elif path == "/operator/images":
                 result = self.broker.operator_images()
             elif path == "/operator/image":
