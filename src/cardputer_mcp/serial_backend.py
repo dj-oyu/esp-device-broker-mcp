@@ -524,6 +524,20 @@ class SerialBackend:
         self.last_closed_plan: dict[str, Any] | None = None
         self.smoke_stop = threading.Event()
 
+    def usb_presence(self) -> str:
+        """USB enumeration only; never opens the port and never reports port identities."""
+        try:
+            resolve_port(self.config.selector, list(self.inventory()))
+        except ValueError as exc:
+            if str(exc) == "device_missing":
+                return "missing"
+            if str(exc) == "device_ambiguous":
+                return "ambiguous"
+            return "unavailable"
+        except Exception:
+            return "unavailable"
+        return "present"
+
     def prepare_fixed_receipt(self, expected_elf_sha256: str) -> dict[str, Any]:
         """Internal receipt-bound preflight; never mutates the registered config."""
         if re.fullmatch(r"[a-f0-9]{64}", expected_elf_sha256) is None:

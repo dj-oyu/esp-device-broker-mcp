@@ -69,6 +69,16 @@ from .store import Store
 DEVICE_WAIT_SECONDS = 1800.0
 
 
+SERIAL_PORT_OPEN_MEANING = (
+    "The broker opens the serial port only while a job runs; false while idle is normal "
+    "and does not mean the device is unplugged. hardware_connected is the same value."
+)
+USB_PRESENCE_MEANING = (
+    "present: exactly one USB device matches the registered selector; missing: none; "
+    "ambiguous: more than one. Enumeration only; it does not prove the firmware responds."
+)
+
+
 class BrokerError(ValueError):
     """Public, fixed-string errors. Do not include exceptions or request content."""
 
@@ -1231,6 +1241,23 @@ class Broker:
             raise BrokerError("lease_expired_active_job_retains_ownership")
         return self.session
 
+    def _connection(self) -> dict[str, Any]:
+        """Keep the broker's own port state apart from USB presence; opens nothing."""
+        presence = getattr(self.backend, "usb_presence", None)
+        if self.backend.name == "mock":
+            usb, source = "not_applicable_mock_backend", None
+        elif callable(presence):
+            usb, source = presence(), "usb_enumeration_without_opening_port"
+        else:
+            usb, source = "not_checked_by_status", None
+        return {
+            "serial_port_open": self.backend.hardware_connected,
+            "serial_port_open_meaning": SERIAL_PORT_OPEN_MEANING,
+            "usb_presence": usb,
+            "usb_presence_source": source,
+            "usb_presence_meaning": USB_PRESENCE_MEANING,
+        }
+
     def status(self) -> dict[str, Any]:
         self._expire()
         store = self._store()
@@ -1241,6 +1268,7 @@ class Broker:
         return {
             "backend": self.backend.name,
             "hardware_connected": self.backend.hardware_connected,
+            "connection": self._connection(),
             "ownership_uncertain": bool(getattr(self.backend, "ownership_uncertain", False)),
             "device": self.backend.device,
             "broker_epoch": self.epoch,
