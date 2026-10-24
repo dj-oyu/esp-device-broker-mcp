@@ -57,12 +57,12 @@ def event_loop_policy():
             False,
             {"ok": False, "error": "argument_invalid"},
         ),
-        # A free-form cursor is validated late; the first missing cursor field is named.
+        # A free-form cursor is validated late; a refusal names only the cursor argument.
         (
             "status",
             {"view": "logs", "stream": "broker", "cursor": {}},
             False,
-            {"ok": False, "error": "argument_invalid", "field": "epoch"},
+            {"ok": False, "error": "argument_invalid", "field": "cursor"},
         ),
         # Per-stream rules for stream=app.
         (
