@@ -41,6 +41,15 @@ def queue_job(broker, lease, job_id="queued-job"):
     return job_id
 
 
+async def until_running(broker, job_id):
+    for _ in range(2000):
+        job = broker._store().job(job_id)
+        if job is not None and job["state"] == "running":
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError(f"{job_id} did not start")
+
+
 def request_row(broker, request_id):
     row = broker._store().request(request_id)
     return row["state"], row["reason"]
@@ -93,15 +102,14 @@ async def test_cancel_job_only_without_any_lease_returns_none(tmp_path):
 async def test_cancel_job_only_on_a_running_diagnostic_is_refused(tmp_path):
     clock = Clock()
     async with running(tmp_path, clock) as broker:
-        broker.backend.gate = asyncio.Event()
-        promote_waiting_job(broker)
-        for _ in range(200):
-            if broker._store().job("b-test")["state"] == "running":
-                break
-            await asyncio.sleep(0.005)
-        with pytest.raises(BrokerError, match="^only_queued_jobs_can_be_cancelled$"):
-            broker.cancel_job_only("b-test", "key-b")
-        broker.backend.gate.set()
+        gate = broker.backend.gate = asyncio.Event()
+        try:
+            promote_waiting_job(broker)
+            await until_running(broker, "b-test")
+            with pytest.raises(BrokerError, match="^only_queued_jobs_can_be_cancelled$"):
+                broker.cancel_job_only("b-test", "key-b")
+        finally:
+            gate.set()  # never leave the worker parked, or close() waits forever
         assert (await settle(broker, "b-test"))["state"] == "succeeded"
 
 

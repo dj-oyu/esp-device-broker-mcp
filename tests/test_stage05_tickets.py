@@ -17,6 +17,7 @@ from test_continuation import (
     work_session,
 )
 from test_deferred_device import defer, fake_parent, settle
+from test_stage05_cancellation import until_running
 
 from cardputer_mcp import continuation
 from cardputer_mcp.broker import BrokerError, DeviceWait
@@ -302,17 +303,16 @@ async def child_spent_while_parent_runs_then_device_written(broker):
     """Parent job-1 runs, its ticket is spent ahead of time, a write lands after it ends."""
     work = work_session(broker, "key-a")
     lease = request(broker, work, "key-a")["lease"]["session"]
-    broker.backend.gate = asyncio.Event()
-    queue_job(broker, lease, "job-1")
-    ticket = broker.issue_ticket("job-1")
-    for _ in range(200):
-        if broker._store().job("job-1")["state"] == "running":
-            break
-        await asyncio.sleep(0.005)
-    defer(broker, "key-a", ticket, "a-test")
-    assert broker.tickets._row(ticket)["state"] == "consumed"
-    broker.backend.gate.set()
-    broker.backend.gate = None
+    gate = broker.backend.gate = asyncio.Event()
+    try:
+        queue_job(broker, lease, "job-1")
+        ticket = broker.issue_ticket("job-1")
+        await until_running(broker, "job-1")
+        defer(broker, "key-a", ticket, "a-test")
+        assert broker.tickets._row(ticket)["state"] == "consumed"
+    finally:
+        gate.set()  # never leave the worker parked, or close() waits forever
+        broker.backend.gate = None
     await broker.queue.join()
     assert broker._store().job("job-1")["state"] == "succeeded"
     broker.maintenance_tick()
