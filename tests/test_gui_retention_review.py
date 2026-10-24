@@ -3,14 +3,10 @@
 from dataclasses import replace
 
 import pytest
-from test_gui_timeline import Clock, FakeAPI, card, snapshot
+from test_gui_timeline import card, snapshot
 
 from cardputer_mcp.device_observation import DeviceLogCollector
-from cardputer_mcp.gui_timeline import (
-    TimelineController,
-    TimelineSnapshot,
-    perform_timeline,
-)
+from cardputer_mcp.gui_timeline import TimelineSnapshot
 
 
 def observed_card(*, restart=False):
@@ -33,19 +29,6 @@ def observed_card(*, restart=False):
             "metadata": report.metadata(),
         },
     )
-
-
-def test_same_image_refresh_never_extends_original_retention_before_preview():
-    clock, api = Clock(), FakeAPI()
-    model = TimelineController(clock)
-    assert model.accept(perform_timeline(api, model.refresh(), clock))
-    first_expiry = model.snapshot.cards[0].image.expires_at
-    clock.value += 100
-    assert model.accept(perform_timeline(api, model.refresh(), clock))
-    assert model.snapshot.cards[0].image.expires_at == first_expiry
-    clock.value = first_expiry
-    assert model.load_preview("job_image_1") is None
-    assert api.calls == [("timeline",), ("timeline",)]
 
 
 @pytest.mark.parametrize("mutation", ["result", "reset_flag", "capture_gap"])

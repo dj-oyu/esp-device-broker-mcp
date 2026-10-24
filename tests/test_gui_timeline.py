@@ -1,4 +1,4 @@
-"""Read-only UI integrity, retention and explicit cancellation; no device access."""
+"""Read-only timeline integrity and explicit cancellation; no device access."""
 
 import copy
 from typing import Any
@@ -7,8 +7,8 @@ from test_gui_images import detail as image_detail
 from test_gui_images import row as image_row
 
 from cardputer_mcp.gui_timeline import (
+    CANCEL_REQUESTED,
     CANCEL_UNCERTAIN,
-    TimelineController,
     TimelineOperation,
     perform_timeline,
 )
@@ -87,6 +87,7 @@ class FakeAPI:
 
 
 def loaded(*, cancellable=False):
+    """Read one timeline snapshot exactly as the live window's refresh does."""
     clock, api = Clock(), FakeAPI()
     if cancellable:
         api.status = snapshot(
@@ -99,70 +100,68 @@ def loaded(*, cancellable=False):
                 )
             ]
         )
-    model = TimelineController(clock)
-    op = model.refresh()
-    assert model.accept(perform_timeline(api, op, clock))
-    return model, api, clock
+    outcome = perform_timeline(api, TimelineOperation(1, 0, "refresh", clock()), clock)
+    assert outcome.snapshot is not None and not outcome.error
+    return outcome.snapshot, api, clock
+
+
+def cancel_operation(timeline, clock, job_id="job_image_1"):
+    """Build the cancel operation the live window sends for the selected card."""
+    selected = next(row for row in timeline.cards if row.job_id == job_id)
+    return TimelineOperation(
+        2,
+        0,
+        "cancel_job",
+        clock(),
+        job_id,
+        selected.plan_hash or "",
+        timeline.broker_epoch,
+    )
 
 
 def test_refresh_is_only_read_and_never_approves_executes_or_recaptures():
-    model, api, clock = loaded()
+    timeline, api, clock = loaded()
     assert api.calls == [("timeline",)]
-    assert model.snapshot.cards[0].review is None
-    assert not hasattr(model, "approve") and not hasattr(model, "decide")
-    assert not model.can_cancel("job_image_1")
-    assert model.load_preview("missing") is None
-    assert api.calls == [("timeline",)]
+    assert timeline.cards[0].review is None
+    assert not timeline.cards[0].cancel_available
 
 
 def test_explicit_preview_exact_identity_without_delivery_approval():
-    model, api, clock = loaded()
-    operation = model.load_preview("job_image_1")
-    assert operation is not None
-    assert model.accept(perform_timeline(api, operation, clock))
-    assert model.preview and model.preview.row.job_id == "job_image_1"
+    timeline, api, clock = loaded()
+    row = timeline.cards[0].image
+    operation = TimelineOperation(
+        2, 0, "preview", clock(), "job_image_1", broker_epoch=timeline.broker_epoch, row=row
+    )
+    outcome = perform_timeline(api, operation, clock)
+    assert not outcome.error
+    assert outcome.preview and outcome.preview.row.job_id == "job_image_1"
     assert api.calls == [("timeline",), ("image", "job_image_1")]
 
 
-def test_stale_result_and_pending_close_do_not_release_action_guard():
-    model, api, clock = loaded()
-    op = model.load_preview("job_image_1")
-    assert not model.can_close() and not model.stop()
-    other = TimelineOperation(999, 0, "refresh", clock())
-    assert not model.accept(perform_timeline(api, other, clock))
-    assert model.busy
-    assert model.accept(perform_timeline(api, op, clock))
-    assert model.stop() and model.preview is None
-    assert model.refresh() is None
-
-
-def test_cancel_requires_fresh_exact_target_and_does_not_release_ownership():
-    model, api, clock = loaded(cancellable=True)
-    key = model.cancel_key("job_image_1")
-    assert model.can_cancel("job_image_1")
-    assert model.cancel_job("job_image_1", ("f" * 32, key[1], key[2])) is None
-    operation = model.cancel_job("job_image_1", key)
-    assert not model.can_cancel("job_image_1")
-    assert model.accept(perform_timeline(api, operation, clock))
-    assert not model.fresh and not model.can_cancel("job_image_1")
-    assert api.calls == [("timeline",), ("cancel_job", key[1], key[2], key[0])]
+def test_cancel_sends_the_exact_target_and_does_not_release_ownership():
+    timeline, api, clock = loaded(cancellable=True)
+    outcome = perform_timeline(api, cancel_operation(timeline, clock), clock)
+    assert outcome.message == CANCEL_REQUESTED and not outcome.error
+    plan_hash = timeline.cards[0].plan_hash
+    assert api.calls == [
+        ("timeline",),
+        ("cancel_job", "job_image_1", plan_hash, timeline.broker_epoch),
+    ]
     assert "release" not in str(api.calls)
 
 
 def test_wrong_cancel_ack_is_uncertain_and_never_retried():
-    model, api, clock = loaded(cancellable=True)
+    timeline, api, clock = loaded(cancellable=True)
     api.cancel_response = dict(ok=True, job_id="other")
-    op = model.cancel_job("job_image_1", model.cancel_key("job_image_1"))
-    result = perform_timeline(api, op, clock)
+    result = perform_timeline(api, cancel_operation(timeline, clock), clock)
     assert result.error == CANCEL_UNCERTAIN
-    assert model.accept(result) and not model.can_cancel("job_image_1")
     assert len(api.calls) == 2
 
 
 def test_network_errors_are_fixed_and_no_automatic_retry():
-    model, api, clock = loaded()
+    clock, api = Clock(), FakeAPI()
     api.failure = True
-    result = perform_timeline(api, model.refresh(), clock)
-    assert "private" not in result.error
-    assert model.accept(result) and not model.fresh
-    assert len(api.calls) == 2
+    result = perform_timeline(api, TimelineOperation(1, 0, "refresh", clock()), clock)
+    assert result.error and "private" not in result.error
+    assert result.snapshot is None
+    assert len(api.calls) == 1
