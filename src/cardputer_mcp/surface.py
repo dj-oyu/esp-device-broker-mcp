@@ -16,7 +16,7 @@ from typing import Any, Literal, TypeVar, cast
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from .app_models import (
     U32,
@@ -28,6 +28,7 @@ from .app_models import (
     AppSessionOptions,
 )
 from .broker import BrokerError
+from .derby_reports import shared_job
 from .home_recovery import CancelHomeRecovery, RequestHomeRecovery
 from .models import (
     DEFERRED_DEVICE_TESTS,
@@ -66,6 +67,7 @@ DESTRUCTIVE_TESTS = frozenset({TestName.FLASH.value, TestName.RESTORE.value})
 
 Handler = Callable[..., Awaitable[Any]]
 _T = TypeVar("_T")
+_M = TypeVar("_M", bound=BaseModel)
 
 
 class View(StrEnum):
@@ -297,8 +299,25 @@ def _check(
     return None
 
 
-def _convert(build: Callable[[], Any]) -> tuple[Any, dict[str, Any] | None]:
-    """Build an existing request model; map failures to fixed codes, never values."""
+def _declared_field(name: str) -> bool:
+    """True when a broker model declares this field name (fixed vocabulary, never input)."""
+    stack: list[type[BaseModel]] = [BaseModel]
+    while stack:
+        model = stack.pop()
+        stack.extend(model.__subclasses__())
+        if model.__module__.startswith("cardputer_mcp.") and name in model.model_fields:
+            return True
+    return False
+
+
+def _convert(
+    build: Callable[[], Any], field: str | None = None
+) -> tuple[Any, dict[str, Any] | None]:
+    """Build an existing request model; map failures to fixed codes, never values.
+
+    `field` names the surface argument being converted. Otherwise only a declared
+    field name is reported, so a caller-chosen key (e.g. inside `cursor`) is never echoed.
+    """
     try:
         return build(), None
     except ValidationError as error:
@@ -308,8 +327,20 @@ def _convert(build: Callable[[], Any]) -> tuple[Any, dict[str, Any] | None]:
             reason = public_reason(inner)
             if reason != "invalid_request":
                 return None, _refuse(reason)
+        if field is not None:
+            return None, _refuse("argument_invalid", field)
         parts = [part for part in issue.get("loc", ()) if isinstance(part, str)]
-        return None, _refuse("argument_invalid", parts[0] if parts else None)
+        named = parts[0] if parts and _declared_field(parts[0]) else None
+        return None, _refuse("argument_invalid", named)
+
+
+def _cursor(
+    model: type[_M], cursor: dict[str, int | str] | None
+) -> tuple[_M | None, dict[str, Any] | None]:
+    """Validate a caller cursor; failures name only the `cursor` argument."""
+    if cursor is None:
+        return None, None
+    return _convert(lambda: model.model_validate(cursor), "cursor")
 
 
 STATUS_RULES: dict[View, tuple[set[str], set[str]]] = {
@@ -547,24 +578,21 @@ def register_surface(
         if request.limit is not None:
             extra["limit"] = request.limit
         if stream is Stream.BROKER:
-            model, error = _convert(
-                lambda: LogRequest(
-                    cursor=LogCursor.model_validate(cursor) if cursor is not None else None,
-                    **extra,
-                )
-            )
+            log_cursor, error = _cursor(LogCursor, cursor)
+            if error is not None:
+                return error
+            model, error = _convert(lambda: LogRequest(cursor=log_cursor, **extra))
             return error or await ops["read_logs"](model, ctx)
         assert request.job_id is not None
         if stream is Stream.BUILD:
             for name in ("levels", "context", "include_source_cache"):
                 if getattr(request, name) is not None:
                     extra[name] = getattr(request, name)
+            log_cursor, error = _cursor(LogCursor, cursor)
+            if error is not None:
+                return error
             model, error = _convert(
-                lambda: BuildLogRequest(
-                    job_id=_req(request.job_id),
-                    cursor=LogCursor.model_validate(cursor) if cursor is not None else None,
-                    **extra,
-                )
+                lambda: BuildLogRequest(job_id=_req(request.job_id), cursor=log_cursor, **extra)
             )
             return error or await ops["read_build_logs"](model, ctx)
         if stream is Stream.DEVICE:
@@ -572,12 +600,11 @@ def register_surface(
                 JobRequest(job_id=_req(request.job_id)), ctx
             )
             return device
+        app_cursor, error = _cursor(AppEventCursor, cursor)
+        if error is not None:
+            return error
         model, error = _convert(
-            lambda: AppEventsRequest(
-                job_id=_req(request.job_id),
-                cursor=AppEventCursor.model_validate(cursor) if cursor is not None else None,
-                **extra,
-            )
+            lambda: AppEventsRequest(job_id=_req(request.job_id), cursor=app_cursor, **extra)
         )
         return error or await ops["read_app_events"](model, ctx)
 
@@ -711,7 +738,7 @@ def register_surface(
             except BrokerError as exc:
                 return _refuse(str(exc))
             if running is not None:
-                return {"ok": True, **running}
+                return {"ok": True, **shared_job(running)}
         job = resident._store().job(request.job_id)
         plan = resident._store().plan(job["plan_hash"]) if job is not None else None
         if request.plan_hash is not None and (
