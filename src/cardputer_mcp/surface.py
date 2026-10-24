@@ -194,7 +194,11 @@ class ExecuteToolRequest(StrictModel):
     )
     action: Action | None = Field(default=None, description="app_input operation=action.tap")
     continues: bool | None = Field(
-        default=None, description="op=run: declare a follow-up job; returns continuation_ticket"
+        default=None,
+        description=(
+            "op=run: like a commit that expects a child; returns a single-use "
+            "continuation_ticket. The child is still queued by its own explicit request."
+        ),
     )
     chain_total_hint: int | None = Field(
         default=None, ge=1, le=64, description="Display-only chain length hint; needs continues"
@@ -205,7 +209,11 @@ class FlashToolRequest(StrictModel):
     plan_hash: Digest = Field(description="Plan prepared with kind=flash or kind=restore.")
     session: Capability | None = Field(default=None, description="Live lease of the plan.")
     continues: bool | None = Field(
-        default=None, description="Declare a follow-up job; returns continuation_ticket"
+        default=None,
+        description=(
+            "Like a commit that expects a child; returns a single-use continuation_ticket. "
+            "The child is still queued by its own explicit request."
+        ),
     )
     chain_total_hint: int | None = Field(
         default=None, ge=1, le=64, description="Display-only chain length hint; needs continues"
@@ -222,7 +230,9 @@ class CancelToolRequest(StrictModel):
     resume_token: Capability | None = Field(default=None, description="target=request")
     request_id: Identifier | None = Field(default=None, description="target=request")
     ticket: str | None = Field(
-        default=None, pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$", description="target=ticket"
+        default=None,
+        pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
+        description="target=ticket: close the chain at its tip; no child can be appended",
     )
 
 
@@ -235,7 +245,11 @@ class SessionRequest(StrictModel):
     after: str | None = Field(
         default=None,
         pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
-        description="request: continuation ticket of your previous device job",
+        description=(
+            "request: append to your chain. Spend the ticket of your previous device job "
+            "(the chain tip) to take the device first. One ticket, one child: no branches, "
+            "no merges."
+        ),
     )
     resume_token: Capability | None = Field(default=None, description="request|close")
     session: Capability | None = Field(default=None, description="renew|release")
@@ -435,7 +449,11 @@ def register_surface(
 
     @server.tool(annotations=read_only)
     async def status(request: StatusRequest, ctx: Context[Any, Any]) -> CallToolResult:
-        """Read broker, job, log or session state. view selects what; no side effects."""
+        """Read broker, job, log or session state. view selects what; no side effects.
+
+        view=job adds `chain` for your own chained jobs, like git log from that job:
+        chain_position, chain_jobs_known, chain_open (the tip still accepts a child).
+        """
         required, optional = STATUS_RULES[request.view]
         refused = _check(request, "view", required, optional)
         if refused is not None:
