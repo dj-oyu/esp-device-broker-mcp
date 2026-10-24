@@ -46,7 +46,8 @@ def registrations(tmp_path):
 
 BLOCKED = {
     "operations": {"backup": False, "flash": False, "restore": False},
-    "flash_baseline": "initial_full_backup_required_backup_not_enabled",
+    "flash_baseline": "flash_not_enabled",
+    "lkg_recorded": False,
 }
 
 
@@ -195,18 +196,23 @@ async def test_registered_targets_metadata_empty_input_and_read_only(authenticat
 @pytest.mark.parametrize(
     ("allow", "has_lkg", "baseline"),
     [
-        (dict(allow_backup=True, allow_flash=True), True, "verified_lkg"),
-        (dict(allow_backup=True, allow_flash=True), False, "initial_full_backup_required"),
-        (dict(allow_flash=True), False, "initial_full_backup_required_backup_not_enabled"),
-        (dict(allow_flash=True), True, "verified_lkg"),
+        # A flash never needs an LKG or a backup first (decision 2026-10-25).
+        (dict(allow_backup=True, allow_flash=True), True, "not_required"),
+        (dict(allow_backup=True, allow_flash=True), False, "not_required"),
+        (dict(allow_flash=True), False, "not_required"),
+        (dict(allow_flash=True), True, "not_required"),
+        (dict(allow_backup=True), False, "flash_not_enabled"),
+        ({}, True, "flash_not_enabled"),
     ],
 )
-def test_flash_readiness_names_the_missing_first_step(tmp_path, allow, has_lkg, baseline):
+def test_flash_readiness_never_requires_a_recovery_point(tmp_path, allow, has_lkg, baseline):
     _, device = registrations(tmp_path)
     readiness = flash_readiness(device.model_copy(update=allow), has_lkg)
     assert readiness["flash_baseline"] == baseline
+    assert readiness["lkg_recorded"] is has_lkg
     assert readiness["operations"] == {
         "backup": allow.get("allow_backup", False),
         "flash": allow.get("allow_flash", False),
         "restore": False,
     }
+    assert "backup" not in readiness["flash_baseline"]

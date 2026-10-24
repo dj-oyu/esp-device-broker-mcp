@@ -103,6 +103,9 @@ class OperationPlan:
     backup_sha256: str | None = None
     manifest_sha256: str | None = None
     expected_elf_sha256: str | None = None
+    # "full_backup" / "artifact_bundle" name a frozen recovery point; "none" (flash
+    # only) names none: no recovery-bytes check and no pre-write fence, and the
+    # device identity is bound from the probe just before the write.
     recovery_kind: str = "full_backup"
 
     @property
@@ -185,6 +188,14 @@ class FlashLifecycle:
                 raise FlashFailure("flash_device_busy_or_uncertain")
             if requested_digest != plan.digest or reader_closed() is not True:
                 raise FlashFailure("flash_plan_or_handoff_required")
+            if plan.recovery_kind == "none" and (
+                plan.operation != "flash"
+                or plan.expected_device_sha256 is not None
+                or plan.backup_sha256 is not None
+                or backup is not None
+                or recovery is not None
+            ):
+                raise FlashFailure("flash_plan_or_handoff_required")
             if plan.operation == "flash" and (
                 not isinstance(plan.expected_elf_sha256, str)
                 or len(plan.expected_elf_sha256) != 64
@@ -214,11 +225,16 @@ class FlashLifecycle:
                 )
                 result = receipt, data, {"backup_verified": True, "hardware_write": False}
             else:
-                if (
-                    plan.operation not in ("flash", "restore")
-                    or plan.expected_device_sha256 is None
+                no_recovery_point = plan.recovery_kind == "none"
+                if plan.operation not in ("flash", "restore") or (
+                    plan.expected_device_sha256 is None and not no_recovery_point
                 ):
                     raise FlashFailure("verified_device_recovery_required")
+                # Without a recovery point the expected identity is the device the
+                # probe identified (verify() rejected anything not a 64-hex id). The
+                # registered driver forwards it to the write, every readback and the
+                # post-reset same-USB boot reconnect; a different device is refused.
+                bound_device = security.device_sha256
                 if plan.recovery_kind == "artifact_bundle":
                     if recovery is None:
                         raise FlashFailure("verified_firmware_recovery_required")
@@ -228,7 +244,7 @@ class FlashLifecycle:
                         for item, data in zip(prior.segments, prior_images, strict=True)
                     ):
                         raise FlashFailure("lkg_bytes_changed")
-                elif (
+                elif not no_recovery_point and (
                     backup is None
                     or len(backup) != plan.flash_bytes
                     or hashlib.sha256(backup).hexdigest() != plan.backup_sha256
@@ -248,14 +264,16 @@ class FlashLifecycle:
                         raise FlashFailure("flash_manifest_changed_needs_review")
                     # Recheck every sector that will be erased, including padding.
                     # An unrelated NVS change outside these ranges is not erased.
-                    stage("flash_backup_prewrite_check")
+                    # Only an explicitly named recovery point has a fence to keep.
+                    if not no_recovery_point:
+                        stage("flash_backup_prewrite_check")
                     if recovery is not None:
                         prior, prior_images = recovery
                         for item, expected in zip(prior.segments, prior_images, strict=True):
                             self._live(live)
                             if self.driver.read(item.offset, item.size) != expected:
                                 raise FlashFailure("lkg_current_firmware_changed_needs_review")
-                    else:
+                    elif not no_recovery_point:
                         assert backup is not None
                         for item in bundle.segments:
                             size = ((item.size + 4095) // 4096) * 4096
@@ -339,6 +357,14 @@ class FlashLifecycle:
                         "boot_text_is_cryptographic_proof": False,
                     },
                 )
+                if no_recovery_point:
+                    result[2].update(
+                        recovery_kind="none",
+                        prewrite_fence="not_applied_no_recovery_point",
+                        data_compatibility="not_checked",
+                        device_identity_basis="probed_before_write",
+                        bound_device_sha256=bound_device,
+                    )
             self._live(live)
         except FlashFailure:
             raise

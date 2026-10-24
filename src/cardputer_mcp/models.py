@@ -143,8 +143,8 @@ class PrepareRequest(StrictModel):
         default=None,
         description=(
             "Verified recovery receipt for flash/restore, mutually exclusive with "
-            "backup_job_id. A retained verified LKG may be selected when both are "
-            "omitted."
+            "backup_job_id. A restore may select the retained verified LKG when both "
+            "are omitted; a flash with both omitted names no recovery point."
         ),
     )
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")

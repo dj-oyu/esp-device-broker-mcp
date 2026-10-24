@@ -87,6 +87,49 @@ FLASH_EFFECTS = [
         "principal; no raw backup delivery"
     ),
 ]
+# A firmware_flash that names neither backup_job_id nor lkg_receipt (decision of
+# 2026-10-25): no recovery point is required or kept, so there is no pre-write
+# fence. A separate constant keeps every stored FLASH_EFFECTS plan valid.
+FLASH_EFFECTS_NO_RECOVERY_POINT = [
+    (
+        "Successful flash atomically selects the verified written bundle as the "
+        "device LKG with the successful job"
+    ),
+    (
+        "No recovery point is required or kept by this flash: no LKG or backup "
+        "precondition and no pre-write comparison of current device bytes"
+    ),
+    (
+        "Writes the attested bootloader, partition table and app; compatibility of "
+        "partitions, NVS or filesystem data with the previous firmware is not checked"
+    ),
+    (
+        "Recovery from a bad build is flashing a fixed build; restore stays a "
+        "separate explicit operation"
+    ),
+    (
+        "Executes only the registered external Python/esptool 5.1.0 ROM worker; may "
+        "reset the selected device"
+    ),
+    (
+        "Only the device identified by the pre-write probe is accepted for the write, "
+        "readback and boot check; current uncertainty blocks execution"
+    ),
+    (
+        "Flash: one 100 ms normal-boot reset and up to 30 s passive IDF/ELF "
+        "observation; at most one same-USB reopen after close, without another reset"
+    ),
+    (
+        "ROM reads: fixed 60 s + 600 s/MiB hard deadline, min 300 s/max 9660 s; "
+        "60 s without advancing progress stops; lease renewal remains explicit"
+    ),
+    (
+        "Flash leaves the new firmware installed; interrupted work remains "
+        "diagnostic history; no rollback"
+    ),
+    "Shares bounded redacted progress/boot logs only with the requesting principal",
+]
+RECOVERY_KINDS = ("full_backup", "artifact_bundle", "none")
 FLASH_FIELDS = {
     "flash_operation",
     "lkg_receipt",
@@ -112,23 +155,25 @@ FLASH_FIELDS = {
 
 
 def flash_readiness(registration: Any, has_lkg: bool) -> dict[str, Any]:
-    """What a registered device allows and what a first flash still needs; no hardware.
+    """What a registered device allows; no hardware.
 
-    Without a verified LKG, a flash must name a successful full backup of the device
-    (`firmware_backup`, then `backup_job_id`). If backup is not enabled, that first
-    step is unavailable until the local registration allows it.
+    A flash needs no LKG or backup: `flash_baseline` is "not_required" whenever
+    flash is enabled. `lkg_recorded` says whether a verified LKG exists that a
+    flash or restore may name explicitly with `lkg_receipt`.
     """
     operations = {
         name: getattr(registration, "allow_" + name) is True
         for name in ("backup", "flash", "restore")
     }
-    if has_lkg:
-        baseline = "verified_lkg"
-    elif operations["backup"]:
-        baseline = "initial_full_backup_required"
-    else:
-        baseline = "initial_full_backup_required_backup_not_enabled"
-    return {"operations": operations, "flash_baseline": baseline}
+    return {
+        "operations": operations,
+        "flash_baseline": "not_required" if operations["flash"] else "flash_not_enabled",
+        "lkg_recorded": has_lkg,
+    }
+
+
+def no_recovery_point_flash(plan: dict[str, Any]) -> bool:
+    return bool(plan["flash_operation"] == "flash" and plan["recovery_kind"] == "none")
 
 
 def operation_from_plan(plan: dict[str, Any]) -> OperationPlan:
@@ -168,9 +213,21 @@ def validate_flash_plan(plan: dict[str, Any]) -> None:
         or re.fullmatch(r"[a-f0-9]{64}", plan["manifest_export_sha256"]) is None
     ):
         raise ValueError("invalid_flash_plan")
+    # "none" exists only for new firmware_flash plans (which always carry
+    # manifest_export_sha256) and names no recovery input or expected device.
+    no_recovery_point = plan.get("recovery_kind") == "none"
+    if no_recovery_point and (
+        plan["test"] != TestName.FLASH.value
+        or not optional
+        or any(
+            plan[key] is not None
+            for key in ("lkg_receipt", "backup_job_id", "backup_sha256", "expected_device_sha256")
+        )
+    ):
+        raise ValueError("invalid_flash_plan")
     if (
         plan["flash_operation"] != FLASH_ACTIONS[plan["test"]]
-        or plan["recovery_kind"] not in ("full_backup", "artifact_bundle")
+        or plan["recovery_kind"] not in RECOVERY_KINDS
         or plan["backend"] not in ("mock", "serial")
         or plan["device"]
         != ("mock-cardputer" if plan["backend"] == "mock" else "configured-cardputer")
@@ -180,7 +237,8 @@ def validate_flash_plan(plan: dict[str, Any]) -> None:
         or plan["flash_bytes"] not in (2097152, 4194304, 8388608, 16777216)
         or not isinstance(plan["flash_principal"], str)
         or re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", plan["flash_principal"]) is None
-        or plan["effects"] != FLASH_EFFECTS
+        or plan["effects"]
+        != (FLASH_EFFECTS_NO_RECOVERY_POINT if no_recovery_point else FLASH_EFFECTS)
         or plan["stages"] != FLASH_STAGES
         or plan["argv_template"]
         != ["registered-python", "fixed-flash-worker", "broker-owned-operation"]
@@ -383,6 +441,10 @@ class FirmwareFlash:
                 ):
                     raise FlashFailure("backup_registered_device_mismatch")
                 expected_device, backup_digest = receipt.device_sha256, receipt.sha256
+            elif operation == "flash" and getattr(request, "lkg_receipt", None) is None:
+                # No baseline named: no LKG/backup lookup and no pre-write fence
+                # (decision 2026-10-25). Identity is bound at execution from the probe.
+                recovery_kind = "none"
             else:
                 row, metadata, files = self._known(
                     registration,
@@ -461,7 +523,7 @@ class FirmwareFlash:
             expected_app_bin_sha256=image_digest,
             registration_sha256=registration_digest,
             fingerprint=op.digest,
-            effects=FLASH_EFFECTS,
+            effects=FLASH_EFFECTS_NO_RECOVERY_POINT if recovery_kind == "none" else FLASH_EFFECTS,
             stages=FLASH_STAGES,
             expected_idf="6.0.1",
             target="esp32s3",
@@ -506,8 +568,15 @@ class FirmwareFlash:
         recovery = None
         snapshot_files = {}
         metadata = None
-        current = self.store().firmware_current(plan["device_id"])
-        baseline = current["baseline"] if current else plan["backup_job_id"]
+        no_recovery_point = no_recovery_point_flash(plan)
+        current = None
+        if no_recovery_point:
+            # No LKG/backup lookup at all. firmware_lkg.baseline is NOT NULL; a flash
+            # without a recovery point records its own job id as its baseline.
+            baseline = plan["job_id"]
+        else:
+            current = self.store().firmware_current(plan["device_id"])
+            baseline = current["baseline"] if current else plan["backup_job_id"]
         if plan["lkg_receipt"] is not None:
             row, metadata, snapshot_files = self._known(
                 registration, plan["device_id"], plan["lkg_receipt"]
@@ -524,7 +593,7 @@ class FirmwareFlash:
                 # The baseline backup stays owned by whoever took it; it is used
                 # internally here and never delivered to the caller.
                 _, backup = self._backup(registration, metadata["backup_job_id"], row["principal"])
-        elif plan["flash_operation"] != "backup":
+        elif plan["flash_operation"] != "backup" and not no_recovery_point:
             _, backup = self._backup(registration, plan["backup_job_id"], plan["flash_principal"])
         if plan["flash_operation"] == "flash":
             root, manifest = self._build_context(plan["build_job_id"], plan["flash_principal"])
@@ -545,6 +614,10 @@ class FirmwareFlash:
             elf = next(item for item in manifest["artifacts"] if item["name"] == elf_name)
             snapshot_files[elf_name] = _file(root, elf, 67108864)
             compat = compatibility(manifest, bundle, snapshot_files, registration.flash_bytes)
+            # The bundle's own layout is validated above. Without a named recovery
+            # point (current is None, known is None, backup is None) there is no
+            # previous layout to match: the partition table is written with the
+            # bundle and partition/NVS/data compatibility is not checked.
             if current is not None and known is None:
                 _, previous, _ = self._known(registration, plan["device_id"], current["receipt"])
                 if previous.get("compat") is not None:
@@ -718,6 +791,9 @@ class FirmwareFlash:
                         backup_sha256=plan["backup_sha256"],
                         backup_job_id=plan["backup_job_id"],
                     )
+                if no_recovery_point_flash(plan):
+                    # The new LKG is bound to the device the pre-write probe identified.
+                    metadata = dict(metadata, expected_device_sha256=summary["bound_device_sha256"])
                 if self.engine.cancelled.is_set() or live() is not True:
                     raise FlashFailure("lkg_promotion_cancelled_needs_review")
                 selected = (

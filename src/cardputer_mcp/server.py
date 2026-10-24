@@ -606,8 +606,8 @@ def create_server(
         or a physical connection. Paths, selectors and credentials stay private.
         Names outside the request ID format (1–64 letters/digits/underscore/hyphen)
         are omitted; they cannot be used in prepare_test.
-        Each device reports its enabled operations and flash_baseline: verified_lkg,
-        or initial_full_backup_required (back up first, then flash with backup_job_id).
+        Each device reports its enabled operations, flash_baseline (not_required when
+        flash is enabled: a flash needs no LKG or backup) and lkg_recorded.
         """
 
         def targets() -> dict[str, Any]:
@@ -759,8 +759,8 @@ def create_server(
         firmware_flash requires request.job_id, test=firmware_flash, a live owned
         request.session, registered request.device_id and successful owned
         request.build_job_id. Do not pass project_id: the registered device selects
-        its project. backup_job_id and lkg_receipt are mutually exclusive; verified
-        retained LKG may be used when both are omitted. Missing recovery is rejected.
+        its project. backup_job_id and lkg_receipt are mutually exclusive and add a
+        pre-write recovery fence; with both omitted no recovery point is required.
         firmware_backup requires session/device_id, with no build/recovery inputs.
         firmware_restore requires session/device_id and verified recovery, with no
         build_job_id or project_id. Explicit null optional references are allowed.

@@ -12,7 +12,9 @@ Every operation requires authenticated explicit execution of its exact prepared
 plan. No local approval, unattended grant or mock opt-in is required. Backup bytes stay in a private local directory.
 
 Flash requires the successful owned build's attested layout, sdkconfig, BIN and ELF
-receipts and either a device-bound initial full backup or retained verified LKG. Restore requires its own explicit request and
+receipts. It does not require an LKG or a backup (see "Flashing without a recovery
+point"); naming a device-bound full backup or a retained verified LKG adds a
+pre-write recovery fence. Restore requires its own explicit request and
 the original firmware BIN and ELF receipts registered locally. Security enabled
 or uncertain, encryption, existing stubs, and ROM ranges above 16 MiB fail closed.
 Initial chip detection has bounded fallback before identity verification; writes
@@ -87,8 +89,9 @@ previous target. A committed successful job stays successful if the client loses
 its reply. Successful explicit restore selects the version actually restored;
 build timestamp does not select a newer version behind the user's back.
 
-After first successful flash, omit `backup_job_id` to prepare another flash using
-the current LKG. Restore may omit recovery inputs to select the current target,
+A flash that omits both `backup_job_id` and `lkg_receipt` names no recovery point
+(below). Pass `lkg_receipt` to flash on top of a verified LKG with its fence.
+Restore may omit recovery inputs to select the current target,
 or pass `lkg_receipt` to select a previously verified exact target. Prepare freezes
 that receipt/hash; execute never substitute dynamic latest. A
 `backup_job_id` explicitly selects full-device recovery, including data.
@@ -96,10 +99,43 @@ that receipt/hash; execute never substitute dynamic latest. A
 The fast artifact path supports one factory app with exactly bootloader, table
 and app BIN regions. MD5, bounds, labels, flags, non-overlap and erase-sector fences
 are checked. Partition bytes, security settings and SPI geometry must be unchanged.
-NVS/filesystem/otadata are not firmware write targets. Before another flash, current
-firmware bytes are checked against the retained LKG rather than a stale initial
-full backup. Firmware-only restore also checks the current partition table; an
+NVS/filesystem/otadata are not firmware write targets. When a flash names a recovery
+point, current firmware bytes are checked against that LKG (or the named full
+backup) before the write. Firmware-only restore also checks the current partition table; an
 unreadable/changed table stops for separate recovery validation.
+
+## Flashing without a recovery point
+
+Decision of 2026-10-25, confirmed by the device owner. A `kind=flash` request
+without `backup_job_id` and `lkg_receipt` prepares a plan with
+`recovery_kind: "none"` and `lkg_receipt`, `backup_sha256`, `backup_job_id` and
+`expected_device_sha256` all null. Neither prepare nor execute looks up an LKG or
+a backup. Reason: ESP32-S3 ROM download mode cannot be bricked by app-region
+writes, and recovery from a bad build is flashing a fixed build; demanding exact
+recovery bytes and a pre-write fence only created dead ends (for example a device
+whose earlier write did not commit no longer matches its LKG, and with backup and
+restore disabled nothing could be flashed).
+
+Such a flash has no recovery-bytes check, no pre-write comparison of current
+device bytes and no partition-layout match against a previous LKG: the partition
+table is written as part of the bundle, and partition/NVS/data compatibility is
+not checked (the summary records `data_compatibility: "not_checked"`). Unchanged:
+registration, `allow_flash` and tool hashes, the owned verified build and manifest
+binding, the security probe, cancellation and authority checks, the single write,
+full readback, boot ELF/IDF check, confirmed close, final authority and the atomic
+commit that makes the build the device's LKG (`artifact_bundle`). The device
+identity is bound at execution time from the probe just before the write; a probe
+that cannot identify the device stops before any write. That identity is the only
+one accepted for the write, every readback and the LKG metadata, and the boot
+reconnect still requires the same USB device. The summary records it as
+`bound_device_sha256` with `device_identity_basis: "probed_before_write"`. The
+committed `firmware_lkg.baseline` is the flash job's own id (the column is NOT
+NULL and no earlier baseline is involved). The plan's `effects` say that no
+recovery point is required or kept; stored plans keep their original effects.
+
+Flashes that name `lkg_receipt` or `backup_job_id`, restore and backup are
+unchanged, including the pre-write fence. `status(view=targets)` reports
+`flash_baseline: "not_required"` whenever flash is enabled, plus `lkg_recorded`.
 
 This protects the MCP write ranges, not subsequent firmware behavior. Firmware
 may erase or modify NVS/filesystems after boot, and firmware rollback cannot promise
@@ -123,8 +159,8 @@ the flash kind, the caller's live owned session, registered device_id and a
 successful owned build_job_id. Do not pass project_id: the registered device
 selects its project. The public schema expresses these conditional requirements.
 Optional project_id=null remains accepted. backup_job_id and lkg_receipt are
-mutually exclusive; leaving both absent may select a retained verified LKG, and
-preflight rejects unavailable recovery. No URL, port, path or raw argv is accepted.
+mutually exclusive; for a flash, leaving both absent names no recovery point, and
+for a restore it selects the current verified LKG (preflight rejects unavailable recovery). No URL, port, path or raw argv is accepted.
 kind=backup requires session/device_id and no build/recovery inputs;
 kind=restore requires session/device_id and verified recovery, no build_job_id.
 Current principal/device/security checks, static registered operation capabilities,

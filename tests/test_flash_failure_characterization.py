@@ -262,7 +262,9 @@ async def test_lkg_prewrite_current_firmware_mismatch_never_writes(env):
     app = metadata["bundle"]["segments"][-1]
     env.driver.data[app["offset"] + 3] ^= 1
     before = _durable(env)
-    await _flash(env, "prewrite")
+    # The fence applies only when the LKG is named explicitly (decision 2026-10-25);
+    # with no baseline named, the same device content is flashed without a fence.
+    await _flash(env, "prewrite", build_job_id="build-one", lkg_receipt=env.selected)
     _assert_terminal(env, "prewrite", "lkg_current_firmware_changed_needs_review", before, 0)
 
 

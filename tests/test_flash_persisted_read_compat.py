@@ -100,7 +100,8 @@ async def test_full_backup_lkg_with_compat_absent_or_null_is_a_flash_baseline(en
         )
         env.store.db.commit()
     seq = env.store.device_write_seq()
-    prepared = env.prepare("after-full", build_job_id="build-one")
+    # Named explicitly: with no baseline named a flash uses no recovery point.
+    prepared = env.prepare("after-full", build_job_id="build-one", lkg_receipt=receipt)
     plan = prepared["plan"]
     assert (plan["lkg_receipt"], plan["recovery_kind"]) == (receipt, "full_backup")
     assert plan["backup_sha256"] == metadata["backup_sha256"]

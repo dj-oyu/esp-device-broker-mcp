@@ -67,7 +67,7 @@
   2. ダイジェストと引き渡しの確認
   3. probe とセキュリティ
   4. 回復用バイトの確認
-  5. 書き込み前の現行ファームウェアのフェンス
+  5. 書き込み前の現行ファームウェアのフェンス(回復点を明示したときだけ。§5.3)
   6. 書き込み
   7. readback
   8. 起動の ELF/IDF の確認
@@ -288,9 +288,7 @@
 - **`status(view=device)` に `connection` を足した(PR #88)。** `hardware_connected` は「ブローカーがポートを
   開いているか」で、待機中は常に false。これを実機が抜けていると読む誤りがあった。`serial_port_open` と
   その意味、ポートを開かない USB の列挙による `usb_presence` を返す。
-- **最初のフラッシュには、今も全体バックアップが要る。** `allow_backup = false` の設定では、LKG のない実機には
-  焼けない。これは回復の起点を残すための規則として保つ。行き止まりだと状態の読み取りで分かるようにすることを、
-  後の修正として残す(§5.2)。
+- ~~**最初のフラッシュには、今も全体バックアップが要る。**~~ §5.3 で取り消した。
 
 ### 5.2 段階 0.5 で見つかったこと(PR #87 の xfail と報告)
 
@@ -302,6 +300,36 @@
   バックアップの `.bin` は、`backend_error_no_retry` になる。
 - ハンドラーの中の内部の例外は、`invalid_arguments` として報告される。保守のタスクも黙って止まる。
 - 最初のフラッシュの行き止まり(§5.1)を、`status(view=targets)` か `status(view=device)` で示す。
+
+### 5.3 回復点なしのフラッシュ(2026-10-25、利用者の確認済み)
+
+- **フラッシュは、LKG も全体バックアップも前提にしない。** `backup_job_id` と `lkg_receipt` のどちらも
+  指定しないフラッシュは、計画の `recovery_kind` を `"none"` にする。`lkg_receipt`、`backup_sha256`、
+  `backup_job_id`、`expected_device_sha256` は null。準備でも実行でも、LKG とバックアップを引かない。
+- 理由: ESP32-S3 の ROM ダウンロードモードは、アプリ領域への書き込みでは壊れない。悪いビルドからの回復は、
+  直したビルドを焼くこと(前へ進める)。正確な回復用バイトと書き込み前のフェンスを求めると、行き止まりが
+  できるだけだった。実例: 前のフラッシュが書き込み後に確定しなかった(readback 中に権限が変わった)ため、
+  実機の中身が LKG と一致しなくなった。`allow_backup = false`、`allow_restore = false` の設定では、
+  すべてのフラッシュが `flash_backup_prewrite_check` の段で `lkg_current_firmware_changed_needs_review`
+  になり、出口がなかった。
+- `"none"` の実行では、回復用バイトの確認、書き込み前のフェンス、前の LKG との `same_layout` の照合をしない。
+  パーティションテーブルは一式の一部として書く。NVS やデータとの互換は確かめない(要約に
+  `data_compatibility: "not_checked"`)。
+- 実機の同一性は、実行時に、書き込み直前の probe で結ぶ。probe で実機を特定できなければ書かない。
+  その値を、書き込み・readback・LKG のメタデータの期待値にし、要約に `bound_device_sha256` として残す。
+  起動後の再接続は、今までどおり同じ USB を要する。
+- 残すもの: 登録・`allow_flash`・ツールのハッシュ、所有する検証済みビルドとマニフェストの結び付き、
+  セキュリティの probe、キャンセルと権限の確認、`driver.write` の 1 回の書き込み、全体の readback、
+  起動の ELF/IDF の確認、確認付きのクローズ、最後の権限確認、そしてこのビルドを LKG にする
+  `Store.finish_firmware` の不可分な確定。
+- `firmware_lkg.baseline` は NOT NULL なので、`"none"` のフラッシュは自分のジョブ ID を入れる。
+  表と列は増やさない。
+- 計画の `effects` は、回復点を求めも残しもしないことを書いた別の定数(`FLASH_EFFECTS_NO_RECOVERY_POINT`)。
+  `FLASH_EFFECTS` は変えないので、保存済みの計画はそのまま有効。`"none"` は新しい firmware_flash の計画
+  (`manifest_export_sha256` を持つもの)だけに許す。
+- `lkg_receipt` か `backup_job_id` を明示したフラッシュ、リストア、バックアップは変えない(フェンスも残す)。
+- `status(view=targets)` の `flash_baseline` は、`allow_flash` が true なら `"not_required"`。
+  `lkg_recorded` を足した。§5.2 の「行き止まりを示す」は、行き止まりがなくなったので不要になった。
 
 ## 6. 未検証
 
