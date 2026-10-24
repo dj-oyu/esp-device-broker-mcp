@@ -22,8 +22,10 @@ have one attempt and block attempt, without reconnect/reflash or automatic resto
 
 Keep command side effects simple and explicit: backup reads and preserves a
 private receipt, flash installs and leaves the verified new firmware installed,
-and restore writes the exact prior backup only when separately requested. No command silently invokes another MCP command. Failure stops for
-review without rollback, repeat writes or automatically invoking restore.
+and restore writes the exact prior backup only when separately requested. No command silently invokes another MCP command. Failure stops
+without rollback, repeat writes or automatically invoking restore. Whether it also
+needs review depends on what is known about the device; see
+[Failure outcomes](#failure-outcomes).
 
 Each native ROM probe/read/write connects in download mode and can reset the
 selected device. Backup performs only probe/read and does not add a normal-boot
@@ -39,8 +41,9 @@ independent explicitly requested job. The ELF prefix is textual boot evidence;
 readback independently verifies the complete written BIN bytes.
 
 Cancellation and authority checks apply during passive reads as well as between
-native phases. Interrupted or uncertain work requires review. Device ownership
-is retained until owned processes and serial ports have certainly closed.
+native phases. Interrupted work after a write began, or uncertain work, requires
+review. Device ownership is retained until owned processes and serial ports have
+certainly closed.
 Shared filtered logs disclose bounded redacted progress and bounded boot logs,
 never raw backups or private tool paths. Mock verification does not authorize
 physical device access or prove a hardware flash succeeded.
@@ -69,8 +72,37 @@ verified read is still required before retaining a backup receipt.
 
 Read authority is rechecked during owned execution. Cancellation terminates the
 owned process tree and retains ownership until teardown is confirmed; uncertainty
-still needs review. Clients must explicitly renew a live lease for long reads.
-No stub, retry, implicit renewal, automatic rollback or restore is added.
+still needs review. A lease must be live when its job is admitted (an expired
+lease cancels a queued job before it starts). Once the job is running it keeps the
+lease and device ownership until it finishes, even past the lease deadline:
+the lease clock no longer revokes it. This matters for jobs requested ahead of
+time, whose internal job lease (60 s default, 300 s maximum) is never returned to
+the client and so can never be renewed. Principal revocation or scope loss,
+explicit cancellation, broker shutdown, a broker epoch change and uncertainty still
+stop a running job, and its owner can still cancel it after the deadline. The
+lease is not extended: no stub, retry, implicit renewal, automatic rollback or
+restore is added, and an expired lease ends as soon as its job has finished.
+
+## Failure outcomes
+
+A failed flash, restore or backup ends `failed` when the device state is known,
+and `needs_review` when it is not. `needs_review` cancels every queued job
+(`recovery_review_required`) and must be reviewed; `failed` keeps its result code
+and leaves other queued work alone. The result code itself is never changed (some
+codes keep their historical `_needs_review` suffix). Neither outcome promotes LKG.
+The rule is in `src/cardputer_mcp/device_failure_outcome.py`.
+
+| Where it failed | Driver/port close | Outcome |
+| --- | --- | --- |
+| Before `driver.write` was called: plan/input checks, probe, security, identity, pre-write fence (`lkg_current_firmware_changed_needs_review`, `flash_backup_stale_needs_review`, ...), pre-write read errors, authority lost or cancelled before the write | confirmed | `failed` |
+| Same | not confirmed | `needs_review` |
+| Backup (read only) read error or authority loss | confirmed | `failed` |
+| `driver.write` started (or may have started), readback, boot verification, LKG staging/promotion, authority lost or cancelled after the write began | any | `needs_review` |
+| Uncertain codes: shutdown uncertain, device busy/uncertain, reader handoff unconfirmed, backup persistence failed | any | `needs_review` |
+| Unknown exception (state not established) or a failed final commit | any | `needs_review` |
+
+"Write started" is recorded by the lifecycle immediately before it calls
+`driver.write`; `driver.write` and `Store.finish_firmware` are unchanged.
 
 ## Verified last-known-good recovery
 
