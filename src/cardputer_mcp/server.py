@@ -782,6 +782,12 @@ def create_server(
         """
 
         def prepare() -> dict[str, Any]:
+            if request.after is not None and request.test not in (
+                TestName.BUILD,
+                TestName.SOURCE,
+            ):
+                waiter = principal(ctx, "control")
+                return resident.prepare_deferred(request, waiter.principal_id, waiter.origin.value)
             if request.test in (TestName.BUILD, TestName.SOURCE):
                 owner = principal(ctx, "control")
                 return resident.profile_jobs.prepare(
@@ -868,6 +874,9 @@ def create_server(
                 return resident.profile_jobs.execute(
                     request, owner.principal_id, owner.origin.value
                 )
+            if plan is not None and plan.get("execution_context") == "device_deferred":
+                waiter = principal(ctx, "control")
+                return resident.execute_deferred(request, waiter.principal_id, waiter.origin.value)
             return owned(request, ctx, lambda: resident.execute(request))
 
         return _result(lambda: shared_job(execute()))

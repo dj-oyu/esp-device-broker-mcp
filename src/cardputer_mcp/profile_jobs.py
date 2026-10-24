@@ -364,7 +364,14 @@ class ProfileJobs:
         if ticket is None:
             raise BrokerError("ticket_invalid")
         try:
-            broker.deferred.add(plan["job_id"], request.plan_hash, parent_id, principal, origin)
+            broker.deferred.add(
+                plan["job_id"],
+                request.plan_hash,
+                parent_id,
+                principal,
+                origin,
+                str(ticket["ticket_id"]),
+            )
             try:
                 broker.tickets.consume(str(ticket["ticket_id"]), principal)
                 broker.tickets.note_consumer(str(ticket["ticket_id"]), plan["job_id"])

@@ -30,6 +30,7 @@ from .app_models import (
 from .broker import BrokerError
 from .home_recovery import CancelHomeRecovery, RequestHomeRecovery
 from .models import (
+    DEFERRED_DEVICE_TESTS,
     AcquireRequest,
     BuildLogLevel,
     BuildLogRequest,
@@ -179,9 +180,14 @@ class SubmitRequest(StrictModel):
         default=None,
         pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
         description=(
-            "build: continue the source fetch named by this ticket (the chain tip); the "
-            "build waits for it. One ticket, one child. Omit source_receipt."
+            "Continue the job named by this ticket (the chain tip) without waiting for the "
+            "device: build after fetch (omit source_receipt), or a device kind (omit session). "
+            "Queue it with execute/flash; it waits for its parent and the device. One ticket, "
+            "one child. Not for backup or app_session."
         ),
+    )
+    lease_seconds: int | None = Field(
+        default=None, ge=1, le=300, description="with after, device kinds: lease length"
     )
     app: AppSessionOptions | None = Field(default=None, description="app_session")
 
@@ -448,6 +454,7 @@ def register_surface(
                 plan is not None
                 and "session_id" not in plan
                 and not str(plan.get("execution_context", "")).startswith("registered_project")
+                and plan.get("execution_context") != "device_deferred"
             ):
                 return _refuse("argument_not_allowed", "continues")
         model, error = _convert(lambda: ExecuteRequest(plan_hash=plan_hash, session=session))
@@ -582,6 +589,15 @@ def register_surface(
         in execute_tool: flash for flash and restore, otherwise execute.
         """
         required, optional = SUBMIT_RULES[request.kind]
+        if "after" in request.model_fields_set:
+            if request.kind is Kind.BUILD:
+                pass  # build keeps its own rule: after is optional there
+            elif KIND_TEST[request.kind] in DEFERRED_DEVICE_TESTS:
+                # Requested ahead of time: no live lease, the ticket names the parent.
+                required = (required - {"session"}) | {"after"}
+                optional = optional | {"lease_seconds"}
+            else:
+                return _refuse("argument_not_allowed", "after")
         refused = _check(request, "kind", required, optional)
         if refused is not None:
             return refused
@@ -687,6 +703,15 @@ def register_surface(
             cancelled = None
         if cancelled is not None:
             return {"ok": True, **cancelled}
+        if request.session is None:
+            try:
+                running = resident.cancel_job_only(
+                    request.job_id, principal(ctx, "control").principal_id
+                )
+            except BrokerError as exc:
+                return _refuse(str(exc))
+            if running is not None:
+                return {"ok": True, **running}
         job = resident._store().job(request.job_id)
         plan = resident._store().plan(job["plan_hash"]) if job is not None else None
         if request.plan_hash is not None and (

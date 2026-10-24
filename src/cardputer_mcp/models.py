@@ -38,6 +38,10 @@ class TestName(StrEnum):
 
 
 FLASH_TESTS = frozenset({TestName.BACKUP, TestName.FLASH, TestName.RESTORE})
+# Device jobs that need no live client capability and may be requested ahead of time.
+DEFERRED_DEVICE_TESTS = frozenset(
+    set(TestName) - {TestName.SOURCE, TestName.BUILD, TestName.BACKUP, TestName.APP_SESSION}
+)
 
 
 class AcquireRequest(StrictModel):
@@ -154,7 +158,10 @@ class PrepareRequest(StrictModel):
         default=None,
         pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
         exclude_if=lambda value: value is None,
-        description="Build only: continue the source fetch named by this ticket.",
+        description="Continue the job named by this ticket (build, or a device job).",
+    )
+    lease_seconds: int | None = Field(
+        default=None, ge=1, le=300, exclude_if=lambda value: value is None
     )
     app: AppSessionOptions | None = Field(default=None, exclude_if=lambda value: value is None)
 
@@ -162,12 +169,16 @@ class PrepareRequest(StrictModel):
     def flash_references(self) -> "PrepareRequest":
         if (self.test == TestName.APP_SESSION) != (self.app is not None):
             raise ValueError("app_options_required_only_for_app_session")
-        if self.after is not None and (
-            self.test != TestName.BUILD
-            or self.project_id is None
-            or self.source_receipt is not None
-        ):
-            raise ValueError("after_only_for_registered_build_without_receipt")
+        if self.after is not None:
+            if self.test == TestName.BUILD:
+                if self.project_id is None or self.source_receipt is not None:
+                    raise ValueError("after_only_for_registered_build_without_receipt")
+            elif self.test not in DEFERRED_DEVICE_TESTS:
+                raise ValueError("after_only_for_registered_build_without_receipt")
+            elif self.session is not None:
+                raise ValueError("session_not_allowed_with_after")
+        if self.lease_seconds is not None and self.after is None:
+            raise ValueError("lease_seconds_only_with_after")
         if "derby_dma_mode" in self.model_fields_set and (
             self.derby_dma_mode is None
             or self.derby_detail_mode is None
@@ -181,7 +192,11 @@ class PrepareRequest(StrictModel):
             raise ValueError("diagnostic_mode_requires_source_build")
         if self.flash_job_id is not None and self.test != TestName.DERBY_FIXED:
             raise ValueError("flash_job_id_only_for_fixed_collector")
-        if self.test not in (TestName.SOURCE, TestName.BUILD) and self.session is None:
+        if (
+            self.test not in (TestName.SOURCE, TestName.BUILD)
+            and self.session is None
+            and self.after is None
+        ):
             raise ValueError("device_session_required")
         if self.test == TestName.SOURCE:
             if (

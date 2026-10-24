@@ -116,6 +116,14 @@ class Tickets:
         )
         db.commit()
 
+    def set_fence(self, ticket_id: str, seq: int) -> None:
+        db = self._store().db
+        db.execute(
+            "UPDATE continuation_tickets SET fence_seq=? WHERE ticket_id=? AND fence_seq IS NULL",
+            (seq, ticket_id),
+        )
+        db.commit()
+
     def set_hold(self, ticket_id: str, value: str) -> None:
         db = self._store().db
         db.execute("UPDATE continuation_tickets SET hold=? WHERE ticket_id=?", (value, ticket_id))
@@ -267,7 +275,13 @@ class Deferred:
         return [dict(row) for row in rows]
 
     def add(
-        self, job_id: str, plan_hash: str, parent_job_id: str, principal_id: str, origin: str
+        self,
+        job_id: str,
+        plan_hash: str,
+        parent_job_id: str,
+        principal_id: str,
+        origin: str,
+        ticket_id: str | None = None,
     ) -> None:
         db = self._store().db
         count = db.execute("SELECT COUNT(*) FROM deferred_jobs WHERE state='pending'").fetchone()[0]
@@ -275,9 +289,23 @@ class Deferred:
             raise TicketError("queue_full")
         db.execute(
             "INSERT INTO deferred_jobs(job_id,plan_hash,parent_job_id,principal_id,origin,epoch,"
-            "state,created) VALUES(?,?,?,?,?,?,'pending',?)",
-            (job_id, plan_hash, parent_job_id, principal_id, origin, self._epoch(), time.time()),
+            "ticket_id,state,created) VALUES(?,?,?,?,?,?,?,'pending',?)",
+            (
+                job_id,
+                plan_hash,
+                parent_job_id,
+                principal_id,
+                origin,
+                self._epoch(),
+                ticket_id,
+                time.time(),
+            ),
         )
+        db.commit()
+
+    def set_wait(self, job_id: str, wait_id: str) -> None:
+        db = self._store().db
+        db.execute("UPDATE deferred_jobs SET wait_id=? WHERE job_id=?", (wait_id, job_id))
         db.commit()
 
     def remove(self, job_id: str) -> None:
@@ -312,7 +340,11 @@ class Deferred:
 
     def view(self, row: dict[str, Any]) -> dict[str, Any]:
         """Job-shaped record for a waiting or finished deferred job."""
-        state = {"pending": "waiting_parent"}.get(str(row["state"]), str(row["state"]))
+        state = (
+            ("waiting_for_device" if row.get("wait_id") else "waiting_parent")
+            if row["state"] == "pending"
+            else str(row["state"])
+        )
         job: dict[str, Any] = {
             "id": row["job_id"],
             "plan_hash": row["plan_hash"],
