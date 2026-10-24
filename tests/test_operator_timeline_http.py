@@ -24,11 +24,13 @@ async def test_timeline_keeps_job_context_from_plan_through_image_delivery(regis
         ) as local,
         connect(service.url, service.keys["second"].token) as remote,
     ):
-        lease = await call(remote, "acquire_session", {"owner": "remote_mcp"})
+        lease = await call(
+            remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         plan = await call(
             remote,
-            "prepare_test",
-            {"session": lease["session"], "job_id": "timeline-capture", "test": "capture_home"},
+            "submit",
+            {"session": lease["session"], "job_id": "timeline-capture", "kind": "capture"},
         )
         started_at = time.monotonic()
         timeline = (await local.get("/operator/timeline")).json()
@@ -41,7 +43,9 @@ async def test_timeline_keeps_job_context_from_plan_through_image_delivery(regis
         retired = await local.post("/operator/approve-plan", json={"plan_hash": plan["plan_hash"]})
         assert retired.status_code == 410 and service.backend.calls == 0
         executed = await call(
-            remote, "execute_test", {"session": lease["session"], "plan_hash": plan["plan_hash"]}
+            remote,
+            "execute",
+            {"op": "run", "session": lease["session"], "plan_hash": plan["plan_hash"]},
         )
         assert executed["ok"]
         await service.resident.queue.join()
@@ -51,7 +55,7 @@ async def test_timeline_keeps_job_context_from_plan_through_image_delivery(regis
         assert card["state"] == "succeeded" and card["image"]["delivery_state"] == "available"
         assert "image_base64" not in str(completed)
         allowed = await remote.call_tool(
-            "read_capture", {"request": {"job_id": "timeline-capture"}}
+            "status", {"request": {"view": "capture", "job_id": "timeline-capture"}}
         )
         assert not allowed.is_error
         preview = (await local.post("/operator/image", json={"job_id": "timeline-capture"})).json()
@@ -64,7 +68,9 @@ async def test_timeline_keeps_job_context_from_plan_through_image_delivery(regis
         assert service.backend.calls == 1
         retired = await local.post("/operator/image-decision", json={"job_id": "timeline-capture"})
         assert retired.status_code == 410
-        image = await remote.call_tool("read_capture", {"request": {"job_id": "timeline-capture"}})
+        image = await remote.call_tool(
+            "status", {"request": {"view": "capture", "job_id": "timeline-capture"}}
+        )
         assert not image.is_error and any(item.type == "image" for item in image.content)
         assert service.backend.calls == 1
 

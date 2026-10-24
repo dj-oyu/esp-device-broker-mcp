@@ -67,7 +67,7 @@ refused before anything starts.
    --config <profile> --require-auth [--enable-serial]` with the tokens inherited from the
    environment only
 4. Polls `cardputer.exe --url <Url> --auth-source environment status` (the existing
-   authenticated `device_status` call, read-only) until the broker answers with `ok`, a backend,
+   authenticated `status(view=device)` call, read-only) until the broker answers with `ok`, a backend,
    no active job/owner and no open hardware connection. On timeout it points you to the server
    console, where the exe prints its own refusal (for example `serial_runtime_opt_in_required`
    or a profile error), and suggests `-NoSerial` or `-Url`

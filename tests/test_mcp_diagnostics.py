@@ -56,7 +56,7 @@ async def test_real_http_probe_uses_existing_operator_identity_and_does_no_work(
     result = await asyncio.to_thread(api.catalog)
     assert result == summary() | {
         "server_version": "0.12.0",
-        "tools_count": 25,
+        "tools_count": 6,
         "broker_epoch": service.resident.epoch,
     }
     assert service.backend.calls == 0
@@ -119,10 +119,10 @@ def test_old_catalog_and_unknown_version_are_reported_without_schema_echo(monkey
                 next_cursor=None,
                 tools=[
                     SimpleNamespace(
-                        name="prepare_test",
+                        name="submit",
                         input_schema={
                             "$defs": {
-                                "TestName": {"enum": ["diagnostics", "hello"]},
+                                "Kind": {"enum": ["diagnostics", "hello"]},
                             }
                         },
                     ),
@@ -189,10 +189,10 @@ def test_malformed_capture_enum_is_never_reported_supported(monkeypatch, values)
                 next_cursor=None,
                 tools=[
                     SimpleNamespace(
-                        name="prepare_test",
+                        name="submit",
                         input_schema={
                             "$defs": {
-                                "TestName": {"enum": values},
+                                "Kind": {"enum": values},
                             }
                         },
                     ),
@@ -262,5 +262,5 @@ async def test_status_sends_exactly_one_typed_read_request(result_type):
         with pytest.raises(MCPDiagnosticsError, match="^status_unavailable$"):
             await diagnostic._status(client)
     assert len(calls) == 1
-    assert calls[0].params.name == "device_status"
-    assert calls[0].params.arguments == {}
+    assert calls[0].params.name == "status"
+    assert calls[0].params.arguments == {"request": {"view": "device"}}

@@ -21,20 +21,18 @@ from cardputer_mcp.client import call, connect
 
 async def capture(client: Client, job_id: str, session: str) -> dict[str, Any]:
     prepared = await call(
-        client,
-        "prepare_test",
-        {"session": session, "job_id": job_id, "test": "capture_home"},
+        client, "submit", {"session": session, "job_id": job_id, "kind": "capture"}
     )
     assert prepared["ok"]
     executed = await call(
-        client, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+        client, "execute", {"op": "run", "session": session, "plan_hash": prepared["plan_hash"]}
     )
     assert executed["ok"]
     return prepared
 
 
 async def read_capture(client: Client, job_id: str) -> CallToolResult:
-    result = await client.call_tool("read_capture", {"request": {"job_id": job_id}})
+    result = await client.call_tool("status", {"request": {"view": "capture", "job_id": job_id}})
     assert isinstance(result, CallToolResult)
     return result
 
@@ -83,9 +81,12 @@ async def test_capture_http_delivers_image_content_hash_and_principal_isolation(
         connect(service.url, service.keys["reader"].token) as reader,
     ):
         advertised = await owner.list_tools()
-        tool = next(tool for tool in advertised.tools if tool.name == "read_capture")
+        tool = next(tool for tool in advertised.tools if tool.name == "status")
         assert tool.annotations is not None and tool.annotations.read_only_hint
-        acquired = await call(owner, "acquire_session", {"owner": "remote_mcp"})
+        assert "capture" in json.dumps(tool.input_schema)
+        acquired = await call(
+            owner, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         session = acquired["session"]
         await capture(owner, "image-content", session)
         await service.resident.queue.join()
@@ -95,9 +96,9 @@ async def test_capture_http_delivers_image_content_hash_and_principal_isolation(
         assert_unavailable(await read_capture(reader, "image-content"))
         assert_unavailable(await read_capture(stranger, "nonexistent"))
         public = [
-            await call(reader, "job_status", {"job_id": "image-content"}),
-            await call(reader, "read_logs", {}),
-            await call(reader, "device_status"),
+            await call(reader, "status", {"view": "job", "job_id": "image-content"}),
+            await call(reader, "status", {"view": "logs", "stream": "broker"}),
+            await call(reader, "status", {"view": "device"}),
         ]
         assert public[0]["state"] == "succeeded"
         serialized = json.dumps(public)
@@ -117,7 +118,9 @@ async def test_capture_http_rechecks_credential_after_success(
     monkeypatch.setattr(server_module, "time", lambda: service.now[0])
     key = service.keys["first"]
     async with connect(service.url, key.token) as owner:
-        acquired = await call(owner, "acquire_session", {"owner": "remote_mcp"})
+        acquired = await call(
+            owner, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         await capture(owner, "credential-changed", acquired["session"])
         await service.resident.queue.join()
         assert_image(await read_capture(owner, "credential-changed"))
@@ -135,8 +138,10 @@ async def test_capture_http_rechecks_credential_after_success(
                         "id": "capture-read",
                         "method": "tools/call",
                         "params": {
-                            "name": "read_capture",
-                            "arguments": {"request": {"job_id": "credential-changed"}},
+                            "name": "status",
+                            "arguments": {
+                                "request": {"view": "capture", "job_id": "credential-changed"}
+                            },
                         },
                     },
                 )
@@ -157,24 +162,32 @@ async def test_capture_http_reconnect_release_and_expiry_never_recaptures(
     service.resident.clock = lambda: now[0]
     key = service.keys["second"]
     async with connect(service.url, key.token) as owner:
-        acquired = await call(owner, "acquire_session", {"owner": "remote_mcp"})
+        acquired = await call(
+            owner, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         session = acquired["session"]
         plan = await capture(owner, "reconnect", session)
     await service.resident.queue.join()
     async with connect(service.url, key.token) as reconnected:
         repeated = await call(
-            reconnected, "execute_test", {"session": session, "plan_hash": plan["plan_hash"]}
+            reconnected,
+            "execute",
+            {"op": "run", "session": session, "plan_hash": plan["plan_hash"]},
         )
         assert repeated["deduplicated"]
         original = assert_image(await read_capture(reconnected, "reconnect"))
-        assert (await call(reconnected, "release_session", {"session": session}))["released"]
+        assert (await call(reconnected, "session", {"action": "release", "session": session}))[
+            "released"
+        ]
     async with connect(service.url, key.token) as later:
         now[0] = 399.999
         assert assert_image(await read_capture(later, "reconnect")) == original
         now[0] = 400.0
         assert_unavailable(await read_capture(later, "reconnect"))
         assert_unavailable(await read_capture(later, "reconnect"))
-        assert (await call(later, "job_status", {"job_id": "reconnect"}))["state"] == "succeeded"
+        assert (await call(later, "status", {"view": "job", "job_id": "reconnect"}))[
+            "state"
+        ] == "succeeded"
         assert service.backend.calls == 1
 
 
@@ -182,12 +195,14 @@ async def test_legacy_mock_capture_reads_and_preparation_still_require_authentic
     service: str,
 ) -> None:
     async with connect(service) as anonymous:
-        acquired = await call(anonymous, "acquire_session", {"owner": "local_cli"})
+        acquired = await call(
+            anonymous, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 30}
+        )
         assert acquired["ok"]
         prepared = await call(
             anonymous,
-            "prepare_test",
-            {"session": acquired["session"], "job_id": "anonymous", "test": "capture_home"},
+            "submit",
+            {"session": acquired["session"], "job_id": "anonymous", "kind": "capture"},
         )
         assert prepared == {"ok": False, "error": "authentication_required"}
         assert_unavailable(await read_capture(anonymous, "anonymous"), "authentication_required")
@@ -205,21 +220,23 @@ async def test_three_clients_share_fifo_and_capture_by_key_without_duplicate_rec
     backend.gate = asyncio.Event()
     async with connect(service.url, shared_key) as codex, connect(service.url, cloud_key) as cloud:
         async with connect(service.url, shared_key) as claude:
-            claude_work = await call(claude, "create_work_session", {"owner": "remote_mcp"})
-            codex_work = await call(codex, "create_work_session", {"owner": "remote_mcp"})
-            cloud_work = await call(cloud, "create_work_session", {"owner": "remote_mcp"})
+            claude_work = await call(claude, "session", {"action": "open", "owner": "remote_mcp"})
+            codex_work = await call(codex, "session", {"action": "open", "owner": "remote_mcp"})
+            cloud_work = await call(cloud, "session", {"action": "open", "owner": "remote_mcp"})
             assert (
                 len({work["work_session_id"] for work in (claude_work, codex_work, cloud_work)})
                 == 3
             )
             claude_state = await call(
-                claude, "request_device", {"resume_token": claude_work["resume_token"]}
+                claude,
+                "session",
+                {"action": "request", "resume_token": claude_work["resume_token"]},
             )
             codex_state = await call(
-                codex, "request_device", {"resume_token": codex_work["resume_token"]}
+                codex, "session", {"action": "request", "resume_token": codex_work["resume_token"]}
             )
             cloud_state = await call(
-                cloud, "request_device", {"resume_token": cloud_work["resume_token"]}
+                cloud, "session", {"action": "request", "resume_token": cloud_work["resume_token"]}
             )
             assert claude_state["request"]["state"] == "owning"
             assert codex_state["request"]["position"] == 1
@@ -237,34 +254,38 @@ async def test_three_clients_share_fifo_and_capture_by_key_without_duplicate_rec
         async with connect(service.url, shared_key) as claude_again:
             resumed = await call(
                 claude_again,
-                "resume_work_session",
-                {"resume_token": claude_work["resume_token"]},
+                "status",
+                {"view": "session", "resume_token": claude_work["resume_token"]},
             )
             assert resumed["lease"]["session"] == session
             repeated = await call(
                 claude_again,
-                "execute_test",
-                {"session": session, "plan_hash": plan["plan_hash"]},
+                "execute",
+                {"op": "run", "session": session, "plan_hash": plan["plan_hash"]},
             )
             assert repeated["deduplicated"]
             assert_image(await read_capture(claude_again, "three-clients"))
             assert_image(await read_capture(codex, "three-clients"))
             assert_unavailable(await read_capture(cloud, "three-clients"))
-            assert (await call(claude_again, "release_session", {"session": session}))["released"]
+            assert (await call(claude_again, "session", {"action": "release", "session": session}))[
+                "released"
+            ]
         codex_state = await call(
-            codex, "resume_work_session", {"resume_token": codex_work["resume_token"]}
+            codex, "status", {"view": "session", "resume_token": codex_work["resume_token"]}
         )
         cloud_state = await call(
-            cloud, "resume_work_session", {"resume_token": cloud_work["resume_token"]}
+            cloud, "status", {"view": "session", "resume_token": cloud_work["resume_token"]}
         )
         assert codex_state["request"]["state"] == "owning"
         assert cloud_state["request"]["position"] == 1
         assert_image(await read_capture(codex, "three-clients"))
-        assert (await call(codex, "release_session", {"session": codex_state["lease"]["session"]}))[
-            "released"
-        ]
+        assert (
+            await call(
+                codex, "session", {"action": "release", "session": codex_state["lease"]["session"]}
+            )
+        )["released"]
         cloud_state = await call(
-            cloud, "resume_work_session", {"resume_token": cloud_work["resume_token"]}
+            cloud, "status", {"view": "session", "resume_token": cloud_work["resume_token"]}
         )
         assert cloud_state["request"]["state"] == "owning"
         assert_unavailable(await read_capture(cloud, "three-clients"))

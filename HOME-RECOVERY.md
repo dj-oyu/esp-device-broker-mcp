@@ -28,14 +28,14 @@ configuration is not cryptographic evidence of the actual running firmware.
 ## Explicit authenticated recovery request
 
 1. Inspect the failed source job and release its idle lease through ordinary MCP.
-2. Call `request_home_recovery` with a new `job_id` and eligible `source_job_id`.
+2. Call `execute(op=home_recovery)` with a new `job_id` and eligible `source_job_id`.
    The current source-owning principal must have read and control scopes. This
    explicit request validates and durably consumes the source's single recovery
    attempt, then starts bounded recovery immediately. It is not a proposal waiting
    for a local click, keyword, attestation, arming window or launcher.
-3. Poll `job_status` with the recovery job ID. If the response was lost, inspect
+3. Poll `status(view=job)` with the recovery job ID. If the response was lost, inspect
    this existing job rather than creating another recovery attempt.
-4. `cancel_home_recovery` takes the job ID and plan hash. Cancellation stops further
+4. `cancel(target=job, job_id, plan_hash)` takes the job ID and plan hash. Cancellation stops further
    input and retains ownership until serial close is confirmed.
 
 The old review/approval CLI, operator routes and HomeRecovery launch-slot flow

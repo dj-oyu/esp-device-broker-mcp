@@ -117,7 +117,10 @@ class HTTPBrokerAdapter:
                         transport, read_timeout_seconds=_REQUEST_SECONDS, cache=None
                     ) as client:
                         identity = await self._call_once(
-                            client, CallToolRequestParams(name="client_identity", arguments={})
+                            client,
+                            CallToolRequestParams(
+                                name="status", arguments={"request": {"view": "identity"}}
+                            ),
                         )
                         self._verify_identity(identity)
                         dispatched = True

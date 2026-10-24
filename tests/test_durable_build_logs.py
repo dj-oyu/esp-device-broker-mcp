@@ -195,7 +195,9 @@ async def test_actual_mcp_receipt_survives_broker_restart_and_denies_other_princ
         logs = BuildLogs(OWNER)
         logs.append("warning: synthetic job output")
         broker.firmware_build.logs["build-0"] = logs
-        first = await call(owner, "read_build_logs", {"job_id": "build-0"})
+        first = await call(
+            owner, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
+        )
         assert first["ok"] and first["manifest"] == manifest and not first["expired"]
         expected_export = first["manifest_export"], first["manifest_export_sha256"]
     before = list(receipt.store.db.iterdump())
@@ -205,11 +207,15 @@ async def test_actual_mcp_receipt_survives_broker_restart_and_denies_other_princ
         connect(url, LOCAL) as stranger,
     ):
         assert not broker.firmware_build.logs and not broker.firmware_build.manifests
-        result = await call(owner, "read_build_logs", {"job_id": "build-0"})
+        result = await call(
+            owner, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
+        )
         assert result["ok"] and result["expired"] and result["gap"]
         assert result["artifact_status"] == "verified" and result["manifest"] == manifest
         assert (result["manifest_export"], result["manifest_export_sha256"]) == expected_export
-        denied = await call(stranger, "read_build_logs", {"job_id": "build-0"})
+        denied = await call(
+            stranger, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
+        )
         assert denied == {"ok": False, "error": "build_log_not_available"}
         assert "manifest_export" not in denied
         assert broker.session is None and broker.backend.calls == 0
@@ -224,7 +230,9 @@ async def test_mcp_unavailable_artifact_preserves_log_gap_and_success_history(re
     else:
         (root / "app.bin").unlink()
     async with running(receipt) as (url, broker, _), connect(url, REMOTE) as owner:
-        result = await call(owner, "read_build_logs", {"job_id": "build-0"})
+        result = await call(
+            owner, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
+        )
         assert result["ok"] and result["expired"] and result["gap"]
         assert result["artifact_status"] == "unavailable" and "manifest" not in result
         assert "SYNTHETIC_PRIVATE" not in json.dumps(result)
@@ -256,8 +264,10 @@ async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
             result = await owner.session.send_request(
                 CallToolRequest(
                     params=CallToolRequestParams(
-                        name="read_build_logs",
-                        arguments={"request": {"job_id": "build-0"}},
+                        name="status",
+                        arguments={
+                            "request": {"view": "logs", "stream": "build", "job_id": "build-0"}
+                        },
                     )
                 ),
                 CallToolResult,
@@ -269,13 +279,20 @@ async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
             assert await asyncio.to_thread(entered.wait, 2)
             async with connect(url, REMOTE) as status_client:
                 concurrent = await asyncio.wait_for(
-                    call(status_client, "read_build_logs", {"job_id": "build-0"}), 1
+                    call(
+                        status_client,
+                        "status",
+                        {"view": "logs", "stream": "build", "job_id": "build-0"},
+                    ),
+                    1,
                 )
                 assert concurrent["ok"] and concurrent["artifact_status"] == "busy"
                 assert "manifest" not in concurrent
                 assert "manifest_export" not in concurrent
                 assert "manifest_export_sha256" not in concurrent
-                status = await asyncio.wait_for(call(status_client, "device_status"), 1)
+                status = await asyncio.wait_for(
+                    call(status_client, "status", {"view": "device"}), 1
+                )
                 assert status["ok"] and status["active_job"] is None
             if mutation == "revoke":
                 auth._tokens[Origin.REMOTE] = "c" * 64
@@ -303,7 +320,9 @@ async def test_hash_io_is_off_loop_and_rechecks_authority_before_delivery(
         result = await asyncio.wait_for(reading, 3)
         if mutation == "none":
             assert result["ok"] and result["artifact_status"] == "verified"
-            again = await call(owner, "read_build_logs", {"job_id": "build-0"})
+            again = await call(
+                owner, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
+            )
             assert again["ok"] and again["artifact_status"] == "verified"
             assert again["manifest"] == result["manifest"]
             assert again["manifest_export"] == result["manifest_export"]

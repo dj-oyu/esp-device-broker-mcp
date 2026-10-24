@@ -74,7 +74,7 @@ function Test-Listener {
         return ($connect.AsyncWaitHandle.WaitOne(300) -and $client.Connected)
     } catch { return $false } finally { $client.Close() }
 }
-# One bounded authenticated `status` (the existing device_status call): no lease, USB or device command.
+# One bounded authenticated `status` (the existing status(view=device) call): no lease, USB or device command.
 function Get-BrokerStatus {
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = $exePath

@@ -266,7 +266,7 @@ async def test_tool_validation_never_echoes_raw_input(
     server = create_server(Settings())
     request: dict[str, Any] = {"session": "a" * 64, "job_id": "safe", **invalid_fields}
     try:
-        result = await server.call_tool("prepare_test", {"request": request})
+        result = await server.call_tool("submit", {"request": {**request}})
     except Exception as exc:
         rendered = str(exc)
     else:

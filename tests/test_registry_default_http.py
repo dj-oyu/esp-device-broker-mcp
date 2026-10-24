@@ -18,8 +18,10 @@ async def test_auto_registry_live_mutations_and_independent_tokens(registry_serv
     service = registry_service
     reader = service.keys["reader"]
     async with connect(service.url, reader.token) as client:
-        assert (await call(client, "device_status"))["ok"]
-        refused = await call(client, "acquire_session", {"owner": "remote_mcp"})
+        assert (await call(client, "status", {"view": "device"}))["ok"]
+        refused = await call(
+            client, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         assert refused == {"ok": False, "error": "insufficient_scope"}
         service.registry.revoke(reader.metadata.key_id)
         async with httpx2.AsyncClient(trust_env=False) as http:
@@ -34,7 +36,7 @@ async def test_auto_registry_live_mutations_and_independent_tokens(registry_serv
     )
     issued = writer.issue("new synthetic client", Origin.REMOTE)
     async with connect(service.url, issued.token) as client:
-        assert (await call(client, "device_status"))["ok"]
+        assert (await call(client, "status", {"view": "device"}))["ok"]
     writer.close()
     # Missing -> newly created store is detected by the same running broker.
     service.registry.close()
@@ -48,7 +50,7 @@ async def test_auto_registry_live_mutations_and_independent_tokens(registry_serv
     )
     new = replacement.issue("replacement synthetic", Origin.REMOTE)
     async with connect(service.url, new.token) as client:
-        assert (await call(client, "device_status"))["ok"]
+        assert (await call(client, "status", {"view": "device"}))["ok"]
     replacement.close()
     # A corrupt replacement denies issued credentials, never anonymous fallback.
     path.write_bytes(b"invalid sqlite content")
@@ -59,4 +61,4 @@ async def test_auto_registry_live_mutations_and_independent_tokens(registry_serv
         assert (await http.get(service.url)).status_code == 401
     for token in (LOCAL, REMOTE):
         async with connect(service.url, token) as client:
-            assert (await call(client, "device_status"))["ok"]
+            assert (await call(client, "status", {"view": "device"}))["ok"]

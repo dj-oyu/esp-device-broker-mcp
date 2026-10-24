@@ -8,7 +8,7 @@
 ## 稼働中のMCPツールを確認する（v0.7.1）
 
 画面上部の **MCP info** を押します。GUIが保持している認証で同じローカルbrokerへ
-接続し、初期化情報・tools/list・device_statusだけを読み取ります。USBを開かず、
+接続し、初期化情報・tools/list・status(view=device)だけを読み取ります。USBを開かず、
 ジョブ作成・キー作成・サーバー再起動をしません。診断全体の待ち時間は最大5秒です。
 認証キー、ヘッダー、完全なツール定義、SDKエラー本文は表示・記録しません。
 
@@ -16,13 +16,13 @@
 
 - gui_version: 今開いているGUIのコード版（この版は0.12.0）
 - server_version: 実際に応答したMCPサーバーの版
-- tools_count: 実際のtools/listの件数（この版は17）
-- read_capture: 画像読取ツールの有無
-- capture_home: prepare_testの選択肢にcapture_homeがあるか
+- tools_count: 実際のtools/listの件数（この版は6）
+- read_capture: statusのviewにcaptureがあるか（画像読取）
+- capture_home: submitのkindにcaptureがあるか
 - broker_epoch: このbroker起動を識別する値。認証キーではありません
 
 件数とcapture項目だけでは、新しい引数や全選択肢が反映されたかまでは確認できません。
-クラウド側device_statusのbroker_epochも一致するか比較すると、
+クラウド側status(view=device)のbroker_epochも一致するか比較すると、
 同じ実行中サーバーを見ているか切り分けられます。GUIとserverの版が違う場合は、
 稼働中プロセスや起動元を確認します。診断は自動で再試行しません。
 
@@ -40,9 +40,9 @@ GUIだけの再起動は、認証を保持する元のPowerShellが残ってい�
 ## 仕事ごとのタイムライン
 
 同じjobカードで要求内容・影響・実行状態・結果・保持中の画像を確認します。
-認証済みクライアントがprepareした正確なplan_hashをexecuteすると待ち列へ進みます。
+認証済みクライアントがsubmitした正確なplan_hashをexecute（flash/restoreのplanはflash）すると待ち列へ進みます。
 GUIでのApprove、画像送信判断、Pending承認バッジ、許可ルール画面は廃止しました。
-`wait_for_approval` は互換性用の非推奨引数で、指定しても待機しません。
+承認用の引数は現在ありません。
 
 画像の取得元principalは、有効なread権限と元の保持期限内で画像を取得できます。
 プレビュー表示や更新で再撮影したり、5分の保持期限を延長したりしません。
@@ -120,7 +120,7 @@ GUI は同じ resident broker の状態を読むだけで、別のシリアル�
 まず mock を使ってください。実機切替は別途 `-EnableSerial` と private config が必要です。
 GUI 操作用のローカル token は公式 Tunnel client に渡しません。
 GUI の operator API は local_cli + control の認証だけを受け付け、Tunnel 用 remote_mcp では操作できません。
-クラウド側での接続可否は、実際の tools/list と device_status が成功するまで未確認です。
+クラウド側での接続可否は、実際の tools/list と status(view=device) が成功するまで未確認です。
 
 ## Cancel a registered-project job
 
@@ -132,7 +132,7 @@ uses the existing profile worker/process cleanup path. A first operator stop rec
 operator_cancelled after confirmed cleanup; earlier stop reasons and uncertain
 cleanup codes remain unchanged.
 
-Remote clients still require their own job's principal/origin for MCP cancel_job;
+Remote clients still require their own job's principal/origin for MCP cancel(target=job);
 they cannot use the local operator route. This stop authority grants no execution,
 artifact-use, lease-acquisition or flash/restore/device-operation permission.
 Legacy lease-bound work, unregistered projects and other job types are rejected.

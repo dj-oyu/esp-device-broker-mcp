@@ -364,7 +364,10 @@ def register_surface(
 
     def plan_is_callers(plan: dict[str, Any], ctx: Context[Any, Any], session: str | None) -> bool:
         """The plan's kind is disclosed only to its own principal (or lease holder)."""
-        owner = principal(ctx, "control")
+        try:
+            owner = principal(ctx, "control")
+        except BrokerError:
+            return False  # the ordinary handler reports the authentication/scope error
         bound = [plan[key] for key in PLAN_PRINCIPAL_KEYS if isinstance(plan.get(key), str)]
         if bound:
             return all(value == owner.principal_id for value in bound)

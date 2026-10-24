@@ -21,6 +21,7 @@ from .operator import acknowledge_device_request_recovery, acknowledge_recovery
 from .operator_client import OperatorClient, OperatorClientError
 from .ports import inventory_json
 from .server import create_app
+from .surface import KIND_TEST
 
 RETIRED_COMMANDS = frozenset(
     {
@@ -123,6 +124,12 @@ def parser() -> argparse.ArgumentParser:
         if name == "execute":
             cmd.add_argument("--plan", required=True)
             cmd.add_argument(
+                "--tool",
+                choices=["execute", "flash"],
+                default="execute",
+                help="MCP tool to queue the plan with: flash is required for flash/restore plans",
+            )
+            cmd.add_argument(
                 "--wait-for-approval",
                 action="store_true",
                 help=argparse.SUPPRESS,
@@ -164,61 +171,136 @@ async def demo(
     if local_token is None or remote_token is None:
         raise AuthError("demo_requires_authenticated_clients")
     async with connect(url, local_token) as local, connect(url, remote_token) as remote:
-        initial = await call(local, "device_status")
+        initial = await call(local, "status", {"view": "device"})
         if initial.get("backend") != "mock":
             raise ValueError("Demo requires a mock broker; hardware is never used")
-        acquired = await call(local, "acquire_session", {"owner": "local_cli", "lease_seconds": 60})
+        acquired = await call(
+            local, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 60}
+        )
         if not acquired.get("ok"):
             raise ValueError("Demo needs an idle, reviewed mock broker")
         session = acquired["session"]
         await beat("1. Local CLI owns the whole flash -> boot -> test session")
         prepared = await call(
             local,
-            "prepare_test",
+            "submit",
             {
+                "kind": "workflow",
                 "session": session,
                 "job_id": f"demo-{uuid4().hex}",
-                "test": "firmware_workflow",
             },
         )
         if not prepared.get("ok"):
             raise ValueError("Could not prepare mock workflow")
         job = await call(
-            local, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+            local,
+            "execute",
+            {"op": "run", "session": session, "plan_hash": prepared["plan_hash"]},
         )
         if not job.get("ok"):
             raise ValueError("Could not enqueue mock workflow")
-        conflict = await call(remote, "acquire_session", {"owner": "remote_mcp"})
+        conflict = await call(
+            remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         if conflict.get("error") != "device_busy":
             raise ValueError("Expected a single-owner conflict")
         await beat("2. Second MCP client: device_busy (same broker, no second USB reader)")
-        while (await call(local, "job_status", {"job_id": job["id"]}))["state"] in (
+        while (await call(local, "status", {"view": "job", "job_id": job["id"]}))["state"] in (
             "queued",
             "running",
         ):
             await asyncio.sleep(0.05)
-        done = await call(remote, "job_status", {"job_id": job["id"]})
+        done = await call(remote, "status", {"view": "job", "job_id": job["id"]})
         if done["state"] != "succeeded":
             raise ValueError("Mock workflow did not succeed")
-        one = await call(local, "read_logs", {})
-        two = await call(remote, "read_logs", {})
+        one = await call(local, "status", {"view": "logs", "stream": "broker"})
+        two = await call(remote, "status", {"view": "logs", "stream": "broker"})
         if one["entries"] != two["entries"]:
             raise ValueError("Log readers did not see the same cached events")
         await beat("3. MOCK workflow passed; both clients read identical cached logs")
         retry = await call(
-            local, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+            local,
+            "execute",
+            {"op": "run", "session": session, "plan_hash": prepared["plan_hash"]},
         )
         if not retry.get("deduplicated"):
             raise ValueError("Retry was not deduplicated")
         await beat("4. Retrying the job ID returns the original result; no replay")
-        await call(local, "release_session", {"session": session})
-        second = await call(remote, "acquire_session", {"owner": "remote_mcp"})
+        await call(local, "session", {"action": "release", "session": session})
+        second = await call(
+            remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         if not second.get("ok"):
             raise ValueError("Ownership handover failed")
         await beat("5. Local releases; second MCP client acquires the device")
-        await call(remote, "release_session", {"session": second["session"]})
+        await call(remote, "session", {"action": "release", "session": second["session"]})
         await beat("PASS: exclusive ownership, shared logs, durable jobs, safe retry")
     print("No USB / real flash / Tunnel connection was used", flush=True)
+
+
+_TEST_KIND = {test.value: kind.value for kind, test in KIND_TEST.items()}
+
+
+def _resume_token(args: argparse.Namespace) -> str:
+    resume_token = os.environ.get(args.resume_env, "")
+    if re.fullmatch(r"[a-f0-9]{64}", resume_token) is None:
+        raise ValueError("invalid_work_resume_environment")
+    return resume_token
+
+
+def surface_request(command: str, args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    """Map one CLI sub-command to the MCP tool and typed request that implements it."""
+    if command == "work-create":
+        return "session", {"action": "open", "owner": args.owner, "ttl_seconds": args.seconds}
+    if command == "work-resume":
+        return "status", {"view": "session", "resume_token": _resume_token(args)}
+    if command == "work-request":
+        return "session", {
+            "action": "request",
+            "resume_token": _resume_token(args),
+            "lease_seconds": args.lease_seconds,
+            "wait_seconds": args.wait_seconds,
+        }
+    if command == "work-cancel":
+        return "cancel", {
+            "target": "request",
+            "resume_token": _resume_token(args),
+            "request_id": args.request_id,
+        }
+    if command == "work-close":
+        return "session", {"action": "close", "resume_token": _resume_token(args)}
+    if command == "status":
+        return "status", {"view": "device"}
+    if command == "logs":
+        request: dict[str, Any] = {"view": "logs", "stream": "broker", "limit": args.limit}
+        if args.cursor:
+            request["cursor"] = json.loads(args.cursor)
+        return "status", request
+    if command == "acquire":
+        return "session", {"action": "open", "owner": args.owner, "lease_seconds": args.seconds}
+    if command == "job":
+        return "status", {"view": "job", "job_id": args.job_id}
+    if command == "device-logs":
+        return "status", {"view": "logs", "stream": "device", "job_id": args.job_id}
+    if command == "release":
+        return "session", {"action": "release", "session": args.session}
+    if command == "renew":
+        return "session", {
+            "action": "renew",
+            "session": args.session,
+            "lease_seconds": args.seconds,
+        }
+    if command == "prepare":
+        return "submit", {
+            "kind": _TEST_KIND[str(args.test)],
+            "job_id": args.job,
+            "session": args.session,
+        }
+    if command == "execute":
+        if args.tool == "flash":
+            return "flash", {"session": args.session, "plan_hash": args.plan}
+        return "execute", {"op": "run", "session": args.session, "plan_hash": args.plan}
+    return "cancel", {"target": "job", "job_id": args.job, "session": args.session}
 
 
 async def run_client(args: argparse.Namespace) -> None:
@@ -234,53 +316,7 @@ async def run_client(args: argparse.Namespace) -> None:
         )
         return
     command = args.command
-    tools = {
-        "status": "device_status",
-        "logs": "read_logs",
-        "acquire": "acquire_session",
-        "release": "release_session",
-        "renew": "renew_session",
-        "prepare": "prepare_test",
-        "execute": "execute_test",
-        "cancel": "cancel_job",
-        "job": "job_status",
-        "device-logs": "read_device_logs",
-        "work-create": "create_work_session",
-        "work-resume": "resume_work_session",
-        "work-request": "request_device",
-        "work-cancel": "cancel_device_request",
-        "work-close": "close_work_session",
-    }
-    request: dict[str, Any] | None = {}
-    if command == "work-create":
-        request = {"owner": args.owner, "ttl_seconds": args.seconds}
-    elif command.startswith("work-"):
-        resume_token = os.environ.get(args.resume_env, "")
-        if re.fullmatch(r"[a-f0-9]{64}", resume_token) is None:
-            raise ValueError("invalid_work_resume_environment")
-        request = {"resume_token": resume_token}
-        if command == "work-request":
-            request.update(lease_seconds=args.lease_seconds, wait_seconds=args.wait_seconds)
-        elif command == "work-cancel":
-            request["request_id"] = args.request_id
-    elif command == "status":
-        request = None
-    elif command == "logs":
-        request = {"limit": args.limit, "cursor": json.loads(args.cursor) if args.cursor else None}
-    elif command == "acquire":
-        request = {"owner": args.owner, "lease_seconds": args.seconds}
-    elif command in ("job", "device-logs"):
-        request = {"job_id": args.job_id}
-    else:
-        request = {"session": args.session}
-        if command == "renew":
-            request["lease_seconds"] = args.seconds
-        elif command == "prepare":
-            request.update(job_id=args.job, test=args.test)
-        elif command == "execute":
-            request["plan_hash"] = args.plan
-        elif command == "cancel":
-            request["job_id"] = args.job
+    tool, request = surface_request(command, args)
     token = None
     if args.auth_source == "environment":
         token = load_environment_token(Origin(args.client))
@@ -293,7 +329,7 @@ async def run_client(args: argparse.Namespace) -> None:
             raise ValueError("auth_file_required")
         token = load_client_token(args.auth_file, Origin(args.client))
     async with connect(url, token) as client:
-        result = await call(client, tools[command], request)
+        result = await call(client, tool, request)
         output(result)
         if not result.get("ok"):
             raise SystemExit(1)

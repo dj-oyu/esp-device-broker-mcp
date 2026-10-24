@@ -11,6 +11,7 @@ import pytest
 from filelock import Timeout
 
 from cardputer_mcp import tunnel_manager as tm
+from cardputer_mcp.client import SURFACE_TOOLS
 from cardputer_mcp.tunnel import TunnelError, TunnelSettings
 from cardputer_mcp.windows_process import WindowsProcessError
 
@@ -400,25 +401,27 @@ def test_default_broker_probe_only_read_only_tools(monkeypatch):
 
     class Client:
         async def list_tools(self):
-            return SimpleNamespace(tools=[SimpleNamespace(name=name) for name in calls])
+            return SimpleNamespace(tools=[SimpleNamespace(name=name) for name in SURFACE_TOOLS])
 
     @asynccontextmanager
     async def connection(url, token):
         assert url == URL and token == BEARER.removeprefix("Bearer ")
         yield Client()
 
-    async def call(client, tool):
-        calls.append(tool)
-        if tool == "client_identity":
+    async def call(client, tool, request):
+        # Only the read-only status tool is ever used by the default probe.
+        assert tool == "status"
+        calls.append(request["view"])
+        if request["view"] == "identity":
             return {"ok": True, "authenticated": True, "origin": "remote_mcp", "scopes": ["read"]}
-        assert tool == "device_status"
+        assert request == {"view": "device"}
         return {"ok": True, "backend": "mock", "active_job": PRIVATE, "owner": PRIVATE}
 
     monkeypatch.setattr(tm, "connect_mcp", connection)
     monkeypatch.setattr(tm, "call", call)
     result = tm.broker_probe(URL, BEARER)
     assert result["authenticated"] and result["backend"] == "mock"
-    assert calls == ["client_identity", "device_status"]
+    assert calls == ["identity", "device"]
 
 
 def test_health_http_bounds_proxy_redirects_and_untrusted_body(monkeypatch):

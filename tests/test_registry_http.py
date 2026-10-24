@@ -127,50 +127,60 @@ async def test_registry_read_scopes_and_unique_principal_binding(
         connect(service.url, second.token) as stranger,
         connect(service.url, reader.token) as observer,
     ):
-        status = await call(observer, "device_status")
-        logs = await call(observer, "read_logs", {})
-        job = await call(observer, "job_status", {"job_id": "missing"})
+        status = await call(observer, "status", {"view": "device"})
+        logs = await call(observer, "status", {"view": "logs", "stream": "broker"})
+        job = await call(observer, "status", {"view": "job", "job_id": "missing"})
         assert status["ok"] and logs["ok"]
         assert job["error"] == "job_not_found"
-        denied = await call(observer, "acquire_session", {"owner": "remote_mcp"})
+        denied = await call(
+            observer, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         assert denied == {"ok": False, "error": "insufficient_scope"}
-        spoof = await call(owner, "acquire_session", {"owner": "local_cli"})
+        spoof = await call(
+            owner, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 30}
+        )
         assert spoof["error"] == "authenticated_owner_mismatch"
-        acquired = await call(owner, "acquire_session", {"owner": "remote_mcp"})
+        acquired = await call(
+            owner, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         session = acquired["session"]
         prepared = await call(
-            owner, "prepare_test", {"session": session, "job_id": "registry-control"}
+            owner,
+            "submit",
+            {"kind": "diagnostics", "session": session, "job_id": "registry-control"},
         )
         assert prepared["ok"]
         actions = {
-            "renew_session": {},
-            "release_session": {},
-            "prepare_test": {"job_id": "unauthorized"},
-            "execute_test": {"plan_hash": prepared["plan_hash"]},
-            "cancel_job": {"job_id": "registry-control"},
+            "renew": ("session", {"action": "renew"}),
+            "release": ("session", {"action": "release"}),
+            "submit": ("submit", {"kind": "diagnostics", "job_id": "unauthorized"}),
+            "execute": ("execute", {"op": "run", "plan_hash": prepared["plan_hash"]}),
+            "cancel": ("cancel", {"target": "job", "job_id": "registry-control"}),
         }
-        for tool, fields in actions.items():
+        for label, (tool, fields) in actions.items():
             stolen = await call(stranger, tool, {"session": session, **fields})
-            assert stolen == {"ok": False, "error": "authenticated_owner_mismatch"}, tool
+            assert stolen == {"ok": False, "error": "authenticated_owner_mismatch"}, label
             denied = await call(observer, tool, {"session": session, **fields})
-            assert denied == {"ok": False, "error": "insufficient_scope"}, tool
-        assert (await call(owner, "renew_session", {"session": session}))["renewed"]
+            assert denied == {"ok": False, "error": "insufficient_scope"}, label
+        assert (await call(owner, "session", {"action": "renew", "session": session}))["renewed"]
         result = await call(
-            owner, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+            owner,
+            "execute",
+            {"op": "run", "session": session, "plan_hash": prepared["plan_hash"]},
         )
         assert result["ok"]
         await service.resident.queue.join()
-        job = await call(observer, "job_status", {"job_id": "registry-control"})
+        job = await call(observer, "status", {"view": "job", "job_id": "registry-control"})
         assert job["state"] == "succeeded"
-        status = await call(observer, "device_status")
-        logs = await call(observer, "read_logs", {})
+        status = await call(observer, "status", {"view": "device"})
+        logs = await call(observer, "status", {"view": "logs", "stream": "broker"})
         public = str(status) + str(logs) + str(job)
         for key in service.keys.values():
             assert key.token not in public
             assert key.metadata.principal_id not in public
             assert key.metadata.key_id not in public
         assert session not in public
-        assert (await call(owner, "release_session", {"session": session}))["released"]
+        assert (await call(owner, "session", {"action": "release", "session": session}))["released"]
 
 
 async def test_registry_and_ephemeral_credentials_coexist_without_session_theft(
@@ -183,22 +193,30 @@ async def test_registry_and_ephemeral_credentials_coexist_without_session_theft(
         connect(service.url, REMOTE) as remote,
         connect(service.url, key.token) as key_client,
     ):
-        assert (await call(local, "device_status"))["ok"]
-        acquired = await call(remote, "acquire_session", {"owner": "remote_mcp"})
+        assert (await call(local, "status", {"view": "device"}))["ok"]
+        acquired = await call(
+            remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         session = acquired["session"]
         assert service.resident.session is not None
         assert service.resident.session.principal_id == "ephemeral:remote_mcp"
-        denied = await call(key_client, "release_session", {"session": session})
+        denied = await call(key_client, "session", {"action": "release", "session": session})
         assert denied["error"] == "authenticated_owner_mismatch"
-        assert (await call(remote, "renew_session", {"session": session}))["renewed"]
-        assert (await call(remote, "release_session", {"session": session}))["released"]
-        acquired = await call(key_client, "acquire_session", {"owner": "remote_mcp"})
+        assert (await call(remote, "session", {"action": "renew", "session": session}))["renewed"]
+        assert (await call(remote, "session", {"action": "release", "session": session}))[
+            "released"
+        ]
+        acquired = await call(
+            key_client, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         session = acquired["session"]
         assert service.resident.session is not None
         assert service.resident.session.principal_id == key.metadata.principal_id
-        denied = await call(remote, "release_session", {"session": session})
+        denied = await call(remote, "session", {"action": "release", "session": session})
         assert denied["error"] == "authenticated_owner_mismatch"
-        assert (await call(key_client, "release_session", {"session": session}))["released"]
+        assert (await call(key_client, "session", {"action": "release", "session": session}))[
+            "released"
+        ]
     async with httpx2.AsyncClient(trust_env=False) as http:
         assert (await http.post(service.url, json={})).status_code == 401
 
@@ -212,11 +230,17 @@ async def test_registry_invalidation_blocks_new_calls_without_cancelling_active_
     backend = service.backend
     backend.gate = asyncio.Event()
     async with connect(service.url, key.token) as owner:
-        acquired = await call(owner, "acquire_session", {"owner": "remote_mcp"})
+        acquired = await call(
+            owner, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+        )
         session = acquired["session"]
-        prepared = await call(owner, "prepare_test", {"session": session, "job_id": "active"})
+        prepared = await call(
+            owner, "submit", {"kind": "diagnostics", "session": session, "job_id": "active"}
+        )
         executed = await call(
-            owner, "execute_test", {"session": session, "plan_hash": prepared["plan_hash"]}
+            owner,
+            "execute",
+            {"op": "run", "session": session, "plan_hash": prepared["plan_hash"]},
         )
         assert executed["ok"]
         async with asyncio.timeout(5):
@@ -235,12 +259,16 @@ async def test_registry_invalidation_blocks_new_calls_without_cancelling_active_
             assert rejected.status_code == 401
             assert rejected.json() == {"error": "authentication_required"}
         async with connect(service.url, service.keys["second"].token) as other:
-            job = await call(other, "job_status", {"job_id": "active"})
+            job = await call(other, "status", {"view": "job", "job_id": "active"})
             assert job["state"] == "running"
             assert backend.active == 1
-            busy = await call(other, "acquire_session", {"owner": "remote_mcp"})
+            busy = await call(
+                other, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
+            )
             assert busy["error"] == "device_busy"
-            stolen = await call(other, "cancel_job", {"session": session, "job_id": "active"})
+            stolen = await call(
+                other, "cancel", {"target": "job", "session": session, "job_id": "active"}
+            )
             assert stolen["error"] in {
                 "authenticated_owner_mismatch",
                 "lease_expired_active_job_retains_ownership",
@@ -249,7 +277,7 @@ async def test_registry_invalidation_blocks_new_calls_without_cancelling_active_
             assert service.resident.session.principal_id == key.metadata.principal_id
             backend.gate.set()
             await service.resident.queue.join()
-            job = await call(other, "job_status", {"job_id": "active"})
+            job = await call(other, "status", {"view": "job", "job_id": "active"})
             assert job["state"] == "succeeded"
             assert backend.calls == 1 and backend.active == 0
             # Revocation expires the lease, but ownership ended only after the job closed.

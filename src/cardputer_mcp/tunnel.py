@@ -27,7 +27,7 @@ import httpx2
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, ConfigDict, Field
 
-from .client import call, connect, validate_url
+from .client import SURFACE_TOOLS, call, connect, validate_url
 from .config import Settings, TunnelMetadata, load_settings
 
 RELEASE = "0.0.15"
@@ -432,7 +432,7 @@ async def check_broker(url: str, bearer: str, *, ingress_enabled: bool = False) 
     url = _local_broker_url(url)
     async with asyncio.timeout(5):
         async with connect(url, bearer.removeprefix("Bearer ")) as client:
-            identity = await call(client, "client_identity")
+            identity = await call(client, "status", {"view": "identity"})
             if identity.get("ok") is not True or identity.get("authenticated") is not True:
                 raise TunnelError("tunnel_broker_auth_failed")
             if identity.get("origin") != "remote_mcp":
@@ -441,13 +441,13 @@ async def check_broker(url: str, bearer: str, *, ingress_enabled: bool = False) 
             if not isinstance(scopes, list) or "read" not in scopes:
                 raise TunnelError("tunnel_broker_scope_rejected")
             check_ingress_mode(identity, ingress_enabled)
-            status = await call(client, "device_status")
+            status = await call(client, "status", {"view": "device"})
             tools = await client.list_tools()
     if not status.get("ok") or status.get("active_job") or status.get("owner"):
         raise TunnelError("broker_not_idle")
     if status.get("hardware_connected") or status.get("ownership_uncertain"):
         raise TunnelError("broker_hardware_not_closed")
-    if not {"client_identity", "device_status"} <= {item.name for item in tools.tools}:
+    if not set(SURFACE_TOOLS) <= {item.name for item in tools.tools}:
         raise TunnelError("mcp_discovery_failed")
     return {
         "ok": True,

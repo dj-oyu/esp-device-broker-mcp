@@ -9,6 +9,9 @@ import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
+# The complete MCP tool surface; every in-repo client discovers exactly these names.
+SURFACE_TOOLS = ("status", "submit", "execute", "flash", "cancel", "session")
+
 
 def validate_url(url: str) -> str:
     parsed = urlsplit(url)

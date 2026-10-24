@@ -56,11 +56,17 @@ async def test_operator_snapshot_reorder_cancel_and_release_share_resident(
         connect(url, REMOTE) as remote,
         httpx2.AsyncClient(trust_env=False, headers={"Authorization": f"Bearer {LOCAL}"}) as http,
     ):
-        held = await call(local, "acquire_session", {"owner": "local_cli"})
-        first = await call(remote, "create_work_session", {"owner": "remote_mcp"})
-        second = await call(remote, "create_work_session", {"owner": "remote_mcp"})
-        one = await call(remote, "request_device", {"resume_token": first["resume_token"]})
-        two = await call(remote, "request_device", {"resume_token": second["resume_token"]})
+        held = await call(
+            local, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 30}
+        )
+        first = await call(remote, "session", {"action": "open", "owner": "remote_mcp"})
+        second = await call(remote, "session", {"action": "open", "owner": "remote_mcp"})
+        one = await call(
+            remote, "session", {"action": "request", "resume_token": first["resume_token"]}
+        )
+        two = await call(
+            remote, "session", {"action": "request", "resume_token": second["resume_token"]}
+        )
         one_id, two_id = one["request"]["request_id"], two["request"]["request_id"]
         response = await http.get(base + "/state")
         snapshot = response.json()
@@ -104,15 +110,17 @@ async def test_operator_snapshot_reorder_cancel_and_release_share_resident(
         assert [row["request_id"] for row in snapshot["waiters"]] == [one_id]
         released = await http.post(base + "/release", json={"lease_id": lease_id})
         assert released.json()["ok"] and released.json()["released"]
-        resumed = await call(remote, "resume_work_session", {"resume_token": first["resume_token"]})
+        resumed = await call(
+            remote, "status", {"view": "session", "resume_token": first["resume_token"]}
+        )
         assert resumed["lease"] is not None
         assert resident.session is not None
         assert resident.session.id == resumed["lease"]["lease_id"]
         stale = await http.post(base + "/release", json={"lease_id": lease_id})
         assert stale.json() == {"ok": False, "error": "lease_not_found"}
         assert resident.session.id == resumed["lease"]["lease_id"]
-        await call(remote, "close_work_session", {"resume_token": first["resume_token"]})
-        await call(remote, "close_work_session", {"resume_token": second["resume_token"]})
+        await call(remote, "session", {"action": "close", "resume_token": first["resume_token"]})
+        await call(remote, "session", {"action": "close", "resume_token": second["resume_token"]})
 
 
 async def test_operator_cannot_release_an_active_job(
@@ -130,14 +138,22 @@ async def test_operator_cannot_release_an_active_job(
                 trust_env=False, headers={"Authorization": f"Bearer {LOCAL}"}
             ) as http,
         ):
-            held = await call(local, "acquire_session", {"owner": "local_cli"})
+            held = await call(
+                local, "session", {"action": "open", "owner": "local_cli", "lease_seconds": 30}
+            )
             prepared = await call(
-                local, "prepare_test", {"session": held["session"], "job_id": "operator-active"}
+                local,
+                "submit",
+                {
+                    "kind": "diagnostics",
+                    "session": held["session"],
+                    "job_id": "operator-active",
+                },
             )
             executed = await call(
                 local,
-                "execute_test",
-                {"session": held["session"], "plan_hash": prepared["plan_hash"]},
+                "execute",
+                {"op": "run", "session": held["session"], "plan_hash": prepared["plan_hash"]},
             )
             assert executed["ok"]
             async with asyncio.timeout(5):
@@ -152,7 +168,7 @@ async def test_operator_cannot_release_an_active_job(
             assert resident.session is not None and resident.session.id == lease_id
             backend.gate.set()
             await resident.queue.join()
-            done = await call(local, "job_status", {"job_id": "operator-active"})
+            done = await call(local, "status", {"view": "job", "job_id": "operator-active"})
             assert done["state"] == "succeeded"
             assert (await http.post(base + "/release", json={"lease_id": lease_id})).json()["ok"]
     finally:

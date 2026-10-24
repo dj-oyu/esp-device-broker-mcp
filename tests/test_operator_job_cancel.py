@@ -61,11 +61,13 @@ async def test_actual_cancel_http_waits_for_cleanup_and_retains_uncertainty(
     ):
         prepared = await call(
             client,
-            "prepare_test",
-            dict(job_id="cancel-job", test="firmware_build", project_id="fixture"),
+            "submit",
+            dict(job_id="cancel-job", kind="build", project_id="fixture"),
         )
         assert prepared["ok"]
-        assert (await call(client, "execute_test", {"plan_hash": prepared["plan_hash"]}))["ok"]
+        assert (await call(client, "execute", {"op": "run", "plan_hash": prepared["plan_hash"]}))[
+            "ok"
+        ]
         await asyncio.wait_for(started.wait(), 2)
         try:
             listing = (await http.get("/operator/timeline")).json()
@@ -73,7 +75,7 @@ async def test_actual_cancel_http_waits_for_cleanup_and_retains_uncertainty(
             assert row["cancel_available"] and row["state"] == "running"
             # Remote clients retain their existing same-principal restriction.
             async with connect(service.url, service.keys["first"].token) as other:
-                refused = await call(other, "cancel_job", {"job_id": "cancel-job"})
+                refused = await call(other, "cancel", {"target": "job", "job_id": "cancel-job"})
                 assert refused["ok"] is False
             assert not broker.firmware_build.process.stop_requested.is_set()
             stopped = (
@@ -149,8 +151,8 @@ async def test_endpoint_rejects_remote_scope_epoch_plan_and_device_jobs(registry
     read_only = service.registry.issue("Synthetic local reader", Origin.LOCAL, scopes={"read"})
     async with connect(service.url, actor.token) as local:
         for tool, arguments in (
-            ("execute_test", {"plan_hash": prepared["plan_hash"]}),
-            ("cancel_job", {"job_id": "cancel-job"}),
+            ("execute", {"op": "run", "plan_hash": prepared["plan_hash"]}),
+            ("cancel", {"target": "job", "job_id": "cancel-job"}),
         ):
             assert (await call(local, tool, arguments))["ok"] is False
             assert broker.job("cancel-job")["state"] == "queued"

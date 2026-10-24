@@ -42,7 +42,7 @@ process that can already rewrite the cache or the broker state.
 
 ## Explicit cloud MCP requests
 
-1. With a current authenticated control principal, prepare firmware_fetch_source
+1. With a current authenticated control principal, submit kind=fetch
    with project_id, a fresh job_id and source_commit (full 40 hex). Omit session:
    source/build jobs require neither a USB lease nor individual operator approval.
    Prepare does not download. Storage shows cache counts/bytes and fixed limits.
@@ -52,12 +52,12 @@ process that can already rewrite the cache or the broker state.
 3. Read_build_logs for the succeeded fetch job returns source.source_receipt,
    repository/commit/tree/source hashes, file count/bytes and source_cache usage.
    The receipt is available after RAM-log expiry/restart to the same principal.
-4. Prepare firmware_build with project_id and source_receipt. A succeeded owned
+4. Submit kind=build with project_id and source_receipt. A succeeded owned
    fetch is mandatory. Execute the exact build plan without operator approval or
    USB lease. Read_build_logs
    returns the existing hashed manifest plus source_provenance, linking the exact
    receipt, repository, commit, Git tree and SHA-256 source manifest.
-5. Prepare/execute firmware_flash from that successful build job and
+5. Submit kind=flash and queue it with the `flash` tool, from that successful build job and
    existing registered device/recovery receipt. Readback/expected boot verification
    and LKG behavior are unchanged. Logs/capture use their existing permissions.
 
@@ -109,8 +109,8 @@ Use the verified Windows ZIP/exe from the PR's exact head/run. Start that MCP
 server with the existing config/authentication and external SDK registration.
 Keep local Codex stopped. Through the actual Secure MCP Tunnel, compare tools/list
 names/input schemas/annotations to the parent cloud client's callable definitions.
-The new prepare_test enum firmware_fetch_source and source_commit/source_receipt
-inputs must exist on both sides; read_build_logs must expose receipt/manifest.
+The new submit kind fetch and source_commit/source_receipt
+inputs must exist on both sides; status(view=logs, stream=build) must expose receipt/manifest.
 Run steps 1–4 from the cloud and check commit/source hashes in the real build
 manifest before separately authorizing any physical flash.
 
@@ -222,7 +222,7 @@ Disk reserve, finite evidence headroom and complete reference inventory are
 checked before reclamation. Source download failure can leave an old payload
 retired, but never removes its receipt or recovery evidence.
 
-`read_source_resources` performs one fresh bounded traversal and returns owned
+`status(view=source)` performs one fresh bounded traversal and returns owned
 resident/receipt-only entries, counts/bytes and eligibility. The additive
 `payload_protection_reasons` field lists reclamation blockers;
 `provenance_reasons` separately reports immutable receipts and historical LKG
@@ -255,9 +255,9 @@ checked. String-based ancestor traversal avoids rebuilding Path tuples without
 omitting any check; it does not make path checks and directory enumeration atomic
 against a hostile external process swapping paths between syscalls.
 
-`read_build_logs` retains its compatible default capacity request. Frequent log
+`status(view=logs, stream=build)` retains its compatible default capacity request. Frequent log
 pollers should set `include_source_cache=false` (the GUI does this for selected
-job logs); use `read_source_resources` when
+job logs); use `status(view=source)` when
 fresh capacity/reference information is needed. A capacity-scan failure is
 reported as unavailable alongside the source job/log result and does not turn a
 successful source job into a failed log request. Prepare/fetch capacity gates

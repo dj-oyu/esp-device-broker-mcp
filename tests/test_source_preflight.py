@@ -42,6 +42,15 @@ def source_request(job="source-preflight"):
     )
 
 
+def source_submit(job="source-preflight"):
+    return {
+        "kind": "fetch",
+        "job_id": job,
+        "project_id": "fixture",
+        "source_commit": "a" * 40,
+    }
+
+
 @pytest.fixture
 async def resident(tmp_path):
     settings = registered(Settings(state_dir=tmp_path / "state"), tmp_path)
@@ -216,12 +225,12 @@ async def test_real_http_source_prepare_and_source_log_inventory_do_not_block_st
     broker.settings = registered(broker.settings, tmp_path)
     entered, release, _ = gated_usage
     async with connect(url, REMOTE) as client, connect(url, LOCAL) as status_client:
-        task = asyncio.create_task(
-            call(client, "prepare_test", source_request().model_dump(mode="json"))
-        )
+        task = asyncio.create_task(call(client, "submit", source_submit()))
         await entered_worker(entered)
         try:
-            assert (await asyncio.wait_for(call(status_client, "device_status"), 0.5))["ok"]
+            assert (await asyncio.wait_for(call(status_client, "status", {"view": "device"}), 0.5))[
+                "ok"
+            ]
             assert not task.done()
         finally:
             release.set()
@@ -239,10 +248,18 @@ async def test_real_http_source_prepare_and_source_log_inventory_do_not_block_st
         logs = BuildLogs("ephemeral:remote_mcp")
         logs.append("synthetic retained output")
         broker.firmware_source.logs["source-logs"] = logs
-        reading = asyncio.create_task(call(client, "read_build_logs", {"job_id": "source-logs"}))
+        reading = asyncio.create_task(
+            call(
+                client,
+                "status",
+                {"view": "logs", "stream": "build", "job_id": "source-logs"},
+            )
+        )
         await entered_worker(entered)
         try:
-            assert (await asyncio.wait_for(call(status_client, "device_status"), 0.5))["ok"]
+            assert (await asyncio.wait_for(call(status_client, "status", {"view": "device"}), 0.5))[
+                "ok"
+            ]
             if retention == "expiry":
                 logs.deadline = 0
             else:
@@ -256,7 +273,7 @@ async def test_real_http_source_prepare_and_source_log_inventory_do_not_block_st
 
 
 @pytest.mark.parametrize("change", ["revoke", "scope", "read_scope", "principal"])
-@pytest.mark.parametrize("method", ["prepare_test", "read_build_logs"])
+@pytest.mark.parametrize("method", ["submit", "status"])
 async def test_source_reads_recheck_current_grant_before_publishing_plan_or_output(
     authenticated_mock, tmp_path, gated_usage, monkeypatch, change, method
 ):
@@ -283,7 +300,7 @@ async def test_source_reads_recheck_current_grant_before_publishing_plan_or_outp
             if change == "revoke":
                 return None
             if change == "scope":
-                remaining = "read" if method == "prepare_test" else "control"
+                remaining = "read" if method == "submit" else "control"
                 return replace(owner, scopes=frozenset({remaining}))
             if change == "read_scope":
                 return replace(owner, scopes=frozenset({"control"}))
@@ -300,9 +317,9 @@ async def test_source_reads_recheck_current_grant_before_publishing_plan_or_outp
                     params=CallToolRequestParams(
                         name=method,
                         arguments={
-                            "request": source_request().model_dump(mode="json")
-                            if method == "prepare_test"
-                            else {"job_id": "source-logs"}
+                            "request": source_submit()
+                            if method == "submit"
+                            else {"view": "logs", "stream": "build", "job_id": "source-logs"}
                         },
                     )
                 ),
@@ -412,11 +429,20 @@ async def test_source_logs_can_skip_inventory_and_survive_scan_deadline(
     monkeypatch.setattr(SourceSnapshots, "usage", limited)
     async with connect(url, REMOTE) as client:
         skipped = await call(
-            client, "read_build_logs", {"job_id": "resource-logs", "include_source_cache": False}
+            client,
+            "status",
+            {
+                "view": "logs",
+                "stream": "build",
+                "job_id": "resource-logs",
+                "include_source_cache": False,
+            },
         )
         assert skipped["ok"] and not calls
         assert skipped["source_cache"]["reason"] == "not_requested"
-        response = await call(client, "read_build_logs", {"job_id": "resource-logs"})
+        response = await call(
+            client, "status", {"view": "logs", "stream": "build", "job_id": "resource-logs"}
+        )
         assert response["ok"] and len(calls) == 1
         assert response["source_cache"]["available"] is False
         assert response["source_cache"]["scan"]["reason"] == "deadline"
@@ -449,16 +475,22 @@ async def test_resource_tool_inventory_is_fresh_read_only_and_rechecks_authority
 
     monkeypatch.setattr(RequestAuth, "authenticate", current)
     async with connect(url, REMOTE) as client, connect(url, LOCAL) as status_client:
-        task = asyncio.create_task(call(client, "read_source_resources", {"project_id": "fixture"}))
+        task = asyncio.create_task(
+            call(client, "status", {"view": "source", "project_id": "fixture"})
+        )
         await entered_worker(entered)
-        assert (await asyncio.wait_for(call(status_client, "device_status"), 0.5))["ok"]
+        assert (await asyncio.wait_for(call(status_client, "status", {"view": "device"}), 0.5))[
+            "ok"
+        ]
         release.set()
         first = await task
         assert first["ok"] and first["source_cache"]["snapshots"] == 0
         assert first["cleanup_authorized"] is False
         entered.clear()
         release.clear()
-        task = asyncio.create_task(call(client, "read_source_resources", {"project_id": "fixture"}))
+        task = asyncio.create_task(
+            call(client, "status", {"view": "source", "project_id": "fixture"})
+        )
         await entered_worker(entered)
         changed[0] = True
         release.set()

@@ -9,6 +9,23 @@ from cardputer_mcp.app_client import AppClientError, AppSessionClient
 from cardputer_mcp.app_models import AppSessionOptions
 
 
+def route(tool: str, request: dict[str, Any] | None) -> str:
+    """Name the six-tool request by the operation it selects."""
+    body = request or {}
+    if tool == "status":
+        if body["view"] == "apps":
+            return "apps"
+        if body["view"] == "job":
+            return "job"
+        assert body["view"] == "logs" and body["stream"] == "app"
+        return "events"
+    if tool == "submit":
+        assert body["kind"] == "app_session"
+        return "submit"
+    assert tool == "execute"
+    return "run" if body["op"] == "run" else "app_input"
+
+
 class FakeBroker:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
@@ -21,17 +38,18 @@ class FakeBroker:
     async def call(
         self, client: Any, tool: str, request: dict[str, Any] | None = None
     ) -> dict[str, Any]:
+        tool = route(tool, request)
         self.calls.append((tool, request))
-        if tool == "list_apps":
+        if tool == "apps":
             return {"ok": True, "apps": [], "freshness": "unobserved"}
-        if tool == "prepare_test":
+        if tool == "submit":
             return {"ok": True, "plan_hash": "b" * 64}
-        if tool == "execute_test":
+        if tool == "run":
             self.pending.append(
                 dict(kind="started", boot_id=123, run_id=7, control_session=9, next_seq=2)
             )
             return {"ok": True, "state": "queued"}
-        if tool == "app_command":
+        if tool == "app_input":
             assert request is not None
             if request["operation"] == "status":
                 return dict(
@@ -58,7 +76,7 @@ class FakeBroker:
                     )
                 )
             return dict(ok=True, command_id=request["command_id"], state="queued", sent=False)
-        if tool == "read_app_events":
+        if tool == "events":
             self.sequence += 1
             entries, self.pending = self.pending, []
             return dict(
@@ -69,7 +87,7 @@ class FakeBroker:
                 gap=False,
                 expired=False,
             )
-        if tool == "job_status":
+        if tool == "job":
             return dict(ok=True, state="succeeded")
         raise AssertionError(tool)
 
@@ -89,7 +107,8 @@ class AppClientTests(unittest.TestCase):
             async def adapter(
                 connection: Any, tool: str, body: dict[str, Any] | None = None
             ) -> dict[str, Any]:
-                if tool == "prepare_test":
+                tool = route(tool, body)
+                if tool == "submit":
                     assert body is not None
                     options = AppSessionOptions.model_validate(body["app"])
                     plans["current"] = {
@@ -97,7 +116,7 @@ class AppClientTests(unittest.TestCase):
                         **manager.prepare(backend, options),
                     }
                     return dict(ok=True, plan_hash="b" * 64)
-                if tool == "execute_test":
+                if tool == "run":
                     tasks.append(
                         asyncio.create_task(
                             manager.execute(
@@ -106,8 +125,9 @@ class AppClientTests(unittest.TestCase):
                         )
                     )
                     return dict(ok=True, state="queued")
-                if tool == "read_app_events":
+                if tool == "events":
                     assert body is not None
+                    body = {k: v for k, v in body.items() if k not in ("view", "stream")}
                     run = manager.jobs.get(body["job_id"])
                     if run is None:
                         return dict(ok=True, entries=[], logs=[], gap=False, expired=False)
@@ -115,8 +135,9 @@ class AppClientTests(unittest.TestCase):
                         "ok": True,
                         **run.events.read("owner", AppEventsRequest.model_validate(body)),
                     }
-                if tool == "app_command":
+                if tool == "app_input":
                     assert body is not None
+                    body = {k: v for k, v in body.items() if k != "op"}
                     mutations.append(body["operation"])
                     return {
                         "ok": True,
@@ -124,7 +145,7 @@ class AppClientTests(unittest.TestCase):
                             AppCommandRequest.model_validate(body)
                         ),
                     }
-                if tool == "job_status":
+                if tool == "job":
                     if tasks[0].done():
                         assert tasks[0].result() == "app_session_stopped"
                         return dict(ok=True, state="succeeded")
@@ -167,11 +188,11 @@ class AppClientTests(unittest.TestCase):
                 await client.resume()
                 assert (await client.stop())["state"] == "succeeded"
                 assert len(client.recent_logs) > 0
-                prepared = next(r for t, r in broker.calls if t == "prepare_test")
+                prepared = next(r for t, r in broker.calls if t == "submit")
                 assert prepared is not None
                 assert prepared["app"]["app_id"] == app_id
                 assert prepared["app"]["start"] == "fresh"
-                commands = [r for t, r in broker.calls if t == "app_command"]
+                commands = [r for t, r in broker.calls if t == "app_input"]
                 assert [r["seq"] for r in commands if r] == [2, 3, 4, 5]
                 assert all(r and r["run_id"] == 7 for r in commands)
                 assert all(r and r["boot_id"] == 123 for r in commands)
@@ -191,7 +212,7 @@ class AppClientTests(unittest.TestCase):
                 ):
                     ack = await client.tap("accept")
                 assert ack["state"] == "consumed"
-                requests = [r for t, r in broker.calls if t == "app_command"]
+                requests = [r for t, r in broker.calls if t == "app_input"]
                 assert [r["operation"] for r in requests if r] == ["action.tap", "status"]
                 assert requests[0] and requests[1]
                 assert requests[0]["command_id"] == requests[1]["command_id"]
@@ -213,7 +234,7 @@ class AppClientTests(unittest.TestCase):
                         await client.tap("accept")
                 with self.assertRaisesRegex(AppClientError, "invalid_client_state"):
                     await client.tap("accept")
-                requests = [r for t, r in broker.calls if t == "app_command"]
+                requests = [r for t, r in broker.calls if t == "app_input"]
                 assert len(requests) == 2
 
         asyncio.run(scenario())
@@ -229,7 +250,7 @@ class AppClientTests(unittest.TestCase):
                     await client.tap("accept")
                 with self.assertRaisesRegex(AppClientError, "invalid_client_state"):
                     await client.tap("accept")
-                assert len([t for t, _ in broker.calls if t == "app_command"]) == 1
+                assert len([t for t, _ in broker.calls if t == "app_input"]) == 1
 
         asyncio.run(scenario())
 

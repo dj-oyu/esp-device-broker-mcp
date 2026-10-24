@@ -51,15 +51,20 @@ class AppSessionClient:
 
     async def list_apps(self) -> dict[str, Any]:
         """Read the cached catalog, including freshness; never opens a device."""
-        return await self._request("list_apps")
+        return await self._request("status", {"view": "apps"})
 
     async def events(self) -> dict[str, Any]:
         if self.job_id is None:
             raise AppClientError("app_session_not_started")
-        request: dict[str, Any] = {"job_id": self.job_id, "limit": 100}
+        request: dict[str, Any] = {
+            "view": "logs",
+            "stream": "app",
+            "job_id": self.job_id,
+            "limit": 100,
+        }
         if self.cursor is not None:
             request["cursor"] = self.cursor
-        result = await self._request("read_app_events", request)
+        result = await self._request("status", request)
         if result.get("gap") or result.get("expired"):
             raise AppClientError("outcome_unknown")
         self.cursor = result.get("next_cursor")
@@ -90,15 +95,17 @@ class AppSessionClient:
             raise AppClientError("invalid_client_state")
         self.session, self.job_id = session, job_id
         plan = await self._request(
-            "prepare_test",
+            "submit",
             {
+                "kind": "app_session",
                 "session": session,
                 "job_id": job_id,
-                "test": "app_session",
                 "app": options.model_dump(mode="json", exclude_none=True),
             },
         )
-        await self._request("execute_test", {"session": session, "plan_hash": plan["plan_hash"]})
+        await self._request(
+            "execute", {"op": "run", "session": session, "plan_hash": plan["plan_hash"]}
+        )
         started = await self._wait(lambda e: e.get("kind") == "started", wait_seconds)
         self.identity = {name: started[name] for name in ("boot_id", "run_id", "control_session")}
         self.next_seq = started.get("next_seq", 2)
@@ -122,6 +129,7 @@ class AppSessionClient:
             raise AppClientError("invalid_client_state")
         command_id, seq = self.next_command, self.next_seq
         request: dict[str, Any] = {
+            "op": "app_input",
             "session": self.session,
             "job_id": self.job_id,
             **self.identity,
@@ -132,7 +140,7 @@ class AppSessionClient:
         if action is not None:
             request["action"] = action
         try:
-            await self._request("app_command", request)
+            await self._request("execute", request)
         except AppClientError:
             self.uncertain = True
             raise
@@ -154,7 +162,7 @@ class AppSessionClient:
             status = {**request, "operation": "status"}
             status.pop("action", None)
             try:
-                event = await self._request("app_command", status)
+                event = await self._request("execute", status)
             except AppClientError:
                 self.uncertain = True
                 raise
@@ -184,7 +192,7 @@ class AppSessionClient:
         await self.command("stop", wait_seconds=wait_seconds)
         deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:
-            job = await self._request("job_status", {"job_id": self.job_id})
+            job = await self._request("status", {"view": "job", "job_id": self.job_id})
             if job.get("state") in ("succeeded", "failed", "cancelled", "needs_review"):
                 return job
             await asyncio.sleep(0.05)

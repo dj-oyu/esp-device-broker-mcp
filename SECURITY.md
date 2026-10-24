@@ -108,7 +108,7 @@ cleanup retains handles and the launcher lock, blocking another launch.
 Native Windows behavior remains unverified here; tests substitute the Win32 API.
 Official client bytes remain pinned. Runtime API and remote MCP credentials are
 one-operation inputs, omitted from argv/files/logs/repr, with no local operator
-credential in the child's environment. A read-only authenticated client_identity
+credential in the child's environment. A read-only authenticated status(view=identity)
 check rejects local-origin keys before launching. No keys are automatically issued.
 
 Canonical [tunnel] metadata rejects secret and auto-connect fields. Explicit Save
