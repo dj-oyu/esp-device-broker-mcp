@@ -282,10 +282,6 @@ async def test_app_event_value_error_reaches_client_unchanged(registry_service, 
     assert result.structured_content == {"ok": False, "error": code}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known gap: broker re-wraps any app-event ValueError text as BrokerError(str(exc))",
-)
 async def test_app_event_converter_does_not_leak_free_text(registry_service, monkeypatch):
     service = registry_service
     principal = service.keys["first"].metadata.principal_id

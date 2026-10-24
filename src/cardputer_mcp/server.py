@@ -63,7 +63,8 @@ from .models import (
     TestName,
 )
 from .operator_api import OperatorAPI
-from .public_reasons import public_reason
+from .public_errors import refusal
+from .public_reasons import public_broker_reason
 from .registry_defaults import LiveKeyRegistry, default_key_registry_path
 from .source_preflight import settings_identity, source_inventory, source_usage
 from .source_resources import resource_report
@@ -414,12 +415,8 @@ class TunnelIngress:
 def _result(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     try:
         return {"ok": True, **call()}
-    except BrokerError as exc:
-        return {"ok": False, "error": str(exc)}
-    except SourceError as exc:
-        return {"ok": False, **exc.public()}
     except ValueError as exc:
-        return {"ok": False, "error": public_reason(exc)}
+        return refusal(exc)
 
 
 def create_server(
@@ -678,12 +675,8 @@ def create_server(
                     now=resident.clock(),
                 ),
             }
-        except SourceError as exc:
-            return {"ok": False, **exc.public()}
-        except BrokerError as exc:
-            return {"ok": False, "error": str(exc)}
         except ValueError as exc:
-            return {"ok": False, "error": public_reason(exc)}
+            return refusal(exc)
 
     @op
     async def device_status(ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -799,12 +792,8 @@ def create_server(
                     request, owner_id, origin, reauthorize=current_owner
                 )
                 return {"ok": True, **result}
-            except BrokerError as exc:
-                return {"ok": False, "error": str(exc)}
-            except SourceError as exc:
-                return {"ok": False, **exc.public()}
             except ValueError as exc:
-                return {"ok": False, "error": public_reason(exc)}
+                return refusal(exc)
         return _result(prepare)
 
     @op
@@ -1063,12 +1052,8 @@ def create_server(
 
         try:
             return {"ok": True, **await get_logs()}
-        except BrokerError as exc:
-            return {"ok": False, "error": str(exc)}
-        except SourceError as exc:
-            return {"ok": False, **exc.public()}
         except ValueError as exc:
-            return {"ok": False, "error": public_reason(exc)}
+            return refusal(exc)
 
     @op
     async def list_apps(ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -1143,7 +1128,7 @@ def create_server(
             owner = principal(ctx, "read")
             captured = resident.read_capture(request.job_id, owner.principal_id)
         except BrokerError as exc:
-            body = {"ok": False, "error": str(exc)}
+            body = {"ok": False, "error": public_broker_reason(exc)}
             return CallToolResult(
                 content=[TextContent(type="text", text=json.dumps(body))],
                 structured_content=body,
