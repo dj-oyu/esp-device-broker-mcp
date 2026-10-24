@@ -945,6 +945,32 @@ class SerialBackend:
                     self.last_closed_plan = json.loads(json.dumps(plan))
                 emit("serial_close")
 
+    def recheck_closed(self) -> tuple[bool, str]:
+        """Explicit operator re-check of an unconfirmed close; never opens a port.
+
+        The caller confirms first that no device work is running. The retained
+        handle is closed only through the existing confirmed-close helper, and the
+        latch clears only when that handle reports closed.
+        """
+        if not self.ownership_uncertain:
+            return True, "not_set"
+        port = self._unclosed_port
+        if port is None:
+            return False, "serial_handle_unknown"
+        try:
+            if port.is_open is not False:
+                self._close_restart_port(port)
+            if port.is_open is not False:
+                return False, "serial_close_unconfirmed"
+        except Exception:
+            return False, "serial_close_unconfirmed"
+        self.ownership_uncertain = False
+        self._unclosed_port = None
+        self.hardware_connected = False
+        # The failed run kept its ownership count; no other run can hold it now.
+        self.active = 0
+        return True, "serial_close_confirmed"
+
     def _close_restart_port(self, port: SerialPort) -> None:
         """An uncertain close is terminal, including an intermediate reconnect close."""
         try:

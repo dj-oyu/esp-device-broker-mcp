@@ -166,6 +166,25 @@ class FlashLifecycle:
         self.driver.stop()
         return True
 
+    def recheck_shutdown(self) -> tuple[bool, str]:
+        """Explicit operator re-check of an unconfirmed shutdown; never writes.
+
+        Uses only the driver's existing confirmed close, which refuses while any
+        driver process or serial handle is active or uncertain.
+        """
+        with self._lock:
+            if not self.uncertain:
+                return True, "not_set"
+            try:
+                self.driver.close()
+                if self.driver.active or self.driver.uncertain:
+                    return False, "flash_driver_still_owned"
+            except Exception:
+                return False, "flash_driver_still_owned"
+            self.uncertain = False
+            self.active = False
+            return True, "flash_shutdown_confirmed"
+
     def _live(self, live: Callable[[], bool]) -> None:
         if self.cancelled.is_set():
             raise FlashFailure("flash_cancelled_needs_review")

@@ -116,7 +116,10 @@ class JobLedger:
         return written
 
     def mark_reviewed(self, job_id: str) -> bool:
-        """Acknowledge a needs_review row (offline operator); not a state transition."""
+        """Acknowledge a needs_review row (offline CLI or online local operator).
+
+        Not a state transition: state, result and diagnostic are never written.
+        """
         cursor = self.db.execute(
             "UPDATE jobs SET reviewed=1 WHERE id=? AND state='needs_review'", (job_id,)
         )
