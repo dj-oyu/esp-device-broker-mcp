@@ -435,7 +435,7 @@ def register_surface(
     *,
     ops: dict[str, Handler],
     resident: Any,
-    principal: Callable[[Context[Any, Any], Any], Any],
+    require: Callable[..., Any],
     auth_required: bool,
     read_only: ToolAnnotations,
     mutating: ToolAnnotations,
@@ -448,7 +448,7 @@ def register_surface(
     def plan_is_callers(plan: dict[str, Any], ctx: Context[Any, Any], session: str | None) -> bool:
         """The plan's kind is disclosed only to its own principal (or lease holder)."""
         try:
-            owner = principal(ctx, "control")
+            owner = require(ctx, "control", honor_auth_required=False)
         except BrokerError:
             return False  # the ordinary handler reports the authentication/scope error
         bound = [plan[key] for key in PLAN_PRINCIPAL_KEYS if isinstance(plan.get(key), str)]
@@ -533,7 +533,8 @@ def register_surface(
             waiting_view = None
             try:
                 waiting_view = resident.deferred_job(
-                    _req(request.job_id), principal(ctx, "read").principal_id
+                    _req(request.job_id),
+                    require(ctx, "read", honor_auth_required=False).principal_id,
                 )
             except BrokerError:
                 waiting_view = None
@@ -546,7 +547,7 @@ def register_surface(
             if body.get("ok") and isinstance(body.get("plan_hash"), str):
                 plan = plan_for(body["plan_hash"])
                 try:
-                    caller = principal(ctx, "read").principal_id
+                    caller = require(ctx, "read", honor_auth_required=False).principal_id
                 except BrokerError:
                     caller = None
                 if (
@@ -707,7 +708,7 @@ def register_surface(
             return refused
         if request.target is Target.TICKET:
             try:
-                owner = principal(ctx, "control")
+                owner = require(ctx, "control", honor_auth_required=False)
                 return {
                     "ok": True,
                     **cancellation.cancel_job(
@@ -728,7 +729,9 @@ def register_surface(
         try:
             cancelled = cancellation.cancel_job(
                 resident,
-                cancellation.DeferredJob(request.job_id, principal(ctx, "control").principal_id),
+                cancellation.DeferredJob(
+                    request.job_id, require(ctx, "control", honor_auth_required=False).principal_id
+                ),
             )
         except BrokerError:
             cancelled = None
@@ -739,7 +742,8 @@ def register_surface(
                 running = cancellation.cancel_job(
                     resident,
                     cancellation.JobLeaseJob(
-                        request.job_id, principal(ctx, "control").principal_id
+                        request.job_id,
+                        require(ctx, "control", honor_auth_required=False).principal_id,
                     ),
                 )
             except BrokerError as exc:
