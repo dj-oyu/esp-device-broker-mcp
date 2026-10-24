@@ -217,8 +217,10 @@ async def test_owned_ram_logs_redaction_permission_expiry_and_no_receipt_io(
     assert len(json.dumps(result).encode()) < 512 * 1024
     _, rest = await answer(api, {**payload, "cursor": result["next_cursor"]}, "job-logs")
     assert [item["sequence"] for item in rest["entries"]] == [17, 18, 19, 20]
+    # The local operator reads any job's redacted output, not only its own.
     current[0] = actor("stranger")
-    assert (await answer(api, payload, "job-logs"))[1] == {"ok": False, "error": "not_authorized"}
+    _, other = await answer(api, payload, "job-logs")
+    assert other["status"] == "available" and "fixture-secret" not in json.dumps(other)
     current[0] = actor(scopes=frozenset({"control"}))
     assert (await answer(api, payload, "job-logs"))[1]["error"] == "not_authorized"
     current[0] = actor()
@@ -277,3 +279,35 @@ async def test_report_retention_wakes_reader_and_removes_metadata(tmp_path, reas
         _, reset = await answer(api, {"cursor": None})
         assert "device_observation" not in reset["timeline"]["cards"][0]
         assert backend.calls == 0 and not backend.hardware_connected
+
+
+@pytest.mark.parametrize(
+    ("test", "field", "stream"),
+    [
+        ("firmware_flash", "flash_principal", "flash"),
+        ("firmware_build", "build_principal", "build"),
+        ("passive_observe", None, "device"),
+    ],
+)
+async def test_local_operator_reads_durable_logs_of_any_principal(operator, test, field, stream):
+    api, broker, current = operator
+    plan = {"test": test, **({field: "remote-owner"} if field else {})}
+    digest = digest_plan(plan)
+    broker._store().put_plan(digest, plan)
+    broker._store().add_job("durable", digest)
+    log = broker.job_logs.begin("durable", "remote-owner", test, keep=set())
+    log.append(stream, "warning: retained line token=fixture-secret", "warning")
+    log.close()
+    current[0] = actor("local-operator")
+    payload = {"job_id": "durable", "levels": ["warning"], "context": 0, "limit": 100}
+    _, result = await answer(api, payload, "job-logs")
+    assert result["status"] == "available" and result["source"] == "durable_job_log"
+    assert [entry["text"].startswith("warning: retained line") for entry in result["entries"]] == [
+        True
+    ]
+    assert "fixture-secret" not in json.dumps(result)
+    current[0] = SimpleNamespace(
+        principal_id="remote-owner", origin=Origin.REMOTE, scopes=frozenset({"read", "control"})
+    )
+    # The operator API stays local-only; remote clients keep owner-only MCP reads.
+    assert (await answer(api, payload, "job-logs"))[1]["error"] == "local_operator_required"

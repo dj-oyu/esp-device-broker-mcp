@@ -128,38 +128,69 @@ class OperatorAPI:
     def _retained_job_logs(
         self, request: BuildLogRequest, principal: OperatorPrincipal
     ) -> dict[str, Any]:
-        if "read" not in principal.scopes:
+        """The local operator reads any job's redacted output.
+
+        The operator API is local-only and the person at this machine can already
+        read the state directory, so the job owner is not required. Remote MCP
+        log reads stay owner-only. RAM output first, then the durable job log.
+        """
+        if "read" not in principal.scopes or principal.origin != Origin.LOCAL:
             raise BrokerError("not_authorized")
         store = self.broker._store()
         job = store.job(request.job_id)
         plan = store.plan(job["plan_hash"]) if job else None
         if plan is None:
             raise BrokerError("unavailable")
-        service: Any
-        if plan.get("test") == TestName.APP_SESSION.value:
-            logs = self._app_job_logs(request.job_id, job, plan, principal)
-        elif plan.get("test") == TestName.SOURCE.value:
-            owner, service = plan.get("source_principal"), self.broker.firmware_source
-        elif plan.get("test") == TestName.BUILD.value:
-            owner, service = plan.get("build_principal"), self.broker.firmware_build
-        elif plan.get("test") in {test.value for test in FLASH_TESTS}:
-            owner, service = plan.get("flash_principal"), self.broker.firmware_flash
-        else:
-            raise BrokerError("unavailable")
-        if plan.get("test") != TestName.APP_SESSION.value:
-            if owner != principal.principal_id:
-                raise BrokerError("not_authorized")
-            # RAM only: do not invoke receipt/manifest readers or hash retained artifacts.
-            logs = service.logs.get(request.job_id)
-            if logs is None:
-                raise BrokerError("unavailable")
         # 16 * 4096 characters, even JSON control escapes, fits the 512 KiB
         # client transport bound. BuildLogs preserves cursor/has_more on this cap.
         bounded = request.model_copy(update={"limit": min(request.limit, 16)})
-        try:
-            result = logs.read(principal.principal_id, bounded)
-        except ValueError:
-            raise BrokerError("unavailable") from None
+        test = plan.get("test")
+        if test == TestName.APP_SESSION.value:
+            app_logs = self._app_job_logs(request.job_id, job, plan, principal)
+            try:
+                app = app_logs.read(principal.principal_id, bounded)
+            except ValueError:
+                raise BrokerError("unavailable") from None
+            return {"status": "expired" if app["expired"] else "available", **app}
+        service: Any = None
+        owner: Any
+        if test == TestName.SOURCE.value:
+            owner, service, stream = (
+                plan.get("source_principal"),
+                self.broker.firmware_source,
+                "source",
+            )
+        elif test == TestName.BUILD.value:
+            owner, service, stream = (
+                plan.get("build_principal"),
+                self.broker.firmware_build,
+                "build",
+            )
+        elif test in {item.value for item in FLASH_TESTS}:
+            owner, service, stream = (
+                plan.get("flash_principal"),
+                self.broker.firmware_flash,
+                "flash",
+            )
+        else:
+            owner, stream = self.broker.job_logs.owner(request.job_id), "device"
+        result: dict[str, Any] | None = None
+        # RAM only: do not invoke receipt/manifest readers or hash retained artifacts.
+        ram: Any = service.logs.get(request.job_id) if service is not None else None
+        if ram is not None and isinstance(owner, str):
+            try:
+                result = ram.read(owner, bounded)
+            except ValueError:
+                result = None
+        if (result is None or result["expired"]) and isinstance(owner, str):
+            try:
+                durable = self.broker.job_logs.build_read(request.job_id, owner, stream, bounded)
+            except ValueError:
+                raise BrokerError("unavailable") from None
+            if durable is not None:
+                result = durable
+        if result is None:
+            raise BrokerError("unavailable")
         return {"status": "expired" if result["expired"] else "available", **result}
 
     def _app_job_logs(

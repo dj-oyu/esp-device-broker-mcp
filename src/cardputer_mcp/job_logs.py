@@ -264,6 +264,18 @@ class JobLogStore:
             "partial_line_skipped": partial,
         }
 
+    def owner(self, job_id: str) -> str | None:
+        """The principal recorded in a job log's header, or None when unreadable."""
+        try:
+            path = self._path(job_id)
+            if not path.exists():
+                return None
+            header, _, _ = self._load(path)
+        except Exception:
+            return None
+        principal = header.get("principal_id")
+        return principal if header.get("job_id") == job_id and isinstance(principal, str) else None
+
     @staticmethod
     def epoch(job_id: str) -> str:
         """Stable cursor epoch for one job's durable log; differs from RAM epochs."""
