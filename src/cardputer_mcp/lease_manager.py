@@ -16,6 +16,14 @@ calls `prepare`/`execute`, whose `_lease()` runs `_expire()` and so a nested
 and it keeps the same timing (revocation/expiry checks right after the grant). Removing
 it would move those checks to the next 0.25 s tick, which is a behaviour change.
 
+Lease expiry and revocation are different things. Reaching `deadline` ends an *idle*
+lease and stops a queued job from being admitted, but a job that was already admitted
+and is running keeps its lease (and device ownership) until it finishes
+(DESIGN-CONTINUATION-TICKETS.md section 5.3: "実行中のジョブは、リースの期限が来ても所有を
+保つ"). Revocation (principal no longer valid, scope lost) is recorded with
+`revoke()`, which also sets the sticky `revoked` flag, so the running-job checks can
+still stop the job. Neither is persisted; a lease is process-local.
+
 Every method is synchronous: a caller's check and the write share one loop step.
 """
 
@@ -34,6 +42,9 @@ class Session:
     request_id: str | None = None
     chain_ticket: str | None = None
     job_id: str | None = None
+    # Set only by `LeaseManager.revoke`; never cleared. A running job checks this
+    # instead of the clock (see the module docstring).
+    revoked: bool = False
 
 
 class ReleaseRefused(Exception):
@@ -74,6 +85,16 @@ class LeaseManager:
     @staticmethod
     def shorten(session: Session, until: float) -> None:
         """Never extend: revocation moves the deadline to `until` if that is earlier."""
+        session.deadline = min(session.deadline, until)
+
+    @staticmethod
+    def revoke(session: Session, until: float) -> None:
+        """Authority was withdrawn: shorten like `shorten` and mark the lease revoked.
+
+        The flag is sticky, so a later successful authentication cannot revive the
+        lease for the job that was running under it.
+        """
+        session.revoked = True
         session.deadline = min(session.deadline, until)
 
     @staticmethod

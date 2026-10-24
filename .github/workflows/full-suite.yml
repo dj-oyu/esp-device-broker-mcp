@@ -15,7 +15,7 @@ jobs:
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +67,7 @@ jobs:
       - name: Complete tests with synthetic devices and credentials
         if: always() && steps.environment.outcome == 'success'
         id: tests
-        run: uv run --frozen python packaging/full_suite.py
+        run: uv run --frozen python packaging/full_suite.py --deadline 1200
       - name: Preserve synthetic-suite diagnostics
         if: always() && steps.tests.outcome != 'skipped'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

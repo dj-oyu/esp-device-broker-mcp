@@ -39,7 +39,9 @@ async def test_owner_reads_device_text_for_every_outcome(tmp_path, outcome):
             assert "sha256" in env.broker.read_device_logs(JOB, PRINCIPAL)
             env.clock.now += 301  # the RAM report is gone
         else:
-            assert job["state"] == "needs_review"
+            # Review classification fix: both read errors surface as the typed
+            # serial_read_failed with a confirmed close, so `failed` (was needs_review).
+            assert job["state"] == "failed"
         report = env.broker.read_device_logs(JOB, PRINCIPAL)
         assert report["source"] == "durable_job_log"
         assert report["state"] == job["state"] and report["kind"] == "firmware_observe"
@@ -69,7 +71,7 @@ async def test_mcp_failed_job_logs_are_owner_only(http_observation):  # noqa: F8
     env.port.chunks.append(OSError("synthetic"))
     await http_observe(env)
     job = env.broker.job(JOB)
-    assert job["state"] == "needs_review"
+    assert job["state"] == "failed"  # review classification fix (was needs_review)
     report = (await rpc(env, "status", DEVICE_LOGS))["structuredContent"]
     assert report["ok"] and report["source"] == "durable_job_log"
     assert LOG_LINE in report["logs"]

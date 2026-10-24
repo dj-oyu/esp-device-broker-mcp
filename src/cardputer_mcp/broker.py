@@ -37,6 +37,8 @@ from .continuation import (
 )
 from .derby_provenance import DerbyProvenance, capture_provenance, finish_provenance
 from .derby_reports import PROVENANCE_KEY
+from .device_failure_outcome import FailureEvidence
+from .device_failure_outcome import classify as classify_failure
 from .device_observation import DeviceObservation
 from .firmware_build import BuildPreflightFailure
 from .fixed_diagnostic import DiagnosticContext, finish_fixed_diagnostic
@@ -391,6 +393,59 @@ class Broker:
         if not self._store().ledger.transition(job_id, "needs_review", result, diagnostic):
             self.execution_uncertain = True
 
+    def _record_failure(
+        self,
+        job_id: str,
+        result: str,
+        diagnostic: dict[str, Any] | None,
+        evidence: FailureEvidence,
+    ) -> None:
+        """End a running device job that raised a failure, by classification.
+
+        `failed` (device state established: close confirmed, no write) keeps the
+        result code and leaves other queued jobs alone. Everything else is the
+        review barrier: `needs_review` plus cancelling the queue, as before.
+        See device_failure_outcome.py for the table.
+        """
+        if classify_failure(evidence) == "failed":
+            if self._store().ledger.transition(job_id, "failed", result, diagnostic):
+                self.logs.append(Event.FAILED)
+                return
+            # The row already left `running`; treat it like a refused review write.
+            self.execution_uncertain = True
+        else:
+            self._record_review(job_id, result, diagnostic)
+        self.logs.append(Event.REVIEW)
+        self._cancel_queued("recovery_review_required")
+
+    def _failure_evidence(self, plan: dict[str, Any], job_id: str, code: str) -> FailureEvidence:
+        """Observed close/write evidence for a typed failure of the running job."""
+        backend = self.backend
+        try:
+            serial_closed = not (
+                backend.active
+                or backend.hardware_connected
+                or getattr(backend, "ownership_uncertain", False)
+            )
+        except Exception:
+            serial_closed = False
+        test = plan.get("test")
+        if test in {item.value for item in FLASH_TESTS}:
+            write_started, flash_closed = self.firmware_flash.failure_evidence(job_id)
+            closed = serial_closed and flash_closed
+        else:
+            # Serial jobs never call a flash write; the mock workflow models one.
+            write_started, closed = test == TestName.WORKFLOW.value, serial_closed
+        from .home_recovery import CAPTURE_FAILURES
+
+        return FailureEvidence(
+            code=code,
+            known=True,
+            close_confirmed=closed,
+            write_possibly_started=write_started,
+            home_recovery_source=test == TestName.DERBY.value and code in CAPTURE_FAILURES,
+        )
+
     def _cancel_execution_intent(self, intent: ExecutionIntent, reason: str) -> None:
         job = self._store().job(intent.job_id)
         if (
@@ -418,8 +473,19 @@ class Broker:
             and self._execution_lease_binding_live(intent)
         )
 
-    def _execution_lease_binding_live(self, intent: ExecutionIntent) -> bool:
-        """Current lease authority, independent of the fixed admission deadline."""
+    def _execution_lease_binding_live(
+        self, intent: ExecutionIntent, *, running: bool = False
+    ) -> bool:
+        """Current lease authority, independent of the fixed admission deadline.
+
+        `running=True` is used only for a job that was already admitted and is
+        running under this lease. Such a job keeps its lease until it finishes
+        (DESIGN-CONTINUATION-TICKETS.md section 5.3): the lease and work-session
+        clocks no longer revoke it. A job-only lease returns no capability, so it
+        could never be renewed. Revocation (`Session.revoked`, set when the principal
+        or work session loses authority), closing, epoch and identity changes still
+        stop it. Admission (`running=False`) keeps every clock check.
+        """
         lease, now = self.session, self.clock()
         if (
             self.closing
@@ -427,7 +493,7 @@ class Broker:
             or intent.epoch != self.epoch
             or lease is None
             or not math.isfinite(lease.deadline)
-            or now >= lease.deadline
+            or (lease.revoked if running else now >= lease.deadline)
             or (intent.lease_ref is not None and lease is not intent.lease_ref)
             or lease.id != intent.lease_id
             or lease.principal_id != intent.principal_id
@@ -440,9 +506,9 @@ class Broker:
             if (
                 work is None
                 or work is not intent.work_ref
-                or work.state != "open"
+                or work.state not in (("open", "expired") if running else ("open",))
                 or not math.isfinite(work.deadline)
-                or now >= work.deadline
+                or (not running and now >= work.deadline)
                 or work.principal_id != intent.principal_id
                 or work.owner != intent.owner
                 or not {"read", "control"} <= work.scopes
@@ -491,7 +557,7 @@ class Broker:
                 # A peer build's still-owned normal teardown is not revoked
                 # device authority. Admission and failed cleanup remain gated.
                 or self._execution_uncertain(allow_profile_cleanup=True)
-                or not self._execution_lease_binding_live(intent)
+                or not self._execution_lease_binding_live(intent, running=True)
                 or not self._device_lock.is_locked
                 or not self._state_lock.is_locked
                 or (committing and not store.db.in_transaction)
@@ -647,10 +713,15 @@ class Broker:
         session = self.session
         if session is not None:
             owning_work = self.work_sessions.get(session.work_session_id or "")
-            if owning_work is not None and (
-                owning_work.state != "open" or not self._principal_live(owning_work)
-            ):
-                self.leases.shorten(session, now)
+            if owning_work is not None:
+                if owning_work.state not in ("open", "expired") or not self._principal_live(
+                    owning_work
+                ):
+                    self.leases.revoke(session, now)
+                elif owning_work.state == "expired":
+                    # Clock expiry of the work session: like lease expiry, it ends an
+                    # idle lease but does not revoke a running job.
+                    self.leases.shorten(session, now)
             if (
                 owning_work is None
                 and session.principal_id is not None
@@ -663,7 +734,7 @@ class Broker:
                 except Exception:
                     live = False
                 if live is not True:
-                    self.leases.shorten(session, now)
+                    self.leases.revoke(session, now)
             if now >= session.deadline:
                 self._cancel_queued("lease_expired")
                 if not self._physical_busy():
@@ -1229,7 +1300,12 @@ class Broker:
     def _expire(self) -> None:
         self.maintenance_tick()
 
-    def _lease(self, capability: str | None) -> Session:
+    def _lease(self, capability: str | None, *, running_job: bool = False) -> Session:
+        """The live lease for `capability`.
+
+        `running_job=True` (cancel only) also accepts a lease past its deadline while
+        a running job keeps it, so the owner can still stop that job.
+        """
         self._expire()
         if self.closing:
             raise BrokerError("broker_closing")
@@ -1239,9 +1315,22 @@ class Broker:
             or not secrets.compare_digest(self.session.capability, capability)
         ):
             raise BrokerError("invalid_session")
-        if self.clock() >= self.session.deadline:
+        if self.clock() >= self.session.deadline and not (
+            running_job and self._lease_kept_by_running_job(self.session)
+        ):
             raise BrokerError("lease_expired_active_job_retains_ownership")
         return self.session
+
+    def _lease_kept_by_running_job(self, lease: Session) -> bool:
+        """The lease is held past its deadline only because its own job is running."""
+        job_id = self.active_job
+        if job_id is None or lease.revoked or self.closing or self.session is not lease:
+            return False
+        job = self._store().job(job_id)
+        if job is None or job["state"] != "running":
+            return False
+        plan = self._store().plan(job["plan_hash"])
+        return bool(plan is not None and plan.get("session_id") == lease.id)
 
     def _connection(self) -> dict[str, Any]:
         """Keep the broker's own port state apart from USB presence; opens nothing."""
@@ -1930,7 +2019,8 @@ class Broker:
         return {**self.job(job_id), "deduplicated": False}
 
     def cancel(self, request: CancelRequest) -> dict[str, Any]:
-        session = self._lease(request.session)
+        # A running job keeps its lease past the deadline; its owner can still stop it.
+        session = self._lease(request.session, running_job=True)
         job = self.job(request.job_id)
         plan = self._store().plan(job["plan_hash"])
         if not plan or plan["session_id"] != session.id:
@@ -2508,7 +2598,7 @@ class Broker:
                             and self._runtime_binding() == current_binding
                             and collector_live(self, plan, lease.principal_id or "")
                             and self.session is lease
-                            and self._execution_lease_binding_live(queued_intent)
+                            and self._execution_lease_binding_live(queued_intent, running=True)
                             and self._device_lock.is_locked
                             and self._state_lock.is_locked
                             and self.active_job == job_id
@@ -2557,7 +2647,10 @@ class Broker:
                                 or current is not lease
                                 or current.principal_id != capture_principal
                                 or not math.isfinite(self.clock())
-                                or self.clock() >= current.deadline
+                                # A running flash keeps its lease past the deadline;
+                                # only revocation stops it (see
+                                # _execution_lease_binding_live).
+                                or current.revoked
                             ):
                                 return False
                             registration = self.settings.flash_devices.get(plan["device_id"])
@@ -2588,7 +2681,7 @@ class Broker:
                                 and flash_binding is not None
                                 and live_binding(self, flash_binding, plan)
                                 and self.session is lease
-                                and self._execution_lease_binding_live(queued_intent)
+                                and self._execution_lease_binding_live(queued_intent, running=True)
                                 and self._device_lock.is_locked
                                 and self._state_lock.is_locked
                                 and self._running_job_binding_live(
@@ -2711,15 +2804,14 @@ class Broker:
                                 delivery_state="available",
                             )
                 except (FlashFailure, FlashAdmissionError) as failure:
-                    self._record_review(
+                    self._record_failure(
                         job_id,
                         str(failure),
                         _bounded_read_diagnostic(failure.code, failure.diagnostic)
                         if isinstance(failure, FlashFailure)
                         else None,
+                        self._failure_evidence(plan, job_id, str(failure)),
                     )
-                    self.logs.append(Event.REVIEW)
-                    self._cancel_queued("recovery_review_required")
                 except (BuildPreflightFailure, BuildLocationError) as failure:
                     self._record_review(
                         job_id,
@@ -2741,18 +2833,20 @@ class Broker:
                 except DeviceOperationFailure as failure:
                     from .serial_backend import SerialFailure
 
+                    evidence = self._failure_evidence(plan, job_id, failure.code)
                     if (
                         plan["test"] == TestName.DERBY_FIXED.value
                         and isinstance(failure, SerialFailure)
                         and failure.fixed_trial is not None
                         and capture_principal is not None
                     ):
+                        outcome = classify_failure(evidence)
                         try:
                             store.finish_fixed_trial(
                                 job_id,
                                 job["plan_hash"],
                                 capture_principal,
-                                "needs_review",
+                                outcome,
                                 failure.code,
                                 failure.fixed_trial,
                                 failure.diagnostic,
@@ -2760,18 +2854,26 @@ class Broker:
                         except Exception:
                             self.execution_uncertain = True
                             self._record_review(job_id, "fixed_trial_persist_failed")
+                            outcome = "needs_review"
+                        if outcome == "failed":
+                            self.logs.append(Event.FAILED)
+                        else:
+                            self.logs.append(Event.REVIEW)
+                            self._cancel_queued("recovery_review_required")
                     else:
-                        self._record_review(
+                        self._record_failure(
                             job_id,
                             failure.code,
                             derby_diagnostic(failure.diagnostic),
+                            evidence,
                         )
-                    self.logs.append(Event.REVIEW)
-                    self._cancel_queued("recovery_review_required")
                 except DeviceDisconnected:
-                    self._record_review(job_id, "device_disconnected_no_retry")
-                    self.logs.append(Event.REVIEW)
-                    self._cancel_queued("recovery_review_required")
+                    self._record_failure(
+                        job_id,
+                        "device_disconnected_no_retry",
+                        None,
+                        self._failure_evidence(plan, job_id, "device_disconnected_no_retry"),
+                    )
                 except Exception:
                     # Never persist the exception string (may contain credentials).
                     if plan["test"] == TestName.SOURCE.value:

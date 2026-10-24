@@ -72,7 +72,9 @@ async def test_failed_home_wait_keeps_metadata_but_no_raw_wire_or_storage(tmp_pa
         prepared = prepare(env)
         await execute(env, prepared)
         job = env.broker.job("private-home")
-        assert job["state"] == "needs_review"
+        # Review classification fix: a HOME wait timeout in a capture job (not a DERBY
+        # HOME recovery source) with a confirmed close is `failed` (was needs_review).
+        assert job["state"] == "failed"
         assert job["diagnostic"]["receive_summary"]["after_command"]["home_ready_token_lines"] == 1
         assert env.port.writes == [b"\x1b"] and env.port.closes == 1
         assert_no_private(job)

@@ -430,7 +430,9 @@ async def test_read_failure_withholds_partial_logs_and_sanitizes_exception(tmp_p
         validate_prepared(env, plan)
         await execute(env, plan)
         job = env.broker.job("firmware-report")
-        assert job["state"] == "needs_review" and job["result"] == "serial_read_failed"
+        # Review classification fix: a read error with a confirmed close is `failed`
+        # (was needs_review); the result code is unchanged.
+        assert job["state"] == "failed" and job["result"] == "serial_read_failed"
         unavailable(env)
         assert not env.broker.device_observations
         assert env.broker.operator_device_observation_metadata("firmware-report") is None

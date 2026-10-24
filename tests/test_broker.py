@@ -109,9 +109,26 @@ async def test_cancel_only_queued_and_capacity(tmp_path):
         await b.close()
 
 
-async def test_disconnect_quarantines_and_offline_review(broker):
+async def test_disconnect_without_write_and_with_confirmed_close_is_a_plain_failure(broker):
+    # Running-job lease / review classification fix: a disconnect of a job that
+    # writes nothing, after a confirmed close, ends `failed` and is not a review.
     token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")["session"]
     digest = plan(broker, token)
+    broker.backend.disconnect_next = True
+    broker.execute(ExecuteRequest(session=token, plan_hash=digest))
+    await broker.queue.join()
+    job = broker.job("job-one")
+    assert (job["state"], job["result"]) == ("failed", "device_disconnected_no_retry")
+    assert not broker._store().needs_review()
+    assert not broker.execution_uncertain
+
+
+async def test_disconnect_quarantines_and_offline_review(broker):
+    # Running-job lease / review classification fix: the mock workflow models a
+    # flash write, so its disconnect is still a review (the diagnostics kind is
+    # covered by the plain-failure test above).
+    token = broker.acquire(AcquireRequest(owner=Origin.LOCAL), principal_id="owner")["session"]
+    digest = plan(broker, token, test=Workflow.WORKFLOW)
     broker.backend.disconnect_next = True
     broker.execute(ExecuteRequest(session=token, plan_hash=digest))
     await broker.queue.join()

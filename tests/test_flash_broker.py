@@ -133,7 +133,9 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.broker.execute(ExecuteRequest(session=self.token, plan_hash=result["plan_hash"]))
         await self.broker.queue.join()
         job = self.broker.job("native-failed")
-        self.assertEqual(job["state"], "needs_review")
+        # Review classification fix: a backup read error (no write, confirmed close)
+        # is `failed` (was needs_review); the result code and diagnostic are kept.
+        self.assertEqual(job["state"], "failed")
         self.assertEqual(job["result"], code)
         self.assertEqual(job["diagnostic"], diagnostic)
         listing = OperatorTimeline(self.broker, approvals).snapshot()
@@ -142,6 +144,6 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
         gui = TimelineSnapshot.parse({"ok": True, **listing}, 0).cards
         shown = next(x for x in gui if x.job_id == "native-failed")
         self.assertEqual(shown.result, code)
-        self.assertTrue(shown.needs_device_review)
+        self.assertFalse(shown.needs_device_review)
         self.assertTrue(self.driver.closed)
         self.assertEqual(self.driver.writes, 0)

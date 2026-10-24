@@ -205,9 +205,9 @@ def _lkg_root(env):
     return env.broker.settings.flash_devices["fixture"].backup_directory / "lkg"
 
 
-def _assert_terminal(env, job, code, before, writes):
+def _assert_terminal(env, job, code, before, writes, state="needs_review"):
     record = env.broker.job(job)
-    assert (record["state"], record["result"]) == ("needs_review", code), record
+    assert (record["state"], record["result"]) == (state, code), record
     after = _durable(env)
     assert after["current"] == before["current"]
     assert after["history"] == before["history"]
@@ -265,7 +265,13 @@ async def test_lkg_prewrite_current_firmware_mismatch_never_writes(env):
     # The fence applies only when the LKG is named explicitly (decision 2026-10-25);
     # with no baseline named, the same device content is flashed without a fence.
     await _flash(env, "prewrite", build_job_id="build-one", lkg_receipt=env.selected)
-    _assert_terminal(env, "prewrite", "lkg_current_firmware_changed_needs_review", before, 0)
+    # Review classification fix: the pre-write fence failed before any write and the
+    # driver close was confirmed, so the job is `failed` (it was needs_review); the
+    # result code is unchanged and the prior LKG stays selected.
+    _assert_terminal(
+        env, "prewrite", "lkg_current_firmware_changed_needs_review", before, 0, "failed"
+    )
+    assert not env.store.needs_review()
 
 
 @pytest.mark.parametrize("how", ["cancelled", "authority_revoked"])

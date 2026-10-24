@@ -106,7 +106,9 @@ async def test_fixed_smoke_explicit_request_then_principal_bound_image(derby_ser
                 service.resident.session.deadline = service.resident.clock() - 1
             release.set()
         await service.resident.queue.join()
-        if interruption in ("cancel", "lease_expired"):
+        # Running-job lease fix: passing the lease deadline while the derby runs no
+        # longer revokes it (it was needs_review); it completes like the normal case.
+        if interruption == "cancel":
             job = service.resident.job("derby-one")
             assert job["state"] == "needs_review", json.dumps(job)
             assert wire.closed and wire.writes[-1] == b"e"

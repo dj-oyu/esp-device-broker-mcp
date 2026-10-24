@@ -276,8 +276,10 @@ async def test_backup_restore_and_full_backup_require_separate_explicit_request(
     env.execute(prepared)
     await env.broker.queue.join()
     if action == Action.FLASH:
-        # The original full backup no longer matches the already flashed base.
-        assert env.broker.job("separate")["state"] == "needs_review"
+        # The original full backup no longer matches the already flashed base. Review
+        # classification fix: the pre-write fence stopped it before any write with a
+        # confirmed close, so it is `failed` (was needs_review) with the same code.
+        assert env.broker.job("separate")["state"] == "failed"
         assert env.broker.job("separate")["result"] == "flash_backup_stale_needs_review"
     else:
         assert env.broker.job("separate")["state"] == "succeeded"
@@ -503,7 +505,10 @@ async def test_last_auth_callback_cannot_replace_owned_fetch_receipt(env, phase,
     env.broker.principal_valid = current
     await env.broker.queue.join()
     assert changed
-    expected = "cancelled" if phase == "dispatch" else "needs_review"
+    # Review classification fix: losing the receipt before the write ("prewrite")
+    # with a confirmed close is `failed` (was needs_review); after the write
+    # ("commit") it stays needs_review.
+    expected = {"dispatch": "cancelled", "prewrite": "failed"}.get(phase, "needs_review")
     assert env.broker.job("receipt-revoke")["state"] == expected, env.broker.job("receipt-revoke")
     assert env.store.firmware_current("fixture") == previous
     if phase != "commit":
