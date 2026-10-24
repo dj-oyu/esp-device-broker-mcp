@@ -175,6 +175,14 @@ class SubmitRequest(StrictModel):
     derby_detail_mode: DiagnosticMode | None = Field(default=None, description="build")
     derby_dma_mode: DiagnosticMode | None = Field(default=None, description="build")
     flash_job_id: Identifier | None = Field(default=None, description="derby_fixed")
+    after: str | None = Field(
+        default=None,
+        pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
+        description=(
+            "build: continue the source fetch named by this ticket (the chain tip); the "
+            "build waits for it. One ticket, one child. Omit source_receipt."
+        ),
+    )
     app: AppSessionOptions | None = Field(default=None, description="app_session")
 
 
@@ -342,7 +350,7 @@ SUBMIT_RULES: dict[Kind, tuple[set[str], set[str]]] = {
     Kind.FETCH: ({"job_id", "project_id", "source_commit"}, set()),
     Kind.BUILD: (
         {"job_id", "project_id"},
-        {"source_receipt", "derby_detail_mode", "derby_dma_mode"},
+        {"source_receipt", "derby_detail_mode", "derby_dma_mode", "after"},
     ),
     Kind.BACKUP: ({"job_id", "session", "device_id"}, set()),
     Kind.FLASH: ({"job_id", "session", "device_id", "build_job_id"}, set(_RECOVERY)),
@@ -436,7 +444,11 @@ def register_surface(
             return _refuse("argument_required", "continues")
         if continues:
             plan = plan_for(plan_hash)
-            if plan is not None and "session_id" not in plan:
+            if (
+                plan is not None
+                and "session_id" not in plan
+                and not str(plan.get("execution_context", "")).startswith("registered_project")
+            ):
                 return _refuse("argument_not_allowed", "continues")
         model, error = _convert(lambda: ExecuteRequest(plan_hash=plan_hash, session=session))
         body: dict[str, Any] = error or await ops["execute_test"](model, ctx)
@@ -479,6 +491,18 @@ def register_surface(
             )
         elif view is View.JOB:
             assert request.job_id is not None
+            waiting_view = None
+            try:
+                waiting_view = resident.deferred_job(
+                    _req(request.job_id), principal(ctx, "read").principal_id
+                )
+            except BrokerError:
+                waiting_view = None
+            if waiting_view is not None:
+                chain = resident.chain_progress(_req(request.job_id))
+                return _wrap(
+                    {"ok": True, **waiting_view, **({"chain": chain} if chain is not None else {})}
+                )
             body = await ops["job_status"](JobRequest(job_id=_req(request.job_id)), ctx)
             if body.get("ok") and isinstance(body.get("plan_hash"), str):
                 plan = plan_for(body["plan_hash"])
@@ -655,6 +679,14 @@ def register_surface(
             )
             return error or await ops["cancel_device_request"](model, ctx)
         assert request.job_id is not None
+        try:
+            cancelled = resident.cancel_deferred(
+                request.job_id, principal(ctx, "control").principal_id
+            )
+        except BrokerError:
+            cancelled = None
+        if cancelled is not None:
+            return {"ok": True, **cancelled}
         job = resident._store().job(request.job_id)
         plan = resident._store().plan(job["plan_hash"]) if job is not None else None
         if request.plan_hash is not None and (

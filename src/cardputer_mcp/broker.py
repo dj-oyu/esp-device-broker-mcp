@@ -29,6 +29,7 @@ from .config import Settings
 from .continuation import (
     HOLD_SECONDS,
     TICKET_TTL_SECONDS,
+    Deferred,
     Hold,
     TicketError,
     Tickets,
@@ -229,6 +230,7 @@ class Broker:
         self.waiters: list[str] = []
         self.hold: Hold | None = None
         self.tickets = Tickets(self._store, lambda: self.epoch)
+        self.deferred = Deferred(self._store, lambda: self.epoch)
         self._queue_sequence = 0
         self.maintenance: asyncio.Task[None] | None = None
         self.active_job: str | None = None
@@ -294,6 +296,7 @@ class Broker:
                 os.chmod(self.settings.state_dir / "history.sqlite3", 0o600)
             self.store.recover()
             self.tickets.void_stale()
+            self.deferred.cancel_stale()
             self.logs.append(Event.STARTED)
             self.worker = asyncio.create_task(self._work(), name="single-device-worker")
             self.profile_jobs.start()
@@ -643,6 +646,8 @@ class Broker:
         # The approval interface is retired: discard any legacy consent rather
         # than calling its removed validator or reviving delivery authority.
         self.capture_delivery_consents.clear()
+        for waiting in self.deferred.pending():
+            self.profile_jobs.promote(waiting)
         self._tickets_tick(now)
         if (
             self.closing
@@ -729,6 +734,11 @@ class Broker:
             ticket_id = str(row["ticket_id"])
             job = store.job(str(row["parent_job_id"]))
             if job is None:
+                waiting = self.deferred.get(str(row["parent_job_id"]))
+                if waiting is not None and waiting["state"] == "pending":
+                    continue
+                if waiting is not None and waiting["state"] == "promoted":
+                    continue
                 self.tickets.mark_state(ticket_id, "void", "chain_broken")
                 continue
             if job["state"] in ("awaiting_approval", "queued", "running"):
@@ -788,12 +798,43 @@ class Broker:
         job = store.job(job_id)
         plan = store.plan(job["plan_hash"]) if job is not None else None
         principal_id = self.job_principal(job_id)
-        if plan is None or "session_id" not in plan or principal_id is None:
+        if job is None:
+            waiting = self.deferred.get(job_id)
+            plan = store.plan(waiting["plan_hash"]) if waiting is not None else None
+            principal_id = waiting["principal_id"] if waiting is not None else None
+        elif plan is not None and plan.get("execution_context") == "registered_project":
+            principal_id = plan.get("principal_id")
+        registered = plan is not None and str(plan.get("execution_context", "")).startswith(
+            "registered_project"
+        )
+        if (
+            plan is None
+            or ("session_id" not in plan and not registered)
+            or not isinstance(principal_id, str)
+        ):
             raise BrokerError("continuation_not_supported")
         try:
             return self.tickets.issue(job_id, principal_id, total_hint=total_hint)
         except TicketError as exc:
             raise BrokerError(str(exc)) from None
+
+    def deferred_job(self, job_id: str, principal_id: str) -> dict[str, Any] | None:
+        """Job-shaped view of a waiting job; only for the principal that requested it."""
+        row = self.deferred.get(job_id)
+        if row is None or row["principal_id"] != principal_id:
+            return None
+        if row["state"] == "promoted":
+            return None  # the real job row answers from here on
+        return self.deferred.view(row)
+
+    def cancel_deferred(self, job_id: str, principal_id: str) -> dict[str, Any] | None:
+        row = self.deferred.get(job_id)
+        if row is None or row["principal_id"] != principal_id or row["state"] != "pending":
+            return None
+        self.deferred.finish(job_id, "cancelled", "client_cancelled_waiting")
+        updated = self.deferred.get(job_id)
+        assert updated is not None
+        return self.deferred.view(updated)
 
     def cancel_ticket(self, ticket_id: str, principal_id: str) -> dict[str, Any]:
         row = self.tickets._row(ticket_id)
@@ -825,13 +866,24 @@ class Broker:
         if not before and not after and own is None:
             return None
         job = self._store().job(job_id)
+        waiting = self.deferred.get(job_id) if job is None else None
         reference = own or open_ticket
         if reference is None and before:
             reference = self.tickets._previous(job_id)
         hold = self.hold
         held = own is not None and hold is not None and hold.ticket_id == own["ticket_id"]
-        state = str(job["state"]) if job is not None else "unknown"
-        if state in ("failed", "cancelled", "needs_review", "interrupted"):
+        state = (
+            str(job["state"])
+            if job is not None
+            else "waiting_parent"
+            if waiting is not None and waiting["state"] == "pending"
+            else "cancelled"
+            if waiting is not None and waiting["state"] == "cancelled"
+            else "unknown"
+        )
+        if state == "waiting_parent":
+            chain_state = "waiting_parent"
+        elif state in ("failed", "cancelled", "needs_review", "interrupted"):
             chain_state = "broken"
         elif state == "queued":
             chain_state = "waiting_for_device"

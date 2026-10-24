@@ -150,12 +150,24 @@ class PrepareRequest(StrictModel):
         default=None, exclude_if=lambda value: value is None
     )
     flash_job_id: Identifier | None = None
+    after: str | None = Field(
+        default=None,
+        pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
+        exclude_if=lambda value: value is None,
+        description="Build only: continue the source fetch named by this ticket.",
+    )
     app: AppSessionOptions | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def flash_references(self) -> "PrepareRequest":
         if (self.test == TestName.APP_SESSION) != (self.app is not None):
             raise ValueError("app_options_required_only_for_app_session")
+        if self.after is not None and (
+            self.test != TestName.BUILD
+            or self.project_id is None
+            or self.source_receipt is not None
+        ):
+            raise ValueError("after_only_for_registered_build_without_receipt")
         if "derby_dma_mode" in self.model_fields_set and (
             self.derby_dma_mode is None
             or self.derby_detail_mode is None

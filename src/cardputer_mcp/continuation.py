@@ -121,8 +121,8 @@ class Tickets:
         db.execute("UPDATE continuation_tickets SET hold=? WHERE ticket_id=?", (value, ticket_id))
         db.commit()
 
-    def consume(self, ticket_id: str, principal_id: str) -> dict[str, Any]:
-        """Atomically spend an issued ticket. Unknown and foreign tickets look the same."""
+    def peek(self, ticket_id: str, principal_id: str) -> dict[str, Any]:
+        """Validate a ticket for its owner without spending it."""
         row = self._row(ticket_id)
         if row is None or row["principal_id"] != principal_id:
             raise TicketError("ticket_invalid")
@@ -130,10 +130,13 @@ class Tickets:
             raise TicketError("ticket_consumed")
         if row["state"] == "expired":
             raise TicketError("hold_expired")
-        if row["state"] != "issued":
+        if row["state"] != "issued" or row["epoch"] != self._epoch():
             raise TicketError("ticket_void")
-        if row["epoch"] != self._epoch():
-            raise TicketError("ticket_void")
+        return row
+
+    def consume(self, ticket_id: str, principal_id: str) -> dict[str, Any]:
+        """Atomically spend an issued ticket. Unknown and foreign tickets look the same."""
+        row = self.peek(ticket_id, principal_id)
         db = self._store().db
         db.execute(
             "UPDATE continuation_tickets SET state='consumed' WHERE ticket_id=? AND state='issued'",
@@ -232,3 +235,96 @@ class Tickets:
             return datetime.strptime(finished, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).timestamp()
         except ValueError:
             return None
+
+
+MAX_PENDING_DEFERRED = 64
+
+
+class Deferred:
+    """Jobs the owner already requested, waiting for their parent job to finish.
+
+    A waiting job is not in the job table and never holds a queue position. When the
+    parent succeeds the broker prepares and queues the exact plan the owner committed
+    to; when it fails the waiting job is cancelled with a fixed reason code.
+    """
+
+    def __init__(self, store: Callable[[], Store], epoch: Callable[[], str]) -> None:
+        self._store = store
+        self._epoch = epoch
+
+    def get(self, job_id: str) -> dict[str, Any] | None:
+        row = (
+            self._store()
+            .db.execute("SELECT * FROM deferred_jobs WHERE job_id=?", (job_id,))
+            .fetchone()
+        )
+        return dict(row) if row else None
+
+    def pending(self) -> list[dict[str, Any]]:
+        rows = self._store().db.execute(
+            "SELECT * FROM deferred_jobs WHERE state='pending' ORDER BY created"
+        )
+        return [dict(row) for row in rows]
+
+    def add(
+        self, job_id: str, plan_hash: str, parent_job_id: str, principal_id: str, origin: str
+    ) -> None:
+        db = self._store().db
+        count = db.execute("SELECT COUNT(*) FROM deferred_jobs WHERE state='pending'").fetchone()[0]
+        if count >= MAX_PENDING_DEFERRED:
+            raise TicketError("queue_full")
+        db.execute(
+            "INSERT INTO deferred_jobs(job_id,plan_hash,parent_job_id,principal_id,origin,epoch,"
+            "state,created) VALUES(?,?,?,?,?,?,'pending',?)",
+            (job_id, plan_hash, parent_job_id, principal_id, origin, self._epoch(), time.time()),
+        )
+        db.commit()
+
+    def remove(self, job_id: str) -> None:
+        db = self._store().db
+        db.execute("DELETE FROM deferred_jobs WHERE job_id=? AND state='pending'", (job_id,))
+        db.commit()
+
+    def finish(
+        self,
+        job_id: str,
+        state: str,
+        reason: str | None = None,
+        resolved_plan_hash: str | None = None,
+    ) -> None:
+        db = self._store().db
+        db.execute(
+            "UPDATE deferred_jobs SET state=?, reason=?, resolved_plan_hash=? "
+            "WHERE job_id=? AND state='pending'",
+            (state, reason, resolved_plan_hash, job_id),
+        )
+        db.commit()
+
+    def cancel_stale(self) -> None:
+        """A restart cancels every waiting job; nothing is resumed automatically."""
+        db = self._store().db
+        db.execute(
+            "UPDATE deferred_jobs SET state='cancelled', reason='broker_restart' "
+            "WHERE state='pending' AND epoch<>?",
+            (self._epoch(),),
+        )
+        db.commit()
+
+    def view(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Job-shaped record for a waiting or finished deferred job."""
+        state = {"pending": "waiting_parent"}.get(str(row["state"]), str(row["state"]))
+        job: dict[str, Any] = {
+            "id": row["job_id"],
+            "plan_hash": row["plan_hash"],
+            "state": state,
+            "stage": None,
+            "result": row["reason"],
+            "diagnostic": None,
+            "reviewed": 0,
+            "created": None,
+            "finished": None,
+            "continues": {"parent_job_id": row["parent_job_id"]},
+        }
+        if row["resolved_plan_hash"]:
+            job["resolved_plan_hash"] = row["resolved_plan_hash"]
+        return job

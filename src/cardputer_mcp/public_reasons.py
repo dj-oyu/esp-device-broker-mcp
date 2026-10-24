@@ -24,6 +24,7 @@ PUBLIC_REASON_CODES: frozenset[str] = frozenset(
         "source_commit_only_for_fetch",
         "source_fetch_requires_registered_project_and_full_commit",
         "source_receipt_only_for_registered_build",
+        "after_only_for_registered_build_without_receipt",
         "successful_build_job_required",
         "project_only_for_build",
         "test_not_available_for_backend",

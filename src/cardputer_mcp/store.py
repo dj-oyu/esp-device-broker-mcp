@@ -127,6 +127,11 @@ class Store:
             reason TEXT, hold TEXT, consumed_by_job TEXT, chain_started REAL NOT NULL,
             chain_total INTEGER, created REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS deferred_jobs (
+            job_id TEXT PRIMARY KEY, plan_hash TEXT NOT NULL, parent_job_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL, origin TEXT NOT NULL, epoch TEXT NOT NULL,
+            state TEXT NOT NULL, reason TEXT, resolved_plan_hash TEXT, created REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS device_requests (
             id TEXT PRIMARY KEY, session_id TEXT, lease_id TEXT,
             state TEXT NOT NULL, lease_seconds INTEGER NOT NULL,
