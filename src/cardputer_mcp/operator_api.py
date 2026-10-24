@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from . import cancellation
 from .broker import Broker, BrokerError
 from .build_logs import BuildLogs
 from .models import FLASH_TESTS, BuildLogRequest, Digest, Identifier, Origin, TestName
@@ -384,12 +385,15 @@ class OperatorAPI:
                 )
             elif path == "/operator/job-cancel":
                 cancel_job = CancelJob.model_validate(payload)
-                cancelled = self.broker.profile_jobs.operator_cancel(
-                    cancel_job.job_id,
-                    cancel_job.plan_hash,
-                    cancel_job.broker_epoch,
-                    principal.principal_id,
-                    principal.origin.value,
+                cancelled = cancellation.cancel_job(
+                    self.broker,
+                    cancellation.OperatorProfileJob(
+                        cancel_job.job_id,
+                        cancel_job.plan_hash,
+                        cancel_job.broker_epoch,
+                        principal.principal_id,
+                        principal.origin.value,
+                    ),
                 )
                 result = {
                     "job_id": cancel_job.job_id,
@@ -407,7 +411,9 @@ class OperatorAPI:
                 result = self.broker.operator_snapshot()
             elif path == "/operator/cancel":
                 cancel = CancelWait.model_validate(payload)
-                result = self.broker.operator_cancel_wait(cancel.request_id)
+                result = cancellation.cancel_job(
+                    self.broker, cancellation.OperatorWait(cancel.request_id)
+                )
             elif path == "/operator/reorder":
                 reorder = ReorderWait.model_validate(payload)
                 result = self.broker.operator_reorder_wait(

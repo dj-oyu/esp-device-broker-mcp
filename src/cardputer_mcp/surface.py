@@ -18,6 +18,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field, ValidationError
 
+from . import cancellation
 from .app_models import (
     U32,
     U64,
@@ -709,7 +710,9 @@ def register_surface(
                 owner = principal(ctx, "control")
                 return {
                     "ok": True,
-                    **resident.cancel_ticket(_req(request.ticket), owner.principal_id),
+                    **cancellation.cancel_job(
+                        resident, cancellation.Ticket(_req(request.ticket), owner.principal_id)
+                    ),
                 }
             except BrokerError as exc:
                 return _refuse(public_broker_reason(exc))
@@ -723,8 +726,9 @@ def register_surface(
             return error or await ops["cancel_device_request"](model, ctx)
         assert request.job_id is not None
         try:
-            cancelled = resident.cancel_deferred(
-                request.job_id, principal(ctx, "control").principal_id
+            cancelled = cancellation.cancel_job(
+                resident,
+                cancellation.DeferredJob(request.job_id, principal(ctx, "control").principal_id),
             )
         except BrokerError:
             cancelled = None
@@ -732,8 +736,11 @@ def register_surface(
             return {"ok": True, **cancelled}
         if request.session is None:
             try:
-                running = resident.cancel_job_only(
-                    request.job_id, principal(ctx, "control").principal_id
+                running = cancellation.cancel_job(
+                    resident,
+                    cancellation.JobLeaseJob(
+                        request.job_id, principal(ctx, "control").principal_id
+                    ),
                 )
             except BrokerError as exc:
                 return _refuse(public_broker_reason(exc))

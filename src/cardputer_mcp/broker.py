@@ -23,6 +23,7 @@ from .app_models import AppCommandRequest, AppEventsRequest
 from .app_sessions import AppSessions
 from .backend import Backend, BackendResult, DeviceDisconnected, DeviceOperationFailure, MockBackend
 from .build_locations import BuildLocationError
+from .cancellation import DeviceStop, device_stop
 from .capture import CapturedImage
 from .collector_binding import collector_live, prepare_collector
 from .config import Settings
@@ -1934,40 +1935,34 @@ class Broker:
         plan = self._store().plan(job["plan_hash"])
         if not plan or plan["session_id"] != session.id:
             raise BrokerError("job_session_mismatch")
-        if job["state"] == "awaiting_approval":
+        stop = device_stop(job["state"], plan["test"])
+        if stop is DeviceStop.INTENT:
             intent = self._execution_intents.get(request.job_id)
             if intent is None or not self._execution_intent_live(intent):
                 raise BrokerError("execution_intent_not_available")
             self._cancel_execution_intent(intent, "client_cancelled_awaiting_approval")
             return self.job(request.job_id)
-        if job["state"] == "running" and plan["test"] == TestName.APP_SESSION.value:
+        if stop is DeviceStop.APP_EVENT:
             app_run = self.app_sessions.jobs.get(request.job_id)
             if app_run is None:
                 raise BrokerError("app_session_not_available")
             app_run.cancelled.set()
             return {**job, "stop_requested": True, "requires_review": False}
-        if job["state"] == "running" and plan["test"] == TestName.SOURCE.value:
+        if stop is DeviceStop.SOURCE:
             accepted = self.firmware_source.request_stop(request.job_id)
             return {**job, "stop_requested": accepted, "requires_review": accepted}
-        if job["state"] == "running" and plan["test"] in (
-            TestName.DERBY.value,
-            TestName.DERBY_FIXED.value,
-        ):
+        if stop is DeviceStop.SMOKE:
             from .serial_backend import SerialBackend
 
             if not isinstance(self.backend, SerialBackend):
                 raise BrokerError("backend_not_available")
             accepted = self.backend.request_smoke_stop()
             return {**job, "stop_requested": accepted, "requires_review": accepted}
-        if job["state"] == "running" and plan["test"] in (
-            {TestName.BUILD.value} | {t.value for t in FLASH_TESTS}
-        ):
-            controller = (
-                self.firmware_build if plan["test"] == TestName.BUILD.value else self.firmware_flash
-            )
+        if stop in (DeviceStop.BUILD, DeviceStop.FLASH):
+            controller = self.firmware_build if stop is DeviceStop.BUILD else self.firmware_flash
             accepted = controller.request_stop(request.job_id)
             return {**job, "stop_requested": accepted, "requires_review": accepted}
-        if job["state"] != "queued":
+        if stop is DeviceStop.REFUSE:
             raise BrokerError("only_queued_jobs_can_be_cancelled")
         if self._store().ledger.transition(
             request.job_id, "cancelled", "client_cancelled_queued", expect={"queued"}

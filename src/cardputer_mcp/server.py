@@ -24,6 +24,7 @@ from mcp.types import (
 from pydantic import TypeAdapter, ValidationError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from . import cancellation
 from .app_models import AppCommandRequest, AppEventsRequest
 from .auth import AuthState
 from .broker import Broker, BrokerError
@@ -869,7 +870,10 @@ def create_server(
     ) -> dict[str, Any]:
         """Stop this principal's exact recovery; retain ownership until confirmed close."""
         return _result(
-            lambda: resident.home_recovery.cancel(request, principal(ctx, "control").principal_id)
+            lambda: cancellation.cancel_job(
+                resident,
+                cancellation.HomeRecoveryJob(request, principal(ctx, "control").principal_id),
+            )
         )
 
     @op
@@ -1163,8 +1167,15 @@ def create_server(
                 TestName.SOURCE.value,
             ):
                 owner = principal(ctx, "control")
-                return resident.profile_jobs.cancel(request, owner.principal_id, owner.origin.value)
-            return owned(request, ctx, lambda: resident.cancel(request))
+                return cancellation.cancel_job(
+                    resident,
+                    cancellation.ProfileJob(request, owner.principal_id, owner.origin.value),
+                )
+            return owned(
+                request,
+                ctx,
+                lambda: cancellation.cancel_job(resident, cancellation.LeasedDeviceJob(request)),
+            )
 
         return _result(lambda: shared_job(cancel()))
 
@@ -1214,8 +1225,9 @@ def create_server(
             lambda: work_action(
                 ctx,
                 "control",
-                lambda owner: resident.cancel_device_request(
-                    request, principal_id=owner.principal_id, scopes=owner.scopes
+                lambda owner: cancellation.cancel_job(
+                    resident,
+                    cancellation.DeviceRequestWait(request, owner.principal_id, owner.scopes),
                 ),
             )
         )
