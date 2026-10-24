@@ -104,6 +104,41 @@ contains the redacted report; avoid shared files unless sharing is intended.
   confirmed close. Restart clears it; reads never extend the deadline
 - Log bodies never enter SQLite, job history, the shared `status(view=logs, stream=broker)` event cache,
   or the operator timeline. The local timeline displays validated summary fields
+
+## Durable per-job device logs
+
+Separately from the five-minute report above, the broker saves the serial text it
+receives for every serial device job that opens the port (`passive_observe`,
+`firmware_observe`, `restart_and_observe`, `hello`, `capture_home`, `derby_smoke`,
+`derby_fixed_workload`) on every outcome:
+success, failure, needs review, cancellation and exceptions. Saving has no
+outcome condition. It is passive: the backend copies bytes it already read, and
+never adds a port open, reset, retry or read. A storage failure never fails the
+job; the job diagnostic then carries `job_log_unavailable: true`.
+
+- Files: `<state_dir>/job-logs/<job_id>.jsonl`, append-only JSON lines. The first
+  line is `{"schema_version":1,"job_id","principal_id","kind","created"}`, then
+  one `{"seq","t","stream","level","text"}` entry per line (`stream` is `device`).
+  Each line is flushed when received, so a crash keeps what arrived; the file is
+  fsynced when the job ends. Linked/reparse-point files and non-identifier job
+  ids are refused
+- Redaction happens before writing, with the same rules as the report
+  (credential-like lines and PEM blocks replaced, capture/pixel records and
+  binary lines omitted) plus the shared log redaction. Best effort, as above
+- Bounds: 8 MiB per job (one truncation marker, then further text is dropped);
+  newest 500 job files and 512 MiB in total, pruned oldest-first when a job
+  starts. A queued or running job's file is never pruned; nothing else in the
+  directory is touched
+- Read with `status(view=logs, stream=device, job_id=...)` or `device-logs`.
+  When the RAM report is gone (expired, restart) or the job did not succeed,
+  the owning principal gets the persisted text for any terminal state with
+  `"source": "durable_job_log"`, the job `state`/`result` and the newest
+  lines (at most 1000 lines / 256 KiB; `omitted_oldest_lines` counts the rest).
+  Other principals get `device_logs_not_available`
+- App sessions use their own framed transport and are not included yet; flash
+  jobs have their own flash log
+- These files are private state: they stay on disk until pruned. Delete the
+  directory yourself if you need them gone sooner
 - The original principal must still have read permission. A different principal
   cannot read the report. Sessions sharing one key share the same principal;
   this is not physical-terminal or per-session identity isolation

@@ -43,6 +43,7 @@ from .flash_binding import FlashBinding, live_binding, prepare_binding, validate
 from .flash_lifecycle import FlashFailure, _bounded_read_diagnostic
 from .flash_manifest import FlashAdmissionError
 from .home_line import HomeLineProbe
+from .job_logs import DeviceLogTap, JobLog, JobLogStore
 from .logs import Event, LogBook
 from .models import (
     FLASH_TESTS,
@@ -77,6 +78,13 @@ USB_PRESENCE_MEANING = (
     "present: exactly one USB device matches the registered selector; missing: none; "
     "ambiguous: more than one. Enumeration only; it does not prove the firmware responds."
 )
+
+# Device jobs whose serial bytes the backend tees into the durable job log.
+_NON_DEVICE_LOG_TESTS = frozenset(
+    {TestName.APP_SESSION.value, TestName.SOURCE.value, TestName.BUILD.value}
+    | {test.value for test in FLASH_TESTS}
+)
+_TERMINAL_LOG_STATES = frozenset({"succeeded", "failed", "needs_review", "cancelled"})
 
 
 class BrokerError(ValueError):
@@ -279,6 +287,8 @@ class Broker:
         self.captures: dict[str, RetainedCapture] = {}
         self.capture_delivery_consents: dict[str, CaptureDeliveryConsent] = {}
         self.device_observations: dict[str, RetainedDeviceObservation] = {}
+        self.job_logs = JobLogStore(settings.state_dir / "job-logs")
+        self._job_log_failures: set[str] = set()
         self._flash_bindings: dict[str, FlashBinding] = {}
         self._execution_bindings: dict[str, str] = {}
         self._execution_intents: dict[str, ExecutionIntent] = {}
@@ -2026,9 +2036,86 @@ class Broker:
             raise BrokerError("device_logs_not_available")
         return retained
 
+    def _open_device_job_log(
+        self, job_id: str, principal_id: str | None, test: str
+    ) -> tuple[JobLog | None, DeviceLogTap | None]:
+        """Unconditionally record what the serial reader receives for a device job.
+
+        Passive only: the backend tees bytes it already read. A store failure
+        never fails the job; it is recorded as ``job_log_unavailable``.
+        """
+        if test in _NON_DEVICE_LOG_TESTS or not hasattr(self.backend, "device_log"):
+            return None, None
+        try:
+            if not principal_id:
+                raise ValueError("job_log_principal_required")
+            store = self._store()
+            active = {
+                str(row[0])
+                for row in store.db.execute(
+                    "SELECT id FROM jobs WHERE state IN ('queued','running','awaiting_approval')"
+                )
+            }
+            job_log = self.job_logs.begin(job_id, principal_id, test, keep=active)
+        except Exception:
+            self._job_log_failures.add(job_id)
+            return None, None
+        tap = DeviceLogTap(job_log)
+        self.backend.device_log = tap
+        return job_log, tap
+
+    def _close_device_job_log(
+        self, job_id: str, job_log: JobLog | None, tap: DeviceLogTap | None
+    ) -> None:
+        try:
+            if hasattr(self.backend, "device_log"):
+                self.backend.device_log = None
+            if tap is not None:
+                tap.finish()
+            if job_log is not None:
+                job_log.close()
+                if job_log.unavailable:
+                    self._job_log_failures.add(job_id)
+            if job_id in self._job_log_failures:
+                self._job_log_failures.discard(job_id)
+                store = self._store()
+                job = store.job(job_id)
+                if job is not None and job["state"] not in ("queued", "running"):
+                    diagnostic = dict(job["diagnostic"] or {})
+                    diagnostic["job_log_unavailable"] = True
+                    store.set_job(job_id, job["state"], job["result"], diagnostic)
+        except Exception:
+            # Logging is never allowed to change the job outcome.
+            pass
+
+    def _durable_device_logs(self, job_id: str, principal_id: str) -> dict[str, Any]:
+        """Owner-only persisted device text for any terminal job state."""
+        job = None if self.closing else self._store().job(job_id)
+        if (
+            job is None
+            or job["state"] not in _TERMINAL_LOG_STATES
+            or not isinstance(principal_id, str)
+            or not principal_id
+        ):
+            raise BrokerError("device_logs_not_available")
+        owner = self.job_principal(job_id)
+        if owner is not None and not secrets.compare_digest(owner, principal_id):
+            raise BrokerError("device_logs_not_available")
+        report = self.job_logs.device_report(job_id, principal_id)
+        if report is None:
+            raise BrokerError("device_logs_not_available")
+        return {**report, "state": job["state"], "result": job["result"]}
+
     def read_device_logs(self, job_id: str, principal_id: str) -> dict[str, Any]:
-        """Read only the requesting principal's explicitly requested completed report."""
-        retained = self._device_observation(job_id)
+        """Read only the requesting principal's own device log for a finished job.
+
+        A retained RAM report (succeeded observe/restart) is returned as before;
+        otherwise the durable per-job log serves any terminal state.
+        """
+        try:
+            retained = self._device_observation(job_id)
+        except BrokerError:
+            return self._durable_device_logs(job_id, principal_id)
         if not secrets.compare_digest(retained.principal_id, principal_id):
             raise BrokerError("device_logs_not_available")
         return {
@@ -2556,6 +2643,9 @@ class Broker:
                     except Exception:
                         return False
 
+                job_log, device_tap = self._open_device_job_log(
+                    job_id, capture_principal, plan["test"]
+                )
                 try:
 
                     def on_stage(name: str, job: str = job_id, db: Store = store) -> None:
@@ -2916,6 +3006,8 @@ class Broker:
                         if fixed_review:
                             self._cancel_queued("recovery_review_required")
                 finally:
+                    self._close_device_job_log(job_id, job_log, device_tap)
+                    job_log = device_tap = None
                     if local_home_probe is not None:
                         local_home_probe.finish()
                         local_home_probe = None
