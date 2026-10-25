@@ -73,44 +73,37 @@ def test_require_principal_table(scope, credential, auth_required, honor):
 
 # --- every call site keeps its kind --------------------------------------------------------
 
-# op/helper -> sorted (scope, honor_auth_required) of each require() call inside it.
+# helper/tool -> sorted (scope, honor_auth_required) of each require() call inside it.
+# Stage 3c folded the former server.py @op handlers into surface.py; the former op is
+# named beside each body. server.py keeps only the definition of require() itself.
 SITES = {
-    "server.py": {
-        "client_identity": [("read", False)],
-        "list_registered_targets": [("read", False)],
-        "read_source_resources": [("read", False)] * 2,
-        "device_status": [("read", True)],
-        "read_logs": [("read", True)],
-        "acquire_session": [("control", True)],
-        "renew_session": [("control", True)],
-        "release_session": [("control", True)],
-        # deferred, profile, device (always + require_owner), then the gated owned check,
-        # and the source reauthorize callback.
-        "prepare_test": [("control", False)] * 4 + [("control", True)],
-        "execute_test": [("control", False)] * 2 + [("control", True)],
-        "request_home_recovery": [("control", False)],
-        "cancel_home_recovery": [("control", False)],
-        "job_status": [("read", False)] * 4 + [("read", True)],
-        "read_build_logs": [("read", False)] * 3,
-        "list_apps": [("read", False)],
-        "app_command": [("control", False)],
-        "read_app_events": [("read", False)],
-        "read_device_logs": [("read", False)],
-        "read_capture": [("read", False)],
-        "cancel_job": [("control", False), ("control", True)],
-        "create_work_session": [("control", False)],
-        "resume_work_session": [("read", False)],
-        "request_device": [("control", False)],
-        "cancel_device_request": [("control", False)],
-        "close_work_session": [("control", False)],
-    },
+    "server.py": {},
     "surface.py": {
         "plan_is_callers": [("control", False)],
-        # status(view=job) authenticates once; view=jobs|recovery use _reader, which
-        # honours auth_required like view=job|device (owned_by_caller only).
+        # view=jobs|recovery use _reader, which honours auth_required (owned_by_caller only).
         "_reader": [("read", True)],
-        "status": [("read", False)],
-        "cancel": [("control", False)] * 3,
+        "identity_body": [("read", False)],  # client_identity
+        "targets_body": [("read", False)],  # list_registered_targets
+        "source_body": [("read", False)] * 2,  # read_source_resources
+        "job_body": [("read", False)] * 4 + [("read", True)],  # job_status
+        "build_logs_body": [("read", False)] * 3,  # read_build_logs
+        "capture_result": [("read", False)],  # read_capture
+        # prepare_test: deferred, profile, device (always + require_owner), then the gated
+        # owned check, and the source reauthorize callback.
+        "prepare_body": [("control", False)] * 4 + [("control", True)],
+        "execute_body": [("control", False)] * 2 + [("control", True)],  # execute_test
+        # view=job authenticates once; resume_work_session, list_apps (always) and
+        # device_status (honours auth_required).
+        "status": [("read", False)] * 3 + [("read", True)],
+        # read_logs (honours auth_required), read_device_logs, read_app_events.
+        "_read_logs": [("read", False)] * 2 + [("read", True)],
+        "execute": [("control", False)] * 2,  # app_command, request_home_recovery
+        # ticket, deferred, job lease, cancel_device_request, cancel_home_recovery and
+        # cancel_job (profile always, device job honours auth_required).
+        "cancel": [("control", False)] * 6 + [("control", True)],
+        # create_work_session, request_device, close_work_session (always); acquire,
+        # renew and release (honour auth_required).
+        "session": [("control", False)] * 3 + [("control", True)] * 3,
     },
 }
 

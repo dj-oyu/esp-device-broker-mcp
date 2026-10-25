@@ -10,6 +10,10 @@ Labels: **[obs]** = read in code; **[verified]** = reproduced by a short local P
 
 ### A1. Exception → public error ladders (the five the gate will replace)
 
+Stage 3c (2026-10-25): the four `server.py` ladders below are now `surface._result` / `surface._result_async`
+(both `public_errors.refusal`); `server.py:<line>` references in this file are 5d79d2d lines. See
+`surface.md` §0.1 for where each former op lives.
+
 All five are identical in shape: `BrokerError → str(exc)` passthrough; `SourceError → exc.public()`;
 any other `ValueError → public_reason(exc)` (allowlist, else `invalid_request`). Everything else propagates.
 

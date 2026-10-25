@@ -15,7 +15,7 @@ from cardputer_mcp.models import AcquireRequest, LeaseRequest, Origin, PrepareRe
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.public_errors import to_public
 from cardputer_mcp.public_reasons import RECOVERY_POINT_NEXT_STEPS
-from cardputer_mcp.server import _result
+from cardputer_mcp.surface import _result
 
 env = test_flash_policy.env
 

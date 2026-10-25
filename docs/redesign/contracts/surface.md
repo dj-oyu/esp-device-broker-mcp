@@ -25,6 +25,27 @@ but not executed, **[doc]** = stated in DESIGN-MCP-SURFACE.md.
   cancel_home_recovery, job_status, read_build_logs, list_apps, app_command, read_app_events, read_device_logs,
   read_capture, cancel_job, create_work_session, resume_work_session, request_device, cancel_device_request,
   close_work_session.
+- **Stage 3c (2026-10-25): the `@op` layer is gone.** `op`, `ops`, `_result`, `bind_lease` and `bind_origin`
+  left `server.py`; the six tools in `surface.py` call the broker directly. `server.py:<line>` references
+  below are still 5d79d2d lines. Where each former op now lives (`register_surface` closures):
+  | former op | now |
+  |---|---|
+  | client_identity, list_registered_targets | `identity_body`, `targets_body` |
+  | read_source_resources | `source_body` |
+  | device_status, list_apps, resume_work_session | inline in `status` (view=device/apps/session) |
+  | job_status | `job_body` |
+  | read_logs, read_device_logs, read_app_events | inline in `_read_logs` (stream=broker/device/app) |
+  | read_build_logs | `build_logs_body` |
+  | read_capture | `capture_result` |
+  | prepare_test | `prepare_body` |
+  | execute_test | `execute_body` (called by `enqueue`) |
+  | app_command, request_home_recovery | inline in `execute` |
+  | cancel_job, cancel_home_recovery, cancel_device_request | inline in `cancel` |
+  | acquire_session, renew_session, release_session, create_work_session, request_device, close_work_session | inline in `session` |
+  | `server._result` | `surface._result` (sync) and `surface._result_async`, both through `public_errors.refusal` |
+
+  Each body keeps its former `require(ctx, scope, honor_auth_required=...)` value; pinned per path by
+  `tests/test_surface_gate_matrix.py`. tools/list is unchanged (`tests/fixtures/surface_tools_list.json`).
 - Each tool has the signature `(request: <Model>, ctx)`. The wire arguments are therefore **always
   `{"request": {...}}`**: the top-level schema is `{"properties":{"request":{"$ref":"#/$defs/<Model>"}},
   "required":["request"],"title":"<tool>Arguments","type":"object"}` **[probe]**.

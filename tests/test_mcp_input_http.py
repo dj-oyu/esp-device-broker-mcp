@@ -8,8 +8,8 @@ from test_registry_http import registry_service as registry_service
 
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.flash_models import FlashDevice
-from cardputer_mcp.server import _result
 from cardputer_mcp.source_snapshot import SourceError
+from cardputer_mcp.surface import _result
 
 
 def flash(**changes):
