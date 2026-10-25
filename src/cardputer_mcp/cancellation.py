@@ -15,6 +15,8 @@ changes nothing a caller observes:
 | `HomeRecoveryJob`    | `HomeRecovery.cancel`           | plan hash entry + plan principal     |
 | `OperatorWait`       | `Broker.operator_cancel_wait`   | local operator (HTTP gate)           |
 | `OperatorProfileJob` | `ProfileJobs.operator_cancel`   | local origin, epoch, plan hash       |
+| `OperatorDeviceJob`  | `Broker.operator_stop_job`      | local operator (HTTP gate), epoch,   |
+|                      | (then `Broker.cancel`)          | plan hash, current lease job         |
 
 Callers keep the request-level checks they made before (authentication, `owned()`,
 plan kind routing). Releases (`release`, `close_work_session`, `operator_release_idle`)
@@ -130,6 +132,16 @@ class OperatorProfileJob:
     origin: str
 
 
+@dataclass(frozen=True)
+class OperatorDeviceJob:
+    """Local operator stop of a lease job; never interrupts a flash/restore/backup."""
+
+    job_id: str
+    plan_hash: str
+    broker_epoch: str
+    principal_id: str
+
+
 # Targets whose primitive answers None when the caller owns no such job.
 OptionalTarget = JobLeaseJob | DeferredJob
 DefiniteTarget = (
@@ -140,6 +152,7 @@ DefiniteTarget = (
     | HomeRecoveryJob
     | OperatorWait
     | OperatorProfileJob
+    | OperatorDeviceJob
 )
 CancelTarget = OptionalTarget | DefiniteTarget
 
@@ -176,4 +189,6 @@ def cancel_job(resident: "Broker", target: CancelTarget) -> dict[str, Any] | Non
             return resident.profile_jobs.operator_cancel(
                 job_id, plan_hash, broker_epoch, principal_id, origin
             )
+        case OperatorDeviceJob(job_id, plan_hash, broker_epoch, principal_id):
+            return resident.operator_stop_job(job_id, plan_hash, broker_epoch, principal_id)
     raise TypeError("unknown cancellation target")

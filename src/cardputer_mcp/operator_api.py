@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import cancellation, job_reads, operator_review, resource_recheck
+from . import cancellation, job_reads, operator_review, operator_stop, resource_recheck
 from .broker import Broker, BrokerError
 from .build_logs import BuildLogs
 from .models import BuildLogRequest, Digest, Identifier, Origin, TestName
@@ -136,6 +136,13 @@ class OperatorAPI:
             plan = self.broker._store().plan(job["plan_hash"]) if job else None
             card["cancel_available"] = bool(
                 card["state"] in ("queued", "running") and self._operator_profile(plan, principal)
+            )
+            # A device-lane job of the current lease that the operator may stop
+            # without interrupting a firmware write (see operator_stop.py).
+            card["stop_available"] = bool(
+                not card["cancel_available"]
+                and card["state"] in ("queued", "running")
+                and operator_stop.stop_available(self.broker, card["job_id"])
             )
         return result
 
@@ -297,6 +304,7 @@ class OperatorAPI:
             "/operator/job-logs": "POST",
             "/operator/cancel": "POST",
             "/operator/job-cancel": "POST",
+            "/operator/job-stop": "POST",
             "/operator/review": "POST",
             "/operator/recheck": "POST",
             "/operator/reorder": "POST",
@@ -406,6 +414,16 @@ class OperatorAPI:
                     "state": cancelled["state"],
                     "stop_requested": cancelled.get("stop_requested", False),
                 }
+            elif path == "/operator/job-stop":
+                # The owner's device-lane stop, authorized for the local operator.
+                # Never interrupts a flash/restore/backup; releases nothing.
+                stop = CancelJob.model_validate(payload)
+                result = cancellation.cancel_job(
+                    self.broker,
+                    cancellation.OperatorDeviceJob(
+                        stop.job_id, stop.plan_hash, stop.broker_epoch, principal.principal_id
+                    ),
+                )
             elif path == "/operator/review":
                 # A human acknowledgement only: sets `reviewed`, never state/result,
                 # never retries, never touches the device. Not exposed through MCP.
