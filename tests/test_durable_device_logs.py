@@ -66,7 +66,7 @@ async def test_store_failure_never_fails_the_job(tmp_path):
         (env.broker.settings.state_dir / "job-logs").unlink()
 
 
-async def test_mcp_failed_job_logs_are_owner_only(http_observation):  # noqa: F811
+async def test_mcp_failed_job_logs_are_readable_by_any_reader(http_observation):  # noqa: F811
     env = http_observation
     env.port.chunks.append(OSError("synthetic"))
     await http_observe(env)
@@ -76,8 +76,9 @@ async def test_mcp_failed_job_logs_are_owner_only(http_observation):  # noqa: F8
     assert report["ok"] and report["source"] == "durable_job_log"
     assert LOG_LINE in report["logs"]
     assert all(secret not in json.dumps(report) for secret in SECRETS)
+    # Cross-principal reads: another read-scoped key gets the same redacted body.
     for key in ("other", "reader"):
-        denied = (await rpc(env, "status", DEVICE_LOGS, token=env.keys[key].token))[
+        other = (await rpc(env, "status", DEVICE_LOGS, token=env.keys[key].token))[
             "structuredContent"
         ]
-        assert denied == {"ok": False, "error": "device_logs_not_available"}
+        assert other == report

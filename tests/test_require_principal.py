@@ -106,7 +106,10 @@ SITES = {
     },
     "surface.py": {
         "plan_is_callers": [("control", False)],
-        "status": [("read", False)] * 2,
+        # status(view=job) authenticates once; view=jobs|recovery use _reader, which
+        # honours auth_required like view=job|device (owned_by_caller only).
+        "_reader": [("read", True)],
+        "status": [("read", False)],
         "cancel": [("control", False)] * 3,
     },
 }

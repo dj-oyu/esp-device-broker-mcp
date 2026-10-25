@@ -7,10 +7,10 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import cancellation, operator_review, resource_recheck
+from . import cancellation, job_reads, operator_review, resource_recheck
 from .broker import Broker, BrokerError
 from .build_logs import BuildLogs
-from .models import FLASH_TESTS, BuildLogRequest, Digest, Identifier, Origin, TestName
+from .models import BuildLogRequest, Digest, Identifier, Origin, TestName
 from .operator_live import LiveRequest, OperatorLive
 from .operator_timeline import OperatorTimeline
 from .plan_approval import PlanApprovals
@@ -154,9 +154,9 @@ class OperatorAPI:
     ) -> dict[str, Any]:
         """The local operator reads any job's redacted output.
 
-        The operator API is local-only and the person at this machine can already
-        read the state directory, so the job owner is not required. Remote MCP
-        log reads stay owner-only. RAM output first, then the durable job log.
+        Like every read, the job owner is not required: the owner and stream come
+        from `job_reads.log_stream`, the same lookup MCP log reads use. RAM output
+        first, then the durable job log.
         """
         if "read" not in principal.scopes or principal.origin != Origin.LOCAL:
             raise BrokerError("not_authorized")
@@ -176,28 +176,7 @@ class OperatorAPI:
             except ValueError:
                 raise BrokerError("unavailable") from None
             return {"status": "expired" if app["expired"] else "available", **app}
-        service: Any = None
-        owner: Any
-        if test == TestName.SOURCE.value:
-            owner, service, stream = (
-                plan.get("source_principal"),
-                self.broker.firmware_source,
-                "source",
-            )
-        elif test == TestName.BUILD.value:
-            owner, service, stream = (
-                plan.get("build_principal"),
-                self.broker.firmware_build,
-                "build",
-            )
-        elif test in {item.value for item in FLASH_TESTS}:
-            owner, service, stream = (
-                plan.get("flash_principal"),
-                self.broker.firmware_flash,
-                "flash",
-            )
-        else:
-            owner, stream = self.broker.job_logs.owner(request.job_id), "device"
+        owner, service, stream = job_reads.log_stream(self.broker, plan, request.job_id)
         result: dict[str, Any] | None = None
         # RAM only: do not invoke receipt/manifest readers or hash retained artifacts.
         ram: Any = service.logs.get(request.job_id) if service is not None else None

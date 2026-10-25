@@ -324,14 +324,17 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
             async with connect(service.url, service.keys["first"].token) as other:
                 denied = await call(other, "execute", request)
                 assert not denied["ok"]
-                denied = await call(
-                    other,
-                    "status",
-                    {"view": "logs", "stream": "build", "job_id": "build-corrected"},
-                )
-                assert not denied["ok"]
-                denied = await call(other, "status", {"view": "job", "job_id": "build-corrected"})
-                assert not denied["ok"]
+                # Execution stays owner-only; reads are cross-principal (2026-10-25).
+                logs = {"view": "logs", "stream": "build", "job_id": "build-corrected"}
+                assert await call(other, "status", logs) == await call(remote, "status", logs)
+                job = {"view": "job", "job_id": "build-corrected"}
+                theirs = await call(other, "status", job)
+                mine = await call(remote, "status", job)
+                assert theirs["ok"] and theirs["owned_by_caller"] is False
+                assert mine["owned_by_caller"] is True
+                assert {k: v for k, v in theirs.items() if k != "owned_by_caller"} == {
+                    k: v for k, v in mine.items() if k not in {"owned_by_caller", "chain"}
+                }
         source, _ = service.resident.firmware_source.snapshots.resolve(
             "fixture", receipt, key.metadata.principal_id
         )

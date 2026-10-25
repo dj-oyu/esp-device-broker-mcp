@@ -605,9 +605,11 @@ async def test_mcp_catalog_and_structured_report_obey_principal_boundary(http_ob
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
     assert hashlib.sha256(canonical).hexdigest() == report["sha256"]
+    # Reads are not bound to the job's principal: every read-scoped caller gets the
+    # owner's exact redacted report (cross-principal reads, 2026-10-25).
     for token in (LOCAL, REMOTE, env.keys["other"].token, env.keys["reader"].token):
-        denied = (await rpc(env, "status", DEVICE_LOGS, token=token))["structuredContent"]
-        assert denied == {"ok": False, "error": "device_logs_not_available"}
+        other = (await rpc(env, "status", DEVICE_LOGS, token=token))["structuredContent"]
+        assert other == report
     assert (await rpc(env, "session", {"action": "release", "session": session}))[
         "structuredContent"
     ]["released"]
@@ -639,9 +641,13 @@ async def test_mcp_rechecks_key_authority_after_device_completion(http_observati
         env.key_clock.now += 11
     else:
         replacement = env.registry.rotate(key.metadata.key_id)
-        assert (await rpc(env, "status", DEVICE_LOGS, token=replacement.token))[
+        # The RAM report stays bound to the original key's validity; any read-scoped
+        # caller (here the replacement key) still reads the durable redacted log.
+        durable = (await rpc(env, "status", DEVICE_LOGS, token=replacement.token))[
             "structuredContent"
-        ] == {"ok": False, "error": "device_logs_not_available"}
+        ]
+        assert durable["ok"] and durable["source"] == "durable_job_log"
+        assert "sha256" not in durable
     response = await rpc_response(
         env,
         "tools/call",

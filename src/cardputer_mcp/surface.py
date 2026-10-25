@@ -18,7 +18,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field, ValidationError
 
-from . import cancellation
+from . import cancellation, job_reads
 from .app_models import (
     U32,
     U64,
@@ -58,6 +58,7 @@ from .models import (
     StrictModel,
     TestName,
 )
+from .public_errors import refusal
 from .public_reasons import public_broker_reason, public_reason
 
 TOOL_SET_VERSION = 2
@@ -81,6 +82,8 @@ class View(StrEnum):
     LOGS = "logs"
     CAPTURE = "capture"
     APPS = "apps"
+    JOBS = "jobs"
+    RECOVERY = "recovery"
 
 
 class Stream(StrEnum):
@@ -157,9 +160,9 @@ class StatusRequest(StrictModel):
     stream: Stream | None = Field(default=None, description="view=logs: broker|build|device|app")
     cursor: dict[str, int | str] | None = Field(
         default=None,
-        description="logs: broker/build {epoch,sequence}; app {epoch,control,log}",
+        description="logs: broker/build {epoch,sequence}; app {epoch,control,log}; jobs {before}",
     )
-    limit: int | None = Field(default=None, ge=1, le=100, description="logs")
+    limit: int | None = Field(default=None, ge=1, le=100, description="logs|jobs")
     levels: list[BuildLogLevel] | None = Field(default=None, max_length=5, description="logs build")
     context: int | None = Field(default=None, ge=0, le=10, description="logs build")
     include_source_cache: bool | None = Field(default=None, description="logs build")
@@ -357,7 +360,19 @@ STATUS_RULES: dict[View, tuple[set[str], set[str]]] = {
     ),
     View.CAPTURE: ({"job_id"}, set()),
     View.APPS: (set(), set()),
+    View.JOBS: (set(), {"cursor", "limit"}),
+    View.RECOVERY: (set(), set()),
 }
+JOBS_PAGE_DEFAULT = 20
+TEST_KIND = {test.value: kind.value for kind, test in KIND_TEST.items()}
+
+
+class JobListCursor(StrictModel):
+    """Opaque position in the newest-first job list, from a previous next_cursor."""
+
+    before: int = Field(ge=1, le=2**63 - 1)
+
+
 STREAM_RULES: dict[Stream, tuple[set[str], set[str]]] = {
     Stream.BROKER: (set(), {"cursor", "limit"}),
     Stream.BUILD: (
@@ -420,7 +435,7 @@ SESSION_RULES: dict[SessionAction, tuple[set[str], set[str]]] = {
     SessionAction.CLOSE: ({"resume_token"}, set()),
 }
 
-PLAN_PRINCIPAL_KEYS = ("principal_id", "flash_principal", "build_principal", "source_principal")
+PLAN_PRINCIPAL_KEYS = job_reads.PLAN_PRINCIPAL_KEYS
 
 
 def _wrap(body: dict[str, Any]) -> CallToolResult:
@@ -441,6 +456,17 @@ def register_surface(
     mutating: ToolAnnotations,
     destructive: ToolAnnotations,
 ) -> None:
+    def _reader(ctx: Context[Any, Any]) -> str | None:
+        """The caller's principal for owned_by_caller; None on an unauthenticated mock."""
+        principal = require(ctx, "read", honor_auth_required=True)
+        return principal.principal_id if principal is not None else None
+
+    def _read_body(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        try:
+            return {"ok": True, **call()}
+        except ValueError as exc:
+            return refusal(exc)
+
     def plan_for(plan_hash: str) -> dict[str, Any] | None:
         plan = resident._store().plan(plan_hash)
         return plan if isinstance(plan, dict) else None
@@ -502,8 +528,12 @@ def register_surface(
     async def status(request: StatusRequest, ctx: Context[Any, Any]) -> CallToolResult:
         """Read broker, job, log or session state. view selects what; no side effects.
 
+        Any read-scoped caller can read any job (job, logs, capture), whoever
+        started it; owned_by_caller says whether it is yours. Changes stay owner-only.
         view=job adds `chain` for your own chained jobs, like git log from that job:
         chain_position, chain_jobs_known, chain_open (the tip still accepts a child).
+        view=jobs lists recent jobs, newest first (cursor from next_cursor).
+        view=recovery lists per device the LKG receipts and full backups.
         """
         required, optional = STATUS_RULES[request.view]
         refused = _check(request, "view", required, optional)
@@ -530,34 +560,55 @@ def register_surface(
             )
         elif view is View.JOB:
             assert request.job_id is not None
+            job_id = _req(request.job_id)
             waiting_view = None
+            caller: str | None = None
             try:
-                waiting_view = resident.deferred_job(
-                    _req(request.job_id),
-                    require(ctx, "read", honor_auth_required=False).principal_id,
-                )
+                caller = require(ctx, "read", honor_auth_required=False).principal_id
+                owner = job_reads.deferred_owner(resident, job_id)
+                if owner is not None:
+                    waiting_view = resident.deferred_job(job_id, owner)
             except BrokerError:
                 waiting_view = None
             if waiting_view is not None:
-                chain = resident.chain_progress(_req(request.job_id))
+                mine = job_reads.same_principal(job_reads.deferred_owner(resident, job_id), caller)
+                chain = resident.chain_progress(job_id) if mine else None
                 return _wrap(
-                    {"ok": True, **waiting_view, **({"chain": chain} if chain is not None else {})}
+                    {
+                        "ok": True,
+                        **waiting_view,
+                        "owned_by_caller": mine,
+                        **({"chain": chain} if chain is not None else {}),
+                    }
                 )
-            body = await ops["job_status"](JobRequest(job_id=_req(request.job_id)), ctx)
+            body = await ops["job_status"](JobRequest(job_id=job_id), ctx)
             if body.get("ok") and isinstance(body.get("plan_hash"), str):
                 plan = plan_for(body["plan_hash"])
-                try:
-                    caller = require(ctx, "read", honor_auth_required=False).principal_id
-                except BrokerError:
-                    caller = None
+                mine = plan is not None and job_reads.same_principal(
+                    job_reads.job_owner(resident, job_id, plan), caller
+                )
+                body["owned_by_caller"] = mine
                 if (
                     plan is not None
                     and caller is not None
-                    and resident.job_principal(_req(request.job_id)) == caller
+                    and resident.job_principal(job_id) == caller
                 ):
-                    chain = resident.chain_progress(_req(request.job_id))
+                    chain = resident.chain_progress(job_id)
                     if chain is not None:
                         body["chain"] = chain
+        elif view is View.JOBS:
+            jobs_cursor, error = _cursor(JobListCursor, request.cursor)
+            body = error or _read_body(
+                lambda: job_reads.list_jobs(
+                    resident,
+                    _reader(ctx),
+                    TEST_KIND,
+                    before=jobs_cursor.before if jobs_cursor is not None else None,
+                    limit=request.limit or JOBS_PAGE_DEFAULT,
+                )
+            )
+        elif view is View.RECOVERY:
+            body = _read_body(lambda: job_reads.recovery(resident, _reader(ctx)))
         elif view is View.APPS:
             body = await ops["list_apps"](ctx)
         elif view is View.CAPTURE:

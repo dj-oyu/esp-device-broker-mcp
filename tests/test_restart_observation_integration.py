@@ -620,12 +620,13 @@ async def test_authenticated_mcp_restart_requires_explicit_request_and_exact_rep
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
     assert hashlib.sha256(canonical).hexdigest() == report["sha256"]
+    # Cross-principal reads: every read-scoped caller gets the owner's exact report.
     for token in (LOCAL, REMOTE, env.keys["other"].token, env.keys["reader"].token):
         assert (
             await rpc(
                 env, "status", {"view": "logs", "stream": "device", "job_id": JOB}, token=token
             )
-        )["structuredContent"] == {"ok": False, "error": "device_logs_not_available"}
+        )["structuredContent"] == report
     for _ in range(3):
         assert (
             await rpc(
@@ -670,14 +671,16 @@ async def test_mcp_revalidates_key_after_restart_completion(http_restart, invali
         env.key_clock.now += 11
     else:
         replacement = env.registry.rotate(key.metadata.key_id)
-        assert (
+        # The RAM report needs the original key; the durable redacted log stays readable.
+        durable = (
             await rpc(
                 env,
                 "status",
                 {"view": "logs", "stream": "device", "job_id": JOB},
                 token=replacement.token,
             )
-        )["structuredContent"] == {"ok": False, "error": "device_logs_not_available"}
+        )["structuredContent"]
+        assert durable["ok"] and durable["source"] == "durable_job_log"
     response = await rpc_response(
         env,
         "tools/call",

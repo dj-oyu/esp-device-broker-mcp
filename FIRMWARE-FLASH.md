@@ -236,7 +236,7 @@ PEM blocks and configured process secrets are redacted; unknown/obfuscated secre
 remain subject to the collector's documented best-effort limitations. Boot text
 is still unverified device-reported evidence, not cryptographic identity proof.
 
-Restart, eviction or expiry loses the RAM copy; the owner's reads then fall back
+Restart, eviction or expiry loses the RAM copy; reads then fall back
 to the durable per-job log (`"source": "durable_job_log"`, DEVICE-LOGS.md). No
 automatic replay/recovery is added.
 
@@ -252,7 +252,7 @@ device identity, referenced `lkg_receipt`/`backup_job_id`/`backup_sha256`/
 `build_job_id`/`manifest_sha256`, the backup receipt, the staged LKG receipt and
 whether it was selected, bounded verification fields and timings.
 `status(view=logs, stream=build)` for the flash job returns the latest one as
-`flash_outcome` to the owning principal, also after restart. A broker crash
+`flash_outcome` to any read-scoped principal, also after restart. A broker crash
 mid-flash writes none; the `-- <stage>` lines of the durable flash stream still
 show the phase reached. The record grants nothing and is not a recovery input.
 

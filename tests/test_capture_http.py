@@ -70,7 +70,7 @@ def assert_image(result: CallToolResult) -> bytes:
     return pixels
 
 
-async def test_capture_http_delivers_image_content_hash_and_principal_isolation(
+async def test_capture_http_delivers_image_content_hash_to_any_reader(
     registry_service: RegistryService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = registry_service
@@ -92,8 +92,9 @@ async def test_capture_http_delivers_image_content_hash_and_principal_isolation(
         await service.resident.queue.join()
         result = await read_capture(owner, "image-content")
         pixels = assert_image(result)
-        assert_unavailable(await read_capture(stranger, "image-content"))
-        assert_unavailable(await read_capture(reader, "image-content"))
+        # Cross-principal reads: any read-scoped key gets the same image (2026-10-25).
+        assert assert_image(await read_capture(stranger, "image-content")) == pixels
+        assert assert_image(await read_capture(reader, "image-content")) == pixels
         assert_unavailable(await read_capture(stranger, "nonexistent"))
         public = [
             await call(reader, "status", {"view": "job", "job_id": "image-content"}),
@@ -228,7 +229,7 @@ async def test_three_clients_share_fifo_and_capture_by_key_without_duplicate_rec
             assert repeated["deduplicated"]
             assert_image(await read_capture(claude_again, "three-clients"))
             assert_image(await read_capture(codex, "three-clients"))
-            assert_unavailable(await read_capture(cloud, "three-clients"))
+            assert_image(await read_capture(cloud, "three-clients"))
             assert (await call(claude_again, "session", {"action": "release", "session": session}))[
                 "released"
             ]
@@ -250,6 +251,6 @@ async def test_three_clients_share_fifo_and_capture_by_key_without_duplicate_rec
             cloud, "status", {"view": "session", "resume_token": cloud_work["resume_token"]}
         )
         assert cloud_state["request"]["state"] == "owning"
-        assert_unavailable(await read_capture(cloud, "three-clients"))
+        assert_image(await read_capture(cloud, "three-clients"))
         assert backend.calls == 1
         assert backend.max_active == 1

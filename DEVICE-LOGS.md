@@ -133,23 +133,26 @@ job; the job diagnostic then carries `job_log_unavailable: true`.
   that produced an LKG go last
 - Read with `status(view=logs, stream=device, job_id=...)` or `device-logs`.
   When the RAM report is gone (expired, restart) or the job did not succeed,
-  the owning principal gets the persisted text for any terminal state with
+  a reader gets the persisted text for any terminal state with
   `"source": "durable_job_log"`, the job `state`/`result` and the newest
   lines (at most 1000 lines / 256 KiB; `omitted_oldest_lines` counts the rest).
-  Other principals get `device_logs_not_available`
+  Any read-scoped principal can read it, not only the job's owner (see below)
 - App sessions (`app_session`) save every control event (as an `app_event`
   record) and every redacted app log line (stream `app`) to the same per-job
   file on every outcome. `status(view=logs, stream=app, job_id=...)` serves the
   RAM events while retained, and the persisted copy (`"source":
-  "durable_job_log"`) to the owning principal after expiry or restart. Build,
+  "durable_job_log"`) after expiry or restart, to any read-scoped principal. Build,
   source and flash output goes to the same per-job file under its own stream
   (see FIRMWARE-BUILD.md); every flash/backup/restore the worker ran also
   gets one `flash_outcome` record (see FIRMWARE-FLASH.md)
 - These files are private state: they stay on disk until pruned. Delete the
   directory yourself if you need them gone sooner
-- The original principal must still have read permission. A different principal
-  cannot read the report. Sessions sharing one key share the same principal;
-  this is not physical-terminal or per-session identity isolation
+- Since 2026-10-25 (owner decision) reads are not bound to the job's principal:
+  any authenticated principal with read scope gets the same redacted report the
+  owner gets, so a local agent can debug a job the cloud client started. The
+  retained RAM report additionally requires the original principal to still have
+  read permission; otherwise the durable log answers. Mutations (cancel, execute,
+  session actions) stay owner-only
 - Releasing an idle lease does not erase a completed authorized report before its
   normal expiry. Revocation or lost read scope denies later reads
 
