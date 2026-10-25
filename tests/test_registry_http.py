@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx2
 import pytest
 import uvicorn
+from server_ready import LOG_LEVEL, wait_until_started
 
 from cardputer_mcp import server as server_module
 from cardputer_mcp.auth import AuthState
@@ -91,19 +92,14 @@ async def registry_service(
             app,
             host="127.0.0.1",
             port=port,
-            log_level="critical",
+            log_level=LOG_LEVEL,
             access_log=False,
             proxy_headers=False,
         )
     )
     task = asyncio.create_task(server.serve())
     try:
-        async with asyncio.timeout(5):
-            while not server.started:
-                if task.done():
-                    await task
-                    pytest.fail("Registry HTTP server stopped before readiness")
-                await asyncio.sleep(0.01)
+        await wait_until_started(server, task, "Registry HTTP server")
         yield RegistryService(
             f"http://127.0.0.1:{port}/mcp", resident, backend, registry, keys, now
         )

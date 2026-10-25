@@ -6,6 +6,7 @@ import socket
 import httpx2
 import pytest
 import uvicorn
+from server_ready import LOG_LEVEL, wait_until_started
 from test_serial_backend import backend, config
 
 from cardputer_mcp.auth import AuthState
@@ -33,18 +34,14 @@ async def serial_service(tmp_path):
             app,
             host="127.0.0.1",
             port=port_number,
-            log_level="critical",
+            log_level=LOG_LEVEL,
             access_log=False,
             proxy_headers=False,
         )
     )
     task = asyncio.create_task(server.serve())
     try:
-        async with asyncio.timeout(5):
-            while not server.started:
-                if task.done():
-                    await task
-                await asyncio.sleep(0.01)
+        await wait_until_started(server, task, "Serial HTTP server")
         yield f"http://127.0.0.1:{port_number}/mcp", resident, port
     finally:
         server.should_exit = True
