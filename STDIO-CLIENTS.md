@@ -49,6 +49,12 @@ CARDPUTER_CLIENT_KEY=REPLACE_WITH_ISSUED_LOCAL_DEVELOPMENT_KEY
 - 絶対パスを明示。adapter 配下と `.git` 境界のある checkout 配下は拒否
 - URL は `http://127.0.0.1:1024..65535/mcp` の形だけ。Tunnel URL や redirect は不可
 
+手で貼り付ける代わりに、既存のこのファイルへ `keys issue` / `keys rotate` が直接書き込めます。
+`--write-env` にファイルの絶対パスを明示した場合だけで、確認入力は同じく必要です。
+成功時はキーを表示せず、`CARDPUTER_CLIENT_KEY` の値だけを置き換えます(行がなければ追加)。
+他の行・コメント・URL・BOM・改行は維持し、Windows では既存ファイルの ACL を保ちます。
+ファイルは新規作成しません。詳細と失敗時の扱いは [KEYS.md](KEYS.md) を参照してください。
+
 登録先は同じ Windows 環境で実行するローカル Claude Code / Codex を想定します。
 WSL、別 PC、クラウドの `127.0.0.1` は同じ broker を指すとは限りません。
 

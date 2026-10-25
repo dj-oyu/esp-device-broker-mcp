@@ -285,6 +285,10 @@ class KeyRegistry:
     def _now(self) -> float:
         return _timestamp(self._clock())
 
+    def current_time(self) -> float:
+        """The registry's validated clock reading, as used for expiry checks."""
+        return self._now()
+
     def _random(self, size: int) -> bytes:
         value = self._random_bytes(size)
         if type(value) is not bytes or len(value) != size:

@@ -388,3 +388,200 @@ def test_interrupted_token_display_revokes_before_propagating_without_secret(
     registry = factory(path, create=False)
     assert all(key.revoked_at is not None for key in registry.list_keys())
     assert registry.authenticate("Bearer " + token) is None
+
+
+def _rotate_capturing_prompt(
+    factory: Factory, path: Path, key_id: str, **extra: Any
+) -> tuple[dict[str, object], str]:
+    output = Terminal()
+    seen: list[str] = []
+
+    def approve(prompt: str) -> str:
+        seen.append(output.getvalue())
+        return "ROTATE " + key_id
+
+    result = run(
+        "rotate", path, key_id=key_id, confirm=approve, **extra, **parameters(factory, output)
+    )
+    return result, seen[0]
+
+
+def _lifetime(result: dict[str, object]) -> float:
+    key = result["key"]
+    assert isinstance(key, dict)
+    return float(key["expires_at"]) - float(key["issued_at"])
+
+
+def test_rotate_without_ttl_keeps_original_lifetime_and_shows_it(tmp_path: Path) -> None:
+    factory = Factory()
+    path = tmp_path / "keys.sqlite3"
+    old = factory(path).issue("remote", Origin.REMOTE, ttl_seconds=30 * 86400)
+    result, prompt = _rotate_capturing_prompt(factory, path, old.metadata.key_id)
+    assert _lifetime(result) == 30 * 86400
+    assert "Expires after: 2592000 seconds (30d 0h) - the current key's original lifetime" in prompt
+
+
+def test_rotate_of_default_key_keeps_one_hour(tmp_path: Path) -> None:
+    factory = Factory()
+    path = tmp_path / "keys.sqlite3"
+    old = factory(path).issue("remote", Origin.REMOTE)
+    result, prompt = _rotate_capturing_prompt(factory, path, old.metadata.key_id)
+    assert _lifetime(result) == 3600
+    assert "Expires after: 3600 seconds (1h 0m)" in prompt
+
+
+def test_rotate_explicit_ttl_wins(tmp_path: Path) -> None:
+    factory = Factory()
+    path = tmp_path / "keys.sqlite3"
+    old = factory(path).issue("remote", Origin.REMOTE, ttl_seconds=30 * 86400)
+    result, prompt = _rotate_capturing_prompt(factory, path, old.metadata.key_id, ttl_seconds=7200)
+    assert _lifetime(result) == 7200
+    assert "Expires after: 7200 seconds (2h 0m) - as requested" in prompt
+
+
+def test_rotate_explicit_ttl_above_maximum_is_rejected_before_prompt(tmp_path: Path) -> None:
+    factory = Factory()
+    path = tmp_path / "keys.sqlite3"
+    old = factory(path).issue("remote", Origin.REMOTE)
+    with pytest.raises(KeyOperatorError, match="^invalid_key_expiry$"):
+        run(
+            "rotate",
+            path,
+            key_id=old.metadata.key_id,
+            ttl_seconds=30 * 86400 + 1,
+            confirm=lambda prompt: pytest.fail("must not prompt"),
+            **parameters(factory),
+        )
+
+
+@pytest.mark.parametrize(
+    "span,expected", [(30 * 86400 + 500, 30 * 86400), (0.4, 1), (86399.6, 86400)]
+)
+def test_inherited_lifetime_is_rounded_and_capped(span: float, expected: int) -> None:
+    from cardputer_mcp.key_registry import KeyMetadata
+
+    key = KeyMetadata(
+        principal_id="p",
+        key_id="cpk_" + "0" * 32,
+        origin=Origin.REMOTE,
+        scopes=frozenset({"read"}),
+        label="remote",
+        issued_at=1000.0,
+        expires_at=1000.0 + span,
+        revoked_at=None,
+    )
+    assert key_operator._inherited_lifetime(key) == expected
+
+
+@pytest.mark.parametrize(
+    "seconds,text",
+    [(0, "0s"), (59, "59s"), (60, "1m"), (3599, "59m"), (3600, "1h 0m"), (90061, "1d 1h")],
+)
+def test_duration_formatting(seconds: float, text: str) -> None:
+    assert key_operator._duration(seconds) == text
+
+
+def test_cli_leaves_ttl_unset_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cardputer_mcp import cli
+
+    seen: dict[str, Any] = {}
+
+    def fake_manage(command: str, path: Path | None, **kwargs: Any) -> dict[str, object]:
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(cli, "manage_keys", fake_manage)
+    monkeypatch.setattr("sys.argv", ["cardputer", "keys", "rotate", "--key-id", "cpk_" + "0" * 32])
+    cli.main()
+    assert seen["ttl_seconds"] is None
+
+
+class ClockFactory(Factory):
+    def __init__(self) -> None:
+        super().__init__()
+        self.now = 1_700_000_000.0
+
+    def __call__(self, path: Path, *, create: bool = True) -> KeyRegistry:
+        self.calls.append(create)
+        return KeyRegistry(path, clock=lambda: self.now, random_bytes=self.random, create=create)
+
+
+def test_list_adds_remaining_lifetime_and_warns_on_soon_expiring_keys(tmp_path: Path) -> None:
+    factory = ClockFactory()
+    path = tmp_path / "keys.sqlite3"
+    registry = factory(path)
+    long = registry.issue("long", Origin.REMOTE, ttl_seconds=30 * 86400)
+    soon = registry.issue("soon", Origin.REMOTE, ttl_seconds=30 * 86400)
+    short = registry.issue("short", Origin.REMOTE, ttl_seconds=60)
+    gone = registry.issue("gone", Origin.REMOTE, ttl_seconds=30 * 86400)
+    registry.revoke(gone.metadata.key_id)
+    factory.now += 28 * 86400 - 3 * 3600  # "soon" has 2d 3h left; "short" expired
+    # Short-lived keys expiring within 3 days never warn.
+    hour = registry.issue("hour", Origin.REMOTE)
+    brief = registry.issue("brief", Origin.REMOTE, ttl_seconds=2 * 86400)
+    long_after = registry.issue("long", Origin.REMOTE, ttl_seconds=30 * 86400)
+    registry.revoke(long.metadata.key_id)
+    factory.now += 120
+    warnings = io.StringIO()
+    listed = run(
+        "list",
+        path,
+        input_stream=io.StringIO(),
+        output_stream=io.StringIO(),
+        registry_factory=factory,
+        warning_stream=warnings,
+    )
+    entries = {
+        entry["key_id"]: entry
+        for entry in listed["keys"]  # type: ignore[attr-defined]
+    }
+    entries = {
+        name: entries[issued.metadata.key_id]
+        for name, issued in {
+            "long": long_after,
+            "soon": soon,
+            "short": short,
+            "gone": gone,
+            "hour": hour,
+            "brief": brief,
+        }.items()
+    }
+    assert entries["long"]["remaining"] == "expires in 29d 23h"
+    assert entries["soon"]["remaining"] == "expires in 2d 2h"
+    assert entries["hour"]["remaining"] == "expires in 58m"
+    assert entries["brief"]["remaining"] == "expires in 1d 23h"
+    assert entries["short"]["remaining"] == "expired"
+    assert entries["gone"]["remaining"] == "revoked"
+    # Existing fields are unchanged; "remaining" is the only addition.
+    assert set(entries["long"]) == {
+        "principal_id",
+        "key_id",
+        "origin",
+        "scopes",
+        "label",
+        "issued_at",
+        "expires_at",
+        "revoked_at",
+        "remaining",
+    }
+    assert entries["long"]["expires_at"] == long_after.metadata.expires_at
+    text = warnings.getvalue()
+    assert text == (
+        f"Warning: key {soon.metadata.key_id} (soon) expires in 2d 2h. "
+        "Rotate it before expiry to keep access to its builds/backups.\n"
+    )
+    for issued in (long, soon, short, gone, hour, brief, long_after):
+        assert issued.token not in json.dumps(listed) + text
+
+
+def test_list_warning_failure_does_not_fail_listing(tmp_path: Path) -> None:
+    class Broken(io.StringIO):
+        def write(self, text: str) -> int:
+            raise OSError("synthetic")
+
+    factory = ClockFactory()
+    path = tmp_path / "keys.sqlite3"
+    factory(path).issue("soon", Origin.REMOTE, ttl_seconds=30 * 86400)
+    factory.now += 28 * 86400  # 2 days left: this key warns
+    listed = run("list", path, registry_factory=factory, warning_stream=Broken())
+    assert listed["keys"][0]["remaining"] == "expires in 2d 0h"  # type: ignore[index]

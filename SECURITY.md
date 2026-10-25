@@ -134,7 +134,10 @@ state. Future explicitly requested operations can establish a new connection.
 The selected env file is absolute, bounded and outside repositories/install roots.
 Only literal CARDPUTER_CLIENT_KEY and optional CARDPUTER_BROKER_URL assignments are
 accepted. The adapter does not evaluate expressions, merge environment values,
-or write the key. Issued cpk_ keys only; every upstream session verifies a current
+or write the key. Only the separate, explicitly requested local
+`keys issue/rotate --write-env` command writes a key, into an already existing
+file that passes these reader checks; it keeps that file's ACL/mode and changes
+no permissions (see KEYS.md). Issued cpk_ keys only; every upstream session verifies a current
 remote/read principal. Local operator credentials are refused. Two local clients
 sharing this key share a security principal; work sessions remain explicit and
 have separate resume capabilities. Use a separate cloud connector key.

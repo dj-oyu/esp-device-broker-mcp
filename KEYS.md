@@ -46,8 +46,9 @@ In an interactive terminal in the project directory (not a pipe, transcript or r
 
 Review the stated origin, scope and lifetime and type the exact confirmation.
 The token is shown once. Terminal scrollback/recording may retain it; protect it.
-The program does not write the secret to a file, environment, clipboard or command
-line. Failed or interrupted token display revokes the newly issued key.
+Without `--write-env` (below) the program does not write the secret to a file,
+environment, clipboard or command line. Failed or interrupted token display
+revokes the newly issued key.
 Only confirmed default-path ISSUE may create the private registry directory. Startup never creates a key or database. Explicit override paths still require an existing private parent.
 
 Use `--control` only when intentionally granting mutation capability. `--ttl-seconds`
@@ -63,9 +64,54 @@ never give a local-operator key to a remote connector.
 .\cardputer.exe keys rotate --key-id cpk_REPLACE_WITH_PUBLIC_ID
 ```
 
+`list` prints metadata only. Each entry keeps its numeric `issued_at`/`expires_at`/
+`revoked_at` and adds a readable `remaining` (`expires in 12d 3h`, `expired` or
+`revoked`). Active keys granted more than 3 days that expire within 3 days are also
+named on stderr as a reminder to rotate them in time; short-lived keys never warn.
+
 Verification takes hidden interactive input; no key argument is accepted. Revoke
-and rotate require an exact local confirmation. Rotate preserves origin/scope/label
-and uses the requested/default new lifetime. Never paste the full token into shell arguments.
+and rotate require an exact local confirmation. Rotate preserves origin/scope/label.
+Without `--ttl-seconds` the replacement gets the current key's originally granted
+lifetime (its issued-to-expiry span, at most 30 days), counted from the rotation; an
+explicit `--ttl-seconds` wins. The confirmation prompt shows the resulting lifetime.
+Never paste the full token into shell arguments.
+
+## Writing the key into an existing stdio env file
+
+`issue` and `rotate` accept `--write-env <absolute path>` to put the new key
+straight into the private env file used by the stdio adapter
+([STDIO-CLIENTS.md](STDIO-CLIENTS.md)) instead of displaying it:
+
+```powershell
+.\cardputer.exe keys rotate --key-id cpk_REPLACE_WITH_PUBLIC_ID --write-env 'C:\Users\YOUR_NAME\AppData\Local\DeviceBroker\local-client.env'
+```
+
+- Only when explicitly asked. There is no default path, and the same interactive
+  exact confirmation is required. On success the token is not displayed.
+- Only into a file that already exists and passes the adapter's own reader checks
+  (absolute path outside the adapter and Git checkouts; no link/reparse point or
+  extra hard link; at most 8 KiB; strict grammar; on POSIX owned by you with mode
+  0400/0600). The current `CARDPUTER_CLIENT_KEY` value may be a placeholder; a file
+  without that line gets one appended. `rotate` refuses a file holding a different
+  valid key. A Windows file marked read-only is refused. The file is never created.
+- Only the `CARDPUTER_CLIENT_KEY` value changes. Every other line and comment, the
+  `CARDPUTER_BROKER_URL` value, the BOM and the newline style are kept byte for byte.
+- The new content goes to a temporary file in the same folder, is flushed, and then
+  swapped in after re-checking that the target is still the same unlinked file with
+  unchanged content. Windows uses `ReplaceFileW`, which keeps the existing file's
+  ACL and attributes (the original is moved to a hidden `.bak` beside it and removed
+  after success; if the swap stops halfway it is left there and the command says
+  so); POSIX keeps the original mode. Until the swap, the temporary
+  file has the folder's default protection, so the folder must be private.
+  ACLs are not changed. Afterwards the file is re-read with the adapter's reader.
+- Every check, and creation of the empty temporary file, happens before the registry
+  changes. If writing fails afterwards: `issue` revokes the new key; `rotate` (whose
+  old key is already revoked) shows the replacement once on the terminal instead and
+  says the file was not updated, so you can save it yourself. If that display also
+  fails, the new key is revoked: run `keys issue`. An interrupt during the write
+  revokes the new key. A stdio adapter reads the file only when it starts, so
+  restart running clients to pick up the new key (after `rotate` the old key is
+  already rejected).
 
 ## Automatic verification on a broker
 
