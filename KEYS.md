@@ -64,6 +64,11 @@ never give a local-operator key to a remote connector.
 .\cardputer.exe keys rotate --key-id cpk_REPLACE_WITH_PUBLIC_ID
 ```
 
+`list` prints metadata only. Each entry keeps its numeric `issued_at`/`expires_at`/
+`revoked_at` and adds a readable `remaining` (`expires in 12d 3h`, `expired` or
+`revoked`). Active keys expiring within 3 days are also named on stderr as a reminder
+to rotate them in time.
+
 Verification takes hidden interactive input; no key argument is accepted. Revoke
 and rotate require an exact local confirmation. Rotate preserves origin/scope/label.
 Without `--ttl-seconds` the replacement gets the current key's originally granted

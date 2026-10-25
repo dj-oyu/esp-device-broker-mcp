@@ -146,6 +146,32 @@ def _duration(seconds: float) -> str:
     return f"{remainder}s"
 
 
+_EXPIRY_WARNING_SECONDS = 3 * 86400
+
+
+def _remaining(key: KeyMetadata, now: float) -> str:
+    """Human-readable state for `keys list`; the timestamps stay machine-readable."""
+    if key.revoked_at is not None:
+        return "revoked"
+    if now >= key.expires_at:
+        return "expired"
+    return "expires in " + _duration(key.expires_at - now)
+
+
+def _warn_expiring(keys: list[KeyMetadata], now: float, stream: TextIO) -> None:
+    for key in keys:
+        if key.revoked_at is None and 0 < key.expires_at - now <= _EXPIRY_WARNING_SECONDS:
+            try:
+                stream.write(
+                    f"Warning: key {key.key_id} ({key.label}) {_remaining(key, now)}. "
+                    "Rotate it before expiry to keep access to its builds/backups.\n"
+                )
+                stream.flush()
+            except (OSError, ValueError, UnicodeError):
+                # Advisory only; the JSON listing on stdout is the result.
+                return
+
+
 def _inherited_lifetime(key: KeyMetadata) -> int:
     """The predecessor's originally granted lifetime, within the allowed range."""
     return min(max(round(key.expires_at - key.issued_at), 1), MAX_TTL_SECONDS)
@@ -299,6 +325,7 @@ def run(
     output_stream: TextIO | None = None,
     registry_factory: RegistryFactory = KeyRegistry,
     write_env: Path | None = None,
+    warning_stream: TextIO | None = None,
 ) -> dict[str, object]:
     """Perform one local command, returning only JSON-compatible safe metadata.
 
@@ -372,7 +399,11 @@ def run(
     registry = registry_factory(path, create=False)
     try:
         if command == "list":
-            return {"keys": [_metadata(key) for key in registry.list_keys()]}
+            now = registry.current_time()
+            keys = registry.list_keys()
+            _warn_expiring(keys, now, sys.stderr if warning_stream is None else warning_stream)
+            # "remaining" is additive; existing fields keep their meaning and format.
+            return {"keys": [{**_metadata(key), "remaining": _remaining(key, now)} for key in keys]}
         if command == "verify":
             token = _read_secret(secret_input, outgoing)
             principal = registry.authenticate("Bearer " + token)

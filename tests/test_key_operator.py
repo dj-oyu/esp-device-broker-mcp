@@ -494,3 +494,71 @@ def test_cli_leaves_ttl_unset_by_default(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr("sys.argv", ["cardputer", "keys", "rotate", "--key-id", "cpk_" + "0" * 32])
     cli.main()
     assert seen["ttl_seconds"] is None
+
+
+class ClockFactory(Factory):
+    def __init__(self) -> None:
+        super().__init__()
+        self.now = 1_700_000_000.0
+
+    def __call__(self, path: Path, *, create: bool = True) -> KeyRegistry:
+        self.calls.append(create)
+        return KeyRegistry(path, clock=lambda: self.now, random_bytes=self.random, create=create)
+
+
+def test_list_adds_remaining_lifetime_and_warns_on_soon_expiring_keys(tmp_path: Path) -> None:
+    factory = ClockFactory()
+    path = tmp_path / "keys.sqlite3"
+    registry = factory(path)
+    long = registry.issue("long", Origin.REMOTE, ttl_seconds=30 * 86400)
+    soon = registry.issue("soon", Origin.REMOTE, ttl_seconds=2 * 86400 + 3 * 3600)
+    short = registry.issue("short", Origin.REMOTE, ttl_seconds=60)
+    gone = registry.issue("gone", Origin.REMOTE, ttl_seconds=2 * 86400)
+    registry.revoke(gone.metadata.key_id)
+    factory.now += 120  # "short" has expired; the others are two minutes older
+    warnings = io.StringIO()
+    listed = run(
+        "list",
+        path,
+        input_stream=io.StringIO(),
+        output_stream=io.StringIO(),
+        registry_factory=factory,
+        warning_stream=warnings,
+    )
+    entries = {entry["label"]: entry for entry in listed["keys"]}  # type: ignore[attr-defined]
+    assert entries["long"]["remaining"] == "expires in 29d 23h"
+    assert entries["soon"]["remaining"] == "expires in 2d 2h"
+    assert entries["short"]["remaining"] == "expired"
+    assert entries["gone"]["remaining"] == "revoked"
+    # Existing fields are unchanged; "remaining" is the only addition.
+    assert set(entries["long"]) == {
+        "principal_id",
+        "key_id",
+        "origin",
+        "scopes",
+        "label",
+        "issued_at",
+        "expires_at",
+        "revoked_at",
+        "remaining",
+    }
+    assert entries["long"]["expires_at"] == long.metadata.expires_at
+    text = warnings.getvalue()
+    assert text == (
+        f"Warning: key {soon.metadata.key_id} (soon) expires in 2d 2h. "
+        "Rotate it before expiry to keep access to its builds/backups.\n"
+    )
+    for issued in (long, soon, short, gone):
+        assert issued.token not in json.dumps(listed) + text
+
+
+def test_list_warning_failure_does_not_fail_listing(tmp_path: Path) -> None:
+    class Broken(io.StringIO):
+        def write(self, text: str) -> int:
+            raise OSError("synthetic")
+
+    factory = Factory()
+    path = tmp_path / "keys.sqlite3"
+    factory(path).issue("soon", Origin.REMOTE, ttl_seconds=60)
+    listed = run("list", path, registry_factory=factory, warning_stream=Broken())
+    assert listed["keys"][0]["remaining"] == "expires in 1m"  # type: ignore[index]
