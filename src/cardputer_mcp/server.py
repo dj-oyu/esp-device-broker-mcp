@@ -548,6 +548,21 @@ def create_server(
     return server
 
 
+def end_operator_streams(app: object) -> None:
+    """End open operator event streams before uvicorn waits for open responses.
+
+    Uvicorn's graceful shutdown waits for every in-flight response before the
+    lifespan (and so the broker) closes, and a live stream never completes on
+    its own. Only the wrappers built by ``create_app`` are followed.
+    """
+    current: object | None = app
+    for _ in range(4):
+        if isinstance(current, OperatorAPI):
+            current.live.close()
+            return
+        current = getattr(current, "guarded", None) or getattr(current, "app", None)
+
+
 def create_app(
     settings: Settings,
     broker: Broker | None = None,

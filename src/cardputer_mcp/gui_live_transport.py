@@ -23,6 +23,9 @@ from .models import BuildLogRequest, JobRequest
 from .operator_client import OperatorClient, OperatorClientError, safe_refusal
 
 MAX_RESPONSE_BYTES = 512 * 1024
+LIVE_PATH = "/operator/events"
+# The broker sends a comment heartbeat every 25 s; a longer silence is a dead stream.
+STREAM_READ_SECONDS = 35.0
 MAX_DELIVERIES = 32
 STARTUP_WAIT_SECONDS = 2.0
 STARTUP_FAILED = "Cannot start the live reader. Reopen the local operator window."
@@ -85,8 +88,125 @@ def _image_available(expires_at: float | None) -> bool:
         return False
 
 
+_LINE_END = re.compile(rb"\r\n|\r|\n")
+_AUTH_CODES = frozenset({"authentication_required", "local_operator_required"})
+
+
+class EventStreamParser:
+    """Incremental ``text/event-stream`` reader for data events and comments.
+
+    Lines end with CRLF, LF or CR, also across chunk boundaries. ``feed`` returns
+    the data text of each dispatched default-type event, and ``None`` for each
+    comment line. ``id`` and ``retry`` fields are not used and other event types
+    are ignored. A line or event above ``limit`` bytes raises ``ValueError``.
+    """
+
+    def __init__(self, limit: int = MAX_RESPONSE_BYTES) -> None:
+        self._limit = limit
+        self._line = bytearray()
+        self._data: list[str] = []
+        self._size = 0
+        self._type = ""
+        self._after_cr = False
+        self._first = True
+
+    def feed(self, chunk: bytes) -> list[str | None]:
+        out: list[str | None] = []
+        start = 0
+        if self._after_cr and chunk[:1] == b"\n":
+            start = 1  # The second half of a CRLF split across chunks.
+        self._after_cr = False
+        for match in _LINE_END.finditer(chunk, start):
+            self._append(chunk[start : match.start()])
+            self._take(out)
+            start = match.end()
+            if match.group() == b"\r" and start == len(chunk):
+                self._after_cr = True
+        self._append(chunk[start:])
+        return out
+
+    def _append(self, data: bytes) -> None:
+        if len(self._line) + len(data) + self._size > self._limit:
+            raise ValueError("event_too_large")
+        self._line.extend(data)
+
+    def _take(self, out: list[str | None]) -> None:
+        raw = bytes(self._line)
+        self._line.clear()
+        if self._first:
+            self._first = False
+            raw = raw.removeprefix(b"\xef\xbb\xbf")
+        if not raw:
+            if self._data and self._type in ("", "message"):
+                out.append("\n".join(self._data))
+            self._data, self._size, self._type = [], 0, ""
+        elif raw.startswith(b":"):
+            out.append(None)
+        else:
+            field, separator, value = raw.decode("utf-8").partition(":")
+            if separator and value.startswith(" "):
+                value = value[1:]
+            if field == "data":
+                self._data.append(value)
+                self._size += len(raw) + 1
+            elif field == "event":
+                self._type = value
+
+
+def _transport_failure(error: httpx2.HTTPError) -> _TransportFailure:
+    reasons = {
+        "ConnectTimeout": "connect_timeout",
+        "ReadTimeout": "read_timeout",
+        "WriteTimeout": "write_timeout",
+        "PoolTimeout": "pool_timeout",
+        "ConnectError": "connect_failed",
+        "ReadError": "read_failed",
+        "WriteError": "write_failed",
+        "RemoteProtocolError": "peer_disconnected",
+    }
+    reason = reasons.get(type(error).__name__, "transport_error")
+    return _TransportFailure(UNREACHABLE, reason=reason, retryable=reason != "transport_error")
+
+
+def _refused(data: dict[str, Any]) -> None:
+    """Raise the fixed classification of an ``{"ok": false}`` live envelope."""
+    if data["ok"] is not False:
+        return
+    code = data.get("error")
+    safe_code = code if type(code) is str and code in SAFE_CODES else None
+    if safe_code in _AUTH_CODES:
+        # A grant revoked while the stream was open: like the HTTP 401/403 refusal.
+        raise _TransportFailure(
+            AUTH_FAILED, reason="authentication_failed", status=200, code=safe_code
+        )
+    raise _TransportFailure(
+        REJECTED,
+        reason="broker_rejected",
+        status=200,
+        code=safe_code,
+        retryable=safe_code in RETRYABLE_CODES,
+    )
+
+
+def _envelope(text: str) -> dict[str, Any]:
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError):
+        raise _TransportFailure(INVALID_RESPONSE, status=200) from None
+    if not isinstance(data, dict) or type(data.get("ok")) is not bool:
+        raise _TransportFailure(INVALID_RESPONSE, status=200)
+    _refused(data)
+    if (
+        type(data.get("schema_version")) is not int
+        or data["schema_version"] != 1
+        or data.get("kind") not in ("snapshot", "reset", "delta", "heartbeat")
+    ):
+        raise _TransportFailure(INVALID_RESPONSE, status=200)
+    return data
+
+
 class LiveRunner:
-    """One event loop, one held live read, one log read, and one explicit image read.
+    """One event loop, one live event stream, one log read, and one explicit image read.
 
     ``drain`` belongs to the GUI thread. A caller must increment its generation
     when reconnecting; old generations and closed-view results are discarded.
@@ -126,7 +246,7 @@ class LiveRunner:
         return httpx2.AsyncClient(
             trust_env=False,
             follow_redirects=False,
-            timeout=httpx2.Timeout(35.0, connect=2.0, write=5.0, pool=2.0),
+            timeout=httpx2.Timeout(STREAM_READ_SECONDS, connect=2.0, write=5.0, pool=2.0),
             limits=httpx2.Limits(max_connections=3, max_keepalive_connections=3),
         )
 
@@ -350,9 +470,9 @@ class LiveRunner:
         path: str,
         payload: dict[str, Any],
         *,
-        read_once: bool = False,
         expires_at: float | None = None,
     ) -> dict[str, Any]:
+        """One explicit bounded read; refusals are returned filtered, never retried."""
         client = self._client
         if client is None:
             raise _TransportFailure(UNREACHABLE)
@@ -361,7 +481,7 @@ class LiveRunner:
             self._base_url + path,
             json=payload,
             headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"},
-            timeout=httpx2.Timeout(5.0, connect=2.0) if read_once else client.timeout,
+            timeout=httpx2.Timeout(5.0, connect=2.0),
         )
         # AsyncClient owns a jar, but no response cookie is an operator credential.
         request.headers.pop("cookie", None)
@@ -373,18 +493,14 @@ class LiveRunner:
             try:
                 client.cookies.clear()
                 if response.status_code in (401, 403):
-                    if read_once:
-                        refusal_received = True
-                        return safe_refusal(
-                            {
-                                "ok": False,
-                                "error": "authentication_required"
-                                if response.status_code == 401
-                                else "local_operator_required",
-                            }
-                        )
-                    raise _TransportFailure(
-                        AUTH_FAILED, reason="authentication_failed", status=response.status_code
+                    refusal_received = True
+                    return safe_refusal(
+                        {
+                            "ok": False,
+                            "error": "authentication_required"
+                            if response.status_code == 401
+                            else "local_operator_required",
+                        }
                     )
                 if response.status_code != 200:
                     raise _TransportFailure(
@@ -393,37 +509,10 @@ class LiveRunner:
                         status=response.status_code,
                         retryable=response.status_code in RETRYABLE_HTTP,
                     )
-                declared = response.headers.get("content-length")
-                if declared is not None:
-                    try:
-                        if int(declared) > MAX_RESPONSE_BYTES:
-                            raise _TransportFailure(INVALID_RESPONSE, status=200)
-                    except ValueError:
-                        raise _TransportFailure(INVALID_RESPONSE, status=200) from None
-                body = bytearray()
-                async for chunk in response.aiter_bytes(chunk_size=8192):
-                    if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
-                        raise _TransportFailure(INVALID_RESPONSE, status=200)
-                    body.extend(chunk)
-                try:
-                    data = json.loads(body)
-                except (ValueError, RecursionError):
-                    raise _TransportFailure(INVALID_RESPONSE, status=200) from None
-                if not isinstance(data, dict) or type(data.get("ok")) is not bool:
-                    raise _TransportFailure(INVALID_RESPONSE, status=200)
-                if read_once and data["ok"] is False:
+                data = await self._json_body(response)
+                if data["ok"] is False:
                     refusal_received = True
                     return safe_refusal(data)
-                if not read_once and data["ok"] is not True:
-                    code = data.get("error")
-                    safe_code = code if type(code) is str and code in SAFE_CODES else None
-                    raise _TransportFailure(
-                        REJECTED,
-                        reason="broker_rejected",
-                        status=200,
-                        code=safe_code,
-                        retryable=safe_code in RETRYABLE_CODES,
-                    )
                 return data
             finally:
                 primary_failure = sys.exception()
@@ -435,45 +524,34 @@ class LiveRunner:
                     if primary_failure is None and not refusal_received:
                         raise
         except httpx2.HTTPError as error:
-            reasons = {
-                "ConnectTimeout": "connect_timeout",
-                "ReadTimeout": "read_timeout",
-                "WriteTimeout": "write_timeout",
-                "PoolTimeout": "pool_timeout",
-                "ConnectError": "connect_failed",
-                "ReadError": "read_failed",
-                "WriteError": "write_failed",
-                "RemoteProtocolError": "peer_disconnected",
-            }
-            reason = reasons.get(type(error).__name__, "transport_error")
-            raise _TransportFailure(
-                UNREACHABLE, reason=reason, retryable=reason != "transport_error"
-            ) from None
+            raise _transport_failure(error) from None
+
+    @staticmethod
+    async def _json_body(response: httpx2.Response) -> dict[str, Any]:
+        declared = response.headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > MAX_RESPONSE_BYTES:
+                    raise _TransportFailure(INVALID_RESPONSE, status=200)
+            except ValueError:
+                raise _TransportFailure(INVALID_RESPONSE, status=200) from None
+        body = bytearray()
+        async for chunk in response.aiter_bytes(chunk_size=8192):
+            if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
+                raise _TransportFailure(INVALID_RESPONSE, status=200)
+            body.extend(chunk)
+        try:
+            data = json.loads(body)
+        except (ValueError, RecursionError):
+            raise _TransportFailure(INVALID_RESPONSE, status=200) from None
+        if not isinstance(data, dict) or type(data.get("ok")) is not bool:
+            raise _TransportFailure(INVALID_RESPONSE, status=200)
+        return data
 
     async def _subscribe(self, generation: int) -> None:
-        cursor = None
         started_at = time.monotonic()
         try:
-            while self._current(generation):
-                started_at = time.monotonic()
-                data = await self._request("/operator/live", {"cursor": cursor})
-                if (
-                    type(data.get("schema_version")) is not int
-                    or data["schema_version"] != 1
-                    or data.get("kind") not in ("snapshot", "reset", "delta", "heartbeat")
-                ):
-                    raise _TransportFailure(INVALID_RESPONSE, status=200)
-                next_cursor = _cursor(data.get("cursor"))
-                kind = data["kind"]
-                if (
-                    (cursor is None and kind not in ("snapshot", "reset"))
-                    or (kind == "delta" and _cursor(data.get("base_cursor")) != cursor)
-                    or (kind == "heartbeat" and next_cursor != cursor)
-                ):
-                    raise _TransportFailure(INVALID_RESPONSE, status=200)
-                if not self._emit(TransportEvent("message", generation, data, started_at)):
-                    return
-                cursor = next_cursor
+            await self._follow(generation)
         except _TransportFailure as error:
             self._emit(
                 TransportEvent(
@@ -509,12 +587,96 @@ class LiveRunner:
                 )
             )
 
+    async def _follow(self, generation: int) -> None:
+        """Read one event stream; any end of it is a disconnect for the GUI retry policy."""
+        client = self._client
+        if client is None:
+            raise _TransportFailure(UNREACHABLE)
+        request = client.build_request(
+            "GET",
+            self._base_url + LIVE_PATH,
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Accept": "text/event-stream",
+                "Cache-Control": "no-store",
+            },
+        )
+        request.headers.pop("cookie", None)
+        try:
+            response = await client.send(request, stream=True, follow_redirects=False)
+            try:
+                client.cookies.clear()
+                if response.status_code in (401, 403):
+                    raise _TransportFailure(
+                        AUTH_FAILED, reason="authentication_failed", status=response.status_code
+                    )
+                if response.status_code != 200:
+                    raise _TransportFailure(
+                        REJECTED,
+                        reason="http_rejected",
+                        status=response.status_code,
+                        retryable=response.status_code in RETRYABLE_HTTP,
+                    )
+                media = response.headers.get("content-type", "").split(";", 1)[0]
+                media = media.strip().lower()
+                if media == "application/json":
+                    # A refusal before the stream starts keeps the JSON error boundary.
+                    _refused(await self._json_body(response))
+                if media != "text/event-stream":
+                    raise _TransportFailure(INVALID_RESPONSE, status=200)
+                await self._read_stream(generation, response)
+            finally:
+                primary_failure = sys.exception()
+                try:
+                    await response.aclose()
+                except httpx2.HTTPError:
+                    if primary_failure is None:
+                        raise
+        except httpx2.HTTPError as error:
+            raise _transport_failure(error) from None
+
+    async def _read_stream(self, generation: int, response: httpx2.Response) -> None:
+        parser = EventStreamParser()
+        cursor: dict[str, Any] | None = None
+        # No chunk size: the chunker would otherwise hold small events back.
+        async for chunk in response.aiter_bytes():
+            received_at = time.monotonic()
+            try:
+                items = parser.feed(chunk)
+            except ValueError:
+                raise _TransportFailure(INVALID_RESPONSE, status=200) from None
+            for item in items:
+                if item is None:
+                    if cursor is None:
+                        continue
+                    # A comment is the idle heartbeat; deliver it like the old one.
+                    data: dict[str, Any] = {
+                        "ok": True,
+                        "schema_version": 1,
+                        "kind": "heartbeat",
+                        "cursor": dict(cursor),
+                    }
+                else:
+                    data = _envelope(item)
+                    next_cursor = _cursor(data.get("cursor"))
+                    kind = data["kind"]
+                    if (
+                        (cursor is None and kind not in ("snapshot", "reset"))
+                        or (kind == "delta" and _cursor(data.get("base_cursor")) != cursor)
+                        or (kind == "heartbeat" and next_cursor != cursor)
+                    ):
+                        raise _TransportFailure(INVALID_RESPONSE, status=200)
+                    cursor = next_cursor
+                if not self._emit(TransportEvent("message", generation, data, received_at)):
+                    return
+        raise _TransportFailure(UNREACHABLE, reason="peer_disconnected", retryable=True)
+
     async def _read_logs(self, generation: int, serial: int, request: dict[str, Any]) -> None:
         started_at = time.monotonic()
         received_utc = None
         payload: dict[str, Any] = {"job_id": request["job_id"], "request_id": serial}
         try:
-            payload["response"] = await self._request("/operator/job-logs", request, read_once=True)
+            payload["response"] = await self._request("/operator/job-logs", request)
             received_utc = datetime.now(UTC).isoformat(timespec="seconds")
         except _TransportFailure as error:
             payload["error"] = str(error)
@@ -540,7 +702,7 @@ class LiveRunner:
         payload: dict[str, Any] = {"job_id": request["job_id"], "request_id": serial}
         try:
             payload["response"] = await self._request(
-                "/operator/image", request, read_once=True, expires_at=expires_at
+                "/operator/image", request, expires_at=expires_at
             )
         except _TransportFailure as error:
             payload["error"] = str(error)

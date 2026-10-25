@@ -11,7 +11,7 @@ from . import cancellation, job_reads, operator_review, operator_stop, resource_
 from .broker import Broker, BrokerError
 from .build_logs import BuildLogs
 from .models import BuildLogRequest, Digest, Identifier, Origin, TestName
-from .operator_live import LiveRequest, OperatorLive
+from .operator_live import OperatorLive
 from .operator_timeline import OperatorTimeline
 from .plan_approval import PlanApprovals
 
@@ -300,7 +300,7 @@ class OperatorAPI:
         routes = {
             "/operator/state": "GET",
             "/operator/timeline": "GET",
-            "/operator/live": "POST",
+            "/operator/events": "GET",
             "/operator/job-logs": "POST",
             "/operator/cancel": "POST",
             "/operator/job-cancel": "POST",
@@ -375,22 +375,11 @@ class OperatorAPI:
                 result = self.diagnostics()
             elif path == "/operator/timeline":
                 result = self._timeline(principal)
-            elif path == "/operator/live":
-                live = LiveRequest.model_validate(payload)
-                if not await self.live.wait(live.cursor, principal, receive):
-                    return
-                principal = self.authenticate(header)
-                if principal is None:
-                    await self._respond(
-                        send, 401, {"ok": False, "error": "authentication_required"}
-                    )
-                    return
-                if principal.origin != Origin.LOCAL or "control" not in principal.scopes:
-                    await self._respond(
-                        send, 403, {"ok": False, "error": "local_operator_required"}
-                    )
-                    return
-                result = self.live.response(live.cursor, principal)
+            elif path == "/operator/events":
+                # Server-Sent Events. Refusals before the stream starts use this JSON
+                # boundary; the stream rechecks the current grant on every wake.
+                await self.live.stream(principal, lambda: self.authenticate(header), receive, send)
+                return
             elif path == "/operator/job-logs":
                 result = self._job_logs(
                     BuildLogRequest.model_validate(payload, strict=True), principal
@@ -468,7 +457,7 @@ class OperatorAPI:
                 release = ReleaseIdle.model_validate(payload)
                 result = self.broker.operator_release_idle(release.lease_id)
         except BrokerError as error:
-            # Live subscriptions also use this JSON error boundary. HTTP 200
+            # Live streams also use this JSON error boundary before they start. HTTP 200
             # alone does not mean success; GUI recovery must classify the fixed
             # error code and must not blindly retry every rejected request.
             await self._respond(send, 200, {"ok": False, "error": str(error)})

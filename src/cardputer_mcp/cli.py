@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import re
+import socket
 import sys
 from importlib.metadata import version
 from pathlib import Path
@@ -21,8 +22,30 @@ from .models import Origin, TestName
 from .operator import acknowledge_device_request_recovery, acknowledge_recovery
 from .operator_client import OperatorClient, OperatorClientError
 from .ports import inventory_json
-from .server import create_app
+from .server import create_app, end_operator_streams
 from .surface import KIND_TEST
+
+STARTUP_FAILURE = 3
+
+
+class _Server(uvicorn.Server):
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        # Uvicorn waits for open responses before lifespan shutdown; operator
+        # event streams never finish by themselves, so end them first.
+        end_operator_streams(self.config.app)
+        await super().shutdown(sockets)
+
+
+def _serve(app: Any, **options: Any) -> None:
+    """``uvicorn.run`` for one process, with operator streams ended at shutdown."""
+    server = _Server(uvicorn.Config(app, **options))
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
+    if not server.started:
+        sys.exit(STARTUP_FAILURE)
+
 
 RETIRED_COMMANDS = frozenset(
     {
@@ -367,7 +390,7 @@ def main() -> None:
                 raise AuthError("serial_auth_source_required")
             if (args.require_auth or args.key_registry) and args.auth_source == "none":
                 raise AuthError("auth_source_required")
-            uvicorn.run(
+            _serve(
                 create_app(
                     settings,
                     serial_enabled=args.enable_serial,
