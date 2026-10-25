@@ -745,6 +745,43 @@ class Store:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def write_probe(self) -> bool:
+        """Take and roll back a write lock; nothing is written. False if unavailable."""
+        if self.db.in_transaction:
+            return False
+        try:
+            self.db.execute("BEGIN IMMEDIATE")
+            self.db.execute("SELECT 1 FROM jobs LIMIT 1").fetchall()
+        except Exception:
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+            return False
+        self.db.rollback()
+        return True
+
+    def running_job_ids(self, limit: int = 16) -> list[str]:
+        rows = self.db.execute(
+            "SELECT id FROM jobs WHERE state='running' ORDER BY id LIMIT ?", (limit,)
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def acknowledge_request(self, request_id: str) -> bool:
+        """Set only `reviewed` on an unreviewed needs_review device request.
+
+        Guarded in SQL like `JobLedger.mark_reviewed`: never changes state or reason,
+        and the rowcount says whether this call acknowledged it.
+        """
+        cursor = self.db.execute(
+            "UPDATE device_requests SET reviewed=1 "
+            "WHERE id=? AND state='needs_review' AND reviewed=0",
+            (request_id,),
+        )
+        written = cursor.rowcount == 1
+        self.db.commit()
+        return written
+
     def review_request(self, request_id: str) -> None:
         # Only the offline operator may call this after acquiring the state lock.
         request = self.request(request_id)

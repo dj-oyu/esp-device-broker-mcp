@@ -7,6 +7,7 @@ broker database, receives capability tokens, or stops the broker when it closes.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import wrap
@@ -175,6 +176,63 @@ class OwnerRow:
     release_blocked: bool
 
 
+_CODE = re.compile(r"[a-z][a-z0-9_]{1,80}")
+
+
+def _code(value: Any) -> str:
+    if type(value) is not str or _CODE.fullmatch(value) is None:
+        raise ValueError("invalid_state")
+    return value
+
+
+@dataclass(frozen=True)
+class RecoveryRequestRow:
+    """An unreviewed needs_review device request; acknowledgement only."""
+
+    request_id: str
+    reason: str
+    created: str
+
+
+@dataclass(frozen=True)
+class UncertaintyRow:
+    flag: str
+    reason: str
+
+
+def _recovery_requests(value: Any) -> tuple[RecoveryRequestRow, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or len(value) > 1000:
+        raise ValueError("invalid_state")
+    rows = []
+    for row in value:
+        request_id = _text(row["id"])
+        if re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", request_id) is None:
+            raise ValueError("invalid_state")
+        if row.get("state") != "needs_review" or row.get("reviewed") not in (0, False):
+            raise ValueError("invalid_state")
+        reason = row.get("reason")
+        rows.append(
+            RecoveryRequestRow(
+                request_id,
+                _code(reason) if reason is not None else "unknown",
+                _text(row.get("created"), optional=True)[:40],
+            )
+        )
+    if len({row.request_id for row in rows}) != len(rows):
+        raise ValueError("invalid_state")
+    return tuple(rows)
+
+
+def _uncertainty(value: Any) -> tuple[UncertaintyRow, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or len(value) > 32:
+        raise ValueError("invalid_state")
+    return tuple(UncertaintyRow(_code(row["flag"]), _code(row["reason"])) for row in value)
+
+
 @dataclass(frozen=True)
 class QueueSnapshot:
     backend: str
@@ -186,6 +244,8 @@ class QueueSnapshot:
     needs_review: bool
     ownership_uncertain: bool
     execution_uncertain: bool | None = None
+    recovery_requests: tuple[RecoveryRequestRow, ...] = ()
+    uncertainty: tuple[UncertaintyRow, ...] = ()
 
     @classmethod
     def parse(cls, data: dict[str, Any]) -> QueueSnapshot:
@@ -265,6 +325,8 @@ class QueueSnapshot:
                 _flag(data["needs_review"]),
                 _flag(data["ownership_uncertain"]),
                 _flag(data["execution_uncertain"]) if "execution_uncertain" in data else None,
+                _recovery_requests(data.get("recovery_requests")),
+                _uncertainty(data.get("uncertainty")),
             )
         except (KeyError, TypeError, ValueError, AttributeError):
             raise OperatorClientError("The broker returned an invalid queue snapshot.") from None

@@ -15,7 +15,7 @@ import pytest
 from test_pending_execution import prepare, running, submit
 
 import cardputer_mcp.broker as broker_module
-from cardputer_mcp import cancellation
+from cardputer_mcp import cancellation, operator_review, resource_recheck
 from cardputer_mcp.broker import Broker, BrokerError
 from cardputer_mcp.continuation import Deferred, Tickets
 from cardputer_mcp.job_ledger import JobLedger
@@ -475,6 +475,11 @@ SYNCHRONOUS = [
     (cancellation, "device_stop"),
     (Broker, "cancel_device_request"),
     (Broker, "operator_cancel_wait"),
+    # Online local-operator acknowledgement and explicit resource re-check.
+    (operator_review, "acknowledge_job"),
+    (operator_review, "acknowledge_request"),
+    (Store, "acknowledge_request"),
+    (resource_recheck, "recheck"),
 ]
 
 

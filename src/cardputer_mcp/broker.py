@@ -67,6 +67,7 @@ from .models import (
 )
 from .operator_notifications import OperatorNotifications
 from .registration_digest import flash_digests
+from .resource_recheck import uncertainty
 from .source_snapshot import SourceError
 from .store import Store
 
@@ -254,6 +255,11 @@ class Broker:
         self.store: Store | None = None
         self.closing = False
         self.execution_uncertain = False
+        # RAM only: the fixed reason the latch was set, for status and re-check.
+        self.execution_uncertain_reason: str | None = None
+        # The job the device worker is processing right now, from dequeue until its
+        # final cleanup. `active_job` can stay set after an unconfirmed close.
+        self._worker_job: str | None = None
         self.captures: dict[str, RetainedCapture] = {}
         self.device_observations: dict[str, RetainedDeviceObservation] = {}
         self._flash_bindings: dict[str, FlashBinding] = {}
@@ -381,6 +387,11 @@ class Broker:
         if stopping:
             self.queue.put_nowait(None)
 
+    def _latch_execution(self, reason: str) -> None:
+        self.execution_uncertain = True
+        if self.execution_uncertain_reason is None:
+            self.execution_uncertain_reason = reason
+
     def _record_review(
         self, job_id: str, result: str, diagnostic: dict[str, Any] | None = None
     ) -> None:
@@ -391,7 +402,7 @@ class Broker:
         latch, so the lane admits nothing more until restart and review.
         """
         if not self._store().ledger.transition(job_id, "needs_review", result, diagnostic):
-            self.execution_uncertain = True
+            self._latch_execution("job_review_write_refused")
 
     def _record_failure(
         self,
@@ -412,7 +423,7 @@ class Broker:
                 self.logs.append(Event.FAILED)
                 return
             # The row already left `running`; treat it like a refused review write.
-            self.execution_uncertain = True
+            self._latch_execution("job_failure_write_refused")
         else:
             self._record_review(job_id, result, diagnostic)
         self.logs.append(Event.REVIEW)
@@ -1383,6 +1394,9 @@ class Broker:
                 "current_resource_uncertain": uncertain,
                 "owned_work_active": busy,
                 "historical_review_pending": pending_review,
+                # Each set runtime latch and its fixed reason. The local operator's
+                # explicit re-check clears only latches whose concrete check passes.
+                "uncertainty": uncertainty(self),
                 "physical_device_state": "not_inferred_from_job_history",
                 "required_action": (
                     "inspect_owned_resources_before_new_work"
@@ -1747,6 +1761,7 @@ class Broker:
             "execution_uncertain": self._execution_uncertain(),
             "ownership_uncertain": bool(getattr(self.backend, "ownership_uncertain", False)),
             "recovery_requests": store.recovery_requests(),
+            "uncertainty": uncertainty(self),
         }
 
     def operator_cancel_wait(self, request_id: str) -> dict[str, Any]:
@@ -2544,6 +2559,7 @@ class Broker:
                 elif plan["test"] == TestName.SOURCE.value:
                     self.firmware_source.begin()
                 self.active_job = job_id
+                self._worker_job = job_id
                 capture_principal = self.session.principal_id
                 if not store.ledger.transition(job_id, "running"):
                     # Unreachable after the final synchronous check; never run unrecorded.
@@ -2852,7 +2868,7 @@ class Broker:
                                 failure.diagnostic,
                             )
                         except Exception:
-                            self.execution_uncertain = True
+                            self._latch_execution("fixed_trial_persist_failed")
                             self._record_review(job_id, "fixed_trial_persist_failed")
                             outcome = "needs_review"
                         if outcome == "failed":
@@ -2955,7 +2971,7 @@ class Broker:
                                 job_id, "succeeded", completed, derby_diagnostic(diagnostic)
                             )
                     except Exception as failure:
-                        self.execution_uncertain = True
+                        self._latch_execution("job_final_commit_failed")
                         if plan["test"] == TestName.SOURCE.value:
                             code = (
                                 failure.code
@@ -3004,9 +3020,10 @@ class Broker:
             except Exception:
                 # A failed durable-state operation must not leave an apparently
                 # idle lane admitting more work. History is not the runtime latch.
-                self.execution_uncertain = True
+                self._latch_execution("durable_state_operation_failed")
                 self.logs.append(Event.REVIEW)
             finally:
+                self._worker_job = None
                 if job_id is not None:
                     self._flash_bindings.pop(job_id, None)
                     self._execution_bindings.pop(job_id, None)

@@ -121,6 +121,42 @@ class BuildProcess:
         self.uncertain = False
         self.cleanup_pending = False
         self.owner: win.OwnedWindowsProcess | None = None
+        # Output readers/pipes of an unconfirmed teardown, kept only so an explicit
+        # operator re-check can confirm they finished. Never used to run anything.
+        self._retained: tuple[list[threading.Thread], list[BinaryIO]] = ([], [])
+
+    def recheck_exited(self) -> tuple[bool, str]:
+        """Explicit operator re-check of an unconfirmed teardown; never kills or signals.
+
+        Clears `uncertain` only when the retained job object confirms zero members
+        and an exited leader (`OwnedWindowsProcess.close`, which never terminates)
+        and every retained output reader has finished. Without a retained owner the
+        tree cannot be checked, so the flag is kept.
+        """
+        if not self.uncertain:
+            return True, "not_set"
+        if self.cleanup_pending:
+            return False, "process_cleanup_pending"
+        owner = self.owner
+        if owner is None:
+            return False, "process_tree_unverifiable"
+        readers, pipes = self._retained
+        if any(reader.is_alive() for reader in readers):
+            return False, "process_output_reader_alive"
+        try:
+            owner.close()
+        except Exception:
+            return False, "process_tree_still_active"
+        self.owner = None
+        for pipe in pipes:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+        self._retained = ([], [])
+        self.uncertain = False
+        self.active = False
+        return True, "process_tree_exit_confirmed"
 
     def run(
         self,
@@ -292,3 +328,4 @@ class BuildProcess:
                     raise ValueError("build_tree_stop_unconfirmed")
             finally:
                 self.cleanup_pending = False
+                self._retained = (readers, pipes) if self.uncertain else ([], [])

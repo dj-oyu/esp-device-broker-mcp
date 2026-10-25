@@ -50,6 +50,11 @@ class ProfileJobs:
         self.deadline = 0.0
         self.uncertain = False
         self.state_uncertain = False
+        # RAM only: why state_uncertain was set, for status and an operator re-check.
+        # "owned_process" means only an owned build/source process teardown was
+        # unconfirmed; any other cause has no side-effect-free check.
+        self.state_uncertain_reason: str | None = None
+        self.state_uncertain_cause: str | None = None
         self.source_reads = SourceReadWorker()
 
     def _uncertain(self, *, allow_owned_cleanup: bool = False) -> bool:
@@ -691,7 +696,7 @@ class ProfileJobs:
                             else "profile_or_principal_no_longer_valid",
                         )
                     reason = self.stops.get(job_id)
-                    uncertain = (
+                    other_cause = bool(
                         (
                             committing
                             and reason is None
@@ -699,10 +704,13 @@ class ProfileJobs:
                         )
                         or isinstance(failure, sqlite3.Error)
                         or broker.firmware_source.snapshots.uncertain
+                        or broker.firmware_build.output_uncertain
+                    )
+                    uncertain = (
+                        other_cause
                         or broker.firmware_source.active
                         or broker.firmware_build.process.active
                         or broker.firmware_build.process.uncertain
-                        or broker.firmware_build.output_uncertain
                     )
                     if broker.firmware_source.snapshots.uncertain:
                         code = "source_cleanup_unconfirmed"
@@ -729,6 +737,12 @@ class ProfileJobs:
                     store.ledger.transition(job_id, state, outcome, diagnostic)
                     if uncertain:
                         self.state_uncertain = True
+                        self.state_uncertain_reason = outcome
+                        self.state_uncertain_cause = (
+                            "other"
+                            if other_cause or self.state_uncertain_cause == "other"
+                            else "owned_process"
+                        )
                         broker.logs.append(Event.REVIEW)
                 finally:
                     watch.cancel()

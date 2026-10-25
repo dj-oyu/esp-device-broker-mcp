@@ -317,7 +317,27 @@ A historical failure does not establish the current physical device state or cla
 that the failed action succeeded. An actual uncertain resource must be resolved by
 its owning lifecycle; acknowledging history cannot release that resource.
 
-Optional history acknowledgement is available offline only:
+While the broker runs, the local operator GUI can acknowledge a `needs_review` job
+(**Acknowledge review...** on the selected job) or device request (**Acknowledge
+request...** on the Connection tab). This calls the local-only `/operator/review`
+route (local origin and `control` scope; not an MCP tool). It sets only the reviewed
+flag; state, result and diagnostics stay as recorded, nothing is retried and the
+device is not touched. An acknowledged row no longer blocks HOME recovery. A job that
+is the source of a running HOME recovery cannot be acknowledged until it ends, and
+acknowledging a capture failure gives up its HOME recovery.
+
+`status` lists each set runtime latch under `safety.uncertainty` with a fixed reason
+(for example `serial_ownership` / `serial_close_unconfirmed`). The GUI's **Re-check
+resources...** button (local-only `/operator/recheck`) runs one concrete check per
+latch and clears only latches whose check passes: the retained serial handle reports
+closed (the existing confirmed-close helper; a port is never opened), an owned
+build/flash process tree is confirmed exited (never killed), the flash driver's
+confirmed close succeeds, or no job row is `running` and a SQLite write probe passes.
+It runs nothing while device or registered-project work is active. Build output and
+source cleanup latches have no side-effect-free check and are kept until restart.
+It is never run automatically.
+
+Optional history acknowledgement is also available offline:
 
 1. Establish the physical/resource state and inspect the saved failure evidence.
 2. Stop the broker using its existing owner/supervisor procedure.

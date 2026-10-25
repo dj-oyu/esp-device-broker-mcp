@@ -4,10 +4,10 @@ import json
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from . import cancellation
+from . import cancellation, operator_review, resource_recheck
 from .broker import Broker, BrokerError
 from .build_logs import BuildLogs
 from .models import FLASH_TESTS, BuildLogRequest, Digest, Identifier, Origin, TestName
@@ -66,6 +66,29 @@ class ReorderWait(CancelWait):
 class ReleaseIdle(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     lease_id: Identifier
+
+
+class ReviewTarget(BaseModel):
+    """One needs_review job (id and plan hash) or one device request (id)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    job_id: Identifier | None = None
+    plan_hash: Digest | None = None
+    request_id: Identifier | None = None
+    broker_epoch: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+    @model_validator(mode="after")
+    def _one_target(self) -> "ReviewTarget":
+        job = self.job_id is not None and self.plan_hash is not None
+        partial_job = (self.job_id is None) != (self.plan_hash is None)
+        if partial_job or job == (self.request_id is not None):
+            raise ValueError("invalid_request")
+        return self
+
+
+class Recheck(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    broker_epoch: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
 class PreviewImage(BaseModel):
@@ -295,6 +318,8 @@ class OperatorAPI:
             "/operator/job-logs": "POST",
             "/operator/cancel": "POST",
             "/operator/job-cancel": "POST",
+            "/operator/review": "POST",
+            "/operator/recheck": "POST",
             "/operator/reorder": "POST",
             "/operator/release": "POST",
             "/operator/plans": "GET",
@@ -402,6 +427,27 @@ class OperatorAPI:
                     "state": cancelled["state"],
                     "stop_requested": cancelled.get("stop_requested", False),
                 }
+            elif path == "/operator/review":
+                # A human acknowledgement only: sets `reviewed`, never state/result,
+                # never retries, never touches the device. Not exposed through MCP.
+                target = ReviewTarget.model_validate(payload)
+                if target.request_id is not None:
+                    result = operator_review.acknowledge_request(
+                        self.broker, target.request_id, target.broker_epoch
+                    )
+                else:
+                    assert target.job_id is not None and target.plan_hash is not None
+                    result = operator_review.acknowledge_job(
+                        self.broker, target.job_id, target.plan_hash, target.broker_epoch
+                    )
+            elif path == "/operator/recheck":
+                # Explicit human action only; never run automatically.
+                recheck = Recheck.model_validate(payload)
+                if self.broker.closing:
+                    raise BrokerError("broker_closing")
+                if recheck.broker_epoch != self.broker.epoch:
+                    raise BrokerError("stale_operator_snapshot")
+                result = resource_recheck.recheck(self.broker)
             elif path == "/operator/images":
                 result = self.broker.operator_images()
             elif path == "/operator/image":
