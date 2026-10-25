@@ -9,6 +9,7 @@
   "test_auth.py": 0.0,
   "test_authenticated_mock.py": 2.9,
   "test_broker.py": 1.2,
+  "test_broker_link.py": 1.4,
   "test_build_approval_integration.py": 0.7,
   "test_build_artifact_persistence.py": 2.3,
   "test_build_authority_diagnostic.py": 0.0,

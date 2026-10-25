@@ -31,8 +31,9 @@ from mcp.types import (
     TextContent,
 )
 
+from .broker_link import canonical_broker_port
+
 _KEY = re.compile(r"cpk_[a-f0-9]{32}\.[a-f0-9]{64}\Z")
-_URL = re.compile(r"http://127\.0\.0\.1:([1-9][0-9]{3,4})/mcp\Z")
 _REQUEST_SECONDS = 30.0
 # Tools that queue work verify firmware inputs before they answer; one deadline
 # per request still covers connect, identity, the call and teardown.
@@ -80,8 +81,7 @@ class HTTPBrokerAdapter:
     """One adapter process, with independent requests sharing only a concurrency bound."""
 
     def __init__(self, url: str, token: str) -> None:
-        parsed = _URL.fullmatch(url) if isinstance(url, str) else None
-        if parsed is None or not 1024 <= int(parsed[1]) <= 65535:
+        if canonical_broker_port(url) is None:
             raise StdioAdapterError("stdio_adapter_invalid_url")
         self._url = url
         if not isinstance(token, str) or _KEY.fullmatch(token) is None:
