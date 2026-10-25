@@ -69,16 +69,24 @@ Installing this change does not acknowledge existing uncertain work.
 
 ## Privacy and retention
 
-The broker retains at most eight images, each at most 200,000 PNG bytes, for five
-minutes from successful completion. Images are kept only in process memory, not
-SQLite, event logs, configuration files, or automatic filesystem exports. New
-captures evict the oldest retained image when full. Expiry, eviction, and restart
-return `capture_not_available`; reading never triggers a replacement capture.
-The job's fixed success/failure result remains in ordinary durable history.
+The broker keeps at most eight images, each at most 200,000 PNG bytes, in a
+five-minute RAM cache from successful completion. Every validated image is also
+saved, unconditionally, to private state: `<state_dir>/captures/<job_id>/`
+holds `capture.png` (the exact bytes) and `capture.json` (`schema_version` 1,
+job id, owning principal, origin, `mime_type`, `size_bytes`, `sha256`,
+width/height, source, `captured_utc`). Images never enter SQLite, event logs or
+configuration files. After RAM expiry, eviction or a restart, reads are served
+from the saved copy after re-verifying its size and sha256; a missing or changed
+copy returns `capture_not_available`. Reading never triggers a replacement
+capture. Saved captures are pruned oldest-first beyond 200 images or 64 MiB;
+delete the directory yourself if you need them gone sooner. An image from a job
+whose close was not confirmed is never saved. The operator GUI preview still
+shows only the RAM cache. The job's fixed success/failure result remains in
+ordinary durable history.
 
 Every MCP image read requires a currently valid authenticated key with read scope,
-the same principal that owned the capture job, a succeeded closed capture job,
-and an unexpired retained image. Revoked or expired keys cannot
+the same principal that owned the capture job and a succeeded closed capture job.
+Revoked or expired keys cannot
 retrieve images. A replacement key is a new principal and does not inherit old
 images. Two tools deliberately sharing one key can read one another's captures;
 distinct work sessions are not distinct security identities. The trusted local operator can preview retained images through the local-only
@@ -86,7 +94,8 @@ operator API. The MCP image-read tool remains bound to the original principal.
 
 After the client retrieves a PNG, this broker cannot control copies retained by
 the client, chat service, or user. Explicitly request capture only when the intended output
-may be shared with that client. Cache limits do not promise secure RAM erasure.
+may be shared with that client. Cache limits do not promise secure RAM or disk
+erasure.
 
 No current-app capture, firmware modification, flash, upload, OCR, remote file
 write, automatic image publishing, or physical-device execution is included in

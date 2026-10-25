@@ -284,6 +284,8 @@ class FirmwareFlash:
         self.job_logs: Any = None
         self.results: dict[str, dict[str, Any]] = {}
         self.promotions: dict[str, dict[str, str]] = {}
+        # Stage names with UTC times per job, for the durable flash_outcome record.
+        self.phases: dict[str, list[tuple[str, str]]] = {}
         self._cancelled_jobs: set[str] = set()
         self._lock = threading.RLock()
 
@@ -754,7 +756,9 @@ class FirmwareFlash:
             oldest = next(iter(self.logs))
             del self.logs[oldest]
             self.results.pop(oldest, None)
+            self.phases.pop(oldest, None)
         self.logs[self.job_id] = log
+        phases = self.phases.setdefault(self.job_id, [])
 
         def progress_log(message: str) -> None:
             with self._lock:
@@ -765,6 +769,8 @@ class FirmwareFlash:
         def emit(name: str) -> None:
             with self._lock:
                 log.append("-- " + name)
+                if len(phases) < 32:
+                    phases.append((name, datetime.now(UTC).isoformat(timespec="milliseconds")))
             stage(name)
 
         failure_code: str | None = "flash_operation_failed"
@@ -887,6 +893,110 @@ class FirmwareFlash:
             console_output=False,
         )
 
+    def outcome(self, plan: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+        """A bounded structured summary of one flash/backup/restore job's outcome.
+
+        Holds hashes, ids, fixed reason codes, phase names and times only: no
+        firmware bytes, device output, paths or credentials.
+        """
+        job_id = plan["job_id"]
+        write_started, close_confirmed = self.failure_evidence(job_id)
+        with self._lock:
+            summary = dict(self.results.get(job_id, {}))
+            promotion = self.promotions.get(job_id)
+            phases = list(self.phases.get(job_id, ()))
+        succeeded = job.get("state") == "succeeded"
+        recorded = datetime.now(UTC).isoformat(timespec="milliseconds")
+        duration = None
+        if phases:
+            try:
+                start = datetime.fromisoformat(phases[0][1])
+                duration = round((datetime.fromisoformat(recorded) - start).total_seconds(), 3)
+            except ValueError:
+                duration = None
+        return {
+            "schema_version": 1,
+            "job_id": job_id,
+            "test": plan.get("test"),
+            "operation": plan.get("flash_operation"),
+            "state": job.get("state"),
+            "reason_code": job.get("result"),
+            "last_stage": job.get("stage"),
+            "phase_reached": phases[-1][0] if phases else None,
+            "phases": [{"name": name, "t": at} for name, at in phases],
+            "write_started": bool(write_started),
+            "close_confirmed": bool(close_confirmed),
+            "plan_hash": job.get("plan_hash"),
+            "device": {
+                "device_id": plan.get("device_id"),
+                "device_fingerprint": plan.get("device_fingerprint"),
+                "expected_device_sha256": plan.get("expected_device_sha256"),
+                "bound_device_sha256": summary.get("bound_device_sha256"),
+                "flash_bytes": plan.get("flash_bytes"),
+            },
+            "references": {
+                key: plan.get(key)
+                for key in (
+                    "recovery_kind",
+                    "lkg_receipt",
+                    "backup_job_id",
+                    "backup_sha256",
+                    "build_job_id",
+                    "manifest_sha256",
+                    "expected_elf_sha256",
+                    "expected_app_bin_sha256",
+                )
+            },
+            "backup_receipt": summary.get("backup_receipt"),
+            "staged_lkg_receipt": promotion["receipt"] if promotion else None,
+            "lkg_selected": succeeded and promotion is not None,
+            "verification": {
+                key: value
+                for key, value in summary.items()
+                if key not in ("backup_receipt", "bound_device_sha256")
+                and isinstance(value, (str, int, bool))
+            },
+            "timings": {
+                "created": job.get("created"),
+                "finished": job.get("finished"),
+                "first_phase": phases[0][1] if phases else None,
+                "recorded": recorded,
+                "duration_seconds": duration,
+            },
+        }
+
+    def record_outcome(self, plan: dict[str, Any], job: dict[str, Any]) -> bool:
+        """Append the flash_outcome record to the job's durable log; never raises.
+
+        Uses the log attached when the worker started, or opens the job's log when
+        the job ended before the worker ran (admission/input failures).
+        """
+        opened = None
+        try:
+            log = self.logs.get(plan["job_id"])
+            durable = getattr(log, "durable", None) if log is not None else None
+            if durable is None:
+                if self.open_job_log is None:
+                    return False
+                principal = plan.get("flash_principal")
+                if not isinstance(principal, str) or not principal:
+                    return False
+                opened = durable = self.open_job_log(
+                    plan["job_id"], principal, str(plan.get("test", "firmware_flash"))
+                )
+                if durable is None:
+                    return False
+            durable.record("flash_outcome", self.outcome(plan, job), reserve=True)
+            return not durable.unavailable
+        except Exception:
+            return False
+        finally:
+            if opened is not None:
+                try:
+                    opened.close()
+                except Exception:
+                    pass
+
     def read_logs(self, request: Any, principal: str) -> dict[str, Any]:
         with self._lock:
             logs = self.logs.get(request.job_id)
@@ -909,4 +1019,8 @@ class FirmwareFlash:
                 result["flash_summary"] = persisted
             elif not result["expired"] and request.job_id in self.results:
                 result["flash_summary"] = self.results[request.job_id]
+            if self.job_logs is not None:
+                outcomes = self.job_logs.records(request.job_id, principal, "flash_outcome")
+                if outcomes:
+                    result["flash_outcome"] = outcomes[-1]["data"]
             return result

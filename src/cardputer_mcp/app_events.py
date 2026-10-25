@@ -29,12 +29,29 @@ class AppEvents:
         self.sequence = 0
         self.deadline = time.monotonic() + 300
         self.lock = threading.RLock()
+        # Optional durable tee (job_logs.JobLog); RAM behaviour is unchanged.
+        self.durable: Any = None
+
+    def attach_durable(self, durable: Any) -> None:
+        """Tee every control event and app log line into the job's durable log."""
+        if durable is None:
+            return
+        durable.redactions = tuple(self.logs.redactions)
+        self.durable = durable
+        self.logs.durable_stream = "app"
+        self.logs.durable = durable
 
     def emit(self, kind: str, **fields: Any) -> None:
         with self.lock:
             self.sequence += 1
-            self.control.append(dict(sequence=self.sequence, kind=kind, **fields))
+            event = dict(sequence=self.sequence, kind=kind, **fields)
+            self.control.append(event)
             self.deadline = time.monotonic() + 300
+            if self.durable is not None:
+                try:
+                    self.durable.record("app_event", dict(event))
+                except Exception:
+                    pass
 
     def log(self, text: str) -> None:
         safe = redact_log_text(text, self.logs.redactions)

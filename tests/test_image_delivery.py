@@ -97,7 +97,10 @@ async def test_previews_and_authenticated_reads_never_refresh_retention(tmp_path
             assert broker.read_capture("review", PRINCIPAL).png
             assert broker.captures["review"].deadline == 400.0
         clock.now = 400.0
-        unavailable(broker, "review")
+        # The RAM copy (and the RAM-only operator preview) expires; the owner's
+        # MCP read is then served from the durable copy without refreshing RAM.
+        assert broker.read_capture("review", PRINCIPAL).png
+        assert "review" not in broker.captures
         with pytest.raises(BrokerError, match="^capture_not_available$"):
             broker.operator_image("review")
         assert broker.operator_images()["images"] == []
@@ -105,14 +108,16 @@ async def test_previews_and_authenticated_reads_never_refresh_retention(tmp_path
         assert broker.backend.calls == 1
 
 
-async def test_restart_discards_pixels_without_replay(tmp_path: Path) -> None:
+async def test_restart_drops_ram_pixels_keeps_durable_copy_without_replay(tmp_path: Path) -> None:
     async with running(tmp_path) as original:
         await completed_preview(original)
         epoch = original.epoch
     async with running(tmp_path) as restarted:
         assert restarted.epoch != epoch
         assert restarted.operator_images()["images"] == []
-        unavailable(restarted, "review")
+        assert not restarted.captures
+        assert restarted.read_capture("review", PRINCIPAL).png
+        unavailable(restarted, "review", "different-principal")
         assert restarted.job("review")["state"] == "succeeded"
         await asyncio.sleep(0)
         assert restarted.backend.calls == 0 and restarted.queue.empty()
@@ -189,7 +194,7 @@ async def test_read_revalidates_after_recipient_callback(tmp_path: Path, mutatio
         assert broker.backend.calls == 1
 
 
-async def test_inventory_is_bounded_and_evicted_pixels_cannot_be_read(tmp_path: Path) -> None:
+async def test_inventory_is_bounded_and_evicted_pixels_come_from_disk(tmp_path: Path) -> None:
     async with running(tmp_path) as broker:
         session = acquire(broker)
         for index in range(9):
@@ -197,7 +202,9 @@ async def test_inventory_is_bounded_and_evicted_pixels_cannot_be_read(tmp_path: 
             await broker.queue.join()
             assert len(broker.operator_images()["images"]) <= 8
         assert len(broker.operator_images()["images"]) == 8
-        unavailable(broker, "review-0")
+        assert "review-0" not in broker.captures
+        assert broker.read_capture("review-0", PRINCIPAL).png
+        unavailable(broker, "review-0", "different-principal")
         with pytest.raises(BrokerError, match="^capture_not_available$"):
             broker.operator_image("review-0")
         assert broker.backend.calls == 9

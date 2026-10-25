@@ -7,6 +7,10 @@ into the job; a store failure only marks the log unavailable.
 On-disk format (schema_version 1), one ``<job_id>.jsonl`` file per job:
 first line ``{"schema_version":1,"job_id","principal_id","kind","created"}``,
 then entries ``{"seq","t","stream","level","text"}``.
+
+Structured records ``{"seq","t","record","data"}`` (``flash_outcome``,
+``app_event``) are an additive part of schema_version 1: they carry no
+``stream`` key, so stream readers (including older brokers) skip them.
 """
 
 import hashlib
@@ -15,7 +19,7 @@ import os
 import re
 import stat
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,7 +36,12 @@ from .device_observation import (
 )
 
 SCHEMA_VERSION = 1
-STREAMS = frozenset({"source", "build", "flash", "device"})
+STREAMS = frozenset({"source", "build", "flash", "device", "app"})
+RECORDS = frozenset({"flash_outcome", "app_event"})
+MAX_RECORD_BYTES = 16 * 1024
+# A record written with ``reserve`` may exceed the per-job cap by this much, so
+# a terminal summary is still saved after streamed output hit the size limit.
+RECORD_RESERVE_BYTES = 32 * 1024
 MAX_JOB_BYTES = 8 * 1024 * 1024
 MAX_JOB_FILES = 500
 MAX_TOTAL_BYTES = 512 * 1024 * 1024
@@ -64,6 +73,22 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _redact_value(value: Any, redactions: tuple[str, ...]) -> Any:
+    """Apply the job-log text redaction to every string in a JSON value."""
+    if isinstance(value, str):
+        return redact_log_text(value, redactions)
+    if isinstance(value, dict):
+        return {
+            redact_log_text(str(key), redactions): _redact_value(item, redactions)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_value(item, redactions) for item in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return redact_log_text(str(value), redactions)
+
+
 class JobLog:
     """One job's open append-only file. ``append`` never raises."""
 
@@ -90,6 +115,27 @@ class JobLog:
                 if self._size + len(line) > MAX_JOB_BYTES:
                     self.truncated = True
                     line = self._encode(stream, "warning", TRUNCATION_MARKER)
+                self._handle.write(line)
+                self._handle.flush()
+                self._size += len(line)
+        except Exception:
+            self.unavailable = True
+
+    def record(self, kind: str, data: dict[str, Any], *, reserve: bool = False) -> None:
+        """Append one structured, redacted record; never raises."""
+        try:
+            if kind not in RECORDS or type(data) is not dict:
+                raise JobLogError("job_log_record_invalid")
+            safe = _redact_value(data, self.redactions)
+            with self._lock:
+                if self._handle is None or (self.truncated and not reserve):
+                    return
+                limit = MAX_JOB_BYTES + (RECORD_RESERVE_BYTES if reserve else 0)
+                entry = {"seq": self._seq + 1, "t": _now(), "record": kind, "data": safe}
+                line = (json.dumps(entry, ensure_ascii=True, separators=(",", ":")) + "\n").encode()
+                if len(line) > MAX_RECORD_BYTES or self._size + len(line) > limit:
+                    return
+                self._seq += 1
                 self._handle.write(line)
                 self._handle.flush()
                 self._size += len(line)
@@ -139,7 +185,13 @@ class JobLogStore:
         return path
 
     def begin(
-        self, job_id: str, principal_id: str, kind: str, *, keep: Iterable[str] = ()
+        self,
+        job_id: str,
+        principal_id: str,
+        kind: str,
+        *,
+        keep: Iterable[str] = (),
+        tiers: Mapping[str, int] | None = None,
     ) -> JobLog:
         """Open (or reopen for append) a job's log. Prunes old logs first."""
         if not principal_id or type(principal_id) is not str:
@@ -148,7 +200,7 @@ class JobLogStore:
             self._job(job_id)
             self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
             path = self._path(job_id)
-            self.prune({job_id, *keep})
+            self.prune({job_id, *keep}, tiers)
             flags = (
                 os.O_CREAT
                 | os.O_WRONLY
@@ -186,8 +238,13 @@ class JobLogStore:
                 raise
             return JobLog(path, handle, size, seq)
 
-    def prune(self, keep: set[str]) -> None:
-        """Drop oldest job logs beyond the count/byte caps; never those in ``keep``."""
+    def prune(self, keep: set[str], tiers: Mapping[str, int] | None = None) -> None:
+        """Drop job logs beyond the count/byte caps; never those in ``keep``.
+
+        ``tiers`` ranks the retention value of each job id (missing = 0). Lower
+        tiers are evicted first and oldest first within a tier, so ordinary logs
+        go before needs_review / flash / LKG-producing ones.
+        """
         try:
             names = os.listdir(self.root)
         except FileNotFoundError:
@@ -204,13 +261,20 @@ class JobLogStore:
             if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE:
                 continue
             files.append((info.st_mtime_ns, info.st_size, path))
-        files.sort(key=lambda item: item[0], reverse=True)
+        ranks = tiers or {}
+
+        def job(path: Path) -> str:
+            return path.name[: -len(_SUFFIX)]
+
+        # Walk from the most valuable (highest tier, then newest) down; once the
+        # caps are exceeded, everything further down that is not kept goes.
+        files.sort(key=lambda item: (int(ranks.get(job(item[2]), 0)), item[0]), reverse=True)
         # One slot is reserved for the job being started.
         count, total = 1, 0
         for _, size, path in files:
             count += 1
             total += size
-            if path.name[: -len(_SUFFIX)] in keep:
+            if job(path) in keep:
                 continue
             if count > MAX_JOB_FILES or total > MAX_TOTAL_BYTES:
                 try:
@@ -263,6 +327,23 @@ class JobLogStore:
             "truncated": truncated,
             "partial_line_skipped": partial,
         }
+
+    def records(self, job_id: str, principal_id: str, kind: str) -> list[dict[str, Any]] | None:
+        """The owner's structured records of one kind, oldest first; None if unreadable."""
+        try:
+            path = self._path(job_id)
+            if not path.exists():
+                return None
+            header, entries, _ = self._load(path)
+        except Exception:
+            return None
+        if header.get("job_id") != job_id or header.get("principal_id") != principal_id:
+            return None
+        return [
+            {"seq": entry.get("seq"), "t": entry.get("t"), "data": entry["data"]}
+            for entry in entries
+            if entry.get("record") == kind and type(entry.get("data")) is dict
+        ]
 
     def owner(self, job_id: str) -> str | None:
         """The principal recorded in a job log's header, or None when unreadable."""
@@ -329,6 +410,64 @@ class JobLogStore:
             has_more=sequence < last,
             source="durable_job_log",
             size_limit_reached=loaded["truncated"],
+        )
+
+    def app_events_read(
+        self, job_id: str, principal_id: str, request: Any
+    ) -> dict[str, Any] | None:
+        """Serve an app session's control events and app logs from the durable copy.
+
+        Same response shape as ``AppEvents.read``; the cursor epoch is the durable
+        one, so a RAM cursor resets (``gap``) instead of skipping entries.
+        """
+        loaded = self.read(job_id, principal_id, "app")
+        events = self.records(job_id, principal_id, "app_event")
+        if loaded is None or events is None or not (loaded["entries"] or events):
+            return None
+        epoch = self.epoch(job_id)
+        cursor = request.cursor
+        reset = cursor is not None and cursor.epoch != epoch
+        control_after = 0 if cursor is None or reset else cursor.control
+        log_after = 0 if cursor is None or reset else cursor.log
+        control: list[dict[str, Any]] = [
+            event["data"] for event in events if type(event["data"].get("sequence")) is int
+        ]
+        logs: list[dict[str, Any]] = [
+            dict(
+                sequence=int(entry.get("seq", 0)),
+                text=str(entry.get("text", "")),
+                level=str(entry.get("level", "unknown")),
+                stream="observed_during_run",
+                progress=False,
+            )
+            for entry in loaded["entries"]
+        ]
+        last_control = control[-1]["sequence"] if control else 0
+        last_log = logs[-1]["sequence"] if logs else 0
+        if control_after > last_control or log_after > last_log:
+            raise ValueError("cursor_ahead")
+        entries = [event for event in control if event["sequence"] > control_after]
+        entries = entries[: request.limit]
+        log_entries = [item for item in logs if item["sequence"] > log_after][: request.limit]
+        next_control = entries[-1]["sequence"] if entries else max(control_after, last_control)
+        next_log = log_entries[-1]["sequence"] if log_entries else max(log_after, last_log)
+        return dict(
+            entries=entries,
+            logs=log_entries,
+            log_attribution="observed_during_run",
+            oldest_seq=dict(
+                control=control[0]["sequence"] if control else 1,
+                log=logs[0]["sequence"] if logs else 1,
+            ),
+            next_cursor=dict(epoch=epoch, control=next_control, log=next_log),
+            has_more=next_control < last_control or next_log < last_log,
+            gap=reset,
+            dropped_count=dict(control=0, log=0),
+            expired=False,
+            expiry_seconds=0,
+            source="durable_job_log",
+            size_limit_reached=loaded["truncated"],
+            partial_line_skipped=loaded["partial_line_skipped"],
         )
 
     def device_report(self, job_id: str, principal_id: str) -> dict[str, Any] | None:

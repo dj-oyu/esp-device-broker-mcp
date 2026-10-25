@@ -126,18 +126,25 @@ job; the job diagnostic then carries `job_log_unavailable: true`.
   (credential-like lines and PEM blocks replaced, capture/pixel records and
   binary lines omitted) plus the shared log redaction. Best effort, as above
 - Bounds: 8 MiB per job (one truncation marker, then further text is dropped);
-  newest 500 job files and 512 MiB in total, pruned oldest-first when a job
-  starts. A queued or running job's file is never pruned; nothing else in the
-  directory is touched
+  500 job files and 512 MiB in total, pruned when a job starts. A queued or
+  running job's file is never pruned; nothing else in the directory is touched.
+  Ordinary succeeded non-flash jobs are evicted first (oldest first), then
+  other ordinary jobs; `needs_review` jobs, flash/backup/restore jobs and jobs
+  that produced an LKG go last
 - Read with `status(view=logs, stream=device, job_id=...)` or `device-logs`.
   When the RAM report is gone (expired, restart) or the job did not succeed,
   the owning principal gets the persisted text for any terminal state with
   `"source": "durable_job_log"`, the job `state`/`result` and the newest
   lines (at most 1000 lines / 256 KiB; `omitted_oldest_lines` counts the rest).
   Other principals get `device_logs_not_available`
-- App sessions use their own framed transport and are not included yet. Build,
+- App sessions (`app_session`) save every control event (as an `app_event`
+  record) and every redacted app log line (stream `app`) to the same per-job
+  file on every outcome. `status(view=logs, stream=app, job_id=...)` serves the
+  RAM events while retained, and the persisted copy (`"source":
+  "durable_job_log"`) to the owning principal after expiry or restart. Build,
   source and flash output goes to the same per-job file under its own stream
-  (see FIRMWARE-BUILD.md)
+  (see FIRMWARE-BUILD.md); every flash/backup/restore the worker ran also
+  gets one `flash_outcome` record (see FIRMWARE-FLASH.md)
 - These files are private state: they stay on disk until pruned. Delete the
   directory yourself if you need them gone sooner
 - The original principal must still have read permission. A different principal
