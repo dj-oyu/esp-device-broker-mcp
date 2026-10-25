@@ -5,10 +5,15 @@ import sys
 import threading
 import time
 
+import pytest
+
 from cardputer_mcp.build_process import BuildProcess
 from cardputer_mcp.firmware_build import OS_ENV
 
 
+# Exercise the unbuffered Windows Job Object path used by registered IDF builds.
+# POSIX uses buffered Popen pipes, whose short marker is not emitted until EOF.
+@pytest.mark.skipif(os.name != "nt", reason="native Windows IDF process-tree contract")
 def test_cancel_after_configure_stops_owned_descendant_and_drains_readers(tmp_path):
     marker = tmp_path / "orphan-must-not-write"
     child = f"import time;from pathlib import Path;time.sleep(2);Path({str(marker)!r}).touch()"
