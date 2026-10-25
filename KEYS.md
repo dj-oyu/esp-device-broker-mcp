@@ -65,8 +65,11 @@ never give a local-operator key to a remote connector.
 ```
 
 Verification takes hidden interactive input; no key argument is accepted. Revoke
-and rotate require an exact local confirmation. Rotate preserves origin/scope/label
-and uses the requested/default new lifetime. Never paste the full token into shell arguments.
+and rotate require an exact local confirmation. Rotate preserves origin/scope/label.
+Without `--ttl-seconds` the replacement gets the current key's originally granted
+lifetime (its issued-to-expiry span, at most 30 days), counted from the rotation; an
+explicit `--ttl-seconds` wins. The confirmation prompt shows the resulting lifetime.
+Never paste the full token into shell arguments.
 
 ## Writing the key into an existing stdio env file
 

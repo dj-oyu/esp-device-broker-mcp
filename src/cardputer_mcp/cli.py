@@ -102,7 +102,12 @@ def parser() -> argparse.ArgumentParser:
     keys.add_argument("--label")
     keys.add_argument("--origin", choices=list(Origin), default=Origin.REMOTE.value)
     keys.add_argument("--control", action="store_true", help="Explicitly grant read + control")
-    keys.add_argument("--ttl-seconds", type=int, default=3600)
+    keys.add_argument(
+        "--ttl-seconds",
+        type=int,
+        help="Lifetime of the new key. Default: issue 3600; rotate keeps the current "
+        "key's original lifetime (at most 30 days)",
+    )
     keys.add_argument("--key-id", help="Public ID only; never put the secret key in arguments")
     keys.add_argument(
         "--write-env",

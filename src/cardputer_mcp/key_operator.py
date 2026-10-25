@@ -132,13 +132,38 @@ def _expiry(ttl_seconds: int) -> None:
         raise KeyOperatorError("invalid_key_expiry")
 
 
+def _duration(seconds: float) -> str:
+    """Compact human-readable duration, rounded down: 30d 0h, 3h 5m, 12m, 40s."""
+    days, rest = divmod(max(int(seconds), 0), 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, remainder = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m"
+    return f"{remainder}s"
+
+
+def _inherited_lifetime(key: KeyMetadata) -> int:
+    """The predecessor's originally granted lifetime, within the allowed range."""
+    return min(max(round(key.expires_at - key.issued_at), 1), MAX_TTL_SECONDS)
+
+
 def _description(
-    label: str, origin: Origin, control: bool, ttl_seconds: int, to_env: bool = False
+    label: str,
+    origin: Origin,
+    control: bool,
+    ttl_seconds: int,
+    to_env: bool = False,
+    lifetime_note: str = "",
 ) -> str:
     return (
         f"Client: {label}\nOrigin: {origin.value}\n"
         f"Scopes: {'read, control' if control else 'read'}\n"
-        f"Expires after: {ttl_seconds} seconds\n{_ENV_WARNING if to_env else _WARNING}"
+        f"Expires after: {ttl_seconds} seconds ({_duration(ttl_seconds)}){lifetime_note}\n"
+        f"{_ENV_WARNING if to_env else _WARNING}"
     )
 
 
@@ -266,7 +291,7 @@ def run(
     label: str | None = None,
     origin: Origin = Origin.REMOTE,
     control: bool = False,
-    ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    ttl_seconds: int | None = None,
     key_id: str | None = None,
     confirm: Callable[[str], str] | None = None,
     secret_input: Callable[[str], str] | None = None,
@@ -280,6 +305,8 @@ def run(
     The parent directory must exist. A new registry may be created only after
     confirmed issue; all other commands require an existing registry. No command
     supports a noninteractive bypass for confirmation or secret input/output.
+    Without ``ttl_seconds``, issue uses the one-hour default and rotate keeps
+    the current key's originally granted lifetime (capped at the maximum).
     ``write_env`` (issue/rotate only) names an existing private env file that
     receives the new key instead of the terminal. It is fully validated and a
     temporary file is prepared before the registry changes.
@@ -303,7 +330,7 @@ def run(
         raise KeyOperatorError("key_write_env_not_supported")
     if command != "list":
         _tty(incoming, outgoing)
-    if command in ("issue", "rotate"):
+    if command in ("issue", "rotate") and ttl_seconds is not None:
         _expiry(ttl_seconds)
     if command == "issue":
         if type(label) is not str or _LABEL.fullmatch(label) is None or label != label.strip():
@@ -313,9 +340,10 @@ def run(
         if type(control) is not bool:
             raise KeyOperatorError("invalid_key_scopes")
         _check_env(write_env, None)
+        lifetime = DEFAULT_TTL_SECONDS if ttl_seconds is None else ttl_seconds
         _confirm(
             "ISSUE",
-            _description(label, origin, control, ttl_seconds, write_env is not None),
+            _description(label, origin, control, lifetime, write_env is not None),
             confirm,
             incoming,
             outgoing,
@@ -330,7 +358,7 @@ def run(
                     label,
                     origin,
                     scopes={"read", "control"} if control else {"read"},
-                    ttl_seconds=ttl_seconds,
+                    ttl_seconds=lifetime,
                 )
                 if prepared is None:
                     return _show_once(issued, registry, outgoing)
@@ -367,12 +395,22 @@ def run(
             )
             return {"key_id": identifier, "revoked": registry.revoke(identifier)}
         to_env = write_env is not None
+        if ttl_seconds is None:
+            lifetime = _inherited_lifetime(metadata)
+            note = " - the current key's original lifetime"
+        else:
+            lifetime, note = ttl_seconds, " - as requested"
         # A key line holding a different valid key is refused: wrong file.
         _check_env(write_env, identifier)
         _confirm(
             f"ROTATE {identifier}",
             _description(
-                metadata.label, metadata.origin, "control" in metadata.scopes, ttl_seconds, to_env
+                metadata.label,
+                metadata.origin,
+                "control" in metadata.scopes,
+                lifetime,
+                to_env,
+                note,
             )
             + f"\nKey {identifier} will be revoked immediately when replacement succeeds.\n"
             + (
@@ -387,7 +425,7 @@ def run(
         )
         prepared = _prepare(write_env, identifier)
         try:
-            rotated = registry.rotate(identifier, ttl_seconds=ttl_seconds)
+            rotated = registry.rotate(identifier, ttl_seconds=lifetime)
             if prepared is None:
                 return _show_once(rotated, registry, outgoing)
             return _write_env(rotated, prepared, registry, outgoing, rotated=True)
