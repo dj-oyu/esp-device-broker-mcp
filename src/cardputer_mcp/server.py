@@ -864,7 +864,10 @@ def create_server(
         submits execution. Old pending approvals never resume as new execution.
         """
 
-        def execute() -> dict[str, Any]:
+        def authorize() -> None:
+            bind_lease(require(ctx, "control", honor_auth_required=True), request.session)
+
+        async def execute() -> dict[str, Any]:
             plan = resident._store().plan(request.plan_hash)
             if plan is not None and plan.get("test") in (
                 TestName.BUILD.value,
@@ -877,10 +880,15 @@ def create_server(
             if plan is not None and plan.get("execution_context") == "device_deferred":
                 waiter = require(ctx, "control", honor_auth_required=False)
                 return resident.execute_deferred(request, waiter.principal_id, waiter.origin.value)
-            bind_lease(require(ctx, "control", honor_auth_required=True), request.session)
-            return resident.execute(request)
+            authorize()
+            # Firmware file verification runs off the loop; authority is checked
+            # again before the final synchronous checks and the enqueue.
+            return await resident.execute_async(request, reauthorize=authorize)
 
-        return _result(lambda: shared_job(execute()))
+        try:
+            return {"ok": True, **shared_job(await execute())}
+        except ValueError as exc:
+            return refusal(exc)
 
     @op
     async def request_home_recovery(

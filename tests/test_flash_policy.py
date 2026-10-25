@@ -222,6 +222,7 @@ async def env(tmp_path, request):
             configure=configure,
             prepare=prepare,
             execute=execute,
+            session=session,
             selected=selected,
             output=output,
             source=source,

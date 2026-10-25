@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from .diagnostic_registry import same_diagnostic_selection
 from .models import TestName
+from .offload_io import pure_io
 from .registration_digest import project_digest
 
 if TYPE_CHECKING:
@@ -56,8 +57,12 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             or build.get("build_principal") != principal
         ):
             raise ValueError
-        _, manifest = broker.firmware_build.resolve_flash_manifest(
-            plan["build_job_id"], principal, project_id
+        _, manifest = pure_io(
+            "build_manifest",
+            broker.firmware_build.resolve_flash_manifest,
+            plan["build_job_id"],
+            principal,
+            project_id,
         )
         if not same_diagnostic_selection(manifest, build):
             raise ValueError
@@ -68,7 +73,14 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
                 raise ValueError
             return FlashBinding(binding.plan_hash, _project_hash(broker, plan), job["plan_hash"])
         broker.firmware_source.authorize_receipt(project_id, receipt, principal)
-        _, metadata = broker.firmware_source.snapshots.resolve(project_id, receipt, principal)
+        # Same memoized call as authorize_receipt: the snapshot is hashed once per pass.
+        _, metadata = pure_io(
+            "source_resolve",
+            broker.firmware_source.snapshots.resolve,
+            project_id,
+            receipt,
+            principal,
+        )
         if (
             not isinstance(provenance, dict)
             or build.get("source_provenance") != provenance

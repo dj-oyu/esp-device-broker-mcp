@@ -191,9 +191,14 @@ async def test_stdio_lost_response_is_a_fixed_code_and_stderr_is_sanitized(synth
         }
         result = await _exchange(process, frame)
         assert result["result"]["isError"] is True
-        assert result["result"]["content"] == [
-            {"type": "text", "text": "stdio_adapter_tool_outcome_unknown"}
-        ]
+        content = result["result"]["content"]
+        assert content[0] == {"type": "text", "text": "stdio_adapter_tool_outcome_unknown"}
+        # Then only fixed guidance: the call had no plan_hash/job_id to echo, and
+        # nothing from the (lost) upstream response is included.
+        assert len(content) == 2 and content[1]["type"] == "text"
+        guidance = json.loads(content[1]["text"])
+        assert set(guidance) == {"code", "next_step", "request_may_have_been_accepted"}
+        assert SECRET not in content[1]["text"]
         process.stdin.close()
         tail, errors = await asyncio.wait_for(process.communicate(), timeout=10)
         assert tail == b"" and process.returncode == 0

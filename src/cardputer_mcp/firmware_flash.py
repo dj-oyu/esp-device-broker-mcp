@@ -34,6 +34,7 @@ from .flash_manifest import _file, verify_bundle
 from .job_logs import attach
 from .manifest_export import make_manifest_export, manifest_export_sha256, validate_plan_export
 from .models import TestName
+from .offload_io import offload, pure_io
 from .registration_digest import flash_digest
 
 FLASH_ACTIONS: dict[str, Operation] = {
@@ -270,6 +271,18 @@ def validate_flash_plan(plan: dict[str, Any]) -> None:
         raise ValueError("invalid_flash_plan")
 
 
+def _load_backup(directory: Path, acl: Any, job_id: str, principal: str) -> Any:
+    return BackupStore(directory, windows_private_acl_confirmed=acl).load(job_id, principal)
+
+
+def _load_snapshot(directory: Path, acl: Any, receipt: str) -> Any:
+    return FirmwareSnapshots(directory, windows_private_acl_confirmed=acl).load(receipt)
+
+
+def _verify_bundle(root: Path, manifest: dict[str, Any], flash_bytes: int) -> Any:
+    return verify_bundle(root, manifest, flash_bytes=flash_bytes)
+
+
 class FirmwareFlash:
     def __init__(self, settings: Any, backend: Any, build: Any, store: Any) -> None:
         self.settings, self.backend, self.build, self.store = settings, backend, build, store
@@ -340,9 +353,13 @@ class FirmwareFlash:
                 raise FlashFailure("flash_registration_selector_mismatch")
             from .firmware_build import hash_file
 
+            # Pure hashing; offloaded from the loop when the caller uses offload_io.
             if (
-                hash_file(registration.python_tool.executable) != registration.python_tool.sha256
-                or esptool_fingerprint(registration.esptool_directory)
+                pure_io("hash_file", hash_file, registration.python_tool.executable)
+                != registration.python_tool.sha256
+                or pure_io(
+                    "esptool_fingerprint", esptool_fingerprint, registration.esptool_directory
+                )
                 != registration.esptool_sha256
             ):
                 raise FlashFailure("registered_flash_tools_changed")
@@ -359,10 +376,14 @@ class FirmwareFlash:
             or plan.get("flash_principal") != principal
         ):
             raise FlashFailure("successful_owned_backup_required")
-        return BackupStore(
+        return pure_io(
+            "backup_load",
+            _load_backup,
             registration.backup_directory,
-            windows_private_acl_confirmed=registration.private_backup_acl_confirmed,
-        ).load(job_id, principal)
+            registration.private_backup_acl_confirmed,
+            job_id,
+            principal,
+        )
 
     def _snapshots(self, registration: Any) -> FirmwareSnapshots:
         return FirmwareSnapshots(
@@ -379,7 +400,13 @@ class FirmwareFlash:
         )
         if row is None:
             raise FlashFailure("verified_lkg_or_initial_backup_required")
-        metadata, files = self._snapshots(registration).load(row["receipt"])
+        metadata, files = pure_io(
+            "lkg_load",
+            _load_snapshot,
+            registration.backup_directory / "lkg",
+            registration.private_backup_acl_confirmed,
+            row["receipt"],
+        )
         selector = hashlib.sha256(registration.selector.model_dump_json().encode()).hexdigest()
         if (
             metadata["device_id"] != device_id
@@ -434,7 +461,8 @@ class FirmwareFlash:
         resolver = self.resolver or getattr(self.build, "resolve_flash_manifest", None)
         if resolver is None:
             raise FlashFailure("build_manifest_resolver_unavailable")
-        root, manifest = resolver(job_id, principal, plan["project_id"])
+        # Hashes every owned artifact; it uses its own read-only SQLite connection.
+        root, manifest = pure_io("build_manifest", resolver, job_id, principal, plan["project_id"])
         if not isinstance(root, Path) or not isinstance(manifest, dict):
             raise FlashFailure("invalid_internal_build_manifest_context")
         return root, manifest
@@ -445,7 +473,9 @@ class FirmwareFlash:
         if not principal:
             raise FlashFailure("flash_authenticated_principal_required")
         if self.driver_factory is None:
-            usb = self.backend.prepare(TestName.RESTART)["device_fingerprint"]
+            usb = pure_io("usb_inventory", self.backend.prepare, TestName.RESTART)[
+                "device_fingerprint"
+            ]
         else:
             usb = hashlib.sha256(("mock:" + self.backend.device).encode()).hexdigest()
         expected_device = backup_digest = manifest_digest = elf_digest = image_digest = None
@@ -484,10 +514,12 @@ class FirmwareFlash:
                 build_plan = self.store().plan(build_job["plan_hash"])
                 if build_plan["project_id"] != registration.project_id:
                     raise FlashFailure("flash_build_project_mismatch")
-                bundle = verify_bundle(root, manifest, flash_bytes=registration.flash_bytes)
+                bundle = pure_io(
+                    "verify_bundle", _verify_bundle, root, manifest, registration.flash_bytes
+                )
                 manifest_digest = bundle.manifest_sha256
                 export_digest = manifest_export_sha256(make_manifest_export(manifest))
-                layout = json.loads(_file(root, manifest["flash_layout"], 65536))
+                layout = json.loads(pure_io("file", _file, root, manifest["flash_layout"], 65536))
                 app = layout.get("app", {}).get("file")
                 if not isinstance(app, str) or app not in {item.name for item in bundle.segments}:
                     raise FlashFailure("flash_app_receipt_required")
@@ -496,7 +528,7 @@ class FirmwareFlash:
                 receipt_elf = next((a for a in manifest["artifacts"] if a["name"] == elf), None)
                 if receipt_elf is None:
                     raise FlashFailure("flash_app_elf_receipt_required")
-                _file(root, receipt_elf, 64 * 1024 * 1024)
+                pure_io("file", _file, root, receipt_elf, 64 * 1024 * 1024)
                 elf_digest = receipt_elf["sha256"]
             elif known is not None:
                 metadata, _ = known
@@ -577,6 +609,51 @@ class FirmwareFlash:
     async def execute(self, plan: dict[str, Any], stage: Any, live: Any) -> str:
         loop = asyncio.get_running_loop()
         # SQLite/registry access remains on the broker loop, never the IO worker.
+        # Pure file reads/hashing run in worker threads (offload_io); the packet's
+        # last pass, with every durable check, is synchronous on the loop.
+        preparing = asyncio.ensure_future(offload(lambda: self._packet(plan)))
+        interrupted = False
+        while not preparing.done():
+            try:
+                await asyncio.shield(preparing)
+            except asyncio.CancelledError:
+                interrupted = True
+                self.request_stop(plan["job_id"])
+        if interrupted:
+            # No driver call was made; the verified reads are discarded.
+            preparing.exception()
+            raise FlashFailure("flash_cancelled_needs_review")
+        packet = preparing.result()
+
+        async def check_on_loop() -> bool:
+            return live() is True
+
+        def worker_live() -> bool:
+            return asyncio.run_coroutine_threadsafe(check_on_loop(), loop).result(timeout=5)
+
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                self._execute,
+                plan,
+                lambda name: loop.call_soon_threadsafe(stage, name),
+                worker_live,
+                packet,
+            )
+        )
+        interrupted = False
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                interrupted = True
+                self.request_stop(plan["job_id"])
+        result = worker.result()
+        if interrupted:
+            raise FlashFailure("flash_cancelled_needs_review")
+        return result
+
+    def _packet(self, plan: dict[str, Any]) -> tuple[Any, ...]:
+        """Verified inputs for one flash; side-effect free, so offload may re-run it."""
         validate_flash_plan(plan)
         details = self.prepare_plan(plan)
         if any(plan[key] != value for key, value in details.items()):
@@ -619,21 +696,24 @@ class FirmwareFlash:
         if plan["flash_operation"] == "flash":
             root, manifest = self._build_context(plan["build_job_id"], plan["flash_principal"])
             validate_plan_export(plan, manifest)
-            bundle = verify_bundle(root, manifest, flash_bytes=registration.flash_bytes)
+            bundle = pure_io(
+                "verify_bundle", _verify_bundle, root, manifest, registration.flash_bytes
+            )
             receipts = {item["name"]: item for item in manifest["artifacts"]}
             images = tuple(
-                _file(root, receipts[item.name], 16 * 1024 * 1024) for item in bundle.segments
+                pure_io("file", _file, root, receipts[item.name], 16 * 1024 * 1024)
+                for item in bundle.segments
             )
             snapshot_files = {
                 name: data
                 for name, data in zip((item.name for item in bundle.segments), images, strict=True)
             }
             for receipt in (manifest["flash_layout"], manifest["flash_security"]):
-                snapshot_files[receipt["name"]] = _file(root, receipt, 1048576)
+                snapshot_files[receipt["name"]] = pure_io("file", _file, root, receipt, 1048576)
             app = json.loads(snapshot_files[manifest["flash_layout"]["name"]])["app"]["file"]
             elf_name = str(Path(app).with_suffix(".elf")).replace("\\", "/")
             elf = next(item for item in manifest["artifacts"] if item["name"] == elf_name)
-            snapshot_files[elf_name] = _file(root, elf, 67108864)
+            snapshot_files[elf_name] = pure_io("file", _file, root, elf, 67108864)
             compat = compatibility(manifest, bundle, snapshot_files, registration.flash_bytes)
             # The bundle's own layout is validated above. Without a named recovery
             # point (current is None, known is None, backup is None) there is no
@@ -681,34 +761,7 @@ class FirmwareFlash:
                 backup_job_id=plan["backup_job_id"],
                 compat=None,
             )
-        packet = registration, backup, bundle, images, recovery, metadata, snapshot_files, baseline
-
-        async def check_on_loop() -> bool:
-            return live() is True
-
-        def worker_live() -> bool:
-            return asyncio.run_coroutine_threadsafe(check_on_loop(), loop).result(timeout=5)
-
-        worker = asyncio.create_task(
-            asyncio.to_thread(
-                self._execute,
-                plan,
-                lambda name: loop.call_soon_threadsafe(stage, name),
-                worker_live,
-                packet,
-            )
-        )
-        interrupted = False
-        while not worker.done():
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                interrupted = True
-                self.request_stop(plan["job_id"])
-        result = worker.result()
-        if interrupted:
-            raise FlashFailure("flash_cancelled_needs_review")
-        return result
+        return registration, backup, bundle, images, recovery, metadata, snapshot_files, baseline
 
     def _execute(self, plan: dict[str, Any], stage: Any, live: Any, packet: Any) -> str:
         validate_flash_plan(plan)
