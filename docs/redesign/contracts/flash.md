@@ -52,6 +52,11 @@ The write call must not change: `flash_lifecycle.py:294` `self.driver.write(segm
 | E7 | `enqueue_requested`, then the intent/runtime/flash bindings are stored | broker.py:1892-1899 |
 
 ### 1c. Dispatch (broker worker loop)
+
+Since stage 3a: D1-D5 are in `Broker.admit()`; D6 and D8 are the flash executor in
+`job_kinds.py` (`_execute_flash`); D7 is the method `Broker._flash_live(run, committing)`.
+Line numbers are those of 5d79d2d.
+
 | # | Gate | file:line |
 |---|---|---|
 | D1 | lease principal still valid, `session is lease`, deadline | broker.py:2371-2385 |
@@ -107,6 +112,11 @@ The write call must not change: `flash_lifecycle.py:294` `self.driver.write(segm
 | S4 | The finally block retains the boot diagnostic (schema_version 1) in the principal-scoped RAM log | 726-765 |
 
 ### 1g. Atomic commit (event loop; **no `await` between the worker result and the commit**)
+
+Since stage 3a: C1 is `job_kinds._commit_flash`, called by `Broker._finish_success`; C5 is
+`Broker._finish_success`; F1 is `Broker._finish_failure`; F2 is `Broker._close_admitted`.
+Line numbers are those of 5d79d2d.
+
 | # | Step | file:line |
 |---|---|---|
 | C1 | Success branch → `commit_success(plan, completed, partial(flash_live, committing=True))` | broker.py:2799-2821 |
@@ -375,7 +385,9 @@ Untested or unenforced invariants that need attention:
 ---
 
 ## 7. Risk points when refactoring callers
-1. **No `await` between `firmware_flash.execute` returning and `commit_success`** (broker.py:2605 → 2819). Adding one
+1. **No `await` between `firmware_flash.execute` returning and `commit_success`** (broker.py:2605 → 2819; since stage 3a
+   the executor returns into `_work`, which calls the synchronous `_accept_result` and `finish`;
+   `tests/test_stage3a_sync_sections.py` pins this). Adding one
    lets cancel, lease or principal changes interleave. The guard would still catch most of these, but `_committed` and `promotions` are RAM state.
 2. **Guard callbacks run inside `BEGIN IMMEDIATE`** (store.py:625-672). `flash_live(committing=True)` requires
    `store.db.in_transaction` (broker.py:497) and accepts a `succeeded` row only while committing (500-508).

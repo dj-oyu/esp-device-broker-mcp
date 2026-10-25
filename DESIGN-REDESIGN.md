@@ -258,7 +258,7 @@
 | 2a | `PublicError` / `to_public()`。§2.2 の 1 と 6 は、外に出ている理由コードを語彙に加えて、今の出力を保つ | 不変(語彙の追加だけ) | 不要 |
 | 2b | `JobLedger.transition()` と、散らばった SQL の `Store` への集約 | 不変。不正な遷移は今まで黙って書いていたが、記録してから拒否する | 不要 |
 | 2c | `LeaseManager`、`Broker.cancel_job`、`require(ctx, scope)` | 不変 | 不要 |
-| 3a | `_work` の分割(`admit` / 登録表 / `finish`)と `JobKind` | 不変 | **要**(書き込みなしの hello→observe) |
+| 3a | `_work` の分割(`admit` / 登録表 / `finish`)と `JobKind`。**実装済み**(§5.5。実機の確認は未実施) | 不変 | **要**(書き込みなしの hello→observe) |
 | 3b | `ExecutionAuthority` | 不変 | **要**(フラッシュは明示の承認後) |
 | 3c | 旧 `@op` 層を 6 ツールに畳む(**済**、§5.4) | 不変(tools/list も同じ) | 不要 |
 | 4 | 周辺(`broker_link.py`、永続 JSON を検証だけの厳格モデルへ、小モジュールの統合)。Tunnel の監督の統一は、最後 | 不変 | Tunnel だけ確認 |
@@ -353,6 +353,31 @@
     成功の鍵の集合、`isError`、本文の直列化を固定する。旧コードで作った値のまま通る。
 - 契約台帳(`docs/redesign/contracts/`)の `server.py:<行>` は、`5d79d2d` の時点の行。旧ハンドラーの
   今の場所は、`surface.md` §0.1 の対応表にある。
+
+### 5.5 段階 3a の結果(`_work` の分割)
+
+- `Broker._work` は、キューの読み取り、フラッシュの束縛の先読み(`_prefetch_flash_binding`)、実行器の 3 つだけを
+  `await` する。その間は、次の同期関数が受け持つ。
+  - `Broker.admit(job_id, binding_reads)`: 許可判定(`jobs.md` §5 の 2〜15、順番も理由コードも同じ)から
+    `running` への遷移と DERBY の来歴の取得まで。判定で終わったジョブは None を返す。
+  - `Broker._accept_result(run, result)`: 実行器の結果の検査と、私的な出力(観測・画像)の保持。
+  - `Broker.finish(run, result, failure)`: 失敗の対応付け(`_finish_failure`。元の `except` の順と同じ
+    `isinstance` の並び)か、種類ごとの `commit` による確定(`_finish_success`)。
+  - `Broker._close_admitted(run)`: 元の内側の `finally`(フラッシュの結果の記録、ジョブログを閉じる、
+    `active_job` の解放、閉じた証拠、保守の tick)。取り消し(`CancelledError`)のときも走る。
+- `job_kinds.py` の `JOB_KINDS` が、テスト名ごとの `JobKind(execute, commit)` を 1 か所で宣言する。
+  `execute` だけが待つ。`commit` は同期関数。表にない名前は、今までどおりバックエンドで走る。
+- 入れ子のクロージャは、許可されたジョブ(`AdmittedJob`)を読むメソッドにした:
+  `_running_authorized`、`_flash_live(committing=)`、`_derby_diagnostic`、`_on_stage`。
+- 同期区間は `@sync_section` で印を付ける。`tests/test_stage3a_sync_sections.py` が AST で、`admit`・`finish`・
+  印の付いた関数が `async def` でなく、`await` / `async with` / `async for` を含まないこと、`_work` が上の 3 つしか
+  待たないことを確かめる。
+- 分割の前に、終了処理の分岐を固定するテストを足した(`tests/test_stage3a_finish_characterization.py`、
+  `tests/test_stage3a_fixed_trial_persist.py`)。許可判定の理由コードは、段階 0.5 のテストが固定している。
+- 振る舞いは変えていない。理由コード、診断、遷移、リースと期限の扱い、`tools/list` は同じ。
+- `ProfileJobs._work`(プロファイルの列)は、別のキューと別の状態を持ち、この表に入れると危険が増えるので、
+  そのまま残した。
+- 実機の確認(書き込みなしの hello→observe)は、利用者の実機で行う。まだ行っていない。
 
 ## 6. 未検証
 
