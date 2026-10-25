@@ -61,6 +61,10 @@ has **no WHERE-state clause**, so every `set_job` is unguarded at SQL level.
 
 **Device lane, `Broker._work` (broker.py:2330-2926)**
 
+Since stage 3a these writes are in `Broker.admit()` (2342-2469), `Broker._finish_failure`
+(2721-2798), the kinds' `commit` in `job_kinds.py` with `Broker._finish_success`
+(2799-2889); see the note at section 5.
+
 | Line | From→To | Result code | Guard |
 |---|---|---|---|
 | 2342 | queued→cancelled | `execution_intent_not_available` | Py: 2338 |
@@ -418,6 +422,15 @@ Stop primitives differ per executor:
 
 ## 5. Admission checks in `Broker._work` (order)
 
+> **Since stage 3a** (DESIGN-REDESIGN §5.5) `Broker._work` is split; the line numbers in this
+> section are still those of 5d79d2d. Steps 2-15 are `Broker.admit()` (same order, no `await`);
+> step 16's executors are `JOB_KINDS[test].execute` in `job_kinds.py` and the post-result
+> validation is `Broker._accept_result`; step 17 is `Broker.finish()` (`_finish_failure`, or
+> `_finish_success` with the kind's synchronous `commit`) and `Broker._close_admitted` (the
+> former inner `finally`). The outer `except`/`finally` stays in `_work`. The nested closures
+> became methods that read the admitted job: `_running_authorized(run)`,
+> `_flash_live(run, committing)`, `_derby_diagnostic(run, diagnostic)`, `_on_stage(run, name)`.
+
 1. 2334: sentinel `None` → return.
 2. 2337-2339: `self.job(job_id)` (raises `job_not_found` → outer except → **`execution_uncertain=True`**); state ≠ queued → skip silently.
 3. 2340-2343: no `ExecutionIntent` → `cancelled execution_intent_not_available`.
@@ -539,11 +552,17 @@ grep of `tests/` found nothing for these:
 - **Cancellation paths:** `cancel_job_only`; `operator_released_idle`, `work_session_closed`, `session_released` as reason strings.
 - **Job-lease lifecycle:** `job_complete`, `promotion_failed`, `wait_cancelled`, `chain_hold` refusal while busy; job-lease expiry during long running deferred work.
 - **Ticket limits and expiry:** `ticket_limit` (256), `MAX_PENDING_DEFERRED` / `queue_full` for deferred jobs, `TICKET_TTL` (1800 s for hold=`none`).
-- **Admission reason codes:** `session_not_available`, `plan_not_available`, `principal_or_lease_no_longer_valid`, `collector_binding_changed`.
-- **Failure codes:** `fixed_trial_persist_failed`, `firmware_final_commit_failed`, `profile_plan_inconsistent`; home-recovery `cancelled` / `expired` / `shutdown` job writes.
+- **Admission reason codes:** pinned since stage 0.5 by `tests/test_stage05_admission.py`.
+- **Failure codes:** `profile_plan_inconsistent`; home-recovery `cancelled` / `expired` / `shutdown` job writes.
+  (`fixed_trial_persist_failed` and `firmware_final_commit_failed` are pinned since stage 3a by
+  `tests/test_stage3a_fixed_trial_persist.py` and `tests/test_stage3a_finish_characterization.py`.)
 - **Fencing:** no test that fencing is skipped for early-consumed tickets, or for the `request_device(after=)` path.
 - **Hold ordering:** hold not started while queue or intents are non-empty, then retried next tick; the hold priority move to the tail on release (`_release_hold` reordering).
 - **Restart leftovers:** a job wait that is `waiting` at restart becomes a `device_requests` needs_review row and blocks home recovery.
 - **Not implemented, so not tested:** DESIGN §13.3 invariants 7 ("needs_review blocks other chains until review") and 16 (single terminal exit).
 - **Covered only indirectly:** `void_stale` (via the restart test) and `cancel_stale` (one deferred-build test).
-- **Partly covered:** the no-await serialization assumption (§13.3(12)) has no structural test, apart from race tests in `test_pending_execution`.
+- **Partly covered:** the no-await serialization assumption (§13.3(12)). Since stage 3a,
+  `tests/test_stage3a_sync_sections.py` checks in the AST that `admit`, `finish` and every
+  `@sync_section` function contain no `await`/`async with`/`async for`, and that `_work` awaits
+  only the queue, the flash-binding prefetch and the executor. Other check-then-write functions
+  are covered only by `inspect` in `tests/test_stage05_admission.py` and by race tests.

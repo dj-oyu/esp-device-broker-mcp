@@ -36,16 +36,16 @@ from .continuation import (
     TicketError,
     Tickets,
 )
-from .derby_provenance import DerbyProvenance, capture_provenance, finish_provenance
+from .derby_provenance import capture_provenance, finish_provenance
 from .derby_reports import PROVENANCE_KEY
 from .device_failure_outcome import FailureEvidence
 from .device_failure_outcome import classify as classify_failure
 from .device_observation import DeviceObservation
 from .firmware_build import BuildPreflightFailure
-from .fixed_diagnostic import DiagnosticContext, finish_fixed_diagnostic
 from .flash_binding import FlashBinding, live_binding, prepare_binding, validate_binding
 from .flash_lifecycle import FlashFailure, _bounded_read_diagnostic
 from .flash_manifest import FlashAdmissionError
+from .job_kinds import AdmittedJob, kind_for, sync_section
 from .job_logs import DeviceLogTap, JobLog, JobLogStore
 from .lease_manager import LeaseManager, ReleaseRefused
 from .lease_manager import Session as Session  # re-exported: callers import it from here
@@ -2754,6 +2754,12 @@ class Broker:
         return done and valid is True
 
     async def _work(self) -> None:
+        """The single device worker: ``admit`` → the kind's executor → ``finish``.
+
+        Only the queue read, the flash-binding prefetch and the executor await.
+        ``admit``, ``_accept_result``, ``finish`` and ``_close_admitted`` are
+        synchronous sections (DESIGN-REDESIGN §3, stage 3a).
+        """
         while True:
             job_id = await self.queue.get()
             try:
@@ -2763,616 +2769,26 @@ class Broker:
                 # before any check below; those checks then run synchronously
                 # through the running transition, using only the memoized reads.
                 binding_reads = await self._prefetch_flash_binding(job_id)
-                store = self._store()
-                job = self.job(job_id)
-                if job["state"] != "queued":
+                run = self.admit(job_id, binding_reads)
+                if run is None:
                     continue
-                queued_intent = self._execution_intents.get(job_id)
-                if queued_intent is None:
-                    store.ledger.transition(
-                        job_id, "cancelled", "execution_intent_not_available", expect={"queued"}
-                    )
-                    continue
-                requires_current_principal = (
-                    queued_intent is not None or self.principal_valid is not None
+                run.job_log, run.device_tap = self._open_device_job_log(
+                    job_id, run.capture_principal, run.test
                 )
-                queued_lease = self.session.id if self.session is not None else None
-                self._expire()
-                if self.job(job_id)["state"] != "queued":
-                    continue
-                if (
-                    self.session is None
-                    or self.session.id != queued_lease
-                    or self.clock() >= self.session.deadline
-                    or self.closing
-                ):
-                    store.ledger.transition(
-                        job_id, "cancelled", "session_not_available", expect={"queued"}
-                    )
-                    continue
-                plan = store.plan(job["plan_hash"])
-                if plan is None or plan["session_id"] != self.session.id:
-                    store.ledger.transition(
-                        job_id, "needs_review", "plan_not_available", expect={"queued"}
-                    )
-                    self._cancel_queued("recovery_review_required")
-                    continue
-                lease = self.session
-                if plan["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value) and plan.get(
-                    "log_delivery"
-                ) != self._log_delivery(lease):
-                    if store.ledger.transition(
-                        job_id,
-                        "cancelled",
-                        "principal_or_lease_no_longer_valid",
-                        expect={"queued"},
-                    ):
-                        self.logs.append(Event.CANCELLED)
-                    continue
-                if lease.principal_id is not None and self.principal_valid is not None:
-                    try:
-                        live = self.principal_valid(
-                            lease.principal_id, lease.owner, frozenset({"read", "control"})
-                        )
-                    except Exception:
-                        live = False
-                    if (
-                        live is not True
-                        or self.session is not lease
-                        or self.clock() >= lease.deadline
-                    ):
-                        # The callback may already have committed a terminal reason;
-                        # the first committed reason is kept (DESIGN-REDESIGN 2.1).
-                        if store.ledger.transition(
-                            job_id,
-                            "cancelled",
-                            "principal_or_lease_no_longer_valid",
-                            expect={"queued"},
-                        ):
-                            self.logs.append(Event.CANCELLED)
-                        continue
-                current_valid = self.principal_valid
-                current_binding = self._execution_bindings.get(job_id)
-                flash_binding = self._flash_bindings.get(job_id)
-                if flash_binding is not None and not self._flash_binding_current(
-                    flash_binding, plan, binding_reads
-                ):
-                    self._cancel_execution_intent(queued_intent, "flash_binding_invalid")
-                    continue
-                if "flash_job_id" in plan:
-                    try:
-                        fresh = prepare_collector(
-                            self, plan["flash_job_id"], lease.principal_id or ""
-                        )
-                        if any(plan.get(key) != value for key, value in fresh.items()):
-                            raise ValueError("collector_binding_changed")
-                    except Exception:
-                        self._cancel_execution_intent(queued_intent, "collector_binding_changed")
-                        continue
-                current_authorized = True
-                if lease.principal_id is not None and (
-                    requires_current_principal or self.principal_valid is not None
-                ):
-                    try:
-                        current_authorized = (
-                            self.principal_valid is not None
-                            and self.principal_valid(
-                                lease.principal_id, lease.owner, frozenset({"read", "control"})
-                            )
-                            is True
-                        )
-                    except Exception:
-                        current_authorized = False
-                # Authentication and policy callbacks above can
-                # change the queued row, original intent, lease or clock. Keep
-                # the original intent requirement through every callback, and
-                # check the durable row again before any backend work starts.
-                current_job = store.job(job_id)
-                current_plan = store.plan(job["plan_hash"])
-                if (
-                    current_job is None
-                    or not current_authorized
-                    or queued_intent is None
-                    or self.principal_valid is not current_valid
-                    or self._runtime_binding() != current_binding
-                    or (flash_binding is not None and not live_binding(self, flash_binding, plan))
-                    or not collector_live(self, plan, lease.principal_id or "")
-                    or not self._state_lock.is_locked
-                    or current_job["state"] != "queued"
-                    or current_job["plan_hash"] != job["plan_hash"]
-                    or current_plan != plan
-                    or digest_plan(plan) != job["plan_hash"]
-                    or plan.get("broker_epoch") != self.epoch
-                    or self.session is not lease
-                    or lease.id != queued_lease
-                    or not math.isfinite(lease.deadline)
-                    or not math.isfinite(self.clock())
-                    or self.clock() >= lease.deadline
-                    or self.closing
-                    or self._execution_uncertain()
-                    or self._physical_busy()
-                    or self.backend.hardware_connected
-                    or not self._device_lock.is_locked
-                    or (
-                        queued_intent is not None and not self._execution_intent_live(queued_intent)
-                    )
-                ):
-                    self._cancel_execution_intent(queued_intent, "execution_intent_not_available")
-                    continue
-                self._execution_intents.pop(job_id, None)
-                if plan["test"] == TestName.BUILD.value:
-                    self.firmware_build.begin()
-                elif plan["test"] == TestName.SOURCE.value:
-                    self.firmware_source.begin()
-                self.active_job = job_id
-                self._worker_job = job_id
-                capture_principal = self.session.principal_id
-                if not store.ledger.transition(job_id, "running"):
-                    # Unreachable after the final synchronous check; never run unrecorded.
-                    raise RuntimeError("job_transition_refused")
                 result: str | BackendResult = ""
-                derby_scope = (
-                    capture_provenance(self, plan, job_id, capture_principal or "")
-                    if plan["test"] == TestName.DERBY.value
-                    else None
-                )
-
-                def derby_diagnostic(
-                    diagnostic: dict[str, Any] | None,
-                    scope: DerbyProvenance | None = derby_scope,
-                    prepared: dict[str, Any] = plan,
-                    completed_job: str = job_id,
-                    principal_id: str = capture_principal or "",
-                ) -> dict[str, Any] | None:
-                    if diagnostic is None or scope is None:
-                        return diagnostic
-                    scoped = dict(diagnostic)
-                    # Freeze observed dispatch/completion evidence. Reading a
-                    # historic report never consults a newer firmware target.
-                    scoped[PROVENANCE_KEY] = finish_provenance(
-                        scope,
-                        capture_provenance(self, prepared, completed_job, principal_id),
-                    ).model_dump(mode="json", exclude_none=True)
-                    return scoped
-
-                def running_authorized(
-                    lease: Session = lease,
-                    current_binding: str = current_binding,
-                    queued_intent: ExecutionIntent = queued_intent,
-                    job_id: str = job_id,
-                    store: Store = store,
-                    job: dict[str, Any] = job,
-                    plan: dict[str, Any] = plan,
-                ) -> bool:
-                    valid = self.principal_valid
-                    try:
-                        authorized = (
-                            lease.principal_id is not None
-                            and valid is not None
-                            and valid(
-                                lease.principal_id, lease.owner, frozenset({"read", "control"})
-                            )
-                            is True
-                        )
-                        return bool(
-                            authorized
-                            and self.principal_valid is valid
-                            and self._runtime_binding() == current_binding
-                            and collector_live(self, plan, lease.principal_id or "")
-                            and self.session is lease
-                            and self._execution_lease_binding_live(queued_intent, running=True)
-                            and self._device_lock.is_locked
-                            and self._state_lock.is_locked
-                            and self.active_job == job_id
-                            and store.plan(job["plan_hash"]) == plan
-                            and digest_plan(plan) == job["plan_hash"]
-                            and self._running_job_binding_live(plan, queued_intent)
-                        )
-                    except Exception:
-                        return False
-
-                job_log, device_tap = self._open_device_job_log(
-                    job_id, capture_principal, plan["test"]
-                )
                 try:
-
-                    def on_stage(name: str, job: str = job_id, db: Store = store) -> None:
-                        db.set_stage(job, name)
-                        self.logs.append(Event.STAGE, stage=name)
-
-                    if plan["test"] == TestName.APP_SESSION.value:
-                        result = await self.app_sessions.execute(
-                            self.backend,
-                            plan,
-                            capture_principal or "",
-                            on_stage,
-                            running_authorized,
-                            job_log,
-                        )
-                    elif plan["test"] in {t.value for t in FLASH_TESTS}:
-                        if capture_principal != plan.get("flash_principal"):
-                            raise BrokerError("flash_principal_mismatch")
-
-                        def flash_live(
-                            plan: dict[str, Any] = plan,
-                            lease: Session = lease,
-                            capture_principal: str | None = capture_principal,
-                            committing: bool = False,
-                            current_binding: str = current_binding,
-                            flash_binding: FlashBinding | None = flash_binding,
-                            queued_intent: ExecutionIntent = queued_intent,
-                        ) -> bool:
-                            current = self.session
-                            if (
-                                self.closing
-                                or current is None
-                                or capture_principal is None
-                                or current is not lease
-                                or current.principal_id != capture_principal
-                                or not math.isfinite(self.clock())
-                                # A running flash keeps its lease past the deadline;
-                                # only revocation stops it (see
-                                # _execution_lease_binding_live).
-                                or current.revoked
-                            ):
-                                return False
-                            registration = self.settings.flash_devices.get(plan["device_id"])
-                            if (
-                                registration is None
-                                or getattr(registration, "allow_" + plan["flash_operation"])
-                                is not True
-                                or plan["registration_sha256"] not in flash_digests(registration)
-                            ):
-                                return False
-                            if not self._device_lock.is_locked or not self._state_lock.is_locked:
-                                return False
-                            if self.principal_valid is None:
-                                return False
-                            valid = self.principal_valid
-                            binding = self._runtime_binding()
-                            authorized = (
-                                valid(
-                                    capture_principal, current.owner, frozenset({"read", "control"})
-                                )
-                                is True
-                            )
-                            return bool(
-                                authorized
-                                and self.principal_valid is valid
-                                and self._runtime_binding() == binding
-                                and self._runtime_binding() == current_binding
-                                and flash_binding is not None
-                                and live_binding(self, flash_binding, plan)
-                                and self.session is lease
-                                and self._execution_lease_binding_live(queued_intent, running=True)
-                                and self._device_lock.is_locked
-                                and self._state_lock.is_locked
-                                and self._running_job_binding_live(
-                                    plan, queued_intent, committing=committing
-                                )
-                            )
-
-                        result = await self.firmware_flash.execute(plan, on_stage, flash_live)
-                    elif plan["test"] == TestName.SOURCE.value:
-                        result = await self.firmware_source.execute(
-                            plan, on_stage, running_authorized
-                        )
-                    elif plan["test"] == TestName.BUILD.value:
-                        if capture_principal != plan.get("build_principal"):
-                            raise BrokerError("build_principal_mismatch")
-                        result = await self.firmware_build.execute(plan, on_stage)
-                    elif plan["test"] in (TestName.DERBY.value, TestName.DERBY_FIXED.value):
-                        from .serial_backend import SerialBackend
-
-                        if not isinstance(self.backend, SerialBackend):
-                            raise BrokerError("backend_not_available")
-
-                        result = await self.backend.execute_smoke(
-                            plan, on_stage, running_authorized
-                        )
-                        if plan["test"] == TestName.DERBY.value and (
-                            not running_authorized() or self.backend.smoke_stop.is_set()
-                        ):
-                            raise BrokerError("operation_interrupted_review_required")
-                    else:
-                        result = await self.backend.execute(plan, on_stage)
-                    if plan["test"] == TestName.DERBY.value:
-                        from .derby_observation import NO_CAPTURE, DerbyObservation
-
-                        if (
-                            not isinstance(result, BackendResult)
-                            or not isinstance(result.derby_observation, DerbyObservation)
-                            or not result.derby_observation.exit_home_observed
-                            or result.derby_observation.image_acquired
-                            is not (result.image is not None)
-                            or (
-                                result.image is None
-                                and (
-                                    result.code != NO_CAPTURE
-                                    or not result.derby_observation.no_capture_completed()
-                                )
-                            )
-                        ):
-                            raise BrokerError("capture_result_invalid")
-                    if plan["test"] == TestName.DERBY_FIXED.value and (
-                        not isinstance(result, BackendResult)
-                        or result.fixed_trial is None
-                        or not result.fixed_trial.valid
-                        or result.image is not None
-                    ):
-                        raise BrokerError("fixed_trial_result_invalid")
-                    if plan["test"] == TestName.CAPTURE.value and (
-                        not isinstance(result, BackendResult) or result.image is None
-                    ):
-                        raise BrokerError("capture_result_invalid")
-                    if plan["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value) and (
-                        not isinstance(result, BackendResult) or result.observation is None
-                    ):
-                        raise BrokerError("device_log_result_invalid")
-                    if isinstance(result, BackendResult) and result.observation is not None:
-                        if (
-                            plan["test"] not in (TestName.FIRMWARE.value, TestName.RESTART.value)
-                            or capture_principal is None
-                            or self.backend.active
-                            or self.backend.hardware_connected
-                            or getattr(self.backend, "ownership_uncertain", False)
-                            or self.session is not lease
-                            or plan.get("log_delivery") != self._log_delivery(lease)
-                            or result.observation.reset_sequence_issued
-                            is not (plan["test"] == TestName.RESTART.value)
-                            or type(result.observation.capture_gap) is not bool
-                            or (
-                                plan["test"] != TestName.RESTART.value
-                                and result.observation.capture_gap
-                            )
-                        ):
-                            raise BrokerError("device_log_result_invalid")
-                        # Shutdown may be waiting on another service while this
-                        # worker finishes. Do not republish private output then.
-                        if not self.closing:
-                            # Only the newest report is retained. No text is written to SQLite.
-                            self.device_observations.clear()
-                            self.device_observations[job_id] = RetainedDeviceObservation(
-                                capture_principal,
-                                lease.owner,
-                                result.observation,
-                                self.clock() + 300,
-                            )
-                    if isinstance(result, BackendResult) and result.image is not None:
-                        if (
-                            plan["test"] not in (TestName.CAPTURE.value, TestName.DERBY.value)
-                            or capture_principal is None
-                            or self.backend.active
-                            or self.backend.hardware_connected
-                            or getattr(self.backend, "ownership_uncertain", False)
-                            or not 0 < len(result.image.png) <= 200_000
-                            or result.image.source
-                            != (
-                                "synthetic_fixture"
-                                if self.backend.name == "mock"
-                                else "render_buffer"
-                            )
-                        ):
-                            raise BrokerError("capture_result_invalid")
-                        # Durable copy first, unconditionally (also while closing);
-                        # it is served only after the job commits as succeeded.
-                        self.capture_store.save(
-                            job_id,
-                            capture_principal,
-                            self.session.owner if self.session is not None else "",
-                            result.image,
-                        )
-                        if not self.closing:
-                            self._prune_captures()
-                            while len(self.captures) >= 8:
-                                del self.captures[next(iter(self.captures))]
-                            self.captures[job_id] = RetainedCapture(
-                                capture_principal,
-                                result.image,
-                                self.clock() + 300,
-                                self.session.owner if self.session is not None else "",
-                                datetime.now(UTC).isoformat(),
-                                delivery_state="available",
-                            )
-                except (FlashFailure, FlashAdmissionError) as failure:
-                    self._record_failure(
-                        job_id,
-                        str(failure),
-                        _bounded_read_diagnostic(failure.code, failure.diagnostic)
-                        if isinstance(failure, FlashFailure)
-                        else None,
-                        self._failure_evidence(plan, job_id, str(failure)),
-                    )
-                except (BuildPreflightFailure, BuildLocationError) as failure:
-                    self._record_review(
-                        job_id,
-                        failure.code,
-                        failure.public_diagnostic()
-                        if isinstance(failure, BuildPreflightFailure)
-                        else {"code": failure.code},
-                    )
-                    self.logs.append(Event.REVIEW)
-                    self._cancel_queued("recovery_review_required")
-                except SourceError as failure:
-                    if plan["test"] == TestName.SOURCE.value:
-                        self.firmware_source.record_failure(plan, failure.code)
-                        self._record_review(job_id, failure.code, {"code": failure.code})
-                    else:
-                        self._record_review(job_id, "backend_error_no_retry")
-                    self.logs.append(Event.REVIEW)
-                    self._cancel_queued("recovery_review_required")
-                except DeviceOperationFailure as failure:
-                    from .serial_backend import SerialFailure
-
-                    evidence = self._failure_evidence(plan, job_id, failure.code)
-                    if (
-                        plan["test"] == TestName.DERBY_FIXED.value
-                        and isinstance(failure, SerialFailure)
-                        and failure.fixed_trial is not None
-                        and capture_principal is not None
-                    ):
-                        outcome = classify_failure(evidence)
-                        try:
-                            store.finish_fixed_trial(
-                                job_id,
-                                job["plan_hash"],
-                                capture_principal,
-                                outcome,
-                                failure.code,
-                                failure.fixed_trial,
-                                failure.diagnostic,
-                            )
-                        except Exception:
-                            self._latch_execution("fixed_trial_persist_failed")
-                            self._record_review(job_id, "fixed_trial_persist_failed")
-                            outcome = "needs_review"
-                        if outcome == "failed":
-                            self.logs.append(Event.FAILED)
-                        else:
-                            self.logs.append(Event.REVIEW)
-                            self._cancel_queued("recovery_review_required")
-                    else:
-                        self._record_failure(
-                            job_id,
-                            failure.code,
-                            derby_diagnostic(failure.diagnostic),
-                            evidence,
-                        )
-                except DeviceDisconnected:
-                    self._record_failure(
-                        job_id,
-                        "device_disconnected_no_retry",
-                        None,
-                        self._failure_evidence(plan, job_id, "device_disconnected_no_retry"),
-                    )
-                except Exception:
-                    # Never persist the exception string (may contain credentials).
-                    if plan["test"] == TestName.SOURCE.value:
-                        self.firmware_source.record_failure(plan, "source_fetch_failed")
-                        self._record_review(
-                            job_id,
-                            "source_fetch_failed",
-                            {"code": "source_fetch_failed"},
-                        )
-                    else:
-                        self._record_review(job_id, "backend_error_no_retry")
-                    self.logs.append(Event.REVIEW)
-                    self._cancel_queued("recovery_review_required")
-                else:
-                    fixed_review = False
-                    terminal_event = Event.PASSED
                     try:
-                        completed = result.code if isinstance(result, BackendResult) else result
-                        if plan["test"] == TestName.APP_SESSION.value:
-                            terminal = (
-                                "cancelled"
-                                if completed == "app_session_cancelled"
-                                else "failed"
-                                if completed == "app_session_timeout"
-                                else "succeeded"
-                            )
-                            store.ledger.transition(job_id, terminal, completed)
-                            terminal_event = {
-                                "succeeded": Event.PASSED,
-                                "failed": Event.FAILED,
-                                "cancelled": Event.CANCELLED,
-                            }[terminal]
-                        elif plan["test"] in {item.value for item in FLASH_TESTS}:
-                            self.firmware_flash.commit_success(
-                                plan, completed, partial(flash_live, committing=True)
-                            )
-                        elif plan["test"] == TestName.SOURCE.value:
-                            self.firmware_source.commit_success(plan, completed, running_authorized)
-                        elif plan["test"] == TestName.DERBY_FIXED.value:
-                            from .serial_backend import SerialBackend
-
-                            if (
-                                not isinstance(result, BackendResult)
-                                or result.fixed_trial is None
-                                or capture_principal is None
-                                or not isinstance(self.backend, SerialBackend)
-                            ):
-                                raise ValueError("fixed_trial_result_invalid")
-                            fixed_review = (
-                                not running_authorized() or self.backend.smoke_stop.is_set()
-                            )
-                            finish_fixed_diagnostic(
-                                DiagnosticContext(
-                                    capture_principal,
-                                    origin=lease.owner,
-                                    epoch=self.epoch,
-                                    lease_id=lease.id,
-                                ),
-                                job_id,
-                                job["plan_hash"],
-                                completed,
-                                result.fixed_trial,
-                                fixed_review,
-                                store,
-                            )
-                        else:
-                            diagnostic = (
-                                {
-                                    "derby_observation": result.derby_observation.model_dump(
-                                        mode="json", exclude_none=True
-                                    )
-                                }
-                                if isinstance(result, BackendResult)
-                                and result.derby_observation is not None
-                                and plan["test"] == TestName.DERBY.value
-                                else None
-                            )
-                            store.ledger.transition(
-                                job_id, "succeeded", completed, derby_diagnostic(diagnostic)
-                            )
+                        result = await kind_for(run.test).execute(self, run)
+                        self._accept_result(run, result)
                     except Exception as failure:
-                        self._latch_execution("job_final_commit_failed")
-                        if plan["test"] == TestName.SOURCE.value:
-                            code = (
-                                failure.code
-                                if isinstance(failure, SourceError)
-                                else "source_fetch_failed"
-                            )
-                            self.firmware_source.record_failure(plan, code)
-                            self._record_review(job_id, code, {"code": code})
-                        else:
-                            self._record_review(
-                                job_id,
-                                "fixed_trial_persist_failed"
-                                if plan["test"] == TestName.DERBY_FIXED.value
-                                else "firmware_final_commit_failed",
-                            )
-                        self.logs.append(Event.REVIEW)
-                        self._cancel_queued("recovery_review_required")
+                        self.finish(run, result, failure)
                     else:
-                        self.logs.append(Event.REVIEW if fixed_review else terminal_event)
-                        if fixed_review:
-                            self._cancel_queued("recovery_review_required")
+                        self.finish(run, result, None)
                 finally:
-                    self._record_flash_outcome(job_id, plan)
-                    self._close_job_logs(job_id, job_log, device_tap)
-                    job_log = device_tap = None
                     # Do not keep the last image alive in this suspended worker frame
                     # after the bounded cache expires or is cleared.
                     result = ""
-                    if (
-                        not self.backend.active
-                        and not self.firmware_source.active
-                        and not self.firmware_build.process.active
-                        and not self.firmware_build.process.uncertain
-                        and not self.firmware_flash.active
-                        and not self.firmware_flash.uncertain
-                    ):
-                        self.active_job = None
-                    if self.active_job is None:
-                        try:
-                            self.home_recovery.record_closed(
-                                plan, lease.principal_id or "", lease.owner
-                            )
-                        except Exception:
-                            # Failure to retain closure evidence never grants recovery.
-                            pass
-                    self._expire()
+                    self._close_admitted(run)
             except Exception:
                 # A failed durable-state operation must not leave an apparently
                 # idle lane admitting more work. History is not the runtime latch.
@@ -3385,3 +2801,508 @@ class Broker:
                     self._execution_bindings.pop(job_id, None)
                     self._execution_intents.pop(job_id, None)
                 self.queue.task_done()
+
+    @sync_section
+    def admit(self, job_id: str, binding_reads: IOMemo | None) -> AdmittedJob | None:
+        """Admission: every check, then the ``running`` transition, in one loop step.
+
+        Returns None when the job is skipped or was given a terminal reason here.
+        The order of the checks is part of the contract (jobs.md section 5). No
+        ``await`` may appear in this function (tests/test_stage3a_sync_sections.py).
+        """
+        store = self._store()
+        job = self.job(job_id)
+        if job["state"] != "queued":
+            return None
+        queued_intent = self._execution_intents.get(job_id)
+        if queued_intent is None:
+            store.ledger.transition(
+                job_id, "cancelled", "execution_intent_not_available", expect={"queued"}
+            )
+            return None
+        requires_current_principal = queued_intent is not None or self.principal_valid is not None
+        queued_lease = self.session.id if self.session is not None else None
+        self._expire()
+        if self.job(job_id)["state"] != "queued":
+            return None
+        if (
+            self.session is None
+            or self.session.id != queued_lease
+            or self.clock() >= self.session.deadline
+            or self.closing
+        ):
+            store.ledger.transition(job_id, "cancelled", "session_not_available", expect={"queued"})
+            return None
+        plan = store.plan(job["plan_hash"])
+        if plan is None or plan["session_id"] != self.session.id:
+            store.ledger.transition(job_id, "needs_review", "plan_not_available", expect={"queued"})
+            self._cancel_queued("recovery_review_required")
+            return None
+        lease = self.session
+        if plan["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value) and plan.get(
+            "log_delivery"
+        ) != self._log_delivery(lease):
+            if store.ledger.transition(
+                job_id,
+                "cancelled",
+                "principal_or_lease_no_longer_valid",
+                expect={"queued"},
+            ):
+                self.logs.append(Event.CANCELLED)
+            return None
+        if lease.principal_id is not None and self.principal_valid is not None:
+            try:
+                live = self.principal_valid(
+                    lease.principal_id, lease.owner, frozenset({"read", "control"})
+                )
+            except Exception:
+                live = False
+            if live is not True or self.session is not lease or self.clock() >= lease.deadline:
+                # The callback may already have committed a terminal reason;
+                # the first committed reason is kept (DESIGN-REDESIGN 2.1).
+                if store.ledger.transition(
+                    job_id,
+                    "cancelled",
+                    "principal_or_lease_no_longer_valid",
+                    expect={"queued"},
+                ):
+                    self.logs.append(Event.CANCELLED)
+                return None
+        current_valid = self.principal_valid
+        current_binding = self._execution_bindings.get(job_id)
+        flash_binding = self._flash_bindings.get(job_id)
+        if flash_binding is not None and not self._flash_binding_current(
+            flash_binding, plan, binding_reads
+        ):
+            self._cancel_execution_intent(queued_intent, "flash_binding_invalid")
+            return None
+        if "flash_job_id" in plan:
+            try:
+                fresh = prepare_collector(self, plan["flash_job_id"], lease.principal_id or "")
+                if any(plan.get(key) != value for key, value in fresh.items()):
+                    raise ValueError("collector_binding_changed")
+            except Exception:
+                self._cancel_execution_intent(queued_intent, "collector_binding_changed")
+                return None
+        current_authorized = True
+        if lease.principal_id is not None and (
+            requires_current_principal or self.principal_valid is not None
+        ):
+            try:
+                current_authorized = (
+                    self.principal_valid is not None
+                    and self.principal_valid(
+                        lease.principal_id, lease.owner, frozenset({"read", "control"})
+                    )
+                    is True
+                )
+            except Exception:
+                current_authorized = False
+        # Authentication and policy callbacks above can
+        # change the queued row, original intent, lease or clock. Keep
+        # the original intent requirement through every callback, and
+        # check the durable row again before any backend work starts.
+        current_job = store.job(job_id)
+        current_plan = store.plan(job["plan_hash"])
+        if (
+            current_job is None
+            or not current_authorized
+            or queued_intent is None
+            or self.principal_valid is not current_valid
+            or self._runtime_binding() != current_binding
+            or (flash_binding is not None and not live_binding(self, flash_binding, plan))
+            or not collector_live(self, plan, lease.principal_id or "")
+            or not self._state_lock.is_locked
+            or current_job["state"] != "queued"
+            or current_job["plan_hash"] != job["plan_hash"]
+            or current_plan != plan
+            or digest_plan(plan) != job["plan_hash"]
+            or plan.get("broker_epoch") != self.epoch
+            or self.session is not lease
+            or lease.id != queued_lease
+            or not math.isfinite(lease.deadline)
+            or not math.isfinite(self.clock())
+            or self.clock() >= lease.deadline
+            or self.closing
+            or self._execution_uncertain()
+            or self._physical_busy()
+            or self.backend.hardware_connected
+            or not self._device_lock.is_locked
+            or (queued_intent is not None and not self._execution_intent_live(queued_intent))
+        ):
+            self._cancel_execution_intent(queued_intent, "execution_intent_not_available")
+            return None
+        self._execution_intents.pop(job_id, None)
+        if plan["test"] == TestName.BUILD.value:
+            self.firmware_build.begin()
+        elif plan["test"] == TestName.SOURCE.value:
+            self.firmware_source.begin()
+        self.active_job = job_id
+        self._worker_job = job_id
+        capture_principal = self.session.principal_id
+        if not store.ledger.transition(job_id, "running"):
+            # Unreachable after the final synchronous check; never run unrecorded.
+            raise RuntimeError("job_transition_refused")
+        derby_scope = (
+            capture_provenance(self, plan, job_id, capture_principal or "")
+            if plan["test"] == TestName.DERBY.value
+            else None
+        )
+        return AdmittedJob(
+            job_id=job_id,
+            store=store,
+            job=job,
+            plan=plan,
+            lease=lease,
+            queued_intent=queued_intent,
+            current_binding=current_binding,
+            flash_binding=flash_binding,
+            capture_principal=capture_principal,
+            derby_scope=derby_scope,
+        )
+
+    # --- callbacks handed to executors; each reads only the admitted job ---------------
+
+    def _on_stage(self, run: AdmittedJob, name: str) -> None:
+        run.store.set_stage(run.job_id, name)
+        self.logs.append(Event.STAGE, stage=name)
+
+    def _derby_diagnostic(
+        self, run: AdmittedJob, diagnostic: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if diagnostic is None or run.derby_scope is None:
+            return diagnostic
+        scoped = dict(diagnostic)
+        # Freeze observed dispatch/completion evidence. Reading a
+        # historic report never consults a newer firmware target.
+        scoped[PROVENANCE_KEY] = finish_provenance(
+            run.derby_scope,
+            capture_provenance(self, run.plan, run.job_id, run.capture_principal or ""),
+        ).model_dump(mode="json", exclude_none=True)
+        return scoped
+
+    def _running_authorized(self, run: AdmittedJob) -> bool:
+        lease = run.lease
+        valid = self.principal_valid
+        try:
+            authorized = (
+                lease.principal_id is not None
+                and valid is not None
+                and valid(lease.principal_id, lease.owner, frozenset({"read", "control"})) is True
+            )
+            return bool(
+                authorized
+                and self.principal_valid is valid
+                and self._runtime_binding() == run.current_binding
+                and collector_live(self, run.plan, lease.principal_id or "")
+                and self.session is lease
+                and self._execution_lease_binding_live(run.queued_intent, running=True)
+                and self._device_lock.is_locked
+                and self._state_lock.is_locked
+                and self.active_job == run.job_id
+                and run.store.plan(run.job["plan_hash"]) == run.plan
+                and digest_plan(run.plan) == run.job["plan_hash"]
+                and self._running_job_binding_live(run.plan, run.queued_intent)
+            )
+        except Exception:
+            return False
+
+    def _flash_live(self, run: AdmittedJob, committing: bool = False) -> bool:
+        plan, lease, capture_principal = run.plan, run.lease, run.capture_principal
+        current = self.session
+        if (
+            self.closing
+            or current is None
+            or capture_principal is None
+            or current is not lease
+            or current.principal_id != capture_principal
+            or not math.isfinite(self.clock())
+            # A running flash keeps its lease past the deadline;
+            # only revocation stops it (see
+            # _execution_lease_binding_live).
+            or current.revoked
+        ):
+            return False
+        registration = self.settings.flash_devices.get(plan["device_id"])
+        if (
+            registration is None
+            or getattr(registration, "allow_" + plan["flash_operation"]) is not True
+            or plan["registration_sha256"] not in flash_digests(registration)
+        ):
+            return False
+        if not self._device_lock.is_locked or not self._state_lock.is_locked:
+            return False
+        if self.principal_valid is None:
+            return False
+        valid = self.principal_valid
+        binding = self._runtime_binding()
+        authorized = valid(capture_principal, current.owner, frozenset({"read", "control"})) is True
+        return bool(
+            authorized
+            and self.principal_valid is valid
+            and self._runtime_binding() == binding
+            and self._runtime_binding() == run.current_binding
+            and run.flash_binding is not None
+            and live_binding(self, run.flash_binding, plan)
+            and self.session is lease
+            and self._execution_lease_binding_live(run.queued_intent, running=True)
+            and self._device_lock.is_locked
+            and self._state_lock.is_locked
+            and self._running_job_binding_live(plan, run.queued_intent, committing=committing)
+        )
+
+    # --- after the executor: synchronous sections ---------------------------------------
+
+    @sync_section
+    def _accept_result(self, run: AdmittedJob, result: str | BackendResult) -> None:
+        """Validate the executor's result and retain private output, or raise."""
+        job_id, plan, lease = run.job_id, run.plan, run.lease
+        capture_principal = run.capture_principal
+        if plan["test"] == TestName.DERBY.value:
+            from .derby_observation import NO_CAPTURE, DerbyObservation
+
+            if (
+                not isinstance(result, BackendResult)
+                or not isinstance(result.derby_observation, DerbyObservation)
+                or not result.derby_observation.exit_home_observed
+                or result.derby_observation.image_acquired is not (result.image is not None)
+                or (
+                    result.image is None
+                    and (
+                        result.code != NO_CAPTURE
+                        or not result.derby_observation.no_capture_completed()
+                    )
+                )
+            ):
+                raise BrokerError("capture_result_invalid")
+        if plan["test"] == TestName.DERBY_FIXED.value and (
+            not isinstance(result, BackendResult)
+            or result.fixed_trial is None
+            or not result.fixed_trial.valid
+            or result.image is not None
+        ):
+            raise BrokerError("fixed_trial_result_invalid")
+        if plan["test"] == TestName.CAPTURE.value and (
+            not isinstance(result, BackendResult) or result.image is None
+        ):
+            raise BrokerError("capture_result_invalid")
+        if plan["test"] in (TestName.FIRMWARE.value, TestName.RESTART.value) and (
+            not isinstance(result, BackendResult) or result.observation is None
+        ):
+            raise BrokerError("device_log_result_invalid")
+        if isinstance(result, BackendResult) and result.observation is not None:
+            if (
+                plan["test"] not in (TestName.FIRMWARE.value, TestName.RESTART.value)
+                or capture_principal is None
+                or self.backend.active
+                or self.backend.hardware_connected
+                or getattr(self.backend, "ownership_uncertain", False)
+                or self.session is not lease
+                or plan.get("log_delivery") != self._log_delivery(lease)
+                or result.observation.reset_sequence_issued
+                is not (plan["test"] == TestName.RESTART.value)
+                or type(result.observation.capture_gap) is not bool
+                or (plan["test"] != TestName.RESTART.value and result.observation.capture_gap)
+            ):
+                raise BrokerError("device_log_result_invalid")
+            # Shutdown may be waiting on another service while this
+            # worker finishes. Do not republish private output then.
+            if not self.closing:
+                # Only the newest report is retained. No text is written to SQLite.
+                self.device_observations.clear()
+                self.device_observations[job_id] = RetainedDeviceObservation(
+                    capture_principal,
+                    lease.owner,
+                    result.observation,
+                    self.clock() + 300,
+                )
+        if isinstance(result, BackendResult) and result.image is not None:
+            if (
+                plan["test"] not in (TestName.CAPTURE.value, TestName.DERBY.value)
+                or capture_principal is None
+                or self.backend.active
+                or self.backend.hardware_connected
+                or getattr(self.backend, "ownership_uncertain", False)
+                or not 0 < len(result.image.png) <= 200_000
+                or result.image.source
+                != ("synthetic_fixture" if self.backend.name == "mock" else "render_buffer")
+            ):
+                raise BrokerError("capture_result_invalid")
+            # Durable copy first, unconditionally (also while closing);
+            # it is served only after the job commits as succeeded.
+            self.capture_store.save(
+                job_id,
+                capture_principal,
+                self.session.owner if self.session is not None else "",
+                result.image,
+            )
+            if not self.closing:
+                self._prune_captures()
+                while len(self.captures) >= 8:
+                    del self.captures[next(iter(self.captures))]
+                self.captures[job_id] = RetainedCapture(
+                    capture_principal,
+                    result.image,
+                    self.clock() + 300,
+                    self.session.owner if self.session is not None else "",
+                    datetime.now(UTC).isoformat(),
+                    delivery_state="available",
+                )
+
+    @sync_section
+    def finish(
+        self,
+        run: AdmittedJob,
+        result: str | BackendResult,
+        failure: Exception | None,
+    ) -> None:
+        """Terminal handling for an admitted job, in one loop step.
+
+        With ``failure``, map it to its code (the order of the checks is the order
+        of the former ``except`` clauses). Otherwise run the kind's synchronous
+        commit; a commit that raises is reviewed and latches the lane.
+        """
+        if failure is not None:
+            self._finish_failure(run, failure)
+        else:
+            self._finish_success(run, result)
+
+    @sync_section
+    def _finish_failure(self, run: AdmittedJob, failure: Exception) -> None:
+        job_id, plan, store = run.job_id, run.plan, run.store
+        capture_principal = run.capture_principal
+        if isinstance(failure, (FlashFailure, FlashAdmissionError)):
+            self._record_failure(
+                job_id,
+                str(failure),
+                _bounded_read_diagnostic(failure.code, failure.diagnostic)
+                if isinstance(failure, FlashFailure)
+                else None,
+                self._failure_evidence(plan, job_id, str(failure)),
+            )
+        elif isinstance(failure, (BuildPreflightFailure, BuildLocationError)):
+            self._record_review(
+                job_id,
+                failure.code,
+                failure.public_diagnostic()
+                if isinstance(failure, BuildPreflightFailure)
+                else {"code": failure.code},
+            )
+            self.logs.append(Event.REVIEW)
+            self._cancel_queued("recovery_review_required")
+        elif isinstance(failure, SourceError):
+            if plan["test"] == TestName.SOURCE.value:
+                self.firmware_source.record_failure(plan, failure.code)
+                self._record_review(job_id, failure.code, {"code": failure.code})
+            else:
+                self._record_review(job_id, "backend_error_no_retry")
+            self.logs.append(Event.REVIEW)
+            self._cancel_queued("recovery_review_required")
+        elif isinstance(failure, DeviceOperationFailure):
+            from .serial_backend import SerialFailure
+
+            evidence = self._failure_evidence(plan, job_id, failure.code)
+            if (
+                plan["test"] == TestName.DERBY_FIXED.value
+                and isinstance(failure, SerialFailure)
+                and failure.fixed_trial is not None
+                and capture_principal is not None
+            ):
+                outcome = classify_failure(evidence)
+                try:
+                    store.finish_fixed_trial(
+                        job_id,
+                        run.job["plan_hash"],
+                        capture_principal,
+                        outcome,
+                        failure.code,
+                        failure.fixed_trial,
+                        failure.diagnostic,
+                    )
+                except Exception:
+                    self._latch_execution("fixed_trial_persist_failed")
+                    self._record_review(job_id, "fixed_trial_persist_failed")
+                    outcome = "needs_review"
+                if outcome == "failed":
+                    self.logs.append(Event.FAILED)
+                else:
+                    self.logs.append(Event.REVIEW)
+                    self._cancel_queued("recovery_review_required")
+            else:
+                self._record_failure(
+                    job_id,
+                    failure.code,
+                    self._derby_diagnostic(run, failure.diagnostic),
+                    evidence,
+                )
+        elif isinstance(failure, DeviceDisconnected):
+            self._record_failure(
+                job_id,
+                "device_disconnected_no_retry",
+                None,
+                self._failure_evidence(plan, job_id, "device_disconnected_no_retry"),
+            )
+        else:
+            # Never persist the exception string (may contain credentials).
+            if plan["test"] == TestName.SOURCE.value:
+                self.firmware_source.record_failure(plan, "source_fetch_failed")
+                self._record_review(
+                    job_id,
+                    "source_fetch_failed",
+                    {"code": "source_fetch_failed"},
+                )
+            else:
+                self._record_review(job_id, "backend_error_no_retry")
+            self.logs.append(Event.REVIEW)
+            self._cancel_queued("recovery_review_required")
+
+    @sync_section
+    def _finish_success(self, run: AdmittedJob, result: str | BackendResult) -> None:
+        job_id, plan = run.job_id, run.plan
+        try:
+            completed = result.code if isinstance(result, BackendResult) else result
+            terminal_event, fixed_review = kind_for(run.test).commit(self, run, result, completed)
+        except Exception as failure:
+            self._latch_execution("job_final_commit_failed")
+            if plan["test"] == TestName.SOURCE.value:
+                code = failure.code if isinstance(failure, SourceError) else "source_fetch_failed"
+                self.firmware_source.record_failure(plan, code)
+                self._record_review(job_id, code, {"code": code})
+            else:
+                self._record_review(
+                    job_id,
+                    "fixed_trial_persist_failed"
+                    if plan["test"] == TestName.DERBY_FIXED.value
+                    else "firmware_final_commit_failed",
+                )
+            self.logs.append(Event.REVIEW)
+            self._cancel_queued("recovery_review_required")
+        else:
+            self.logs.append(Event.REVIEW if fixed_review else terminal_event)
+            if fixed_review:
+                self._cancel_queued("recovery_review_required")
+
+    @sync_section
+    def _close_admitted(self, run: AdmittedJob) -> None:
+        """Cleanup after every admitted job, on any outcome (also on cancellation)."""
+        self._record_flash_outcome(run.job_id, run.plan)
+        self._close_job_logs(run.job_id, run.job_log, run.device_tap)
+        run.job_log = run.device_tap = None
+        if (
+            not self.backend.active
+            and not self.firmware_source.active
+            and not self.firmware_build.process.active
+            and not self.firmware_build.process.uncertain
+            and not self.firmware_flash.active
+            and not self.firmware_flash.uncertain
+        ):
+            self.active_job = None
+        if self.active_job is None:
+            try:
+                self.home_recovery.record_closed(
+                    run.plan, run.lease.principal_id or "", run.lease.owner
+                )
+            except Exception:
+                # Failure to retain closure evidence never grants recovery.
+                pass
+        self._expire()
