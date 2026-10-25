@@ -10,7 +10,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from pathlib import Path
 
 from ci_process_tree import ProcessTree
@@ -19,6 +19,9 @@ TIMEOUT = 124
 RUNNER_ERROR = 125
 CONSOLE_LINE_BYTES = 2048
 TESTS = Path(__file__).resolve().parents[1] / "tests"
+WEIGHTS = Path(__file__).with_name("full_suite_weights.json")
+# Rough measured Windows throughput, used only for files absent from WEIGHTS.
+FALLBACK_BYTES_PER_SECOND = 3400.0
 
 
 class ConsoleProgress:
@@ -98,20 +101,36 @@ def positive_seconds(raw: str) -> float:
     return value
 
 
-def shard_files(tests: Path, shard: int, shards: int) -> list[Path]:
-    """Deterministically partition test files, balanced by size, into shards.
+def load_weights(path: Path = WEIGHTS) -> dict[str, float]:
+    return {str(name): float(seconds) for name, seconds in json.loads(path.read_text()).items()}
+
+
+def shard_files(
+    tests: Path, shard: int, shards: int, weights: Mapping[str, float] | None = None
+) -> list[Path]:
+    """Deterministically partition test files into duration-balanced shards.
 
     Every ``test_*.py`` file directly under ``tests`` lands in exactly one
-    shard, so new files are included without editing a list. File size is a
-    rough static weight; largest files are placed first onto the lightest
-    shard (ties broken by name, then shard index).
+    shard, so new files are included without editing a list. Weights are the
+    checked-in per-file seconds (max over the Windows legs' junit.xml of a
+    sharded run); a file missing from the table is weighted by its size.
+    Heaviest files are placed first onto the lightest shard (ties broken by
+    name, then shard index).
     """
+    table = load_weights() if weights is None else weights
+
+    def weight(path: Path) -> float:
+        known = table.get(path.name)
+        return known if known is not None else path.stat().st_size / FALLBACK_BYTES_PER_SECOND
+
     files = sorted(tests.glob("test_*.py"), key=lambda path: path.name)
-    loads = [0] * shards
+    loads = [0.0] * shards
     chosen: list[Path] = []
-    for path in sorted(files, key=lambda item: (-item.stat().st_size, item.name)):
+    for path, cost in sorted(
+        ((path, weight(path)) for path in files), key=lambda item: (-item[1], item[0].name)
+    ):
         target = min(range(shards), key=lambda index: (loads[index], index))
-        loads[target] += path.stat().st_size
+        loads[target] += cost
         if target == shard - 1:
             chosen.append(path)
     return sorted(chosen, key=lambda path: path.name)

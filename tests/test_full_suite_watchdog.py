@@ -1,6 +1,7 @@
 """Real disposable subprocesses prove collection/test/shutdown evidence survives."""
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -287,13 +288,15 @@ def test_new_test_file_is_assigned_to_a_shard_automatically(tmp_path):
     for name, size in [("test_a.py", 50), ("test_b.py", 40), ("test_c.py", 30)]:
         (tmp_path / name).write_text("#" * size, encoding="utf-8")
     (tmp_path / "helper.py").write_text("#" * 500, encoding="utf-8")
-    before = [full_suite.shard_files(tmp_path, shard, 2) for shard in (1, 2)]
+    before = [full_suite.shard_files(tmp_path, shard, 2, {}) for shard in (1, 2)]
     assert [[path.name for path in names] for names in before] == [
         ["test_a.py"],
         ["test_b.py", "test_c.py"],
     ]
     (tmp_path / "test_new.py").write_text("#" * 10, encoding="utf-8")
-    after = [path.name for shard in (1, 2) for path in full_suite.shard_files(tmp_path, shard, 2)]
+    after = [
+        path.name for shard in (1, 2) for path in full_suite.shard_files(tmp_path, shard, 2, {})
+    ]
     assert sorted(after) == ["test_a.py", "test_b.py", "test_c.py", "test_new.py"]
 
 
@@ -309,3 +312,16 @@ def test_invalid_shard_is_rejected_before_any_diagnostics(tmp_path, shard_args):
     )
     assert completed.returncode == 2 and "--shard" in completed.stderr
     assert not output.exists()
+
+
+def test_measured_weights_override_size_and_table_is_well_formed(tmp_path):
+    full_suite = load_full_suite()
+    for name, size in [("test_big.py", 500), ("test_slow.py", 10), ("test_tiny.py", 20)]:
+        (tmp_path / name).write_text("#" * size, encoding="utf-8")
+    weights = {"test_slow.py": 1.0}
+    assert [path.name for path in full_suite.shard_files(tmp_path, 1, 2, weights)] == [
+        "test_slow.py"
+    ]
+    table = full_suite.load_weights()
+    assert table and all(name.startswith("test_") and name.endswith(".py") for name in table)
+    assert all(math.isfinite(seconds) and seconds >= 0 for seconds in table.values())

@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   warm-python-toolcache:
-    name: warm CPython toolcache / ${{ matrix.os }} / Python ${{ matrix.python }}
+    name: warm CPython toolcache
     if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
