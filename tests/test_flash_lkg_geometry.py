@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from cardputer_mcp.flash_lifecycle import FlashFailure
-from cardputer_mcp.flash_lkg_geometry import factory_layout
+from cardputer_mcp.flash_lkg_bundle import factory_layout
 
 
 def table(app_subtype=0, flags=0):

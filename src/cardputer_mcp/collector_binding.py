@@ -11,10 +11,10 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import ConfigDict, Field
 
 from .build_artifacts import manifest_digest
-from .diagnostic_contracts import select_contract
 from .diagnostic_legacy import omitted_collector_digest_shape
 from .diagnostic_registry import (
     same_diagnostic_selection,
+    select_contract,
     validate_diagnostic_selection,
     validate_entry_binding,
 )

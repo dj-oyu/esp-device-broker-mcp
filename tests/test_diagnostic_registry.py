@@ -3,7 +3,7 @@
 import unittest
 
 from cardputer_mcp import diagnostic_registry as registry
-from cardputer_mcp.diagnostic_contracts import select_contract
+from cardputer_mcp.diagnostic_registry import select_contract
 
 
 class DiagnosticRegistryTests(unittest.TestCase):
