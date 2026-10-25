@@ -35,12 +35,21 @@ from .config import load_settings
 from .tunnel import (
     TunnelError,
     TunnelSettings,
-    check_ingress_mode,
     check_listener,
     child_environment,
     client_arguments,
     lock_path,
     verify_release,
+)
+from .tunnel_checks import (
+    GUI_CONFIGURATION,
+    GUI_IDENTITY,
+    PLACEHOLDER_TUNNEL_ID,
+    configuration_refusal,
+    discovery_refusal,
+    gui_status_refusal,
+    identity_refusal,
+    read_broker,
 )
 
 CONFIG_MAX_BYTES = 64 * 1024
@@ -80,15 +89,17 @@ def _new_lock() -> OwnershipLock:
     return FileLock(str(lock_path()), thread_local=False)
 
 
+def _discovery_gate(catalog: Any) -> None:
+    if code := discovery_refusal(catalog, SURFACE_TOOLS, "tunnel_broker_discovery_failed"):
+        raise TunnelError(code)
+
+
 async def _broker_probe_async(url: str, bearer: str) -> dict[str, Any]:
+    # GUI policy: every read is made; only discovery is judged inside the session.
     async with asyncio.timeout(BROKER_TIMEOUT_SECONDS):
-        async with connect_mcp(url, bearer.removeprefix("Bearer ")) as client:
-            identity = await call(client, "status", {"view": "identity"})
-            status = await call(client, "status", {"view": "device"})
-            catalog = await client.list_tools()
-            names = {item.name for item in catalog.tools}
-            if not set(SURFACE_TOOLS) <= names:
-                raise TunnelError("tunnel_broker_discovery_failed")
+        identity, status, _ = await read_broker(
+            connect_mcp, call, url, bearer, after_catalog=_discovery_gate
+        )
     return {**identity, "backend": status.get("backend"), "status": status}
 
 
@@ -325,17 +336,13 @@ class TunnelManager:
             raise TunnelError("tunnel_configuration_changed")
 
     def _validate_configuration(self, settings: TunnelSettings, url: str) -> str:
-        if settings.tunnel_id == "tunnel_" + "0" * 32:
+        if settings.tunnel_id == PLACEHOLDER_TUNNEL_ID:
             raise TunnelError("tunnel_id_placeholder")
         broker = load_settings(settings.broker_config)
-        if settings.ingress_enabled != (broker.tunnel.ingress_enabled if broker.tunnel else False):
-            raise TunnelError("tunnel_config_conflict")
-        if url != f"http://127.0.0.1:{broker.port}/mcp":
-            raise TunnelError("tunnel_broker_url_mismatch")
-        if settings.health_port == broker.port:
-            raise TunnelError("health_port_conflicts_with_broker")
-        if broker.backend == "serial" and not self._enable_serial:
-            raise TunnelError("serial_tunnel_requires_explicit_enable_serial")
+        if code := configuration_refusal(
+            settings, broker, GUI_CONFIGURATION, enable_serial=self._enable_serial, url=url
+        ):
+            raise TunnelError(code)
         return broker.backend
 
     def configure(
@@ -403,19 +410,10 @@ class TunnelManager:
         return fallback
 
     def _check_broker(self, result: dict[str, Any], backend: str, ingress_enabled: bool) -> None:
-        if result.get("authenticated") is not True:
-            raise TunnelError("tunnel_broker_auth_failed")
-        if result.get("origin") != "remote_mcp":
-            raise TunnelError("tunnel_broker_origin_rejected")
-        scopes = result.get("scopes")
-        if not isinstance(scopes, list) or "read" not in scopes:
-            raise TunnelError("tunnel_broker_scope_rejected")
-        if result.get("backend") != backend:
-            raise TunnelError("tunnel_broker_backend_mismatch")
-        check_ingress_mode(result, ingress_enabled)
-        status = result.get("status")
-        if not isinstance(status, dict) or status.get("ok") is not True:
-            raise TunnelError("tunnel_broker_status_invalid")
+        if code := identity_refusal(
+            result, GUI_IDENTITY, ingress_enabled=ingress_enabled, backend=backend
+        ) or gui_status_refusal(result.get("status")):
+            raise TunnelError(code)
         # No idle, owner, job, hardware, queue, lease, or session gate. Restarting
         # the transport must not replay/cancel/pause any device work.
 
