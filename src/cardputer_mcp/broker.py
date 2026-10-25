@@ -53,6 +53,7 @@ from .lease_manager import Session as Session  # re-exported: callers import it 
 from .logs import Event, LogBook
 from .models import (
     FLASH_TESTS,
+    MODULE_LOG_TESTS,
     AcquireRequest,
     CancelDeviceRequest,
     CancelRequest,
@@ -87,10 +88,7 @@ USB_PRESENCE_MEANING = (
 )
 
 # Device jobs whose serial bytes the backend tees into the durable job log.
-_NON_DEVICE_LOG_TESTS = frozenset(
-    {TestName.APP_SESSION.value, TestName.SOURCE.value, TestName.BUILD.value}
-    | {test.value for test in FLASH_TESTS}
-)
+_NON_DEVICE_LOG_TESTS = frozenset(test.value for test in MODULE_LOG_TESTS)
 _TERMINAL_LOG_STATES = frozenset({"succeeded", "failed", "needs_review", "cancelled"})
 
 

@@ -16,6 +16,7 @@ from .gui_job_status import LABELS, configure_job_status_tags
 from .gui_live_presentation import (
     LogRequestState,
     LogView,
+    log_message,
     logs_applicable,
     read_log_result,
     replace_text,
@@ -872,7 +873,7 @@ class LiveWindow:
         if card is not None and not logs_applicable(card.test):
             self.logs = LogView("not_applicable")
             self.log_requests = self.log_requests.settled()
-        message = self.logs.message
+        message = log_message(self.logs, card.state if card else None)
         if self.log_requests.pending:
             message = "Reading permitted output..."
         if self.logs.gap:

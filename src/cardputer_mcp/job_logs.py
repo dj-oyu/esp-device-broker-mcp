@@ -363,13 +363,37 @@ class JobLogStore:
         return hashlib.sha256(b"durable_job_log:" + job_id.encode()).hexdigest()[:32]
 
     def build_read(
-        self, job_id: str, principal_id: str, stream: str, request: Any
+        self,
+        job_id: str,
+        principal_id: str,
+        stream: str,
+        request: Any,
+        *,
+        allow_empty: bool = False,
     ) -> dict[str, Any] | None:
-        """Serve a build/source/flash stream with the RAM reader's cursor/filter semantics."""
+        """Serve a build/source/flash stream with the RAM reader's cursor/filter semantics.
+
+        ``allow_empty`` serves the owner's existing log with no entries of this
+        stream as an empty page (a device job that received no bytes).
+        """
         loaded = self.read(job_id, principal_id, stream)
-        if loaded is None or not loaded["entries"]:
+        if loaded is None or not (loaded["entries"] or allow_empty):
             return None
         epoch = self.epoch(job_id)
+        if not loaded["entries"]:
+            cursor = request.cursor
+            if cursor is not None and cursor.epoch == epoch and cursor.sequence > 0:
+                raise ValueError("cursor_ahead")
+            return dict(
+                entries=[],
+                expired=False,
+                gap=cursor is not None and cursor.epoch != epoch,
+                oldest_sequence=1,
+                next_cursor=dict(epoch=epoch, sequence=0),
+                has_more=False,
+                source="durable_job_log",
+                size_limit_reached=loaded["truncated"],
+            )
         items: list[dict[str, Any]] = [
             dict(
                 sequence=int(entry.get("seq", 0)),

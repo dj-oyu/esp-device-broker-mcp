@@ -14,12 +14,15 @@ from cardputer_mcp.gui_live import LiveWindow
 from cardputer_mcp.gui_live_presentation import (
     LogRequestState,
     LogView,
+    log_message,
+    logs_applicable,
     read_log_result,
 )
 from cardputer_mcp.gui_live_preview import PreviewState
 from cardputer_mcp.gui_live_state import begin, disconnect, select
 from cardputer_mcp.gui_live_transport import TransportEvent
 from cardputer_mcp.gui_timeline import CANCEL_UNCERTAIN
+from cardputer_mcp.models import TestName as Action
 
 
 def response(lines, *, epoch="a" * 32, gap=False, expired=False, sequence=None):
@@ -383,3 +386,65 @@ def test_raised_diagnostic_client_error_traverses_real_worker_and_drain_without_
     window.connection_panels.show_result.assert_not_called()
     assert "private synthetic" not in repr(window.action_status.mock_calls)
     assert not window.action_pending
+
+
+def test_every_request_type_the_broker_logs_is_read_and_unknown_types_are_not():
+    # Device jobs (observe, hello, restart, diagnostics, capture, ...) have a
+    # durable device log; module jobs (source/build/flash/app) their own log.
+    assert all(logs_applicable(test.value) for test in Action)
+    assert logs_applicable(None)
+    assert not logs_applicable("retired_request_type")
+    assert read_log_result(LogView(), {"ok": False, "error": "unsupported"}).phase == (
+        "not_applicable"
+    )
+
+
+def device_window(test, state="succeeded"):
+    window = live_window()
+    selected = card(
+        "a", test=test, backend="serial", state=state, stage=None, cancel_available=False
+    )
+    window.state = select(ready(snapshot([selected])), "a")
+    window.logs = LogView()
+    return window
+
+
+@pytest.mark.parametrize(
+    "test",
+    [
+        Action.OBSERVE,
+        Action.HELLO,
+        Action.RESTART,
+        Action.DIAGNOSTICS,
+        Action.FIRMWARE,
+        Action.WORKFLOW,
+        Action.CAPTURE,
+        Action.DERBY,
+    ],
+)
+def test_finished_device_job_asks_the_broker_for_its_log(test):
+    window = device_window(test.value)
+    window._read_logs()
+    window.runner.read_logs.assert_called_once_with(window.state.generation, "a", None)
+    assert window.logs.phase != "not_applicable" and window.log_requests.pending
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ("succeeded", "No output was received."),
+        ("failed", "No output was received."),
+        ("running", "No output is retained for this job yet."),
+    ],
+)
+def test_empty_log_of_a_finished_job_says_nothing_was_received(state, expected):
+    empty = read_log_result(LogView(), response([], sequence=0))
+    assert empty.phase == "empty" and log_message(empty, state) == expected
+    assert log_message(LogView("unavailable"), "succeeded") == "Logs unavailable."
+    window = device_window(Action.OBSERVE.value, state)
+    del window._render_logs
+    window.logs = empty
+    window.log_status, window.log_text = Mock(), Mock()
+    with patch("cardputer_mcp.gui_live.replace_text") as rendered:
+        window._render_logs()
+    assert rendered.call_args.args[1] == expected
