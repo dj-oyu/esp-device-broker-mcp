@@ -73,8 +73,8 @@ jobs:
         run: |
           python packaging/release_windows.py --exe dist/cardputer.exe --ref $env:SOURCE_REF --commit $env:SOURCE_SHA
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      # Explicit, logged on-demand scan of exactly what is shipped (exe and ZIP,
-      # archive contents included). No exclusion applies to dist/. A detection
+      # Explicit, logged on-demand scan of exactly what is shipped (exe, ZIP and
+      # the ZIP's extracted entries). No exclusion applies here. A detection
       # (exit 2) or any scanner error fails the job; only a runner image without
       # the Defender service/scanner skips, with a warning.
       - name: Scan shipped artifacts with Microsoft Defender
@@ -96,19 +96,28 @@ jobs:
           Get-ChildItem $dist -File | ForEach-Object {
             Write-Host "$($_.Name) $($_.Length) bytes SHA256 $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
           }
-          & $scanner -Scan -ScanType 3 -File $dist -DisableRemediation
-          $code = $LASTEXITCODE
-          Write-Host "MpCmdRun custom scan of $dist exit code: $code"
-          if ($code -eq 2) {
-            Get-MpThreatDetection | Format-List | Out-String | Write-Host
-            Write-Host '::error::Microsoft Defender reported a threat in the shipped artifacts'
-            exit 2
+          # The runner image disables archive scanning, so also scan the ZIP's
+          # extracted contents instead of relying on that preference.
+          $archive = Get-ChildItem $dist -Filter 'cardputer-v*-windows-x64.zip'
+          if (@($archive).Count -ne 1) { throw 'Expected exactly one distribution ZIP' }
+          $unpacked = Join-Path $env:RUNNER_TEMP 'scan-zip-contents'
+          Expand-Archive -Path $archive.FullName -DestinationPath $unpacked -Force
+          Write-Host "ZIP entries extracted for scanning: $(@(Get-ChildItem $unpacked -Recurse -File).Count)"
+          foreach ($target in @($dist, $unpacked)) {
+            & $scanner -Scan -ScanType 3 -File $target -DisableRemediation
+            $code = $LASTEXITCODE
+            Write-Host "MpCmdRun custom scan of $target exit code: $code"
+            if ($code -eq 2) {
+              Get-MpThreatDetection | Format-List | Out-String | Write-Host
+              Write-Host "::error::Microsoft Defender reported a threat in $target"
+              exit 2
+            }
+            if ($code -ne 0) {
+              Write-Host "::error::Microsoft Defender scan of $target did not complete (exit $code)"
+              exit $code
+            }
           }
-          if ($code -ne 0) {
-            Write-Host "::error::Microsoft Defender scan did not complete (exit $code)"
-            exit $code
-          }
-          Write-Host 'Microsoft Defender: no threats found in shipped artifacts'
+          Write-Host 'Microsoft Defender: no threats found in shipped artifacts or ZIP contents'
       - name: Test extracted executable with authenticated mock HTTP
         run: |
           $archive = Get-ChildItem dist/cardputer-v*-windows-x64.zip

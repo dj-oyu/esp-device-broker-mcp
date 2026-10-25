@@ -5,6 +5,11 @@
 # excluded; the checkout, virtual environment and build outputs stay scanned, and
 # shipped artifacts get an explicit scan in the package workflow.
 #
+# On windows-2022 hosted runners (observed 2026-10) real-time protection was
+# already off, so the exclusion is a guard for images where it is on. The
+# scratch directory under RUNNER_TEMP also moves test temp files off the
+# default C: profile temp onto the runner's work disk.
+#
 # Later steps see TMP/TEMP pointing at the scratch directory (via GITHUB_ENV),
 # so pytest's tmp_path base and tempfile users land inside the exclusion. A
 # missing Defender or a refused exclusion is logged and never fails the job.
