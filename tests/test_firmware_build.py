@@ -652,6 +652,8 @@ class FirmwareVerticalTests(unittest.TestCase):
                     self.assertEqual([], list(root.rglob("broker-manifest.json")))
                     return
                 result = builder._execute(plan, lambda _: None)
+            command = next(args for args in calls if args[-1] == "build")
+            self.assertIn("--no-hints", command)
             self.assertEqual(result, "firmware_build_succeeded_no_flash")
             if policy == "inherit":
                 self.assertEqual(calls[0][1:3], ["-NoProfile", "-File"])

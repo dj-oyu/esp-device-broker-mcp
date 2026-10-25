@@ -43,6 +43,15 @@ included in the distribution. Relative `state_dir` remains relative to process c
 The package includes neither ESP-IDF nor a toolchain, firmware, USB driver or
 native Tunnel client. ESP-IDF remains external and pinned to **6.0.1**; this
 packaging change does not add build/flash capabilities or migrate to 6.1.
+
+Registered Windows firmware builds use IDF's `--no-hints` direct subprocess
+mode. The broker already captures both output streams; avoiding IDF's nested
+asyncio hints collector leaves one owner for output collection and teardown.
+Compiler output, exit codes, cancellation and authorization checks remain active.
+A build-authority callback that cannot answer within its existing five-second
+bound reports `build_authority_check_timeout`, retaining completed subprocess
+exit codes without exposing exception text. An interrupted subprocess has no
+invented exit code. A failed or cancelled build never publishes a firmware receipt.
 Serial actions retain explicit startup opt-in, authentication, owned leases and
 separate immutable-plan execution requests. Product approval flows are retired.
 On upgrade, legacy pending/unstarted jobs are cancelled without replay; uncertain
