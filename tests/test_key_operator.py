@@ -511,11 +511,17 @@ def test_list_adds_remaining_lifetime_and_warns_on_soon_expiring_keys(tmp_path: 
     path = tmp_path / "keys.sqlite3"
     registry = factory(path)
     long = registry.issue("long", Origin.REMOTE, ttl_seconds=30 * 86400)
-    soon = registry.issue("soon", Origin.REMOTE, ttl_seconds=2 * 86400 + 3 * 3600)
+    soon = registry.issue("soon", Origin.REMOTE, ttl_seconds=30 * 86400)
     short = registry.issue("short", Origin.REMOTE, ttl_seconds=60)
-    gone = registry.issue("gone", Origin.REMOTE, ttl_seconds=2 * 86400)
+    gone = registry.issue("gone", Origin.REMOTE, ttl_seconds=30 * 86400)
     registry.revoke(gone.metadata.key_id)
-    factory.now += 120  # "short" has expired; the others are two minutes older
+    factory.now += 28 * 86400 - 3 * 3600  # "soon" has 2d 3h left; "short" expired
+    # Short-lived keys expiring within 3 days never warn.
+    hour = registry.issue("hour", Origin.REMOTE)
+    brief = registry.issue("brief", Origin.REMOTE, ttl_seconds=2 * 86400)
+    long_after = registry.issue("long", Origin.REMOTE, ttl_seconds=30 * 86400)
+    registry.revoke(long.metadata.key_id)
+    factory.now += 120
     warnings = io.StringIO()
     listed = run(
         "list",
@@ -525,9 +531,25 @@ def test_list_adds_remaining_lifetime_and_warns_on_soon_expiring_keys(tmp_path: 
         registry_factory=factory,
         warning_stream=warnings,
     )
-    entries = {entry["label"]: entry for entry in listed["keys"]}  # type: ignore[attr-defined]
+    entries = {
+        entry["key_id"]: entry
+        for entry in listed["keys"]  # type: ignore[attr-defined]
+    }
+    entries = {
+        name: entries[issued.metadata.key_id]
+        for name, issued in {
+            "long": long_after,
+            "soon": soon,
+            "short": short,
+            "gone": gone,
+            "hour": hour,
+            "brief": brief,
+        }.items()
+    }
     assert entries["long"]["remaining"] == "expires in 29d 23h"
     assert entries["soon"]["remaining"] == "expires in 2d 2h"
+    assert entries["hour"]["remaining"] == "expires in 58m"
+    assert entries["brief"]["remaining"] == "expires in 1d 23h"
     assert entries["short"]["remaining"] == "expired"
     assert entries["gone"]["remaining"] == "revoked"
     # Existing fields are unchanged; "remaining" is the only addition.
@@ -542,13 +564,13 @@ def test_list_adds_remaining_lifetime_and_warns_on_soon_expiring_keys(tmp_path: 
         "revoked_at",
         "remaining",
     }
-    assert entries["long"]["expires_at"] == long.metadata.expires_at
+    assert entries["long"]["expires_at"] == long_after.metadata.expires_at
     text = warnings.getvalue()
     assert text == (
         f"Warning: key {soon.metadata.key_id} (soon) expires in 2d 2h. "
         "Rotate it before expiry to keep access to its builds/backups.\n"
     )
-    for issued in (long, soon, short, gone):
+    for issued in (long, soon, short, gone, hour, brief, long_after):
         assert issued.token not in json.dumps(listed) + text
 
 
@@ -557,8 +579,9 @@ def test_list_warning_failure_does_not_fail_listing(tmp_path: Path) -> None:
         def write(self, text: str) -> int:
             raise OSError("synthetic")
 
-    factory = Factory()
+    factory = ClockFactory()
     path = tmp_path / "keys.sqlite3"
-    factory(path).issue("soon", Origin.REMOTE, ttl_seconds=60)
+    factory(path).issue("soon", Origin.REMOTE, ttl_seconds=30 * 86400)
+    factory.now += 28 * 86400  # 2 days left: this key warns
     listed = run("list", path, registry_factory=factory, warning_stream=Broken())
-    assert listed["keys"][0]["remaining"] == "expires in 1m"  # type: ignore[index]
+    assert listed["keys"][0]["remaining"] == "expires in 2d 0h"  # type: ignore[index]

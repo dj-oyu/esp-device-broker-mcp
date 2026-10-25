@@ -159,8 +159,14 @@ def _remaining(key: KeyMetadata, now: float) -> str:
 
 
 def _warn_expiring(keys: list[KeyMetadata], now: float, stream: TextIO) -> None:
+    # Only keys granted more than 3 days: short-lived keys are meant to expire
+    # and would otherwise warn on every listing.
     for key in keys:
-        if key.revoked_at is None and 0 < key.expires_at - now <= _EXPIRY_WARNING_SECONDS:
+        if (
+            key.revoked_at is None
+            and key.expires_at - key.issued_at > _EXPIRY_WARNING_SECONDS
+            and 0 < key.expires_at - now <= _EXPIRY_WARNING_SECONDS
+        ):
             try:
                 stream.write(
                     f"Warning: key {key.key_id} ({key.label}) {_remaining(key, now)}. "

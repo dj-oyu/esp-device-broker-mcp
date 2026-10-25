@@ -66,8 +66,8 @@ never give a local-operator key to a remote connector.
 
 `list` prints metadata only. Each entry keeps its numeric `issued_at`/`expires_at`/
 `revoked_at` and adds a readable `remaining` (`expires in 12d 3h`, `expired` or
-`revoked`). Active keys expiring within 3 days are also named on stderr as a reminder
-to rotate them in time.
+`revoked`). Active keys granted more than 3 days that expire within 3 days are also
+named on stderr as a reminder to rotate them in time; short-lived keys never warn.
 
 Verification takes hidden interactive input; no key argument is accepted. Revoke
 and rotate require an exact local confirmation. Rotate preserves origin/scope/label.
