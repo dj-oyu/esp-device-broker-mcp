@@ -5,10 +5,10 @@ Authorization header, and never included in diagnostics or returned objects.
 """
 
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx2
 
+from .broker_link import operator_broker_port
 from .http_diagnostics import DenialReason, parse_request_context
 
 
@@ -127,25 +127,8 @@ def parse_http_diagnostics(data: dict[str, Any]) -> dict[str, Any]:
 
 def operator_base_url(url: str) -> str:
     """Accept a local broker URL or its MCP URL, never an arbitrary destination."""
-    try:
-        parsed = urlsplit(url)
-        port = parsed.port
-        valid = (
-            parsed.scheme == "http"
-            and parsed.hostname == "127.0.0.1"
-            and port is not None
-            and 1 <= port <= 65535
-            and parsed.username is None
-            and parsed.password is None
-            and not parsed.query
-            and not parsed.fragment
-            and parsed.path in ("", "/", "/mcp")
-            and not any(character.isspace() for character in url)
-        )
-    except ValueError:
-        valid = False
-        port = None
-    if not valid:
+    port = operator_broker_port(url)
+    if port is None:
         raise OperatorClientError("Use a local http://127.0.0.1:PORT broker URL.")
     return f"http://127.0.0.1:{port}"
 

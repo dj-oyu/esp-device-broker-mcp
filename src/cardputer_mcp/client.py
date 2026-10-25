@@ -3,28 +3,19 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
+
+from .broker_link import is_local_mcp_url
 
 # The complete MCP tool surface; every in-repo client discovers exactly these names.
 SURFACE_TOOLS = ("status", "submit", "execute", "flash", "cancel", "session")
 
 
 def validate_url(url: str) -> str:
-    parsed = urlsplit(url)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in ("127.0.0.1", "localhost")
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path != "/mcp"
-        or parsed.port is None
-    ):
+    if not is_local_mcp_url(url):
         raise ValueError("This MVP connects only to a local HTTP /mcp endpoint")
     return url
 

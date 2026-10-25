@@ -27,6 +27,7 @@ import httpx2
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, ConfigDict, Field
 
+from .broker_link import DEFAULT_BROKER_URL, canonical_broker_port
 from .client import SURFACE_TOOLS, call, connect, validate_url
 from .config import Settings, TunnelMetadata, load_settings
 
@@ -379,8 +380,7 @@ def child_environment(source: dict[str, str], api_key: str, bearer: str) -> dict
 def _local_broker_url(url: str) -> str:
     try:
         validate_url(url)
-        match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{3,4})/mcp", url)
-        if match is None or not 1024 <= int(match[1]) <= 65535:
+        if canonical_broker_port(url) is None:
             raise ValueError
     except ValueError:
         raise TunnelError("invalid_local_broker_url") from None
@@ -566,7 +566,7 @@ def main() -> None:
     parser.add_argument("--shell", type=Path)
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--enable-serial", action="store_true")
-    parser.add_argument("--url", default="http://127.0.0.1:8765/mcp")
+    parser.add_argument("--url", default=DEFAULT_BROKER_URL)
     args = parser.parse_args()
     try:
         if args.command == "check":

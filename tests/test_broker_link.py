@@ -7,7 +7,14 @@ consolidating their parsing cannot silently widen or narrow any of them.
 
 import pytest
 
-from cardputer_mcp import client, client_environment, operator_client, stdio_adapter, tunnel
+from cardputer_mcp import (
+    broker_link,
+    client,
+    client_environment,
+    operator_client,
+    stdio_adapter,
+    tunnel,
+)
 
 KEY = "cpk_" + "a" * 32 + "." + "b" * 64
 
@@ -1587,3 +1594,16 @@ def test_matrix_covers_every_case():
 @pytest.mark.parametrize("value", NON_STRINGS)
 def test_non_string_inputs_are_pinned(value):
     assert outcomes(value) == EXPECTED[value]
+
+
+def test_standalone_client_environment_copies_match_broker_link():
+    # client_environment stays loadable without the package, so it keeps copies.
+    assert client_environment._DEFAULT_URL == broker_link.DEFAULT_BROKER_URL
+    assert client_environment._URL.pattern == broker_link.CANONICAL_BROKER_URL.pattern
+    assert "from ." not in open(client_environment.__file__, encoding="utf-8").read()
+
+
+def test_default_broker_url_is_canonical():
+    assert broker_link.canonical_broker_port(broker_link.DEFAULT_BROKER_URL) == 8765
+    assert client.validate_url(broker_link.DEFAULT_BROKER_URL) == broker_link.DEFAULT_BROKER_URL
+    assert tunnel._local_broker_url(broker_link.DEFAULT_BROKER_URL) == "http://127.0.0.1:8765/mcp"

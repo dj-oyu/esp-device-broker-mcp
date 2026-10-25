@@ -35,6 +35,8 @@ class _PosixFileAPI(Protocol):
 posix_file_api = cast(_PosixFileAPI, os)
 
 _MAX_BYTES = 8192
+# Copies of broker_link.DEFAULT_BROKER_URL / CANONICAL_BROKER_URL: this module
+# cannot import the package (see above); tests/test_broker_link.py checks they match.
 _DEFAULT_URL = "http://127.0.0.1:8765/mcp"
 _KEY = re.compile(r"cpk_[a-f0-9]{32}\.[a-f0-9]{64}\Z")
 _URL = re.compile(r"http://127\.0\.0\.1:([1-9][0-9]{3,4})/mcp\Z")
