@@ -133,6 +133,29 @@ class RequestAuth:
             return False
         return False
 
+    def same_owner(self, recorded: str, current: str) -> bool:
+        """Whether `current` may use inputs recorded under `recorded`.
+
+        Identical principals always match. Otherwise only two registry keys
+        linked by an explicit local rotation share an owner; ephemeral
+        principals and freshly issued keys never inherit another principal's
+        inputs. Lineage grants no authority: the caller still authenticates
+        `current` and checks its scope. Failures return False.
+        """
+        if type(recorded) is not str or type(current) is not str:
+            return False
+        if recorded == current:
+            return True
+        if not (recorded.startswith("key:") and current.startswith("key:")):
+            return False
+        registry = self.registry[0]
+        if registry is None:
+            return False
+        try:
+            return registry.same_owner(recorded[4:], current[4:]) is True
+        except (KeyRegistryError, ValueError, OSError):
+            return False
+
 
 def require_principal(
     authenticate: Callable[[str | None], Principal | None],
@@ -470,6 +493,7 @@ def create_server(
     authenticator = RequestAuth(holder, registry_holder)
     resident = broker or Broker(settings, serial_enabled=serial_enabled)
     resident.principal_valid = authenticator.principal_valid
+    resident.principal_lineage = authenticator.same_owner
     runtime_path = settings.state_dir / "runtime-auth.json"
 
     @overload

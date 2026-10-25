@@ -64,6 +64,19 @@ class LiveKeyRegistry:
         except (KeyRegistryError, OSError):
             return None
 
+    def same_owner(self, first: str, second: str) -> bool:
+        """Rotation lineage lookup; a missing/unavailable store returns False."""
+        try:
+            if not self.path.exists() and not self.path.is_symlink():
+                return False
+            registry = self._open()
+            try:
+                return registry.same_owner(first, second)
+            finally:
+                registry.close()
+        except (KeyRegistryError, OSError):
+            return False
+
     def list_keys(self) -> list[KeyMetadata]:
         if not self.path.exists() and not self.path.is_symlink() and not self.closed:
             return []

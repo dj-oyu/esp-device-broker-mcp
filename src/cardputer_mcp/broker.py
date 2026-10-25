@@ -225,6 +225,8 @@ class Broker:
         # The only writer of the device lease and its deadline (jobs.md section 3).
         self.leases = LeaseManager(lambda: self._physical_busy())
         self.principal_valid = principal_valid
+        # Rotation lineage (recorded, current) -> bool; None means exact principals only.
+        self.principal_lineage: Callable[[str, str], bool] | None = None
         self.app_sessions = AppSessions()
         self.work_sessions: dict[str, WorkSession] = {}
         self.device_requests: dict[str, DeviceWait] = {}
@@ -254,6 +256,7 @@ class Broker:
         self.firmware_flash = FirmwareFlash(
             settings, self.backend, self.firmware_build, self._store
         )
+        self.firmware_flash.same_owner = self.same_owner
         self.firmware_build.on_logs_change = self.operator_changes.notify_logs
         for module in (self.firmware_build, self.firmware_source, self.firmware_flash):
             module.open_job_log = self._open_job_log
@@ -286,6 +289,28 @@ class Broker:
         from .home_recovery import HomeRecovery
 
         self.home_recovery = HomeRecovery(self)
+
+    def same_owner(self, recorded: object, current: object) -> bool:
+        """Whether inputs recorded under `recorded` (a build or backup) may feed
+        a new job of `current`.
+
+        Exact equality keeps the previous behavior. Otherwise only the injected
+        rotation lineage can link two different principals; it grants no
+        authority of its own (the current principal is authenticated and its
+        scope/lease checked elsewhere). Synchronous: no await is introduced
+        into admission. Any callback failure fails closed.
+        """
+        if recorded == current:
+            return True
+        if type(recorded) is not str or type(current) is not str or not recorded or not current:
+            return False
+        lineage = self.principal_lineage
+        if lineage is None:
+            return False
+        try:
+            return lineage(recorded, current) is True
+        except Exception:
+            return False
 
     def _store(self) -> Store:
         if self.store is None:

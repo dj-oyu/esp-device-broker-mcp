@@ -54,9 +54,12 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             or digest_plan(build) != job["plan_hash"]
             or build.get("test") != TestName.BUILD.value
             or build.get("project_id") != project_id
-            or build.get("build_principal") != principal
+            or not broker.same_owner(build.get("build_principal"), principal)
         ):
             raise ValueError
+        # From here on the build's recorded principal (equal to the flash principal,
+        # or its rotated predecessor) owns the build artifacts and source receipt.
+        principal = build["build_principal"]
         _, manifest = pure_io(
             "build_manifest",
             broker.firmware_build.resolve_flash_manifest,
