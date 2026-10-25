@@ -206,8 +206,9 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
         if scenario == "line_limit":
             assert observation["truncated"] and observation["omitted_lines"] > 0
         async with connect(service.url, service.keys["reader"].token) as foreign:
-            denied = await call(foreign, "status", {"view": "logs", "stream": "build", **request})
-            assert denied == {"ok": False, "error": "flash_log_not_available"}
+            # Cross-principal reads: the same redacted body the owner gets.
+            other = await call(foreign, "status", {"view": "logs", "stream": "build", **request})
+            assert other == result
         cache = broker.firmware_flash.logs["boot-failed"]
         cache.deadline = 0
         expired = await call(owner, "status", {"view": "logs", "stream": "build", **request})

@@ -155,13 +155,15 @@ credentials.
   staged LKG receipt and whether it was selected, bounded verification fields
   and timings. It is written with a small reserve beyond the 8 MiB per-job cap,
   so it survives a truncated stream. `read_firmware_flash_logs` returns the
-  latest one as `flash_outcome` to the owner, after RAM loss and restart. A
+  latest one as `flash_outcome` to any read-scoped caller (served through the
+  owner's reader, see surface.md), after RAM loss and restart. A
   broker crash mid-flash leaves no `flash_outcome`; the `-- <stage>` lines in
   the `flash` stream still show the phase reached. Flash jobs cancelled while
   still queued never ran and get no record.
 - **Captures.** The worker persists a validated capture before placing it in
   the five-minute RAM cache (also while closing). It is served only for a
-  succeeded `capture_home` / `derby_smoke` job, to the same principal, after
+  succeeded `capture_home` / `derby_smoke` job, to any read-scoped caller
+  (loaded under the recorded principal, see surface.md), after
   the same per-request `principal_valid` check against the recorded origin;
   a quarantined (unconfirmed-close) capture is never saved. The operator GUI
   image preview (`operator_images` / `operator_image`) still lists only the

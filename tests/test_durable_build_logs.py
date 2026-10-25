@@ -185,7 +185,9 @@ async def running(receipt):
         await asyncio.wait_for(task, 5)
 
 
-async def test_actual_mcp_receipt_survives_broker_restart_and_denies_other_principal(receipt):
+async def test_actual_mcp_receipt_survives_broker_restart_and_is_readable_by_another_principal(
+    receipt,
+):
     _, manifest = receipt.publish(owner=OWNER)
     async with running(receipt) as (url, broker, _), connect(url, REMOTE) as owner:
         logs = BuildLogs(OWNER)
@@ -209,11 +211,11 @@ async def test_actual_mcp_receipt_survives_broker_restart_and_denies_other_princ
         assert result["ok"] and result["expired"] and result["gap"]
         assert result["artifact_status"] == "verified" and result["manifest"] == manifest
         assert (result["manifest_export"], result["manifest_export_sha256"]) == expected_export
-        denied = await call(
+        # Cross-principal reads: another read-scoped principal gets the owner's exact body.
+        other = await call(
             stranger, "status", {"view": "logs", "stream": "build", "job_id": "build-0"}
         )
-        assert denied == {"ok": False, "error": "build_log_not_available"}
-        assert "manifest_export" not in denied
+        assert other == result
         assert broker.session is None and broker.backend.calls == 0
         assert list(receipt.store.db.iterdump()) == before
 

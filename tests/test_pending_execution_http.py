@@ -38,7 +38,7 @@ def assert_no_device_work(env):
     assert all(port.opens == 0 and port.writes == [] for port in env.ports)
 
 
-async def test_explicit_mcp_execute_runs_once_and_private_logs_remain_owner_bound(http_restart):
+async def test_explicit_mcp_execute_runs_once_and_logs_are_readable_by_any_reader(http_restart):
     env = http_restart
     request, plan = await prepare(env)
     assert_no_device_work(env)
@@ -58,12 +58,13 @@ async def test_explicit_mcp_execute_runs_once_and_private_logs_remain_owner_boun
         "structuredContent"
     ]
     assert report["ok"] and LOG_LINE in report["logs"]
+    # Cross-principal reads: every read-scoped caller gets the owner's exact report.
     for token in (LOCAL, REMOTE, env.keys["other"].token, env.keys["reader"].token):
         assert (
             await rpc(
                 env, "status", {"view": "logs", "stream": "device", "job_id": JOB}, token=token
             )
-        )["structuredContent"] == {"ok": False, "error": "device_logs_not_available"}
+        )["structuredContent"] == report
 
 
 @pytest.mark.parametrize(

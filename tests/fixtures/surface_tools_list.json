@@ -5,7 +5,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read broker, job, log or session state. view selects what; no side effects.\n\nview=job adds `chain` for your own chained jobs, like git log from that job:\nchain_position, chain_jobs_known, chain_open (the tip still accepts a child).\n",
+    "description": "Read broker, job, log or session state. view selects what; no side effects.\n\nAny read-scoped caller can read any job (job, logs, capture), whoever\nstarted it; owned_by_caller says whether it is yours. Changes stay owner-only.\nview=job adds `chain` for your own chained jobs, like git log from that job:\nchain_position, chain_jobs_known, chain_open (the tip still accepts a child).\nview=jobs lists recent jobs, newest first (cursor from next_cursor).\nview=recovery lists per device the LKG receipts and full backups.\n",
     "inputSchema": {
       "$defs": {
         "StatusRequest": {
@@ -46,7 +46,7 @@
                 }
               ],
               "default": null,
-              "description": "logs: broker/build {epoch,sequence}; app {epoch,control,log}",
+              "description": "logs: broker/build {epoch,sequence}; app {epoch,control,log}; jobs {before}",
               "title": "Cursor"
             },
             "include_source_cache": {
@@ -112,7 +112,7 @@
                 }
               ],
               "default": null,
-              "description": "logs",
+              "description": "logs|jobs",
               "title": "Limit"
             },
             "project_id": {
@@ -186,7 +186,9 @@
             "job",
             "logs",
             "capture",
-            "apps"
+            "apps",
+            "jobs",
+            "recovery"
           ],
           "title": "View",
           "type": "string"

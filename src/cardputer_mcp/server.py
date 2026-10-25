@@ -24,7 +24,7 @@ from mcp.types import (
 from pydantic import TypeAdapter, ValidationError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import cancellation
+from . import cancellation, job_reads
 from .app_models import AppCommandRequest, AppEventsRequest
 from .auth import AuthState
 from .broker import Broker, BrokerError
@@ -950,10 +950,9 @@ def create_server(
                     ):
                         return shared_job(job)
                 return result
+            # Status is readable by any read-scoped principal, whoever started the job.
             if plan is not None and plan.get("operation") == "home_recovery":
-                owner = require(ctx, "read", honor_auth_required=False)
-                if plan["principal_id"] != owner.principal_id:
-                    raise BrokerError("owned_home_recovery_required")
+                require(ctx, "read", honor_auth_required=False)
                 job["recovery_audit"] = [
                     dict(row)
                     for row in resident._store().db.execute(
@@ -963,9 +962,7 @@ def create_server(
                     )
                 ]
             if plan is not None and plan.get("execution_context") == "registered_project":
-                owner = require(ctx, "read", honor_auth_required=False)
-                if plan.get("principal_id") != owner.principal_id:
-                    raise BrokerError("owned_registered_project_job_required")
+                require(ctx, "read", honor_auth_required=False)
             return shared_job(job)
 
         def checked() -> dict[str, Any]:
@@ -976,7 +973,7 @@ def create_server(
 
     @op
     async def read_build_logs(request: BuildLogRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
-        """Read bounded shared build output by job and current authenticated principal.
+        """Read bounded shared build output by job; any read-scoped principal may read it.
 
         Default warning/error plus progress, with diagnostic context; no path input.
         Source log polling can set include_source_cache=false to avoid a separate
@@ -997,14 +994,19 @@ def create_server(
             store = resident._store()
             job = store.job(request.job_id)
             plan = store.plan(job["plan_hash"]) if job is not None else None
+            # Any read-scoped caller reads the output through the job owner's reader,
+            # so the body (and its redaction) is exactly what the owner would get.
+            reader = job_reads.log_stream(resident, plan, request.job_id)[0] if plan else None
+            if not isinstance(reader, str) or not reader:
+                reader = None
             if plan is not None and job is not None and plan.get("test") == TestName.SOURCE.value:
-                if plan.get("source_principal") != owner.principal_id:
+                if reader is None:
                     raise BrokerError("source_log_not_available")
                 source = resident.firmware_source
                 epoch, settings = resident.epoch, resident.settings
                 captured = settings.model_copy(deep=True)
                 identity = settings_identity(captured)
-                result = source.read_logs(request, owner.principal_id, include_cache=False)
+                result = source.read_logs(request, reader, include_cache=False)
                 usage: dict[str, Any] = {"available": False, "reason": "not_requested"}
                 if request.include_source_cache:
                     try:
@@ -1033,17 +1035,17 @@ def create_server(
                     raise BrokerError("source_log_not_available")
                 # The cache read can outlive RAM retention or log eviction. Read
                 # the same cursor again only after the current grant is checked.
-                result = source.read_logs(request, owner.principal_id, include_cache=False)
+                result = source.read_logs(request, reader, include_cache=False)
                 result["source_cache"] = usage
                 return result
             if plan is not None and plan.get("test") in {t.value for t in FLASH_TESTS}:
-                if plan.get("flash_principal") != owner.principal_id:
+                if reader is None:
                     raise BrokerError("flash_log_not_available")
-                return resident.firmware_flash.read_logs(request, owner.principal_id)
+                return resident.firmware_flash.read_logs(request, reader)
             if (
                 plan is None
                 or plan.get("test") != TestName.BUILD.value
-                or plan.get("build_principal") != owner.principal_id
+                or reader is None
                 or job is None
             ):
                 raise BrokerError("build_log_not_available")
@@ -1058,7 +1060,7 @@ def create_server(
                 result = await asyncio.to_thread(
                     builder.read_logs,
                     request,
-                    owner.principal_id,
+                    reader,
                     project_id=project_id,
                     broker_epoch=epoch,
                 )
@@ -1135,40 +1137,43 @@ def create_server(
         """
 
         def events() -> dict[str, Any]:
-            owner = require(ctx, "read", honor_auth_required=False)
-            return resident.read_app_events(request, owner.principal_id)
+            caller = require(ctx, "read", honor_auth_required=False)
+            reader = job_reads.app_event_owner(resident, request.job_id)
+            return resident.read_app_events(request, reader or caller.principal_id)
 
         return _result(events)
 
     @op
     async def read_device_logs(request: JobRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
-        """Read your completed firmware_observe or restart_and_observe report from RAM.
+        """Read a completed firmware_observe or restart_and_observe report.
 
-        Requires the same authenticated principal and current read permission. The
-        explicit read returns bounded redacted device logs to that principal.
+        Any principal with current read permission may read any job's report; it is
+        the same bounded redacted body the job's owner gets.
         Known credential patterns are removed, not all secrets.
         Firmware identity is unverified observed boot text; ELF prefixes are not
         firmware binary hashes. Never opens USB, resets, retries or recaptures.
         """
 
         def get_report() -> dict[str, Any]:
-            owner = require(ctx, "read", honor_auth_required=False)
-            return resident.read_device_logs(request.job_id, owner.principal_id)
+            caller = require(ctx, "read", honor_auth_required=False)
+            reader = job_reads.device_log_owner(resident, request.job_id)
+            return resident.read_device_logs(request.job_id, reader or caller.principal_id)
 
         return _result(get_report)
 
     @op
     async def read_capture(request: JobRequest, ctx: Context[Any, Any]) -> CallToolResult:
-        """Read your completed capture from five-minute memory cache; never opens USB.
+        """Read a completed capture from five-minute memory cache; never opens USB.
 
-        Requires the same principal that requested capture_home or derby_smoke, current
-        read permission. No separate image-delivery approval is required.
+        Any principal with current read permission may read it, whoever requested
+        capture_home or derby_smoke. No separate image-delivery approval is required.
         Mock images say TEST / NOT DEVICE. Render-buffer images do not
         prove snapshot coherence or LCD transfer acknowledgement. No automatic recapture.
         """
         try:
-            owner = require(ctx, "read", honor_auth_required=False)
-            captured = resident.read_capture(request.job_id, owner.principal_id)
+            caller = require(ctx, "read", honor_auth_required=False)
+            reader = job_reads.capture_owner(resident, request.job_id)
+            captured = resident.read_capture(request.job_id, reader or caller.principal_id)
         except BrokerError as exc:
             body = {"ok": False, "error": public_broker_reason(exc)}
             return CallToolResult(

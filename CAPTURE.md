@@ -85,12 +85,15 @@ shows only the RAM cache. The job's fixed success/failure result remains in
 ordinary durable history.
 
 Every MCP image read requires a currently valid authenticated key with read scope,
-the same principal that owned the capture job and a succeeded closed capture job.
-Revoked or expired keys cannot
-retrieve images. A replacement key is a new principal and does not inherit old
-images. Two tools deliberately sharing one key can read one another's captures;
-distinct work sessions are not distinct security identities. The trusted local operator can preview retained images through the local-only
-operator API. The MCP image-read tool remains bound to the original principal.
+and a succeeded closed capture job. Since 2026-10-25 (owner decision) the reader
+does not have to be the principal that requested the capture: any read-scoped
+principal gets the same image and metadata the owner would get, from the RAM
+cache or the saved copy, so a local agent can inspect a capture started by the
+cloud client. The capture's own principal must also still be valid with read
+scope; revoking it ends delivery to everyone. Revoked or expired keys cannot
+retrieve images. Distinct work sessions are not distinct security identities.
+The trusted local operator can preview retained images through the local-only
+operator API.
 
 After the client retrieves a PNG, this broker cannot control copies retained by
 the client, chat service, or user. Explicitly request capture only when the intended output

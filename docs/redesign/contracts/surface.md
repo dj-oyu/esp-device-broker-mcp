@@ -190,7 +190,7 @@ Success is `{"ok":true, **call()}`. Pinned by
 **Input** `StatusRequest` (StrictModel → `extra="forbid", frozen=True`, `models.py:13-14`; surface.py:147-162)
 | field | type | notes |
 |---|---|---|
-| view | enum View {identity, targets, source, device, session, job, logs, capture, apps} | required |
+| view | enum View {identity, targets, source, device, session, job, logs, capture, apps, jobs, recovery} | required |
 | project_id | Identifier `^[a-zA-Z0-9_-]{1,64}$` \| null | |
 | job_id | Identifier \| null | |
 | resume_token | Capability `^[a-f0-9]{64}$` \| null | |
@@ -216,6 +216,34 @@ Success is `{"ok":true, **call()}`. Pinned by
 | logs/app | stream, job_id | cursor, limit | `read_app_events` :1127-1138 → broker.py:2209 | read, always |
 | capture | job_id | – | `read_capture` :1157-1187 (returned raw, `cast(CallToolResult)`) | read, always |
 | apps | – | – | `list_apps` :1097-1108 | read, always |
+| jobs | – | cursor `{before}`, limit (default 20) | `job_reads.list_jobs` (surface) | read if auth_required |
+| recovery | – | – | `job_reads.recovery` (surface) | read if auth_required |
+
+**Cross-principal reads (2026-10-25, owner decision; supersedes the owner-only read rows above).**
+Any authenticated caller with the read scope reads any job's status (`view=job`, including
+waiting jobs, home recovery and registered-project jobs), logs (`stream=build|device|app`) and
+capture, whoever started it. Each reader resolves the job's owner (`job_reads`) and calls the
+unchanged owner-scoped reader with that owner's principal, so the body and its redaction are
+exactly what the owner gets. This covers the durable fallbacks too: the saved capture copy
+(owner from its `capture.json`, else the job owner), durable app-session events (RAM run, else
+the queue record, else the job-log header) and `flash_outcome` / `flash_summary` on flash log
+reads (plan `flash_principal`). The owner identity is never returned; `view=job` and `view=jobs`
+carry `owned_by_caller: bool`. Still owner-only: `chain` on view=job, derby private extras
+(`derby_diagnostics`/`fixed_trial`), and every mutation (cancel, execute/flash, session, app
+input, home recovery). `owned_home_recovery_required` / `owned_registered_project_job_required`
+are no longer raised by `job_status`. The local operator's `_retained_job_logs` uses the same
+`job_reads.log_stream` lookup.
+
+- view=jobs: `{"ok":true,"jobs":[{job_id,kind,state,result,created,finished,device_id,
+  owned_by_caller}],"has_more","next_cursor":{"before":N}|null}`, newest first across all
+  principals (stored jobs only; waiting deferred jobs are not listed). `kind` is the surface
+  `Kind` value (or `home_recovery`/`other`). A bad cursor is `argument_invalid` field `cursor`.
+- view=recovery: `{"ok":true,"devices":[{device_id,registered,current_lkg,lkg_history:[{receipt,
+  kind,current,job_id,baseline_job_id,recorded,recorded_by_caller,firmware_sha256,elf_sha256,
+  backup_sha256}],full_backups:[{job_id,created,finished,sha256,flash_bytes,receipt_available,
+  owned_by_caller}]}]}`. History: newest 20 per device; backups: newest 20 succeeded
+  `firmware_backup` jobs. Backup `sha256` comes from the retained receipt metadata only (never
+  the bytes or a path), null when unreadable.
 
 **Output**
 - Always a `CallToolResult` built by `_wrap` (isError false). The exception is view=capture.
