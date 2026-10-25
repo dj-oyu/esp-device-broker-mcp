@@ -18,6 +18,7 @@ from ci_process_tree import ProcessTree
 TIMEOUT = 124
 RUNNER_ERROR = 125
 CONSOLE_LINE_BYTES = 2048
+TESTS = Path(__file__).resolve().parents[1] / "tests"
 
 
 class ConsoleProgress:
@@ -95,6 +96,25 @@ def positive_seconds(raw: str) -> float:
     if not math.isfinite(value) or value <= 0:
         raise argparse.ArgumentTypeError("a positive finite duration is required")
     return value
+
+
+def shard_files(tests: Path, shard: int, shards: int) -> list[Path]:
+    """Deterministically partition test files, balanced by size, into shards.
+
+    Every ``test_*.py`` file directly under ``tests`` lands in exactly one
+    shard, so new files are included without editing a list. File size is a
+    rough static weight; largest files are placed first onto the lightest
+    shard (ties broken by name, then shard index).
+    """
+    files = sorted(tests.glob("test_*.py"), key=lambda path: path.name)
+    loads = [0] * shards
+    chosen: list[Path] = []
+    for path in sorted(files, key=lambda item: (-item.stat().st_size, item.name)):
+        target = min(range(shards), key=lambda index: (loads[index], index))
+        loads[target] += path.stat().st_size
+        if target == shard - 1:
+            chosen.append(path)
+    return sorted(chosen, key=lambda path: path.name)
 
 
 class PhaseWatchdog:
@@ -264,11 +284,21 @@ def main() -> int:
     parser.add_argument("--deadline", type=positive_seconds, default=720.0)
     parser.add_argument("--phase-timeout", type=positive_seconds, default=120.0)
     parser.add_argument("--test-timeout", type=positive_seconds, default=90.0)
+    parser.add_argument("--shard", type=int, default=1, help="1-based shard index")
+    parser.add_argument("--shards", type=int, default=1, help="total shard count")
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     args.output = args.output.resolve()
     if args.pytest_args[:1] == ["--"]:
         args.pytest_args.pop(0)
+    if not 1 <= args.shard <= args.shards:
+        parser.error("--shard must be between 1 and --shards")
+    if not args.child and args.shards > 1:
+        selected = shard_files(TESTS, args.shard, args.shards)
+        if not selected:
+            # An empty selection would make pytest fall back to every testpath.
+            parser.error("the selected shard contains no test files")
+        args.pytest_args = [*map(str, selected), *args.pytest_args]
     return run_pytest(args) if args.child else supervise(args)
 
 

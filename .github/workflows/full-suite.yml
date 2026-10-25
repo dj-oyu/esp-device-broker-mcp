@@ -13,19 +13,61 @@ concurrency:
 
 jobs:
   test:
-    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    name: ${{ matrix.os }} / Python ${{ matrix.python }} / shard ${{ matrix.shard }} of ${{ matrix.shards }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
+        # Windows legs are split into file shards (balanced by file size; see
+        # packaging/full_suite.py shard_files). Lint/format/typing run once per
+        # OS/Python on shard 1.
         include:
           - os: windows-2022
             python: '3.13.16'
+            shard: 1
+            shards: 4
+            deadline: 900
+          - os: windows-2022
+            python: '3.13.16'
+            shard: 2
+            shards: 4
+            deadline: 900
+          - os: windows-2022
+            python: '3.13.16'
+            shard: 3
+            shards: 4
+            deadline: 900
+          - os: windows-2022
+            python: '3.13.16'
+            shard: 4
+            shards: 4
+            deadline: 900
           - os: windows-2022
             python: '3.14.3'
+            shard: 1
+            shards: 4
+            deadline: 900
+          - os: windows-2022
+            python: '3.14.3'
+            shard: 2
+            shards: 4
+            deadline: 900
+          - os: windows-2022
+            python: '3.14.3'
+            shard: 3
+            shards: 4
+            deadline: 900
+          - os: windows-2022
+            python: '3.14.3'
+            shard: 4
+            shards: 4
+            deadline: 900
           - os: ubuntu-24.04
             python: '3.13.16'
+            shard: 1
+            shards: 1
+            deadline: 1200
     defaults:
       run:
         shell: bash
@@ -56,23 +98,26 @@ jobs:
           gcc --version
           cmake --version
       - name: Lint
-        if: always() && steps.environment.outcome == 'success'
+        if: always() && steps.environment.outcome == 'success' && matrix.shard == 1
         run: uv run --frozen ruff check src tests packaging/full_suite.py packaging/ci_process_tree.py
       - name: Format
-        if: always() && steps.environment.outcome == 'success'
+        if: always() && steps.environment.outcome == 'success' && matrix.shard == 1
         run: uv run --frozen ruff format --diff src tests packaging/full_suite.py packaging/ci_process_tree.py
       - name: Native strict typing
-        if: always() && steps.environment.outcome == 'success'
+        if: always() && steps.environment.outcome == 'success' && matrix.shard == 1
         run: uv run --frozen mypy src packaging/full_suite.py packaging/ci_process_tree.py
       - name: Complete tests with synthetic devices and credentials
         if: always() && steps.environment.outcome == 'success'
         id: tests
-        run: uv run --frozen python packaging/full_suite.py --deadline 1200
+        run: >-
+          uv run --frozen python packaging/full_suite.py
+          --deadline ${{ matrix.deadline }}
+          --shard ${{ matrix.shard }} --shards ${{ matrix.shards }}
       - name: Preserve synthetic-suite diagnostics
         if: always() && steps.tests.outcome != 'skipped'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: synthetic-suite-${{ matrix.os }}-py${{ matrix.python }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: synthetic-suite-${{ matrix.os }}-py${{ matrix.python }}-shard${{ matrix.shard }}of${{ matrix.shards }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             test-diagnostics/pytest.log
             test-diagnostics/stacks.log
