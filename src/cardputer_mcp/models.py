@@ -38,6 +38,10 @@ class TestName(StrEnum):
 
 
 FLASH_TESTS = frozenset({TestName.BACKUP, TestName.FLASH, TestName.RESTORE})
+# Jobs whose own module writes their durable output log (not the serial tee).
+MODULE_LOG_TESTS = frozenset({TestName.SOURCE, TestName.BUILD, TestName.APP_SESSION, *FLASH_TESTS})
+# Every other job is a device job: the broker records the serial bytes it receives.
+DEVICE_LOG_TESTS = frozenset(set(TestName) - MODULE_LOG_TESTS)
 # Device jobs that need no live client capability and may be requested ahead of time.
 DEFERRED_DEVICE_TESTS = frozenset(
     set(TestName) - {TestName.SOURCE, TestName.BUILD, TestName.BACKUP, TestName.APP_SESSION}

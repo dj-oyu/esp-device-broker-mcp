@@ -56,6 +56,18 @@ def test_stream_readable_after_ram_loss_with_cursor_semantics(tmp_path, stream, 
     assert store.build_read("job-1", "bob", stream, BuildLogRequest(job_id="job-1")) is None
     other = "device" if stream != "device" else "build"
     assert store.build_read("job-1", "alice", other, BuildLogRequest(job_id="job-1")) is None
+    empty = store.build_read(
+        "job-1", "alice", other, BuildLogRequest(job_id="job-1"), allow_empty=True
+    )
+    assert empty["entries"] == [] and empty["next_cursor"]["sequence"] == 0
+    assert (
+        store.build_read("job-1", "bob", other, BuildLogRequest(job_id="job-1"), allow_empty=True)
+        is None
+    )
+    assert (
+        store.build_read("job-2", "alice", other, BuildLogRequest(job_id="job-2"), allow_empty=True)
+        is None
+    )
 
 
 @pytest.fixture

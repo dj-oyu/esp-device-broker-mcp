@@ -194,7 +194,9 @@ class OperatorAPI:
                 result = None
         if (result is None or result["expired"]) and isinstance(owner, str):
             try:
-                durable = self.broker.job_logs.build_read(request.job_id, owner, stream, bounded)
+                durable = self.broker.job_logs.build_read(
+                    request.job_id, owner, stream, bounded, allow_empty=stream == "device"
+                )
             except ValueError:
                 raise BrokerError("unavailable") from None
             if durable is not None:

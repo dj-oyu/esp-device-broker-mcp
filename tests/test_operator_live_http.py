@@ -552,3 +552,27 @@ async def test_local_operator_reads_durable_logs_of_any_principal(operator, test
     )
     # The operator API stays local-only; remote clients keep owner-only MCP reads.
     assert (await answer(api, payload, "job-logs"))[1]["error"] == "local_operator_required"
+
+
+@pytest.mark.parametrize("test", ["passive_observe", "hello", "restart_and_observe"])
+async def test_device_job_that_received_no_bytes_reads_as_an_empty_page(operator, test):
+    api, broker, current = operator
+    plan = {"test": test}
+    digest = digest_plan(plan)
+    broker._store().put_plan(digest, plan)
+    broker._store().add_job("quiet", digest)
+    payload = {"job_id": "quiet", "levels": ["info"], "context": 0, "limit": 100}
+    # No device log was ever opened (e.g. a backend without the serial tee).
+    assert (await answer(api, payload, "job-logs"))[1]["error"] == "unavailable"
+    broker.job_logs.begin("quiet", "remote-owner", test, keep=set()).close()
+    current[0] = actor("local-operator")
+    _, result = await answer(api, payload, "job-logs")
+    assert result["status"] == "available" and result["source"] == "durable_job_log"
+    assert result["entries"] == [] and result["has_more"] is False
+    assert result["next_cursor"]["sequence"] == 0
+    _, again = await answer(api, {**payload, "cursor": result["next_cursor"]}, "job-logs")
+    assert again["entries"] == [] and again["gap"] is False
+    ahead = {**result["next_cursor"], "sequence": 3}
+    assert (await answer(api, {**payload, "cursor": ahead}, "job-logs"))[1]["error"] == (
+        "unavailable"
+    )

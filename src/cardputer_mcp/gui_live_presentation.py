@@ -4,16 +4,25 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from .models import FLASH_TESTS, TestName
+from .models import DEVICE_LOG_TESTS, MODULE_LOG_TESTS
 
 MAX_LOG_LINES = 256
 MAX_LOG_BYTES = 128 * 1024
-LOG_TESTS = frozenset({TestName.SOURCE, TestName.BUILD, TestName.APP_SESSION, *FLASH_TESTS})
+# The broker's own split: module-written logs plus the durable device job log.
+LOG_TESTS = MODULE_LOG_TESTS | DEVICE_LOG_TESTS
+FINISHED_STATES = frozenset({"succeeded", "failed", "cancelled", "needs_review"})
 
 
 def logs_applicable(test: str | None) -> bool:
     """Unknown historical request types keep the existing guarded read path."""
     return test is None or test in LOG_TESTS
+
+
+def log_message(view: "LogView", job_state: str | None) -> str:
+    """A finished job's empty log means nothing arrived, not that output is pending."""
+    if view.phase == "empty" and job_state in FINISHED_STATES:
+        return "No output was received."
+    return view.message
 
 
 def sync_rows(tree: Any, rows: list[tuple[str, str, tuple[str, ...]]]) -> None:
