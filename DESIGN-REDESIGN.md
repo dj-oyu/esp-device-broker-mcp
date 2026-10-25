@@ -206,9 +206,9 @@
   - GUI の表示エラーでの私的パス
   - stdio の実通信での annotations の透過
 - 永続化:
-  - `timeline_order` の後付けの補完
+  - ~~`timeline_order` の後付けの補完~~(段階 4e で `tests/test_store_timeline_order.py` を足した、§5.8)
   - `build_location` のないマニフェスト
-  - LKG の `compat` の欠落/null
+  - ~~LKG の `compat` の欠落/null~~(段階 4b で `tests/test_flash_lkg_models.py` を足した、§5.8)
   - バックアップの付帯ファイル
   - 計画の保存文字列とハッシュバイトの差
 - PR #84 のテスト削減で消えたガード:
@@ -261,7 +261,7 @@
 | 3a | `_work` の分割(`admit` / 登録表 / `finish`)と `JobKind`。**実装済み**(§5.5。実機の確認済み) | 不変 | **要**(書き込みなしの hello→observe) |
 | 3b | `ExecutionAuthority`。**実装済み**(§5.6。実機の確認済み) | 不変 | **要**(フラッシュは明示の承認後) |
 | 3c | 旧 `@op` 層を 6 ツールに畳む(**済**、§5.4) | 不変(tools/list も同じ) | 不要 |
-| 4 | 周辺(`broker_link.py`、永続 JSON を検証だけの厳格モデルへ、小モジュールの統合)。Tunnel の監督の統一は、最後。GUI のライブ更新を SSE にした(§5.7) | 不変(GUI の見るデータも同じ) | Tunnel と GUI の確認 |
+| 4 | 周辺(`broker_link.py`、永続 JSON を検証だけの厳格モデルへ、小モジュールの統合、Tunnel の確認の共有)と、GUI のライブ更新の SSE。**実装済み**(§5.7、§5.8。Tunnel と GUI は利用者が確認)。Tunnel のプロセスの監督と起動待ちのループは、統一しないと決めた(§5.8) | 不変(GUI の見るデータも同じ) | Tunnel と GUI の確認 |
 | 修正 | §2.1 と §2.2 の穴を 1 つずつ別の PR で | **変わる** | 内容による |
 
 `tools/list` が変わらない限り、ChatGPT 側の Refresh は要らない。段階ごとに、`tools/list` の名前・schema・annotations を、
@@ -281,6 +281,8 @@ GUI のライブ更新は SSE(Server-Sent Events)にする(2026-10-26、利用�
 変化から表示までが周期の分だけ遅れる。WebSocket は、`websockets` / `wsproto` を依存に足すことになり
 (サーバーとクライアントの両方、PyInstaller と NOTICE も)、しかも GUI のライブ更新は片方向で、双方向は要らない。
 SSE は、今の依存(Starlette / uvicorn と httpx2)だけで書ける。中身は §5.7。
+
+Tunnel のプロセスの監督(CLI の `Popen` と GUI の Job Object)と起動待ちのループは、統一しない(2026-10-26、利用者の決定)。理由: CLI の終わり方の意味が変わる、実際の Tunnel での確かめが要る、動いているクラウドの経路を壊す危険がある。CLI の経路で問題が出たとき、またはリリース後の修正として、見直す。中身は §5.8。
 
 ### 5.1 その後の決定と変更(2026-10-25)
 
@@ -478,7 +480,124 @@ SSE は、今の依存(Starlette / uvicorn と httpx2)だけで書ける。中�
   こと(フックなしでは止まらないことも確かめた))、`test_gui_live_transport.py`(パーサー、順序、拒否と切断の診断、
   切断の後の再接続)、`test_operator_refusals.py`、`test_gui_preview_http.py` など。`tools/list` は変わらない
   (`tests/test_surface_snapshot.py` はそのまま通る)。
-- 実機の GUI での確認は未実施。
+- 実機の GUI での確認: 段階 4 の後に、利用者が実機の GUI で、ライブ更新が SSE で動くことを確かめた(2026-10-26)。スリープからの復帰と長時間の接続を確かめたという記録はない(§6)。
+
+### 5.8 段階 4 の結果(2026-10-26)
+
+段階 4 の PR は、すべて main にマージ済み(#119〜#125)。#124 だけは作り直しでなく、振る舞いを変える修正。
+ほかは振る舞いを変えない。どの PR でも `tools/list`(`tests/fixtures/surface_tools_list.json`)は変わらないので、
+ChatGPT 側の Refresh は要らない。各 PR は、先に今の振る舞いを固定するテストを足し、そのテストを変えずに
+移した。
+
+**#119 GUI のライブ更新を SSE に。** 中身は §5.7。実機の GUI は利用者が確認した。
+
+**#121 段階 4a: `broker_link.py`。**
+
+- `broker_link.py` は、それまでなかった新しいモジュール。既定の URL(`DEFAULT_BROKER_URL`)、
+  正規の形の正規表現(`CANONICAL_BROKER_URL`)、`urlsplit` の共通の芯(`split_loopback_http`)を持つ。
+- ループバックのブローカー URL の検査は 5 つあった。`client.validate_url`、`tunnel._local_broker_url`、
+  `operator_client.operator_base_url`、`stdio_adapter` の URL の確認、`client_environment` の正規表現。
+  今は 1 つの芯と、呼び出し側ごとの規則になった。名前、引数、受け付ける集合、エラーは変えていない。
+- 意図して残した差: 受け付ける集合は、呼び出し側ごとに違う(ホスト、ポート、パス、userinfo、拒否のときの
+  公開エラー)。ポートの読み取り(`SplitResult.port` の `ValueError`)が他の確認の前か後かも、呼び出し側ごとに違う。
+- `client_environment` は、標準ライブラリだけで単独で読み込めるままにした(リリースのテストがファイルのパスで
+  読み込む)。そのため正規表現などの写しを持ち、`broker_link` と同じであることをテストで確かめる。
+- 確かめたこと: `tests/test_broker_link.py` が、203 の URL(ホスト、ポート、パス、userinfo、クエリと
+  フラグメント、空白、スキーム)と、3 つの文字列でない入力について、5 つの検査の結果を固定する。旧コードで作った値の
+  まま通る。`tunnel` と `cli` の `--url` の既定値も、この定数を使う(`cli` は段階 4h で写した)。
+- 記録だけして変えなかった、意外な受け付け: `validate_url` は、前後の空白、大文字のスキーム、空の userinfo、
+  ポート 0 を受け付け、正規化した形でなく元の文字列を返す。直すのは、振る舞いを変える後の作業。
+
+**#123 段階 4b: `flash_lkg_models.py`。**
+
+- `LkgEnvelope`: `lkg/<receipt>` の封筒。キーはちょうど `schema_version`、`metadata`、`files` の 3 つ。
+  `schema_version` は `== 1` の等しさで比べる(型の確認でない)。`files` は名前→ダイジェストの文字列。
+  `FirmwareSnapshots.load` が使い、失敗はすべて今までどおり `lkg_snapshot_missing_or_changed` になる。
+- `LkgMetadata`: 封筒の中のメタデータの寛容な見方。知らないキーは残し、値の型は確かめない。`compat` の
+  欠落と `compat: null` は、どちらも「レイアウトの証拠なし」だが、`compat_stored` で区別が見える。
+- `bound_lkg_metadata`(`FirmwareFlash._known` が呼ぶ): 束縛のキー(`device_id`、`principal`、
+  `selector_sha256`、`flash_bytes`)を今までの順に 1 つずつ比べ、その後で `kind` を比べる。
+  `lkg_compat` は、今までの `.get("compat")` と同じ値を返す。
+- 検証だけで、書き戻さない。呼び出し側は解析した元のオブジェクトを使い続けるので、保存済みのバイトと
+  受領書のハッシュは変わらない。
+- 確かめたこと: `tests/test_flash_lkg_models.py`(封筒のキーの集合、版の等しさ、大きさの上限、ファイルの
+  ダイジェスト、キーの順、読んでも書き換えないこと。メタデータは実ブローカーと偽のドライバーで、
+  `artifact_bundle` の `compat` による照合、`compat` の欠落、余分なキー、束縛の順、実行時の今の LKG の読み取り)。
+- 記録だけして変えなかったこと: 束縛のキーが欠けると、今も `prepare` から素の `KeyError` が外へ出る
+  (メタデータがオブジェクトでなければ `TypeError`)。版の `1.0` と `true` は受け付ける。
+
+**#122 段階 4c: `source_receipt_model.py`。**
+
+- `receipt.json`(schema 1 と 2)の形の、検証だけのモデル。`SourceSnapshots._resolve` は
+  `ResolvedSourceReceipt` を、`source_payloads.metadata` は `ListedSourceReceipt` を、それぞれ受け付けが
+  決まった後(成功の経路)でだけ確かめる。拒否の経路は、今までの順に並んだ手書きの確認のまま。順が理由コードを
+  決めるため(例: schema 3 で主体がないと、`_resolve` では `source_snapshot_unavailable` でなく
+  `source_receipt_not_owned`)。モデルの拒否は、各読み手の今までの失敗(`source_snapshot_unavailable` / None)に
+  対応付ける。解析した dict をそのまま返し、書き戻さない。
+- 意図して残した `_resolve` と `metadata` の差:
+  - `_resolve` は `principal`、`project_id`、`source_sha256`、`files` を要し、schema 2 では正しい
+    `submodules` も要る。`metadata` は `.get` で読み、`repository` を要するが、`files` と `submodules` は見ない。
+    そのため、正しい `submodules` のない schema 2 の受領書は、一覧には出るが、`_resolve` で拒否される。
+  - `metadata` は、キーの欠落で例外を出さず、None を返す。ハッシュできない値も、ハッシュせずに比べる。
+  - 両方とも `supported_schema()`(今までの `in (1, 2)` の等しさ)を共有する。JSON の `true` と `1.0` は
+    schema 1、`2.0` は schema 2 として読む。
+- 確かめたこと: `tests/test_source_receipt_model.py`(v1/v2 を両方の読み手で、書き換えないこと、余分なキー、
+  欠けたキー、対応しない版、オブジェクトでない JSON、確認の順と理由コード、ファイルの項目の等しさでの比較)。
+- 記録だけして変えなかったこと: `repository`、`commit`、`tree_sha1` などの来歴のキーは、`_resolve` では
+  要らない。欠けた受領書も今は解決され、後で呼び出し側が `[]` で読むときに失敗する。
+
+**#120 段階 4e: 小モジュールの統合。**
+
+- 使う側が 1 つしかないモジュールを、持ち主に移した。コードと SQL の文は、そのまま写した。
+  - `flash_lkg_geometry`(`factory_layout`、`FactoryLayout`) → `flash_lkg_bundle`
+  - `diagnostic_contracts`(`DiagnosticContract`、J1、DMA、`known_contract`、`select_contract`、
+    `validate_source_identity`) → `diagnostic_registry`
+  - `timeline_order`(`initialize_timeline_order`) → `store`。SQL は `Store` の中だけ、という §3 の規則に合う。
+- テストのファイル名は変えていない(`tests/test_flash_lkg_geometry.py` などは import だけ直した)。
+- 確かめたこと: 新しい `tests/test_store_timeline_order.py` が、新しい DB、`timeline_order` より前の履歴
+  (日付なしの計画の前置きを rowid の順に、ジョブは created と rowid の順に、不正な job_id の計画は飛ばす)、
+  トリガーが 0 本または 1 本の表(既存の行の後に補完)、2 本そろった表(開き直しで補完しない)、
+  保存される DDL の文を固定する。§2.3 の「`timeline_order` の後付けの補完」は、これでテストがある。
+
+**#125 段階 4f: `tunnel_checks.py`。**
+
+- CLI(`tunnel.preflight` / `tunnel.check_broker`)と GUI(`TunnelManager`)が、設定の検査と、読み取りだけの
+  ブローカーの確認の列(identity の status、device の status、`list_tools`)を共有する。各確認は決まった
+  コードを返すだけで、`TunnelError` を出すのと、`connect` / `call` / `load_settings` の差し替え口は、
+  呼び出し側のモジュールに残した。呼び出し側が、自分の規則を渡す。
+- 意図して残した CLI と GUI の差:
+
+| 確かめること | CLI | GUI |
+| --- | --- | --- |
+| 設定の順 | ingress → serial → health port | ingress → URL → health port → serial |
+| identity | ok かつ authenticated、origin、scope。ingress もセッションの中で | authenticated、origin、scope、backend。ingress は probe の後 |
+| status | idle で、ハードウェアが閉じていること | ok だけ。実行中のジョブがあってもよい |
+| discovery | `mcp_discovery_failed`、最後 | `tunnel_broker_discovery_failed`、セッションの中で最初 |
+
+- **決定(2026-10-26、利用者): Tunnel のプロセスの監督(CLI の `Popen` と GUI の Job Object)と、起動待ちの
+  ループは統一しない。** 理由: CLI の終わり方の意味が変わる、実際の Tunnel での確かめが要る、動いている
+  クラウドの経路を壊す危険がある。CLI の経路で問題が出たとき、またはリリース後の修正として、見直す。
+- 確かめたこと: 先に `tests/test_tunnel_check_precedence.py` を足した。`tunnel.preflight` と
+  `TunnelManager._validate_configuration`、`tunnel.check_broker` と GUI の probe の、条件の組み合わせごとの
+  拒否のコード、その順、呼ぶ MCP の呼び出しを固定する。変えずに通る。
+- 実際の Tunnel での確認(利用者): つなぐ・切る・つなぎ直す、ChatGPT からの往復、`tunnel check` の OK。
+  実行中のジョブの扱いの差(上の表の status の行)は、試していない。
+- その確認の中で、GUI の Tunnel の状態の取得が「Checking Tunnel status...」のまま止まる問題を見つけた
+  (issue #126)。状態の取得の経路は 4f で触っていないので、前からあった問題と判断した。別に直す。
+
+**#124 修正(作り直しではない): GUI でデバイスのジョブのログを読む。**
+
+- 前は、GUI がログを読むジョブを source / build / flash / app_session に限っていた。そのため、終わった
+  observe / hello / restart / diagnostics / capture / derby / firmware のジョブは、ブローカーに聞かずに
+  「Logs unsupported for this job type.」と出ていた。ブローカーはデバイスのジョブのシリアル出力を、すべて
+  永続のログに残している。
+- 両側の分け方を、`models.py` の `MODULE_LOG_TESTS` / `DEVICE_LOG_TESTS` の 1 か所から作るようにした。
+- 永続のログはあるが受信が 0 バイトのデバイスのジョブは、`/operator/job-logs` が空の読めるページとして返す
+  (前は unavailable)。GUI は、終わったジョブの空のログに「No output was received.」と出す。
+- MCP の読み取りの経路は変えていない。0 バイトのジョブのデバイスのログを MCP で読むと、今も
+  `device_logs_not_available` になる。揃えるのは後の作業。
+- 確かめたこと: `tests/test_gui_live_presentation.py`、`tests/test_durable_job_log_streams.py`、
+  `tests/test_operator_live_http.py` に足したテスト。
 
 ## 6. 未検証
 
@@ -487,4 +606,6 @@ SSE は、今の依存(Starlette / uvicorn と httpx2)だけで書ける。中�
   チェーン(§5.5、§5.6)。リストアのチェーン、フラッシュの取り消し・失敗・回復の経路、ファームウェアの
   ハッシュのフェンスは、実機では未確認。
 - 親クラウドクライアントからの MCP メタデータの照合は、0.13.0 では未実施。
-- GUI のライブ更新の SSE(§5.7)は、実機の GUI(Windows の Tk、スリープからの復帰、長時間の接続)では未確認。
+- GUI のライブ更新の SSE(§5.7)は、利用者が実機の GUI で動くことを確かめた。スリープからの復帰と長時間の接続は、確かめたという記録がない。
+- Tunnel の確認の共有(§5.8 の #125)は、実際の Tunnel で、つなぐ・切る・つなぎ直す、ChatGPT からの往復、`tunnel check` を確かめた。CLI と GUI の実行中のジョブの扱いの差は、実際の Tunnel では試していない。
+- 段階 4 で記録だけした振る舞い(`validate_url` の意外な受け付け、LKG の束縛のキーの欠落で出る素の `KeyError`、`_resolve` が来歴のキーを要しないこと、0 バイトのデバイスのログの MCP での `device_logs_not_available`)は、変えていない。直すのは、振る舞いを変える後の PR。

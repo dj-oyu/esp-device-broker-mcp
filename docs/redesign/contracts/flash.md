@@ -33,7 +33,7 @@ The write call must not change: `flash_lifecycle.py:294` `self.driver.write(segm
 | P4 | `_registration`: device registered, `allow_<op>` is True; for the real driver: serial backend, selector == settings.serial.selector, python sha256, esptool tree fingerprint. **The tool-hash checks are skipped when `driver_factory` is injected (all tests).** | firmware_flash.py:227-246 |
 | P5 | principal is required; USB fingerprint comes from `backend.prepare(RESTART)` (or a mock hash) | firmware_flash.py:341-346 |
 | P6 | Recovery input A, `backup_job_id`: `_backup` needs a succeeded `firmware_backup` job of the same principal; `BackupStore.load` re-hashes the bytes; the backup's device fingerprint and capacity must match | firmware_flash.py:248-262, 353-360 |
-| P6' | Recovery input B, LKG: `_known` uses an explicit `lkg_receipt` (history row) or the **current pointer, frozen into `lkg_receipt`**. The snapshot is loaded and its metadata must match device_id, principal, selector_sha256, flash_bytes and kind | firmware_flash.py:270-289, 361-373 |
+| P6' | Recovery input B, LKG: `_known` uses an explicit `lkg_receipt` (history row) or the **current pointer, frozen into `lkg_receipt`**. The snapshot is loaded and its metadata must match device_id, principal, selector_sha256, flash_bytes and kind (stage 4b: `flash_lkg_models.bound_lkg_metadata`, same order and codes) | firmware_flash.py:270-289, 361-373 |
 | P6'' | A P6/P6' refusal (`successful_owned_backup_required`, `backup_registered_device_mismatch`, `verified_lkg_or_initial_backup_required`) keeps its code; the public body adds the device's `flash_baseline`/`lkg_recorded` (as `status(view=targets)`) and one fixed `next_step` + `explanation`. No ids, principals or paths | firmware_flash.py `_recovery_point_details`; public_errors.py |
 | P7 | Build: `_build_context` (succeeded, owned, `firmware_build`), project == registration.project_id, `verify_bundle`, manifest export digest, app BIN + ELF receipts present, ELF file readable | firmware_flash.py:319-336, 374-393 |
 | P8 | `OperationPlan` digest (sha256 of `json.dumps(asdict)`) → `fingerprint` | firmware_flash.py:407-421; flash_lifecycle.py:93-110 |
@@ -76,7 +76,7 @@ Line numbers are those of 5d79d2d.
 | X3 | `current = firmware_current(...)` gives the baseline. **This is the only dynamic read of "current" at execute time**, and it is used only for the baseline and a stricter layout check. | firmware_flash.py:485-486, 524-529 |
 | X4 | Load the frozen LKG snapshot (`_known` with plan.lkg_receipt) → `recovery` tuple, or the backup bytes via metadata.backup_job_id | firmware_flash.py:487-504 |
 | X5 | Build: `validate_plan_export`, `verify_bundle`, image bytes, snapshot_files (segments + layout + security + full ELF) | firmware_flash.py:505-522 |
-| X6 | Layout fence: `compatibility()` (exactly bootloader/table/app, single factory app, ranges). Then `same_layout` against the current or known compat, or else `baseline_layout` (backup table bytes == new table) | firmware_flash.py:523-536; flash_lkg_bundle.py:13-70; flash_lkg_geometry.py:17-72 |
+| X6 | Layout fence: `compatibility()` (exactly bootloader/table/app, single factory app, ranges). Then `same_layout` against the current or known compat, or else `baseline_layout` (backup table bytes == new table) | firmware_flash.py:523-536; flash_lkg_bundle.py (`compatibility`, `same_layout`, `baseline_layout`, and `factory_layout`, moved there from the former flash_lkg_geometry.py in stage 4e) |
 | X7 | Build the new artifact_bundle metadata (bytes are not written yet) | firmware_flash.py:537-551 |
 | X8 | Thread hop: `worker_live` marshals `live()` to the loop with a 5 s timeout. A task cancel → `request_stop` + shield loop → raises `flash_cancelled_needs_review` even if the worker succeeded | firmware_flash.py:570-595 |
 | X9 | `_execute`: validate again; `_cancelled_jobs` / live; busy/uncertain; driver constructed; **a new `FlashLifecycle` is created only after the busy/uncertain check and under the lock, with a cancellation re-check** | firmware_flash.py:597-622 |
@@ -297,7 +297,7 @@ Metadata keys:
 ### 4c. Schema-version variants and readers
 | Record | Versions | Writer | Readers |
 |---|---|---|---|
-| LKG envelope | 1 only (strict) | flash_lkg_store.py:108 | flash_lkg_store.py:113-123 |
+| LKG envelope | 1 only (strict) | flash_lkg_store.py:108 | `FirmwareSnapshots.load` via the validate-only `flash_lkg_models.LkgEnvelope` |
 | Build manifest | 1 | firmware_build.py:988 | flash_manifest.py:84-85; build_locations.py:286, 299-300; manifest_export.py:33-35 |
 | Manifest export | 1 | manifest_export.py:111 | manifest_export.py:89-91, 150 |
 | Source snapshot receipt | **1 or 2** (2 = submodules) | source_snapshot.py:1050 | source_snapshot.py:1163-1174; source_payloads.py:67; firmware_build.py:398-400 (dependency_policy); flash_binding.py:77-82 (**the v2 reader in the flash binding**); registration_digest.py:55-65 (v2 excludes the legacy digest shape) |
