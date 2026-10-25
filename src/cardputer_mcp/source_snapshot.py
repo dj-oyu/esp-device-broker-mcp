@@ -24,6 +24,7 @@ from weakref import WeakValueDictionary
 from .flash_backup import BackupStore
 from .registration_digest import source_digest, source_digests
 from .source_cache_lock import LOCK_NAME, CacheLock
+from .source_receipt_model import ResolvedSourceReceipt, supported_schema
 
 
 def pin_root(path: Path) -> Path:
@@ -1159,8 +1160,9 @@ class SourceSnapshots:
             if digest(raw) != receipt:
                 raise SourceError("source_receipt_changed")
             value = json.loads(raw)
+            # Ordered [] checks decide the reason code; the model is checked on success only.
             if (
-                value["schema_version"] not in (1, 2)
+                not supported_schema(value["schema_version"])
                 or value["principal"] != principal
                 or value["project_id"] != project_id
                 or value["registration_sha256"]
@@ -1190,6 +1192,7 @@ class SourceSnapshots:
                 files[name] = file_receipt(item.read_bytes(), entry["mode"])
             if files != value["files"] or digest(canonical(files)) != value["source_sha256"]:
                 raise SourceError("source_snapshot_changed")
+            ResolvedSourceReceipt.model_validate(value)  # validate only; never dumped
             return source, value
         except SourceError:
             raise
