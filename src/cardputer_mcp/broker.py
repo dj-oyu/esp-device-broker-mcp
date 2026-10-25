@@ -98,6 +98,14 @@ class BrokerError(ValueError):
     """Public, fixed-string errors. Do not include exceptions or request content."""
 
 
+class RecoveryPointRefusal(BrokerError):
+    """A fixed recovery-point refusal code plus details the public gate re-validates."""
+
+    def __init__(self, code: str, details: dict[str, Any] | None) -> None:
+        super().__init__(code)
+        self.details = details
+
+
 @dataclass
 class WorkSession:
     resume_token: str = field(repr=False)
@@ -1890,7 +1898,11 @@ class Broker:
                 details = self.backend.prepare(request.test)
         except BuildLocationError as exc:
             raise BrokerError(exc.code) from None
-        except (FlashFailure, FlashAdmissionError) as exc:
+        except FlashFailure as exc:
+            if exc.public_details is not None:
+                raise RecoveryPointRefusal(str(exc), exc.public_details) from None
+            raise BrokerError(str(exc)) from None
+        except FlashAdmissionError as exc:
             raise BrokerError(str(exc)) from None
         except ValueError as exc:
             raise BrokerError("backend_preflight_failed") from exc

@@ -10,13 +10,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from .broker import BrokerError
-from .public_reasons import public_broker_reason, public_reason
+from .broker import BrokerError, RecoveryPointRefusal
+from .public_reasons import public_broker_reason, public_reason, recovery_point_details
 from .source_snapshot import SourceError
 
 
 def to_public(exc: BaseException) -> dict[str, Any] | None:
     """The public body for a request-path failure, or None if it is not one."""
+    if isinstance(exc, RecoveryPointRefusal):
+        code = public_broker_reason(exc)
+        return {"error": code, **recovery_point_details(code, exc.details)}
     if isinstance(exc, BrokerError):
         return {"error": public_broker_reason(exc)}
     if isinstance(exc, SourceError):

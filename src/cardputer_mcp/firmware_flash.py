@@ -35,6 +35,7 @@ from .job_logs import attach
 from .manifest_export import make_manifest_export, manifest_export_sha256, validate_plan_export
 from .models import TestName
 from .offload_io import offload, pure_io
+from .public_reasons import RECOVERY_POINT_REFUSAL_CODES
 from .registration_digest import flash_digest
 
 FLASH_ACTIONS: dict[str, Operation] = {
@@ -468,6 +469,39 @@ class FirmwareFlash:
         return root, manifest
 
     def prepare(self, request: Any, principal: str, epoch: str, session_id: str) -> dict[str, Any]:
+        try:
+            return self._prepare(request, principal, epoch, session_id)
+        except FlashFailure as failure:
+            if failure.code in RECOVERY_POINT_REFUSAL_CODES:
+                failure.public_details = self._recovery_point_details(failure.code, request)
+            raise
+
+    def _recovery_point_details(self, code: str, request: Any) -> dict[str, Any] | None:
+        """The device's flash_baseline/lkg_recorded and one fixed next step; no ids."""
+        registration = self.settings.flash_devices.get(request.device_id)
+        if registration is None:
+            return None
+        readiness = flash_readiness(
+            registration, self.store().firmware_current(request.device_id) is not None
+        )
+        backup_enabled = readiness["operations"]["backup"]
+        if code == "verified_lkg_or_initial_backup_required" and (
+            getattr(request, "lkg_receipt", None) is not None
+        ):
+            step = "choose_lkg_receipt_from_status_recovery"
+        elif not backup_enabled:
+            step = "backup_not_enabled_in_local_registration"
+        elif code == "verified_lkg_or_initial_backup_required":
+            step = "run_firmware_backup_then_pass_backup_job_id"
+        else:
+            step = "name_own_succeeded_backup_of_this_device"
+        return {
+            "flash_baseline": readiness["flash_baseline"],
+            "lkg_recorded": readiness["lkg_recorded"],
+            "next_step": step,
+        }
+
+    def _prepare(self, request: Any, principal: str, epoch: str, session_id: str) -> dict[str, Any]:
         operation = FLASH_ACTIONS[request.test.value]
         registration = self._registration(request.device_id, operation)
         if not principal:

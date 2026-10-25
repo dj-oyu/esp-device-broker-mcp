@@ -65,6 +65,9 @@ class FlashFailure(ValueError):
         super().__init__(code)
         self.code = code
         self.diagnostic = _bounded_read_diagnostic(code, diagnostic)
+        # Set only by FirmwareFlash.prepare for a recovery-point refusal; the public
+        # error gate re-validates it against fixed vocabulary.
+        self.public_details: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
