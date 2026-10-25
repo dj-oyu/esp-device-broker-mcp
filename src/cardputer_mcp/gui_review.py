@@ -1,8 +1,9 @@
-"""Explicit operator acknowledgement and resource re-check for the GUI; no Tk.
+"""Explicit operator acknowledgement, re-check and device-job stop for the GUI; no Tk.
 
 Each function sends exactly one request and turns the reply into a fixed message.
 Nothing is retried. Acknowledgement sets only the reviewed flag; the re-check
-clears only latches whose broker-side check passed.
+clears only latches whose broker-side check passed; a stop only signals the job,
+which keeps the device until its own confirmed close.
 """
 
 from __future__ import annotations
@@ -54,14 +55,82 @@ FLAG_LABELS = {
 _CODE = re.compile(r"[a-z][a-z0-9_]{1,80}")
 
 
+STOP_CONFIRM = (
+    "Stop this device job?\n\n"
+    "It was started by another client. A queued job is cancelled; a running job is "
+    "asked to stop and keeps the device until its port close is confirmed. Firmware "
+    "flash, restore and backup are never interrupted from here. Nothing is retried."
+)
+STOP_QUEUED = "Queued device job cancelled by the local operator. Nothing was retried."
+STOP_REQUESTED = (
+    "Stop requested by the local operator; the job keeps the device until its close "
+    "is confirmed. Refresh status."
+)
+STOP_NOT_ACCEPTED = "The job did not accept the stop request. Refresh status."
+STOP_UNCERTAIN = "Stop outcome unknown. Refresh status; nothing was retried."
+STOP_REFUSED = {
+    "operator_stop_refused_device_write": (
+        "Firmware flash, restore and backup cannot be interrupted from here."
+    ),
+    "operator_stop_not_supported": "This running job kind cannot be stopped.",
+    "operator_stop_not_available": "This job is not a stoppable device job. Refresh status.",
+    "stop_target_not_found": "This job was not found. Refresh status.",
+    "job_not_active": "This job already finished. Refresh status.",
+    "app_session_not_available": "The app session is no longer running. Refresh status.",
+    "backend_not_available": "This job's stop is not available on this backend.",
+    "lease_expired_active_job_retains_ownership": "The device lease ended. Refresh status.",
+    "stale_operator_snapshot": "The broker restarted. Review the current jobs first.",
+    "broker_closing": "The broker is shutting down.",
+    "local_operator_required": "Local operator authority is required.",
+}
+
+
 class ReviewAPI(Protocol):
     def review_job(self, job_id: str, plan_hash: str, broker_epoch: str) -> dict[str, Any]: ...
     def review_request(self, request_id: str, broker_epoch: str) -> dict[str, Any]: ...
     def recheck(self, broker_epoch: str) -> dict[str, Any]: ...
 
 
+class StopAPI(Protocol):
+    def stop_job(self, job_id: str, plan_hash: str, broker_epoch: str) -> dict[str, Any]: ...
+
+
 def review_available(card: TimelineCard | None) -> bool:
     return bool(card is not None and card.needs_device_review and card.plan_hash)
+
+
+def stop_available(card: TimelineCard | None) -> bool:
+    return bool(
+        card is not None
+        and card.stop_available
+        and card.plan_hash
+        and card.state in ("queued", "running")
+    )
+
+
+def perform_stop_job(api: StopAPI, job_id: str, plan_hash: str, epoch: str) -> str:
+    try:
+        result = api.stop_job(job_id, plan_hash, epoch)
+    except Exception:
+        return STOP_UNCERTAIN
+    if type(result) is not dict:
+        return STOP_UNCERTAIN
+    if result.get("ok") is False:
+        return STOP_REFUSED.get(result.get("error", ""), STOP_UNCERTAIN)
+    if (
+        result.get("ok") is not True
+        or result.get("job_id") != job_id
+        or result.get("plan_hash") != plan_hash
+        or result.get("broker_epoch") != epoch
+        or result.get("stopped_by") != "local_operator"
+        or type(result.get("stop_requested")) is not bool
+    ):
+        return STOP_UNCERTAIN
+    if result.get("state") == "cancelled":
+        return STOP_QUEUED
+    if result.get("state") == "running":
+        return STOP_REQUESTED if result["stop_requested"] else STOP_NOT_ACCEPTED
+    return STOP_UNCERTAIN
 
 
 def recheck_available(snapshot: QueueSnapshot | None) -> bool:

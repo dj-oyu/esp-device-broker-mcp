@@ -35,6 +35,14 @@ def safe_refusal(data: Any) -> dict[str, Any]:
             "review_target_in_use",
             "stale_operator_snapshot",
             "broker_closing",
+            "stop_target_not_found",
+            "job_not_active",
+            "operator_stop_not_available",
+            "operator_stop_refused_device_write",
+            "operator_stop_not_supported",
+            "app_session_not_available",
+            "backend_not_available",
+            "lease_expired_active_job_retains_ownership",
         }:
             result["error"] = code
     return result
@@ -164,6 +172,15 @@ class OperatorClient:
         return self._request(
             "POST",
             "/operator/job-cancel",
+            {"job_id": job_id, "plan_hash": plan_hash, "broker_epoch": broker_epoch},
+            allow_refusal=True,
+        )
+
+    def stop_job(self, job_id: str, plan_hash: str, broker_epoch: str) -> dict[str, Any]:
+        """Request a stop of one device-lane job as the local operator; never retried."""
+        return self._request(
+            "POST",
+            "/operator/job-stop",
             {"job_id": job_id, "plan_hash": plan_hash, "broker_epoch": broker_epoch},
             allow_refusal=True,
         )

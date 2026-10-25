@@ -242,6 +242,14 @@ class Store:
             (source, recovery, event),
         )
 
+    def audit_execution(self, job_id: str, plan_hash: str, principal_id: str, event: str) -> None:
+        """Append one committed execution_audit row (for example an operator stop)."""
+        with self.db:
+            self.db.execute(
+                "INSERT INTO execution_audit(job_id,plan_hash,principal_id,event) VALUES(?,?,?,?)",
+                (job_id, plan_hash, principal_id, event),
+            )
+
     def record_home_closed(self, source: str, payload: dict[str, Any]) -> None:
         with self.db:
             result = self.db.execute(

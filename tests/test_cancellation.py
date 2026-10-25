@@ -91,6 +91,12 @@ ROUTES = [
         ("job", "a" * 64, "b" * 32, "key-l", "local_cli"),
         {},
     ),
+    (
+        cancellation.OperatorDeviceJob("job", "a" * 64, "b" * 32, "key-l"),
+        "operator_stop_job",
+        ("job", "a" * 64, "b" * 32, "key-l"),
+        {},
+    ),
 ]
 
 PRIMITIVES = sorted({route for _, route, _, _ in ROUTES})

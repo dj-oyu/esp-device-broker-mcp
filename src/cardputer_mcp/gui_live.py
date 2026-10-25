@@ -35,11 +35,14 @@ from .gui_live_transport import (
 from .gui_review import (
     RECHECK_CONFIRM,
     REVIEW_CONFIRM,
+    STOP_CONFIRM,
     perform_recheck,
     perform_review_job,
     perform_review_request,
+    perform_stop_job,
     recheck_available,
     review_available,
+    stop_available,
     uncertainty_summary,
 )
 from .gui_theme import apply_theme
@@ -198,6 +201,12 @@ class LiveWindow:
         # Human acknowledgement of a needs_review row: sets only its reviewed flag.
         self.job_review = ttk.Button(detail, text="Acknowledge review...", command=self._review_job)
         self.job_review.grid(row=10, sticky="e", pady=(8, 0))
+        # Local operator stop of a device job started by another client. Never
+        # offered for a running flash/restore/backup; releases nothing itself.
+        self.job_stop = ttk.Button(
+            detail, text="Stop device job...", command=self._stop_job, style="Danger.TButton"
+        )
+        self.job_stop.grid(row=11, sticky="e", pady=(8, 0))
         detail.bind("<Configure>", self._resize_details, add="+")
         if self._detail_canvas is not None:
             for widget in (
@@ -206,6 +215,7 @@ class LiveWindow:
                 self.copy_button,
                 self.job_cancel,
                 self.job_review,
+                self.job_stop,
             ):
                 widget.bind("<FocusIn>", self._reveal_detail_focus, add="+")
                 for key in ("Prior", "Next", "Home", "End"):
@@ -901,15 +911,27 @@ class LiveWindow:
             self.job_cancel.grid_remove()
         if hasattr(self, "cancel_context"):
             reason = ""
-            if card and card.state in {"queued", "running"} and not card.cancel_available:
+            if card and card.state in {"queued", "running"} and stop_available(card):
+                reason = "" if ready else "Stop currently unavailable"
+            elif card and card.state in {"queued", "running"} and not card.cancel_available:
                 reason = (
-                    "Cancel via the owning client session"
-                    if card.test in {*FLASH_TESTS, TestName.APP_SESSION}
+                    "Flash, restore and backup are not interrupted here; "
+                    "cancel via the owning client session"
+                    if card.test in FLASH_TESTS
+                    else "Cancel via the owning client session"
+                    if card.test == TestName.APP_SESSION
                     else "Cancellation unavailable for this operator"
                 )
             elif card and card.cancel_available and not ready:
                 reason = "Cancellation currently unavailable"
             self.cancel_context.set(reason)
+        job_stop = getattr(self, "job_stop", None)
+        if job_stop is not None:
+            job_stop.configure(state="normal" if ready and stop_available(card) else "disabled")
+            if stop_available(card):
+                job_stop.grid()
+            else:
+                job_stop.grid_remove()
         job_review = getattr(self, "job_review", None)
         if job_review is not None:
             can_review = bool(ready and review_available(card))
@@ -1109,6 +1131,28 @@ class LiveWindow:
             return result.error or result.message
 
         self._run_action(cancel)
+
+    def _stop_job(self) -> None:
+        from tkinter import messagebox
+
+        card = self.state.selected_card
+        if not self._actions_ready() or not stop_available(card) or card is None:
+            return
+        epoch = self.state.timeline.broker_epoch if self.state.timeline else ""
+        generation = self.state.generation
+        if not messagebox.askyesno("Stop device job", STOP_CONFIRM, parent=self.root):
+            return
+        if (
+            not self._actions_ready()
+            or self.state.generation != generation
+            or self.state.selected_card != card
+            or self.state.timeline is None
+            or self.state.timeline.broker_epoch != epoch
+        ):
+            self.action_status.set("Selection changed. Check the current job before stopping.")
+            return
+        job_id, plan_hash = card.job_id, card.plan_hash or ""
+        self._run_action(lambda: perform_stop_job(self.api, job_id, plan_hash, epoch))
 
     def _review_job(self) -> None:
         from tkinter import messagebox

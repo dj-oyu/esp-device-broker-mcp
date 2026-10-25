@@ -97,6 +97,8 @@ class TimelineCard:
     device_observation: DeviceObservationRow | None = None
     cancel_available: bool = False
     failure_reason: str | None = None
+    # Local operator stop of a device-lane job owned by another client.
+    stop_available: bool = False
 
     @property
     def presentation(self) -> JobPresentation:
@@ -129,7 +131,15 @@ class TimelineCard:
             raise ValueError(INVALID_TIMELINE)
         cancel = data.get("cancel_available", False)
         reviewed = data.get("reviewed", False)
-        if type(cancel) is not bool or type(reviewed) is not bool:
+        stop = data.get("stop_available", False)
+        if type(cancel) is not bool or type(reviewed) is not bool or type(stop) is not bool:
+            raise ValueError(INVALID_TIMELINE)
+        if stop and (
+            cancel
+            or state not in ("queued", "running")
+            or backend not in ("serial", "mock")
+            or test is None
+        ):
             raise ValueError(INVALID_TIMELINE)
         if cancel and (
             state not in ("queued", "running")
@@ -188,6 +198,7 @@ class TimelineCard:
             device_observation=observation,
             cancel_available=cancel,
             failure_reason=reason,
+            stop_available=stop,
         )
 
 

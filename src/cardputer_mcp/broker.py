@@ -1814,6 +1814,14 @@ class Broker:
         self.maintenance_tick()
         return {"cancelled": True, "request_id": request_id}
 
+    def operator_stop_job(
+        self, job_id: str, plan_hash: str, broker_epoch: str, principal_id: str
+    ) -> dict[str, Any]:
+        """Local operator stop of another client's lease job; never a flash write."""
+        from . import operator_stop  # operator_stop.py imports this module
+
+        return operator_stop.stop_job(self, job_id, plan_hash, broker_epoch, principal_id)
+
     def operator_reorder_wait(
         self,
         request_id: str,

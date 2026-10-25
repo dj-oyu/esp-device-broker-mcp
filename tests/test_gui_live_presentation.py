@@ -350,7 +350,9 @@ def test_cancel_visibility_uses_capability_predicate_and_rechecks_after_state_ch
         ready(snapshot([card("a", test="firmware_flash", cancel_available=False)])), "a"
     )
     LiveWindow._controls(window)
-    assert window.cancel_context.set.call_args.args[0] == "Cancel via the owning client session"
+    assert window.cancel_context.set.call_args.args[0] == (
+        "Flash, restore and backup are not interrupted here; cancel via the owning client session"
+    )
 
 
 def test_failed_diagnostic_is_not_presented_as_a_received_success():
