@@ -202,3 +202,24 @@ async def test_unrelated_principal_cannot_use_another_keys_build_or_backup(env, 
         _prepare(env, session, "foreign-restore", Action.RESTORE, backup_job_id="backup-one")
     assert env.store.job("foreign-flash") is None and env.store.job("foreign-restore") is None
     assert env.driver.writes == before
+
+
+async def test_off_loop_admission_rechecks_lineage_in_the_final_block(env):
+    """execute_async: lineage is part of the binding recomputed with no await."""
+    broker = env.broker
+    broker.principal_lineage = _lineage(("alice", "alice-rotated"))
+    session = _switch_principal(env, "alice-rotated")
+    prepared = _prepare(env, session, "async-flash", Action.FLASH, build_job_id="build-one")
+    request = ExecuteRequest(session=session, plan_hash=prepared["plan_hash"])
+
+    def unlink() -> None:
+        # Runs after the off-loop verification and before the final synchronous pass.
+        broker.principal_lineage = None
+
+    with pytest.raises(BrokerError):
+        await broker.execute_async(request, reauthorize=unlink)
+    assert env.store.job("async-flash") is None
+    broker.principal_lineage = _lineage(("alice", "alice-rotated"))
+    await broker.execute_async(request)
+    await broker.queue.join()
+    assert broker.job("async-flash")["state"] == "succeeded", broker.job("async-flash")
