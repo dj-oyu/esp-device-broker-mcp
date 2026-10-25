@@ -406,7 +406,7 @@ job lease would be interrupted and moved to review.
 | 12 | `_cancel_execution_intent` / `_prune_execution_intents` | broker.py:397-409 / 521-529 | `execution_intent_expired` / `execution_intent_not_available` |
 | 13 | `maintenance_tick` waits | broker.py:621-633, 689-697 | `wait_expired` / `principal_not_authorized`; lease shortening on revocation 634-657 |
 | 14 | Deferred/ticket automatic | 754, 760, 765, 794-800, 858 (broker.py); profile_jobs.py:392-433; tickets void/expired in `_tickets_tick` | |
-| 15 | Authority-loss interruption | `running_authorized` 2495-2529, `flash_live` 2549-2603, `ProfileJobs._watch` 588-598 (`execution_deadline_expired` / `profile_or_principal_no_longer_valid`), build monitor firmware_build.py:~556-560 | |
+| 15 | Authority-loss interruption | `running_authorized` 2495-2529, `flash_live` 2549-2603 (since stage 3b: the `RUNNING` / `FLASH_IO` / `FLASH_COMMIT` rows of `RULES` in `execution_authority.py`, evaluated by `ExecutionAuthority.check`), `ProfileJobs._watch` 588-598 (`execution_deadline_expired` / `profile_or_principal_no_longer_valid`), build monitor firmware_build.py:~556-560 | |
 | 16 | Shutdown | `close()` 324-348: app runs `cancelled.set()`, `profile_jobs.close` (`_stop broker_shutdown`), `firmware_build.request_stop()`, `firmware_flash.request_stop()` with no job id, `home_recovery.close`, waits `broker_shutdown` | |
 | 17 | Startup | `recover`, `void_stale`, `cancel_stale`, migration (section 1.2) | |
 
@@ -430,6 +430,10 @@ Stop primitives differ per executor:
 > former inner `finally`). The outer `except`/`finally` stays in `_work`. The nested closures
 > became methods that read the admitted job: `_running_authorized(run)`,
 > `_flash_live(run, committing)`, `_derby_diagnostic(run, diagnostic)`, `_on_stage(run, name)`.
+>
+> **Since stage 3b** (DESIGN-REDESIGN §5.6) steps 13-14 are `ExecutionAuthority.check(Checkpoint.DISPATCH, ...)`
+> (`execution_authority.py`): the second callback and the composite, in the same order. Step 4's dead
+> flag was removed (it was always True after step 3).
 
 1. 2334: sentinel `None` → return.
 2. 2337-2339: `self.job(job_id)` (raises `job_not_found` → outer except → **`execution_uncertain=True`**); state ≠ queued → skip silently.
