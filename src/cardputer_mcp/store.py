@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from time import monotonic
 from types import TracebackType
@@ -15,6 +15,30 @@ from .derby_fixed import FIXED_PLAN, MAX_BYTES, FixedTrial, parse_collected
 from .job_ledger import JobLedger
 from .job_outcome import review_summary
 from .timeline_order import initialize_timeline_order
+
+# Offline history archive: (table, key column, selection kind). Every row keyed
+# by an archived job/plan/registration moves with it; LKG rows never move.
+ARCHIVE_KINDS = frozenset({"jobs", "plans", "timeline", "requests", "sessions"})
+ARCHIVE_TABLES: tuple[tuple[str, str, str], ...] = (
+    ("jobs", "id", "jobs"),
+    ("plans", "hash", "plans"),
+    ("approvals", "hash", "plans"),
+    ("execution_requests", "job_id", "jobs"),
+    ("execution_audit", "job_id", "jobs"),
+    ("firmware_job_summaries", "job_id", "jobs"),
+    ("derby_fixed_trials", "job_id", "jobs"),
+    ("build_artifact_references", "job_id", "jobs"),
+    ("source_publications", "job_id", "jobs"),
+    ("continuation_tickets", "parent_job_id", "jobs"),
+    ("deferred_jobs", "job_id", "jobs"),
+    ("home_closed_sources", "source_job", "jobs"),
+    ("home_recovery_executions", "recovery_job", "jobs"),
+    ("home_recovery_approvals", "recovery_job", "jobs"),
+    ("home_recovery_audit", "source_job", "jobs"),
+    ("timeline_order", "job_id", "timeline"),
+    ("device_requests", "id", "requests"),
+    ("work_sessions", "id", "sessions"),
+)
 
 
 class _ObservedConnection(sqlite3.Connection):
@@ -789,6 +813,79 @@ class Store:
             raise ValueError("request_does_not_need_review")
         self.db.execute("UPDATE device_requests SET reviewed=1 WHERE id=?", (request_id,))
         self.db.commit()
+
+    def archive_rows(
+        self,
+        destination: Path,
+        selection: Mapping[str, Iterable[str]],
+        info: Mapping[str, str],
+    ) -> dict[str, int]:
+        """Offline only, under the state lock: copy selected rows out, verify, then delete.
+
+        The copy commits to a new SQLite file first and is re-read through its own
+        connection before one live transaction deletes exactly the copied rows.
+        A failure before that commit leaves the live store unchanged.
+        """
+        if destination.exists() or self.db.in_transaction:
+            raise ValueError("history_archive_unavailable")
+        self.db.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS archive_keys"
+            "(kind TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(kind,key))"
+        )
+        self.db.execute("DELETE FROM temp.archive_keys")
+        for kind, keys in selection.items():
+            if kind not in ARCHIVE_KINDS:
+                raise ValueError("history_archive_unavailable")
+            self.db.executemany(
+                "INSERT OR IGNORE INTO temp.archive_keys VALUES(?,?)",
+                ((kind, key) for key in keys),
+            )
+        self.db.commit()
+        self.db.execute("ATTACH DATABASE ? AS archive", (str(destination),))
+        try:
+            self.db.execute("PRAGMA archive.journal_mode=DELETE")
+            self.db.execute("PRAGMA archive.synchronous=FULL")
+            expected: dict[str, int] = {}
+            with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                self.db.execute("CREATE TABLE archive.archive_info(key TEXT PRIMARY KEY, value)")
+                self.db.executemany(
+                    "INSERT INTO archive.archive_info VALUES(?,?)", sorted(info.items())
+                )
+                for table, column, kind in ARCHIVE_TABLES:
+                    where = f"{column} IN (SELECT key FROM temp.archive_keys WHERE kind='{kind}')"
+                    self.db.execute(
+                        f"CREATE TABLE archive.{table} AS SELECT * FROM main.{table} WHERE {where}"
+                    )
+                    expected[table] = int(
+                        self.db.execute(
+                            f"SELECT count(*) FROM main.{table} WHERE {where}"
+                        ).fetchone()[0]
+                    )
+        finally:
+            self.db.execute("DETACH DATABASE archive")
+        check = sqlite3.connect(destination.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            if check.execute("PRAGMA integrity_check").fetchone()[0] != "ok" or any(
+                int(check.execute(f"SELECT count(*) FROM {table}").fetchone()[0]) != expected[table]
+                for table, _, _ in ARCHIVE_TABLES
+            ):
+                raise ValueError("history_archive_verification_failed")
+        finally:
+            check.close()
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            for table, column, kind in ARCHIVE_TABLES:
+                deleted = self.db.execute(
+                    f"DELETE FROM main.{table} WHERE {column} IN "
+                    "(SELECT key FROM temp.archive_keys WHERE kind=?)",
+                    (kind,),
+                ).rowcount
+                if deleted != expected[table]:
+                    raise ValueError("history_archive_verification_failed")
+        self.db.execute("DROP TABLE temp.archive_keys")
+        self.db.commit()
+        return {table: count for table, count in expected.items() if count}
 
     def firmware_summary(self, job_id: str, principal: str) -> dict[str, Any] | None:
         row = self.db.execute(

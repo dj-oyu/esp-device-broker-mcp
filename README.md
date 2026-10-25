@@ -291,8 +291,10 @@ Future authenticated Tunnel ingress (not connected) --------^
   events without consuming them. Gaps caused by eviction or restart are explicit
 - There is one device/session, up to 32 queued jobs by default, 256 cached events,
   a maximum 100 events per read, a 16 KiB HTTP body limit, and a 10,000-record cap
-  for each of plans and jobs. History is never silently pruned: archive/reset
-  offline as an explicit operator action when the cap is reached
+  for each of plans, jobs, device requests and work sessions. History is never
+  silently pruned: when a cap is reached new work is refused with
+  `history_full_archive_offline`; run the offline `cardputer archive` command
+  ([History archive](#history-archive)) as an explicit operator action
 
 ### Interrupted work
 
@@ -353,6 +355,46 @@ original working directory. Review returns `reviewed: true` and `replayed: false
 it does not rerun or mark the original action successful. Do not delete or manually
 alter the database to hide an interrupted operation. No acknowledgement is required
 solely to start a safe new job.
+
+### History archive
+
+`cardputer archive` moves old finished history out of the live SQLite store so new
+plans and jobs are accepted again. It is offline only, like `review`: it takes the
+broker's state lock and refuses with `stop_broker_before_history_archive` while a
+broker runs. It never touches a device, a backup file, an LKG object, a build output
+or a source cache, and it replays nothing.
+
+1. Stop the broker using its existing owner/supervisor procedure.
+2. Run `cardputer archive --state-dir ABSOLUTE_EXISTING_STATE_DIR --dry-run`. The JSON
+   report gives the counts that would move (`archive`), the counts that stay
+   (`kept`) and why rows are protected (`protection`). Nothing is changed.
+3. Run the same command without `--dry-run`. `--keep-latest N` (default 1000,
+   0–10000) also keeps the newest N registrations.
+4. Restart with the same existing config, credentials and state working directory.
+
+Kept regardless of age, together with everything they reach (any string in a kept
+plan or flash summary that names a job or plan, continuation/deferred links and HOME
+recovery links; a linked group moves or stays whole): unfinished jobs, unreviewed
+`needs_review` jobs and device requests, waiting/owning device requests and their
+work sessions, every source fetch, backup, flash and restore job (with their plans,
+so source receipts, backups and restore receipts stay resolvable), the current LKG
+and all LKG history rows (`completed_job` and `baseline`), the newest succeeded build
+of each build output slot with a durable artifact reference, pending deferred jobs,
+issued continuation tickets, and any job whose plan is missing or unreadable.
+
+Moved rows are copied to a new
+`<state_dir>/history-archive/<UTC stamp>-<id>/history.sqlite3` (the same columns,
+plus an `archive_info` table), verified by re-reading that file, and only then deleted
+from the live store in one transaction; rows keyed by a moved job (execution
+requests and audit, flash summaries, fixed-trial evidence, build references,
+continuations, HOME recovery rows, timeline order) move with it. The moved jobs'
+durable job logs (`job-logs/<job_id>.jsonl`) and captures (`captures/<job_id>/`)
+move into the same directory; kept jobs keep theirs, and their status and log reads
+are unchanged. A job log or capture that no live job owns (for example left by an
+interrupted run) moves on the next run. An interruption after the copy leaves rows
+in both places, never lost. The archive is a plain SQLite file for offline
+inspection; the broker never reads it. Job IDs are unique within the live database
+only: once archived, an old job ID is no longer deduplicated.
 
 ## Tool surface
 
