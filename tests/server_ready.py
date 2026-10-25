@@ -2,9 +2,14 @@
 
 The deadline stays short so a server that genuinely cannot start fails fast. When it
 expires, the failure names the uvicorn startup stage that is still pending, the
-time at which each stage was first observed, event-loop/GC stall evidence, every
-thread stack and the asyncio task call graphs. Observation is test-side only: the
-helper polls public-ish ``uvicorn.Server`` state and never patches the broker.
+time at which each stage was first observed, event-loop/GC stall evidence, the
+loop thread's stack sampled while the loop was blocked, every thread stack and the
+asyncio task call graphs. Observation is test-side only: the helper polls
+public-ish ``uvicorn.Server`` state and never patches the broker.
+
+Stacks taken at the deadline only show where the loop is after a synchronous block
+has ended. A watchdog thread therefore samples the loop thread's stack once a single
+block reaches each ``BLOCK_SAMPLE_AT`` duration; it is joined before the wait returns.
 """
 
 from __future__ import annotations
@@ -25,6 +30,10 @@ READY_TIMEOUT = 5.0
 POLL_SECONDS = 0.01
 STALL_SECONDS = 0.25
 MAX_TASKS = 40
+# Sample the loop thread's stack once a single block reaches each duration.
+BLOCK_SAMPLE_AT = (1.0, 3.0, 6.0)
+WATCHDOG_SECONDS = 0.05
+MAX_BLOCK_SAMPLES = 12
 
 STAGES = (
     "config_load",  # Server._serve has not constructed its lifespan yet.
@@ -73,6 +82,76 @@ class _GcTimer:
             self.count += 1
             self.total += spent
             self.longest = max(self.longest, spent)
+
+
+class _StallSampler:
+    """Sample the loop thread's stack while the event loop is blocked.
+
+    The loop calls ``poll()`` on every iteration; a daemon thread compares the time
+    since the last poll with ``BLOCK_SAMPLE_AT``. Identical stacks are folded
+    together, the number of samples is bounded and shared state is behind a lock.
+    """
+
+    def __init__(self, loop_thread: int) -> None:
+        self._loop_thread = loop_thread
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._began = self._last_poll = time.perf_counter()
+        self._block_start = self._last_poll
+        self._next_threshold = 0
+        self._samples: dict[str, list[str]] = {}
+        self._sample_count = 0
+        self._thread = threading.Thread(
+            target=self._run, name="readiness-stall-sampler", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join()
+
+    def poll(self) -> None:
+        with self._lock:
+            self._last_poll = time.perf_counter()
+
+    def _due(self, now: float) -> float | None:
+        """Return the current block length when a new sample is due (lock held)."""
+        if self._last_poll != self._block_start:
+            self._block_start = self._last_poll  # the loop polled; a new block may begin
+            self._next_threshold = 0
+        blocked = now - self._last_poll
+        due = False
+        while (
+            self._next_threshold < len(BLOCK_SAMPLE_AT)
+            and blocked >= BLOCK_SAMPLE_AT[self._next_threshold]
+        ):
+            self._next_threshold += 1
+            due = True
+        return blocked if due and self._sample_count < MAX_BLOCK_SAMPLES else None
+
+    def _run(self) -> None:
+        while not self._stop.wait(WATCHDOG_SECONDS):
+            now = time.perf_counter()
+            with self._lock:
+                blocked = self._due(now)
+            if blocked is None:
+                continue
+            frame = sys._current_frames().get(self._loop_thread)
+            stack = "".join(traceback.format_stack(frame)) if frame is not None else "<none>\n"
+            del frame
+            when = f"blocked {blocked:.1f}s at +{now - self._began:.1f}s"
+            with self._lock:
+                self._samples.setdefault(stack, []).append(when)
+                self._sample_count += 1
+
+    def report(self) -> str:
+        with self._lock:
+            samples = list(self._samples.items())
+        if not samples:
+            return f"<loop never stayed blocked for {BLOCK_SAMPLE_AT[0]:g}s>"
+        return "\n".join(f"--- {'; '.join(whens)} ---\n{stack}" for stack, whens in samples)
 
 
 def _thread_stacks() -> str:
@@ -143,6 +222,7 @@ def readiness_report(
     longest_gap: float,
     stalls: int,
     gc_timer: _GcTimer,
+    sampler: _StallSampler | None = None,
 ) -> str:
     seen = ", ".join(f"{stage}@{first_seen[stage]:.3f}s" for stage in STAGES if stage in first_seen)
     return (
@@ -154,7 +234,9 @@ def readiness_report(
         f"gc during wait: {gc_timer.count} collections, {gc_timer.total:.3f}s total, "
         f"longest {gc_timer.longest:.3f}s; threads: {threading.active_count()}, "
         f"tasks: {len(asyncio.all_tasks())}\n"
-        f"=== thread stacks ===\n{_thread_stacks()}\n"
+        f"=== loop thread stacks while loop was blocked ===\n"
+        f"{sampler.report() if sampler is not None else '<not sampled>'}\n"
+        f"=== thread stacks at deadline ===\n{_thread_stacks()}\n"
         f"=== asyncio tasks (server task first) ===\n{_task_stacks(task)}"
     )
 
@@ -174,8 +256,11 @@ async def wait_until_started(
     longest_gap = 0.0
     gc_timer = _GcTimer()
     gc.callbacks.append(gc_timer)
+    sampler = _StallSampler(threading.get_ident())
+    sampler.start()
     try:
         while True:
+            sampler.poll()
             now = time.perf_counter()
             gap = now - last
             last = now
@@ -199,9 +284,11 @@ async def wait_until_started(
                     longest_gap=longest_gap,
                     stalls=stalls,
                     gc_timer=gc_timer,
+                    sampler=sampler,
                 )
                 print(report, file=sys.stderr, flush=True)
                 raise ServerStartupTimeout(report)
             await asyncio.sleep(POLL_SECONDS)
     finally:
+        sampler.stop()
         gc.callbacks.remove(gc_timer)

@@ -60,6 +60,12 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --no-deps uv==0.12.19
           uv sync --frozen --python python
+      # Tests only: TMP/TEMP on the runner temp drive (D:) instead of the C:
+      # profile temp; this roughly halved Windows test time in CI.
+      - name: Put test scratch on the runner temp drive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./producer/packaging/ci_test_scratch.ps1 -Path "$env:RUNNER_TEMP\test-scratch"
       - name: Unmodified response, durable authorization and pinned FW gate
         working-directory: producer
         run: |

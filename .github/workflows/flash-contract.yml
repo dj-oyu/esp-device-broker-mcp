@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/flash-contract.yml'
+      - 'packaging/ci_test_scratch.ps1'
       - 'src/cardputer_mcp/flash*.py'
       - 'src/cardputer_mcp/firmware_flash.py'
       - 'tests/test_flash*.py'
@@ -75,6 +76,10 @@ jobs:
         with:
           python-version: '3.13.16'
           architecture: x64
+      # Tests only: TMP/TEMP on the runner temp drive (D:) instead of the C:
+      # profile temp; this roughly halved Windows test time in CI.
+      - name: Put test scratch on the runner temp drive
+        run: ./packaging/ci_test_scratch.ps1 -Path "$env:RUNNER_TEMP\test-scratch"
       - name: Offline contract tests without hardware
         run: |
           foreach ($pattern in @('test_flash_manifest_contract.py','test_flash_lifecycle.py','test_flash_backup.py','test_flash_worker.py','test_flash_security.py')) {
