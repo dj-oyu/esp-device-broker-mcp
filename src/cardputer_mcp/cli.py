@@ -15,6 +15,7 @@ from .auth import AuthError, load_client_token, load_environment_token
 from .broker import BrokerError
 from .client import call, connect, validate_url
 from .config import load_settings
+from .history_archive import DEFAULT_KEEP_LATEST, HistoryArchiveError, archive_history
 from .key_operator import run as manage_keys
 from .models import Origin, TestName
 from .operator import acknowledge_device_request_recovery, acknowledge_recovery
@@ -147,6 +148,20 @@ def parser() -> argparse.ArgumentParser:
     review = sub.add_parser("review", help="OFFLINE acknowledgement; never retries a job")
     review.add_argument("--state-dir", type=Path, default=Path(".state"))
     review.add_argument("--job", required=True)
+    archive = sub.add_parser(
+        "archive",
+        help="OFFLINE: move old finished history to an archive file; keeps referenced rows",
+    )
+    archive.add_argument("--state-dir", type=Path, default=Path(".state"))
+    archive.add_argument(
+        "--keep-latest",
+        type=int,
+        default=DEFAULT_KEEP_LATEST,
+        help="Also keep this many of the newest registrations (default %(default)s)",
+    )
+    archive.add_argument(
+        "--dry-run", action="store_true", help="Report what would move; change nothing"
+    )
     sub.add_parser("ports", help="Explicit read-only USB metadata inventory; never opens a port")
     demo = sub.add_parser("demo", help="Two actual MCP clients compete for the same MOCK device")
     demo.add_argument(
@@ -425,11 +440,15 @@ def main() -> None:
             output(inventory_json())
         elif args.command == "review":
             output(acknowledge_recovery(args.state_dir, args.job))
+        elif args.command == "archive":
+            output(
+                archive_history(args.state_dir, keep_latest=args.keep_latest, dry_run=args.dry_run)
+            )
         else:
             asyncio.run(run_client(args))
     except KeyboardInterrupt:
         pass
-    except (AuthError, BrokerError, OperatorClientError) as error:
+    except (AuthError, BrokerError, OperatorClientError, HistoryArchiveError) as error:
         print(f"Request failed: {error}", file=sys.stderr)
         raise SystemExit(1) from None
     except Exception:
