@@ -7,6 +7,7 @@ import socket
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -81,6 +82,7 @@ class SyntheticService:
         }
     )
     status: int | None = None
+    keys: set[str] = field(default_factory=lambda: {KEY})
     lose_response: bool = False
     malformed_notification: bool = False
     gate: asyncio.Event | None = None
@@ -131,8 +133,19 @@ async def synthetic_service() -> AsyncIterator[SyntheticService]:
         service.methods.append(scope["method"])
         headers = dict(scope["headers"])
         status = service.status
-        if headers.get(b"authorization") != f"Bearer {KEY}".encode():
-            status = 401
+        if headers.get(b"authorization") not in {f"Bearer {key}".encode() for key in service.keys}:
+            # Same status and fixed body as the broker's pre-dispatch auth guard.
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send(
+                {"type": "http.response.body", "body": b'{"error":"authentication_required"}'}
+            )
+            return
         if status is not None:
             await send(
                 {
@@ -289,8 +302,13 @@ async def test_identity_must_prove_authenticated_remote_read_scope(synthetic_ser
 
 
 async def test_invalid_auth_and_offline_broker_are_fixed_errors(synthetic_service):
-    with pytest.raises(StdioAdapterError, match="^stdio_adapter_authentication_failed$"):
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_client_key_rejected$"):
         await HTTPBrokerAdapter(synthetic_service.url, UNKNOWN_KEY).check_broker()
+    # Any other 401/403 body is not the broker's auth guard: no key reload.
+    synthetic_service.status = 401
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_authentication_failed$"):
+        await HTTPBrokerAdapter(synthetic_service.url, KEY).check_broker()
+    synthetic_service.status = None
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         unavailable = f"http://127.0.0.1:{listener.getsockname()[1]}/mcp"
@@ -317,7 +335,7 @@ async def test_live_registry_invalidation_fails_without_mutation(registry_servic
         service.now[0] += 11
     else:
         service.registry.revoke(key.metadata.key_id)
-    with pytest.raises(StdioAdapterError, match="^stdio_adapter_authentication_failed$"):
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_client_key_rejected$"):
         await adapter.list_tools()
     assert service.resident.session is None and service.resident.active_job is None
 
@@ -369,20 +387,28 @@ async def test_cancelled_request_does_not_issue_cancel_release_or_replay(synthet
     assert "DELETE" not in service.methods
 
 
-async def _start_stdio(url: str, key: str) -> asyncio.subprocess.Process:
+async def _start_stdio(
+    url: str, key: str, env_file: Path | None = None
+) -> asyncio.subprocess.Process:
     # Test-only synthetic key via environment; never place a bearer token in argv.
     program = (
-        "import asyncio,logging,os,sys; "
+        "import asyncio,logging,os,sys; from pathlib import Path; "
         "from cardputer_mcp.stdio_adapter import run_stdio,StdioAdapterError; "
         "logging.basicConfig(level=logging.DEBUG); "
-        "\ntry: asyncio.run(run_stdio(os.environ['TEST_URL'],os.environ['TEST_KEY']))"
+        "env_file=Path(os.environ['TEST_ENV_FILE']) if os.environ.get('TEST_ENV_FILE') else None"
+        "\ntry: asyncio.run(run_stdio(os.environ['TEST_URL'],os.environ['TEST_KEY'],env_file))"
         "\nexcept StdioAdapterError as exc: print(str(exc),file=sys.stderr);sys.exit(1)"
     )
     return await asyncio.create_subprocess_exec(
         sys.executable,
         "-c",
         program,
-        env={**os.environ, "TEST_URL": url, "TEST_KEY": key},
+        env={
+            **os.environ,
+            "TEST_URL": url,
+            "TEST_KEY": key,
+            "TEST_ENV_FILE": "" if env_file is None else str(env_file),
+        },
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -461,7 +487,7 @@ async def test_stdio_auth_failure_has_empty_stdout_and_sanitized_stderr(syntheti
     output, errors = await asyncio.wait_for(process.communicate(), timeout=10)
     assert process.returncode == 1
     assert output == b""
-    assert b"stdio_adapter_authentication_failed" in errors
+    assert b"stdio_adapter_client_key_rejected" in errors
     assert SECRET.encode() not in errors and UNKNOWN_KEY.encode() not in errors
 
 
@@ -667,3 +693,322 @@ async def test_outcome_unknown_result_carries_fixed_guidance(monkeypatch):
     failing.code = "stdio_adapter_broker_unavailable"
     result = await captured["on_call_tool"](None, params)
     assert [item.text for item in result.content] == ["stdio_adapter_broker_unavailable"]
+
+
+# --- Reloading the private env file after a key rejection -------------------
+
+NEW_KEY = "cpk_" + "e" * 32 + "." + "f" * 64
+META = {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1"},
+    "io.modelcontextprotocol/clientCapabilities": {},
+}
+
+
+def _write_env(path: Path, url: str, key: str) -> Path:
+    path.write_bytes(f"CARDPUTER_BROKER_URL={url}\nCARDPUTER_CLIENT_KEY={key}\n".encode())
+    if os.name == "posix":
+        # The env-file reader requires an owner-only 0600/0400 file on POSIX.
+        path.chmod(0o600)
+    return path
+
+
+def _count_attempts(monkeypatch, adapter: HTTPBrokerAdapter) -> list[str]:
+    tokens: list[str] = []
+    original = adapter._attempt
+
+    async def counting(action, token, **kwargs):
+        tokens.append(token)
+        return await original(action, token, **kwargs)
+
+    monkeypatch.setattr(adapter, "_attempt", counting)
+    return tokens
+
+
+def _assert_no_secrets(text: str, *secrets: str) -> None:
+    # A key id (cpk_<32 hex>) is public broker output; the secret half never is.
+    for secret in secrets:
+        assert secret not in text
+        if secret.startswith("cpk_"):
+            assert secret.split(".", 1)[1] not in text
+    assert "Bearer" not in text
+
+
+async def test_rotated_key_in_env_file_is_used_after_one_reconnect(
+    registry_service, tmp_path, monkeypatch
+):
+    service = registry_service
+    old = service.keys["second"]
+    env_file = _write_env(tmp_path / "client.env", service.url, old.token)
+    adapter = HTTPBrokerAdapter(service.url, old.token, env_file)
+    await adapter.check_broker()
+    rotated = service.registry.rotate(old.metadata.key_id)
+    _write_env(env_file, service.url, rotated.token)
+    attempts = _count_attempts(monkeypatch, adapter)
+    status = await adapter.call_tool(
+        CallToolRequestParams(name="status", arguments={"request": {"view": "device"}})
+    )
+    assert status.structured_content["ok"]
+    assert attempts == [old.token, rotated.token]
+    # Later requests use the new key directly, with no further reload.
+    await adapter.list_tools()
+    assert attempts == [old.token, rotated.token, rotated.token]
+    assert service.resident.session is None and service.resident.active_job is None
+
+
+async def test_unchanged_key_is_not_retried_and_names_the_fix(
+    registry_service, tmp_path, monkeypatch
+):
+    service = registry_service
+    key = service.keys["second"]
+    env_file = _write_env(tmp_path / "client.env", service.url, key.token)
+    adapter = HTTPBrokerAdapter(service.url, key.token, env_file)
+    service.registry.revoke(key.metadata.key_id)
+    attempts = _count_attempts(monkeypatch, adapter)
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_client_key_rejected$"):
+        await adapter.call_tool(CallToolRequestParams(name="status", arguments={}))
+    assert attempts == [key.token]
+
+
+async def test_changed_broker_url_is_not_followed(registry_service, tmp_path, monkeypatch):
+    service = registry_service
+    old = service.keys["second"]
+    env_file = _write_env(tmp_path / "client.env", service.url, old.token)
+    adapter = HTTPBrokerAdapter(service.url, old.token, env_file)
+    rotated = service.registry.rotate(old.metadata.key_id)
+    port = int(service.url.rsplit(":", 1)[1].split("/")[0])
+    other = f"http://127.0.0.1:{1025 if port != 1025 else 1026}/mcp"
+    _write_env(env_file, other, rotated.token)
+    attempts = _count_attempts(monkeypatch, adapter)
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_broker_url_changed$"):
+        await adapter.list_tools()
+    assert attempts == [old.token]
+    assert adapter._token == old.token and adapter._url == service.url
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"", b'CARDPUTER_CLIENT_KEY="quoted"\n', b"CARDPUTER_CLIENT_KEY=" + NEW_KEY.encode() * 2],
+)
+async def test_invalid_env_file_after_rotation_is_a_fixed_error(
+    registry_service, tmp_path, monkeypatch, content
+):
+    service = registry_service
+    old = service.keys["second"]
+    env_file = _write_env(tmp_path / "client.env", service.url, old.token)
+    adapter = HTTPBrokerAdapter(service.url, old.token, env_file)
+    service.registry.rotate(old.metadata.key_id)
+    env_file.write_bytes(content)
+    attempts = _count_attempts(monkeypatch, adapter)
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_client_environment_invalid$"):
+        await adapter.list_tools()
+    assert attempts == [old.token] and adapter._token == old.token
+    # A missing file is reported the same way.
+    env_file.unlink()
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_client_environment_invalid$"):
+        await adapter.list_tools()
+
+
+async def test_retry_happens_at_most_once_even_if_the_file_changes_again(
+    synthetic_service, tmp_path, monkeypatch
+):
+    from cardputer_mcp import client_environment
+
+    service = synthetic_service
+    service.keys = set()
+    env_file = _write_env(tmp_path / "client.env", service.url, NEW_KEY)
+    adapter = HTTPBrokerAdapter(service.url, KEY, env_file)
+    attempts = _count_attempts(monkeypatch, adapter)
+    original = client_environment.load_client_environment
+    loads: list[Path] = []
+
+    def load_and_rotate_again(path):
+        loads.append(path)
+        loaded = original(path)
+        _write_env(env_file, service.url, UNKNOWN_KEY)
+        return loaded
+
+    monkeypatch.setattr(client_environment, "load_client_environment", load_and_rotate_again)
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_client_key_rejected$"):
+        await adapter.call_tool(CallToolRequestParams(name="mixed", arguments={}))
+    assert attempts == [KEY, NEW_KEY] and loads == [env_file]
+    assert service.calls == []
+
+
+async def test_rejected_tool_call_is_sent_once_with_the_new_key(synthetic_service, tmp_path):
+    service = synthetic_service
+    service.keys = {NEW_KEY}
+    env_file = _write_env(tmp_path / "client.env", service.url, NEW_KEY)
+    adapter = HTTPBrokerAdapter(service.url, KEY, env_file)
+    result = await adapter.call_tool(CallToolRequestParams(name="mixed", arguments={}))
+    assert result.content == MIXED.content
+    assert service.calls == [IDENTITY_CALL, ("mixed", {})]
+
+
+async def test_executed_call_is_never_replayed_even_with_a_newer_key(
+    synthetic_service, tmp_path, monkeypatch
+):
+    service = synthetic_service
+    service.keys = {KEY, NEW_KEY}
+    env_file = _write_env(tmp_path / "client.env", service.url, NEW_KEY)
+    adapter = HTTPBrokerAdapter(service.url, KEY, env_file)
+    attempts = _count_attempts(monkeypatch, adapter)
+    service.lose_response = True
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_tool_outcome_unknown$"):
+        await adapter.call_tool(CallToolRequestParams(name="mixed", arguments={}))
+    assert attempts == [KEY] and adapter._token == KEY
+    assert [name for name, _ in service.calls].count("mixed") == 1
+
+
+async def test_rejection_that_does_not_prove_non_execution_is_outcome_unknown(
+    monkeypatch, tmp_path
+):
+    from cardputer_mcp import stdio_adapter
+
+    adapter = HTTPBrokerAdapter("http://127.0.0.1:9000/mcp", KEY, tmp_path / "unused.env")
+    calls: list[str] = []
+
+    async def rejected(action, token, **kwargs):
+        calls.append(token)
+        raise stdio_adapter._KeyRejected(False)
+
+    def reload(path):
+        raise AssertionError("must not re-read the env file")
+
+    monkeypatch.setattr(adapter, "_attempt", rejected)
+    monkeypatch.setattr(stdio_adapter.client_environment, "load_client_environment", reload)
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_tool_outcome_unknown$"):
+        await adapter.call_tool(CallToolRequestParams(name="mixed", arguments={}))
+    assert calls == [KEY]
+
+
+def test_only_a_jsonrpc_request_proves_the_operation_was_rejected():
+    import httpx2
+
+    from cardputer_mcp.stdio_adapter import _is_jsonrpc_request
+
+    url = "http://127.0.0.1:9000/mcp"
+
+    def post(frame: object) -> httpx2.Request:
+        return httpx2.Request("POST", url, json=frame)
+
+    assert _is_jsonrpc_request(post({"jsonrpc": "2.0", "id": 3, "method": "tools/call"}))
+    assert not _is_jsonrpc_request(post({"jsonrpc": "2.0", "method": "notifications/cancelled"}))
+    assert not _is_jsonrpc_request(post([{"jsonrpc": "2.0", "id": 3, "method": "tools/call"}]))
+    assert not _is_jsonrpc_request(httpx2.Request("POST", url, content=b"{"))
+
+
+async def test_adapter_without_env_file_does_not_reload(synthetic_service):
+    adapter = HTTPBrokerAdapter(synthetic_service.url, UNKNOWN_KEY)
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_client_key_rejected$"):
+        await adapter.list_tools()
+
+
+async def test_concurrent_rejections_reload_the_env_file_once(
+    synthetic_service, tmp_path, monkeypatch
+):
+    from cardputer_mcp import client_environment
+
+    service = synthetic_service
+    service.keys = {NEW_KEY}
+    env_file = _write_env(tmp_path / "client.env", service.url, NEW_KEY)
+    adapter = HTTPBrokerAdapter(service.url, KEY, env_file)
+    original = client_environment.load_client_environment
+    loads: list[Path] = []
+
+    def counting(path):
+        loads.append(path)
+        return original(path)
+
+    monkeypatch.setattr(client_environment, "load_client_environment", counting)
+    results = await asyncio.gather(*(adapter.list_tools() for _ in range(3)))
+    assert all(
+        [tool.name for tool in result.tools] == [tool.name for tool in TOOLS] for result in results
+    )
+    assert loads == [env_file]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "stdio_adapter_client_key_rejected",
+        "stdio_adapter_client_environment_invalid",
+        "stdio_adapter_broker_url_changed",
+    ],
+)
+async def test_key_rejection_results_carry_fixed_guidance(monkeypatch, code):
+    from mcp.shared.exceptions import MCPError
+
+    from cardputer_mcp import stdio_adapter
+
+    captured: dict[str, Any] = {}
+
+    def fake_server(name, **kwargs):
+        captured.update(kwargs)
+
+    class Failing:
+        instructions = None
+
+        async def call_tool(self, params):
+            raise StdioAdapterError(code)
+
+        async def list_tools(self, params):
+            raise StdioAdapterError(code)
+
+    monkeypatch.setattr(stdio_adapter, "Server", fake_server)
+    create_stdio_server(Failing())
+    params = CallToolRequestParams(name="status", arguments={"request": {"key": KEY}})
+    result = await captured["on_call_tool"](None, params)
+    assert result.is_error and result.content[0].text == code
+    guidance = json.loads(result.content[1].text)
+    assert guidance["code"] == code and guidance["client_key_rejected"] is True
+    if code == "stdio_adapter_client_key_rejected":
+        assert "keys rotate --key-id <key-id> --write-env <env-file>" in guidance["next_step"]
+        assert "keys issue" in guidance["next_step"]
+        assert "no client restart is needed" in guidance["next_step"]
+    _assert_no_secrets(json.dumps(guidance), KEY)
+    with pytest.raises(MCPError) as listing:
+        await captured["on_list_tools"](None, None)
+    assert listing.value.message == code and listing.value.data == guidance
+
+
+async def test_stdio_process_picks_up_rotated_key_without_restart(registry_service, tmp_path):
+    service = registry_service
+    old = service.keys["second"]
+    env_file = _write_env(tmp_path / "client.env", service.url, old.token)
+    process = await _start_stdio(service.url, old.token, env_file)
+
+    def identity(frame_id: int) -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": frame_id,
+            "method": "tools/call",
+            "params": {
+                "name": "status",
+                "arguments": {"request": {"view": "identity"}},
+                "_meta": META,
+            },
+        }
+
+    try:
+        first = await _exchange(process, identity(1))
+        assert first["result"]["structuredContent"]["authenticated"] is True
+        rotated = service.registry.rotate(old.metadata.key_id)
+        _write_env(env_file, service.url, rotated.token)
+        second = await _exchange(process, identity(2))
+        assert second["result"]["structuredContent"]["authenticated"] is True
+        service.registry.revoke(rotated.metadata.key_id)
+        third = await _exchange(process, identity(3))
+        assert third["result"]["isError"] is True
+        texts = [item["text"] for item in third["result"]["content"]]
+        assert texts[0] == "stdio_adapter_client_key_rejected"
+        assert "keys rotate" in json.loads(texts[1])["next_step"]
+        process.stdin.close()
+        tail, errors = await asyncio.wait_for(process.communicate(), timeout=10)
+        assert process.returncode == 0 and tail == b""
+        visible = json.dumps([second, third]) + errors.decode(errors="replace")
+        _assert_no_secrets(visible, old.token, rotated.token, str(tmp_path))
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.communicate()

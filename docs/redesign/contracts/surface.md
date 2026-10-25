@@ -666,7 +666,9 @@ The description says "job or request" and omits `ticket`.
 8. **stdio codes**: stdio_adapter_invalid_url, stdio_adapter_invalid_key, stdio_adapter_authentication_failed,
    stdio_adapter_endpoint_rejected, stdio_adapter_broker_unavailable, stdio_adapter_tool_outcome_unknown,
    stdio_adapter_remote_read_key_required, stdio_adapter_unsupported_tool_result,
-   stdio_adapter_unsupported_tool_request, stdio_adapter_transport_failed.
+   stdio_adapter_unsupported_tool_request, stdio_adapter_transport_failed,
+   stdio_adapter_client_key_rejected, stdio_adapter_client_environment_invalid,
+   stdio_adapter_broker_url_changed (the last three carry fixed JSON guidance; see STDIO-CLIENTS.md).
 
 ---
 
