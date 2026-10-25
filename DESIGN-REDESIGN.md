@@ -261,7 +261,7 @@
 | 3a | `_work` の分割(`admit` / 登録表 / `finish`)と `JobKind`。**実装済み**(§5.5。実機の確認済み) | 不変 | **要**(書き込みなしの hello→observe) |
 | 3b | `ExecutionAuthority`。**実装済み**(§5.6。実機の確認済み) | 不変 | **要**(フラッシュは明示の承認後) |
 | 3c | 旧 `@op` 層を 6 ツールに畳む(**済**、§5.4) | 不変(tools/list も同じ) | 不要 |
-| 4 | 周辺(`broker_link.py`、永続 JSON を検証だけの厳格モデルへ、小モジュールの統合)。Tunnel の監督の統一は、最後 | 不変 | Tunnel だけ確認 |
+| 4 | 周辺(`broker_link.py`、永続 JSON を検証だけの厳格モデルへ、小モジュールの統合)。Tunnel の監督の統一は、最後。GUI のライブ更新を SSE にした(§5.7) | 不変(GUI の見るデータも同じ) | Tunnel と GUI の確認 |
 | 修正 | §2.1 と §2.2 の穴を 1 つずつ別の PR で | **変わる** | 内容による |
 
 `tools/list` が変わらない限り、ChatGPT 側の Refresh は要らない。段階ごとに、`tools/list` の名前・schema・annotations を、
@@ -277,7 +277,10 @@
 3. **フェンスの穴(§2.1 の 2)は、実装を設計書 §13.3(10) に合わせる。** 親の実行中に使ったチケットにもフェンスをかける。
 4. **ツールの取り違えのガード(§2.2 の 4)は、認証なしのときも動かす。** モックの利用者にも、同じ拒否を返す。
 
-未決のまま残すもの: GUI のロングポーリングの層(約 1,380 行)を定期ポーリングにするか。段階 4 の前に改めて確認する。
+GUI のライブ更新は SSE(Server-Sent Events)にする(2026-10-26、利用者の決定)。理由: 定期ポーリングは、
+変化から表示までが周期の分だけ遅れる。WebSocket は、`websockets` / `wsproto` を依存に足すことになり
+(サーバーとクライアントの両方、PyInstaller と NOTICE も)、しかも GUI のライブ更新は片方向で、双方向は要らない。
+SSE は、今の依存(Starlette / uvicorn と httpx2)だけで書ける。中身は §5.7。
 
 ### 5.1 その後の決定と変更(2026-10-25)
 
@@ -434,6 +437,49 @@
   needs_review は増えなかった。NVS などのデータ領域は書いていない。取り消し・失敗・回復の経路は、実機では試して
   いない。
 
+### 5.7 段階 4: GUI のライブ更新を SSE に(2026-10-26)
+
+- ロングポーリングの `POST /operator/live` を消して、`GET /operator/events`(`text/event-stream`)にした。
+  ほかの operator の経路と同じ関所を通る: `LoopbackOnly`(ループバック、Host、Origin、転送ヘッダー、認証)、
+  `OperatorAPI` の認証とローカルの `control` の確認、クエリ文字列の拒否。主体ごとの投影(`cancel_available` など)も同じ。
+  GUI のほかに、この経路を使うものはなかった(src、tests、docs、packaging を grep した)。
+- 流れ: つないだら、まず全体の `snapshot` を 1 つ送る。その後は、`operator_changes` のリビジョンが動くたびに
+  `delta` を 1 つ送る。主体が変わったら `reset`(全体)を送る。各イベントは、今までの応答と同じ形の JSON
+  (`ok`、`schema_version`、`kind`、`cursor` など)を 1 行の `data:` にしたもので、`id: <epoch>:<sequence>` を付ける。
+  `gui_live_state` の reducer は変えていない。
+- 合体と上限: 起きた後は、その時点のリビジョンで 1 回だけ取り直す。通知は 1 つの `asyncio.Event` に畳むので、
+  待ちの列はない。遅い読み手では `send` の背圧で止まるだけで、メモリーは増えない。同時に開けるのは 8 本
+  (`MAX_STREAMS`)。超えたら、ストリームを始める前に、今までと同じ JSON の `unavailable` を返す。
+- 通知なしの変化: 起きるたびに、今までの heartbeat の確認(`maintenance_tick`、報告の読み権限の失効、TTL の期限で
+  `notify_logs`)を行う。期限(`expiry_at`)が来たら、通知がなくても起きて取り直す。何も送らずに 25 秒たったら、
+  SSE のコメント `: ping` を送る。GUI は `: ping` を、今までと同じ `heartbeat` として受け取る。
+- 権限の確かめ直し: 起きるたびに、今の資格を確かめ直す。失効していたら、最後のイベント
+  `{"ok": false, "error": "authentication_required"}`(または `local_operator_required`)を送って閉じる。
+  GUI はこれを HTTP 401/403 と同じ認証の失敗として扱う(自動の再接続はしない)。始める前の拒否は、今までと同じ
+  HTTP 401/403 と JSON の境界のまま。
+- `Last-Event-ID` は使わない。再接続は、毎回、新しいカーソルで全体の `snapshot` から始める。カーソルの番号は
+  ブローカーの中で増え続けるので、reducer の「番号が戻ったら拒否」はそのまま働く。前の `MAX_BASELINES` の
+  カーソル表は要らなくなったので消した。
+- 終わり方:
+  - 読み手の切断は、`http.disconnect` を待つタスクで知る。`finally` で購読を外し、本数を戻す。
+  - uvicorn は、止めるときに、開いている応答が終わるのを待ってから lifespan(ブローカーの `close`)に進む。
+    終わらないストリームがあると、止まらない(`timeout_graceful_shutdown` が既定のなしのとき)。
+    そこで `cli serve` は `uvicorn.run` の代わりに、`shutdown` の最初に `server.end_operator_streams` を呼ぶ
+    `uvicorn.Server` の子クラスで動かす。これで、待つ前にストリームが閉じる。ほかの要求は打ち切らない。
+  - `Broker.close` は、`closing` を立てた後に 1 回 `operator_changes.notify()` を呼ぶ。開いているストリームは
+    起きて、`closing` を見て閉じる。
+- GUI の側(`gui_live_transport.py`): httpx2 のストリームで読み、`EventStreamParser`(CR、LF、CRLF、チャンクの
+  またぎ、コメント、複数行の `data`、1 イベント 512 KiB の上限)で分ける。読みのタイムアウトは今までの 35 秒
+  (heartbeat の 25 秒より長い)。ストリームが終わる・切れるのは、再試行してよい切断(`peer_disconnected`)。
+  再試行・待ち時間・診断の決まり(`gui_live_retry.py`)は変えていない。
+- 確かめたこと(Windows、ファイルごとに pytest): `test_operator_live_http.py`(実 uvicorn での snapshot・delta・
+  ログの変化と認証の拒否、起きるたびの資格の確かめ直し、8 本の上限、切断と取り消しの後始末、`close` と
+  `Broker.close` で閉じる、合体と遅い読み手、期限での取り直し、`: ping`、`cli._Server` の停止でストリームが閉じる
+  こと(フックなしでは止まらないことも確かめた))、`test_gui_live_transport.py`(パーサー、順序、拒否と切断の診断、
+  切断の後の再接続)、`test_operator_refusals.py`、`test_gui_preview_http.py` など。`tools/list` は変わらない
+  (`tests/test_surface_snapshot.py` はそのまま通る)。
+- 実機の GUI での確認は未実施。
+
 ## 6. 未検証
 
 - 台帳の「SPEC」「speculation」の項目は、実行して確かめていない。各段階の始めに、テストで確かめる。
@@ -441,3 +487,4 @@
   チェーン(§5.5、§5.6)。リストアのチェーン、フラッシュの取り消し・失敗・回復の経路、ファームウェアの
   ハッシュのフェンスは、実機では未確認。
 - 親クラウドクライアントからの MCP メタデータの照合は、0.13.0 では未実施。
+- GUI のライブ更新の SSE(§5.7)は、実機の GUI(Windows の Tk、スリープからの復帰、長時間の接続)では未確認。

@@ -356,6 +356,8 @@ class Broker:
         if self.store is None:
             return
         self.closing = True
+        # Wake operator event streams so they end instead of holding shutdown open.
+        self.operator_changes.notify()
         for app_run in self.app_sessions.jobs.values():
             app_run.cancelled.set()
         # Release completed private output before any service shutdown can yield.

@@ -1,4 +1,4 @@
-"""Read-only worker transport boundaries, delivery gaps, and cancellation."""
+"""Read-only worker transport boundaries, event streams, delivery gaps, and cancellation."""
 
 import asyncio
 import json
@@ -11,13 +11,16 @@ from typing import Any
 import httpx2
 import pytest
 
-from cardputer_mcp import gui_live_transport
+from cardputer_mcp import gui_live_transport, operator_live
+from cardputer_mcp.gui_live_retry import LiveRetry
 from cardputer_mcp.gui_live_transport import (
     AUTH_FAILED,
     INVALID_RESPONSE,
     MAX_RESPONSE_BYTES,
     REJECTED,
     STARTUP_FAILED,
+    UNREACHABLE,
+    EventStreamParser,
     LiveRunner,
 )
 from cardputer_mcp.operator_client import OperatorClient, OperatorClientError
@@ -34,6 +37,37 @@ def envelope(kind="snapshot", sequence=1, **fields):
         "cursor": {"epoch": EPOCH, "sequence": sequence},
         **fields,
     }
+
+
+def sse(*payloads):
+    return b"".join(b"data: " + json.dumps(payload).encode() + b"\n\n" for payload in payloads)
+
+
+class Events(httpx2.AsyncByteStream):
+    """A mock event stream: its chunks, then held open (or ended) until cancelled."""
+
+    def __init__(self, *chunks, held=None, cancelled=None, hold=True):
+        self.chunks, self.held, self.cancelled, self.hold = chunks, held, cancelled, hold
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+        if not self.hold:
+            return
+        if self.held is not None:
+            self.held.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            if self.cancelled is not None:
+                self.cancelled.set()
+            raise
+
+
+def stream(*chunks, **options):
+    return httpx2.Response(
+        200, headers={"content-type": "text/event-stream"}, stream=Events(*chunks, **options)
+    )
 
 
 def wait_until(predicate: Callable[[], Any], timeout=2):
@@ -115,13 +149,11 @@ def test_logs_are_bounded_selected_reads_with_per_request_identity(runner_factor
     requests = []
 
     async def handler(request):
+        if request.url.path == "/operator/events":
+            requests.append((request.url.path, None))
+            return stream(sse(envelope()), held=live_held)
         payload = json.loads(request.content)
         requests.append((request.url.path, payload))
-        if request.url.path == "/operator/live":
-            if payload["cursor"] is None:
-                return httpx2.Response(200, json=envelope())
-            live_held.set()
-            await asyncio.Future()
         if payload["job_id"] == "job_A":
             first_held.set()
             try:
@@ -168,9 +200,11 @@ def test_real_localhost_auth_ignores_proxies_and_does_not_follow_redirect(monkey
     sink_requests = []
 
     class Sink(BaseHTTPRequestHandler):
-        def do_POST(self):
+        def do_GET(self):
             sink_requests.append(self.headers.get("Authorization"))
             self.send_error(500)
+
+        do_POST = do_GET
 
         def log_message(self, *args):
             pass
@@ -178,9 +212,8 @@ def test_real_localhost_auth_ignores_proxies_and_does_not_follow_redirect(monkey
     sink = ThreadingHTTPServer(("127.0.0.1", 0), Sink)
 
     class Redirect(BaseHTTPRequestHandler):
-        def do_POST(self):
-            body = self.rfile.read(int(self.headers["Content-Length"]))
-            requests.append((self.path, self.headers.get("Authorization"), json.loads(body)))
+        def do_GET(self):
+            requests.append((self.path, self.headers.get("Authorization"), self.command))
             self.send_response(302)
             self.send_header("Location", f"http://127.0.0.1:{sink.server_port}/capture")
             self.send_header("Content-Length", "0")
@@ -206,7 +239,7 @@ def test_real_localhost_auth_ignores_proxies_and_does_not_follow_redirect(monkey
         runner.start(1)
         events = wait_until(runner.drain)
         assert events[0].payload == {"error": REJECTED}
-        assert requests == [("/operator/live", f"Bearer {TOKEN}", {"cursor": None})]
+        assert requests == [("/operator/events", f"Bearer {TOKEN}", "GET")]
         assert sink_requests == []
     finally:
         try:
@@ -233,26 +266,22 @@ def test_pause_cancels_both_reads_and_requires_explicit_new_generation(runner_fa
 
     async def handler(request):
         nonlocal snapshots
-        payload = json.loads(request.content)
-        requests.append((request.url.path, payload))
-        if request.url.path == "/operator/job-logs":
-            logs_held.set()
-            try:
-                await asyncio.Future()
-            except asyncio.CancelledError:
-                logs_cancelled.set()
-                return httpx2.Response(200, json={"ok": True, "entries": ["late output"]})
-        if payload["cursor"] is None:
+        if request.url.path == "/operator/events":
+            requests.append((request.url.path, None))
             snapshots += 1
             if snapshots == 2:
                 resumed.set()
-            return httpx2.Response(200, json=envelope(sequence=snapshots))
-        live_held.set()
+            return stream(
+                sse(envelope(sequence=snapshots)), held=live_held, cancelled=live_cancelled
+            )
+        payload = json.loads(request.content)
+        requests.append((request.url.path, payload))
+        logs_held.set()
         try:
             await asyncio.Future()
         except asyncio.CancelledError:
-            live_cancelled.set()
-            return httpx2.Response(200, json=envelope("heartbeat", sequence=snapshots))
+            logs_cancelled.set()
+            return httpx2.Response(200, json={"ok": True, "entries": ["late output"]})
 
     runner = make(handler)
     runner.start(1)
@@ -269,7 +298,7 @@ def test_pause_cancels_both_reads_and_requires_explicit_new_generation(runner_fa
     assert not runner._current(1)
     runner.read_logs(1, "job_B")
     runner.reconnect(1)
-    assert len(requests) == 3
+    assert len(requests) == 2
     runner.reconnect(2)
     assert resumed.wait(1)
     events = wait_until(runner.drain)
@@ -351,11 +380,8 @@ def test_explicit_image_read_is_once_bounded_authenticated_and_independent_of_lo
 
     async def handler(request):
         requests.append(request)
-        if request.url.path == "/operator/live":
-            if json.loads(request.content)["cursor"] is None:
-                return httpx2.Response(200, json=envelope())
-            held.set()
-            await asyncio.Future()
+        if request.url.path == "/operator/events":
+            return stream(sse(envelope()), held=held)
         if request.url.path == "/operator/image":
             return httpx2.Response(200, json={"ok": True, "retained": "preview JSON"})
         return httpx2.Response(200, json={"ok": True, "entries": []})
@@ -363,7 +389,12 @@ def test_explicit_image_read_is_once_bounded_authenticated_and_independent_of_lo
     runner = make(handler)
     runner.start(1)
     assert held.wait(1)
-    assert all(request.url.path == "/operator/live" for request in requests)
+    assert [(request.method, request.url.path) for request in requests] == [
+        ("GET", "/operator/events")
+    ]
+    assert requests[0].headers["accept"] == "text/event-stream"
+    assert requests[0].headers["authorization"] == f"Bearer {TOKEN}"
+    assert requests[0].content == b"" and TOKEN not in str(requests[0].url)
     runner.drain()
     image_id = runner.read_image(1, "capture_A", expires_at=time.monotonic() + 10)
     events = wait_until(runner.drain)
@@ -407,10 +438,7 @@ def test_image_read_is_cancelled_and_late_result_fenced_by_view_lifecycle(runner
             except asyncio.CancelledError:
                 cancelled.set()
                 return httpx2.Response(200, json={"ok": True, "body": "late preview"})
-        if json.loads(request.content)["cursor"] is None:
-            return httpx2.Response(200, json=envelope())
-        live_held.set()
-        await asyncio.Future()
+        return stream(sse(envelope()), held=live_held)
 
     runner = make(handler)
     runner.start(1)
@@ -454,10 +482,7 @@ def test_image_failures_are_safe_bounded_and_never_retry_or_disconnect_live(
             return httpx2.Response(
                 status, content=body, headers={"location": "http://secret.example/" + TOKEN}
             )
-        if json.loads(request.content)["cursor"] is None:
-            return httpx2.Response(200, json=envelope())
-        held.set()
-        await asyncio.Future()
+        return stream(sse(envelope()), held=held)
 
     runner = make(handler)
     runner.start(1)
@@ -490,19 +515,28 @@ def test_real_three_connection_budget_allows_held_live_log_and_image_without_can
     class Server(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
+        def do_GET(self):
+            requests.append(("live", self.headers.get("Authorization"), None))
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(sse(envelope()))
+                self.wfile.flush()
+            except OSError:
+                return
+            held["live"].set()
+            releases["live"].wait(timeout=3)
+
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             path = self.path.removeprefix("/operator/")
             requests.append((path, self.headers.get("Authorization"), payload))
-            if path == "live" and payload["cursor"] is None:
-                response = envelope()
-            else:
-                held[path].set()
-                if not releases[path].wait(timeout=3):
-                    return
-                response = (
-                    envelope("heartbeat") if path == "live" else {"ok": True, "retained": path}
-                )
+            held[path].set()
+            if not releases[path].wait(timeout=3):
+                return
+            response = {"ok": True, "retained": path}
             body = json.dumps(response).encode()
             try:
                 self.send_response(200)
@@ -524,7 +558,8 @@ def test_real_three_connection_budget_allows_held_live_log_and_image_without_can
         runner = LiveRunner(OperatorClient(f"http://127.0.0.1:{server.server_port}", TOKEN))
         runner.start(1)
         assert held["live"].wait(1)
-        runner.drain()
+        # The server thread writes the snapshot before it holds; wait for its delivery.
+        assert [event.kind for event in wait_until(runner.drain)] == ["message"]
         log_id = runner.read_logs(1, "job_A")
         assert held["job-logs"].wait(1)
         image_id = runner.read_image(1, "job_B")
@@ -587,3 +622,210 @@ def test_live_failure_diagnostics_classify_status_without_response_text(
     assert details["generation"] == 1 and details["elapsed_ms"] >= 0
     assert details["code"] is None and details["utc"].endswith("+00:00")
     assert TOKEN not in repr(event) and "PRIVATE" not in repr(event)
+
+
+def test_event_stream_parser_handles_split_chunks_comments_and_multiline_data():
+    payload = (
+        b"\xef\xbb\xbf: ping\r\n\r\n"
+        b"id: " + EPOCH.encode() + b":1\r\n"
+        b'data: {"a":\r\n'
+        b"data:1}\r\n\r\n"
+        b"event: other\ndata: ignored\n\n"
+        b"retry: 10\rdata: caf\xc3\xa9\r\r"
+        b"data\n\n"
+        b": ping\n\n"
+    )
+    expected = [None, '{"a":\n1}', "café", "", None]
+    whole = EventStreamParser().feed(payload)
+    assert whole == expected
+    for size in (1, 2, 3, 7):
+        parser = EventStreamParser()
+        items = []
+        for index in range(0, len(payload), size):
+            items.extend(parser.feed(payload[index : index + size]))
+        assert items == expected
+    # A CRLF split across chunks is one line end, not an extra blank line.
+    parser = EventStreamParser()
+    assert parser.feed(b"data: x\r") == []
+    assert parser.feed(b"\ndata: y\r") == []
+    assert parser.feed(b"\n\r\n") == ["x\ny"]
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [[b"data: " + b"x" * 64], [b"data: " + b"x" * 30 + b"\n", b"data: " + b"x" * 40 + b"\n"]],
+    ids=["line", "event"],
+)
+def test_event_stream_parser_bounds_lines_and_events(chunks):
+    parser = EventStreamParser(limit=64)
+    with pytest.raises(ValueError):
+        for chunk in chunks:
+            parser.feed(chunk)
+
+
+def test_event_stream_parser_rejects_invalid_utf8():
+    with pytest.raises(ValueError):
+        EventStreamParser().feed(b"data: \xff\n\n")
+
+
+def messages(runner, count):
+    events = []
+
+    def collected():
+        events.extend(runner.drain())
+        return len(events) >= count
+
+    wait_until(collected)
+    return events
+
+
+def test_stream_delivers_snapshot_delta_and_comment_heartbeat_in_order(runner_factory):
+    make, options = runner_factory
+    first = envelope()
+    delta = envelope(
+        "delta",
+        2,
+        base_cursor=first["cursor"],
+        upsert=[],
+        remove=[],
+        order=[],
+        has_more=False,
+        logs_changed=True,
+    )
+    body = sse(first) + b": ping\n\n" + sse(delta)
+    # Arbitrary chunk boundaries inside events, comments and CRLF pairs.
+    chunks = [body[index : index + 5] for index in range(0, len(body), 5)]
+
+    async def handler(request):
+        return stream(*chunks)
+
+    runner = make(handler)
+    runner.start(1)
+    events = messages(runner, 3)
+    assert [event.kind for event in events] == ["message"] * 3
+    assert events[0].payload == first
+    assert events[1].payload == envelope("heartbeat", 1)
+    assert events[2].payload == delta
+    assert all(event.generation == 1 for event in events)
+    # The read timeout outlasts the broker heartbeat, so only a dead stream times out.
+    timeout = options[0]["timeout"]
+    assert timeout.read > operator_live.HEARTBEAT_SECONDS
+    assert timeout.connect == 2.0
+
+
+@pytest.mark.parametrize(
+    "body,error,reason,code,retryable",
+    [
+        (
+            sse({"ok": False, "error": "unavailable"}),
+            REJECTED,
+            "broker_rejected",
+            "unavailable",
+            True,
+        ),
+        (
+            sse({"ok": False, "error": "authentication_required"}),
+            AUTH_FAILED,
+            "authentication_failed",
+            "authentication_required",
+            False,
+        ),
+        (
+            sse({"ok": False, "error": "local_operator_required"}),
+            AUTH_FAILED,
+            "authentication_failed",
+            "local_operator_required",
+            False,
+        ),
+        (sse({"ok": False, "error": TOKEN}), REJECTED, "broker_rejected", None, False),
+        (
+            b"data: not json " + TOKEN.encode() + b"\n\n",
+            INVALID_RESPONSE,
+            "invalid_response",
+            None,
+            False,
+        ),
+        (sse(envelope("delta", 2)), INVALID_RESPONSE, "invalid_response", None, False),
+        (b"", UNREACHABLE, "peer_disconnected", None, True),
+    ],
+    ids=["unavailable", "unauthenticated", "forbidden", "unknown", "json", "first", "eof"],
+)
+def test_stream_refusals_and_drops_are_fixed_diagnostics(
+    runner_factory, body, error, reason, code, retryable
+):
+    make, _ = runner_factory
+
+    async def handler(request):
+        return stream(body, hold=False)
+
+    runner = make(handler)
+    runner.start(1)
+    event = wait_until(runner.drain)[-1]
+    assert event.kind == "disconnected" and event.payload == {"error": error}
+    assert event.diagnostic["reason"] == reason
+    assert event.diagnostic["code"] == code and event.diagnostic["retryable"] is retryable
+    assert TOKEN not in repr(event)
+
+
+def test_mid_stream_refusal_follows_delivered_events(runner_factory):
+    make, _ = runner_factory
+
+    async def handler(request):
+        return stream(sse(envelope(), {"ok": False, "error": "unavailable"}), hold=False)
+
+    runner = make(handler)
+    runner.start(1)
+    events = messages(runner, 2)
+    assert [event.kind for event in events] == ["message", "disconnected"]
+    assert events[1].diagnostic["code"] == "unavailable" and events[1].diagnostic["retryable"]
+
+
+@pytest.mark.parametrize(
+    "content_type,body,expected,code,retryable",
+    [
+        ("application/json", {"ok": False, "error": "unavailable"}, REJECTED, "unavailable", True),
+        ("application/json", {"ok": True}, INVALID_RESPONSE, None, False),
+        ("text/plain", {"ok": True}, INVALID_RESPONSE, None, False),
+    ],
+)
+def test_json_refusal_before_stream_start_keeps_error_boundary(
+    runner_factory, content_type, body, expected, code, retryable
+):
+    make, _ = runner_factory
+
+    async def handler(request):
+        return httpx2.Response(
+            200, headers={"content-type": content_type}, content=json.dumps(body).encode()
+        )
+
+    runner = make(handler)
+    runner.start(1)
+    event = wait_until(runner.drain)[0]
+    assert event.payload == {"error": expected}
+    assert event.diagnostic["code"] == code and event.diagnostic["retryable"] is retryable
+
+
+def test_dropped_stream_is_retryable_and_reconnect_receives_a_fresh_snapshot(runner_factory):
+    make, _ = runner_factory
+    requests = []
+
+    async def handler(request):
+        requests.append((request.method, request.url.path, request.headers.get("last-event-id")))
+        if len(requests) == 1:
+            return stream(sse(envelope()), hold=False)
+        return stream(sse(envelope(sequence=7)))
+
+    runner = make(handler)
+    runner.start(1)
+    events = messages(runner, 2)
+    assert events[0].payload["kind"] == "snapshot"
+    dropped = events[1]
+    assert dropped.kind == "disconnected" and dropped.payload == {"error": UNREACHABLE}
+    retry = LiveRetry()
+    retry.failed(dropped.diagnostic, 100.0, jitter=1.0)
+    assert not retry.stopped and retry.deadline == 101.0
+    runner.reconnect(2)
+    event = wait_until(runner.drain)[0]
+    assert event.generation == 2 and event.payload == envelope(sequence=7)
+    # Every (re)connect is a full snapshot; no Last-Event-ID is sent.
+    assert requests == [("GET", "/operator/events", None)] * 2

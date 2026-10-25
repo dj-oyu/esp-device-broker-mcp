@@ -1,27 +1,37 @@
-"""Guarded localhost subscriptions plus deterministic ASGI wait/auth boundaries."""
+"""Guarded localhost event streams plus deterministic ASGI stream/auth boundaries."""
 
 import asyncio
 import json
+import socket
 from types import SimpleNamespace
 
 import httpx2
 import pytest
+import uvicorn
+from server_ready import LOG_LEVEL, wait_until_started
 from test_authenticated_mock import authenticated_mock as authenticated_mock
+from test_authenticated_mock import event_loop_policy as event_loop_policy
 from test_operator_timeline import prepare, running
 
-from cardputer_mcp import operator_live
+from cardputer_mcp import cli, operator_live
+from cardputer_mcp.auth import AuthState
 from cardputer_mcp.broker import Broker, RetainedDeviceObservation, digest_plan
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.config import SerialSettings, Settings
 from cardputer_mcp.device_observation import DeviceLogCollector
 from cardputer_mcp.gui_live_state import LiveState, apply, begin
+from cardputer_mcp.gui_live_transport import EventStreamParser
 from cardputer_mcp.models import Origin
 from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.operator_api import OperatorAPI
+from cardputer_mcp.operator_live import OperatorLive
 from cardputer_mcp.ports import DeviceSelector, PortInfo
 from cardputer_mcp.serial_backend import SerialBackend
+from cardputer_mcp.server import create_app
 
 LOCAL = "a" * 64
+REMOTE = "b" * 64
+PING = object()
 
 
 def actor(name="owner", scopes=frozenset({"read", "control"})):
@@ -44,7 +54,7 @@ async def operator(tmp_path):
         await broker.close()
 
 
-def request(api, body, route="live", *, raw=None):
+def request(api, body, route="job-logs", *, raw=None):
     received = asyncio.Queue()
     received.put_nowait(
         {"type": "http.request", "body": json.dumps(body).encode() if raw is None else raw}
@@ -70,70 +80,165 @@ def request(api, body, route="live", *, raw=None):
     return task, output, received
 
 
-async def answer(api, body, route="live", *, raw=None):
+async def answer(api, body, route="job-logs", *, raw=None):
     task, output, _ = request(api, body, route, raw=raw)
     await asyncio.wait_for(task, 2)
     return output[0]["status"], json.loads(output[1]["body"])
 
 
-async def waiting(api, count=1):
+class Stream:
+    """One direct ASGI ``GET /operator/events``; events are parsed like the GUI does."""
+
+    def __init__(self, api, *, method="GET", query=b"", gate=None):
+        self.received = asyncio.Queue()
+        self.received.put_nowait({"type": "http.request", "body": b""})
+        self.messages = asyncio.Queue()
+        self.parser = EventStreamParser()
+        self.items = []
+        self.gate = gate
+        self.task = asyncio.create_task(
+            api(
+                {
+                    "type": "http",
+                    "path": "/operator/events",
+                    "method": method,
+                    "query_string": query,
+                    "headers": [],
+                },
+                self.received.get,
+                self.send,
+            )
+        )
+
+    async def send(self, message):
+        if self.gate is not None and message.get("more_body"):
+            await self.gate.wait()
+        await self.messages.put(message)
+
+    async def start(self):
+        message = await asyncio.wait_for(self.messages.get(), 2)
+        assert message["type"] == "http.response.start"
+        return message
+
+    async def json_refusal(self):
+        start = await self.start()
+        body = await asyncio.wait_for(self.messages.get(), 2)
+        await asyncio.wait_for(self.task, 2)
+        return start["status"], json.loads(body["body"])
+
+    async def next(self):
+        """The next data event (dict) or heartbeat comment (PING); None at stream end."""
+        async with asyncio.timeout(2):
+            while not self.items:
+                message = await self.messages.get()
+                if message["type"] == "http.response.start":
+                    continue
+                self.items.extend(self.parser.feed(message.get("body", b"")))
+                if not message.get("more_body", False) and not self.items:
+                    return None
+        item = self.items.pop(0)
+        return PING if item is None else json.loads(item)
+
+    def pending(self):
+        return not self.messages.empty() or bool(self.items)
+
+    async def disconnect(self):
+        self.received.put_nowait({"type": "http.disconnect"})
+        await asyncio.wait_for(self.task, 2)
+
+
+async def opened(api, *, gate=None):
+    stream = Stream(api, gate=gate)
+    start = await stream.start()
+    assert start["status"] == 200
+    headers = dict(start["headers"])
+    assert headers[b"content-type"] == b"text/event-stream; charset=utf-8"
+    assert headers[b"cache-control"] == b"no-store"
+    return stream, await stream.next()
+
+
+async def settled(api, count):
     async with asyncio.timeout(2):
-        while api.live.waiters != count:
+        while api.live.streams != count:
             await asyncio.sleep(0)
 
 
-async def test_guarded_localhost_snapshot_commit_log_wakeup_and_auth(authenticated_mock):
+class Reader:
+    """Parses one real HTTP event stream; a heartbeat comment is returned as PING."""
+
+    def __init__(self, response):
+        self.chunks = response.aiter_bytes()
+        self.parser = EventStreamParser()
+        self.items = []
+
+    async def next(self):
+        async with asyncio.timeout(2):
+            while not self.items:
+                self.items.extend(self.parser.feed(await anext(self.chunks)))
+        item = self.items.pop(0)
+        return PING if item is None else json.loads(item)
+
+    async def rest(self):
+        remaining = b""
+        async with asyncio.timeout(3):
+            async for chunk in self.chunks:
+                remaining += chunk
+        return remaining
+
+
+async def test_guarded_localhost_stream_snapshot_commit_log_wakeup_and_auth(authenticated_mock):
     url, broker = authenticated_mock
     async with httpx2.AsyncClient(
         base_url=url.removesuffix("/mcp"),
         trust_env=False,
         headers={"Authorization": "Bearer " + LOCAL},
+        timeout=httpx2.Timeout(5.0),
     ) as http:
-        response = await http.post("/operator/live", json={"cursor": None})
-        snapshot = response.json()
-        assert response.headers["cache-control"] == "no-store"
-        assert snapshot["ok"] and snapshot["kind"] == "snapshot"
-        assert snapshot["schema_version"] == 1
-        model = begin(LiveState())
-        model = apply(model, snapshot, model.generation, asyncio.get_running_loop().time())
-        assert model.connection == "live" and model.cursor == snapshot["cursor"]
-        assert model.snapshot is not None and model.timeline is not None
-        assert snapshot["state"]["broker_epoch"] == snapshot["timeline"]["broker_epoch"]
-        held = asyncio.create_task(http.post("/operator/live", json={"cursor": snapshot["cursor"]}))
-        await asyncio.sleep(0.03)
-        assert not held.done()
-        broker._store().add_job("committed", "c" * 64)
-        delta = (await asyncio.wait_for(held, 2)).json()
-        assert delta["kind"] == "delta" and delta["base_cursor"] == snapshot["cursor"]
-        assert delta["upsert"][0]["job_id"] == "committed" and delta["order"] == ["committed"]
-        model = apply(model, delta, model.generation, asyncio.get_running_loop().time())
-        assert model.connection == "live" and model.card("committed") is not None
-        assert model.cursor == delta["cursor"]
-        log = BuildLogs("ephemeral:local_cli", on_change=broker.operator_changes.notify_logs)
-        held = asyncio.create_task(http.post("/operator/live", json={"cursor": delta["cursor"]}))
-        await asyncio.sleep(0.03)
-        log.append("warning: retained output")
-        logs = (await asyncio.wait_for(held, 2)).json()
-        assert logs["kind"] == "delta" and logs["logs_changed"]
-        assert logs["upsert"] == [] and "retained output" not in json.dumps(logs)
-        model = apply(model, logs, model.generation, asyncio.get_running_loop().time())
-        assert model.connection == "live" and model.cursor == logs["cursor"]
+        async with http.stream("GET", "/operator/events") as response:
+            reader = Reader(response)
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            assert response.headers["cache-control"] == "no-store"
+            snapshot = await reader.next()
+            assert snapshot["ok"] and snapshot["kind"] == "snapshot"
+            assert snapshot["schema_version"] == 1
+            model = begin(LiveState())
+            model = apply(model, snapshot, model.generation, asyncio.get_running_loop().time())
+            assert model.connection == "live" and model.cursor == snapshot["cursor"]
+            assert model.snapshot is not None and model.timeline is not None
+            assert snapshot["state"]["broker_epoch"] == snapshot["timeline"]["broker_epoch"]
+            broker._store().add_job("committed", "c" * 64)
+            delta = await reader.next()
+            assert delta["kind"] == "delta" and delta["base_cursor"] == snapshot["cursor"]
+            assert delta["upsert"][0]["job_id"] == "committed" and delta["order"] == ["committed"]
+            model = apply(model, delta, model.generation, asyncio.get_running_loop().time())
+            assert model.connection == "live" and model.card("committed") is not None
+            assert model.cursor == delta["cursor"]
+            log = BuildLogs("ephemeral:local_cli", on_change=broker.operator_changes.notify_logs)
+            log.append("warning: retained output")
+            logs = await reader.next()
+            assert logs["kind"] == "delta" and logs["logs_changed"]
+            assert logs["upsert"] == [] and "retained output" not in json.dumps(logs)
+            model = apply(model, logs, model.generation, asyncio.get_running_loop().time())
+            assert model.connection == "live" and model.cursor == logs["cursor"]
         for headers, status in (
-            ({"Authorization": "Bearer " + "b" * 64}, 403),
+            ({"Authorization": "Bearer " + REMOTE}, 403),
             ({"Authorization": "Bearer invalid"}, 401),
             ({"Origin": "https://example.invalid"}, 403),
         ):
-            denied = await http.post("/operator/live", json={"cursor": None}, headers=headers)
+            denied = await http.get("/operator/events", headers=headers)
             assert denied.status_code == status
+            assert denied.headers["content-type"] == "application/json"
+        # The long-poll route is gone; nothing else serves it.
+        assert (await http.post("/operator/live", json={"cursor": None})).status_code == 404
     assert broker.backend.calls == 0
 
 
 @pytest.mark.parametrize("change", [None, "read_only", "remote", "another_owner"])
-async def test_current_grant_rechecked_after_held_request(operator, change):
+async def test_current_grant_rechecked_on_every_wake(operator, change):
     api, broker, current = operator
-    _, initial = await answer(api, {"cursor": None})
-    task, output, _ = request(api, {"cursor": initial["cursor"]})
-    await waiting(api)
+    stream, initial = await opened(api)
+    assert initial["kind"] == "snapshot"
     current[0] = (
         None if change is None else actor("other" if change == "another_owner" else "owner")
     )
@@ -142,50 +247,185 @@ async def test_current_grant_rechecked_after_held_request(operator, change):
     if change == "remote":
         current[0].origin = Origin.REMOTE
     broker.operator_changes.notify()
-    await task
-    assert api.live.waiters == 0
+    following = await stream.next()
     if change == "another_owner":
-        assert json.loads(output[1]["body"])["kind"] == "reset"
+        assert following["kind"] == "reset" and "timeline" in following
+        assert following["cursor"]["sequence"] > initial["cursor"]["sequence"]
+        await stream.disconnect()
     else:
-        assert output[0]["status"] == (401 if change is None else 403)
-        assert b"timeline" not in output[1]["body"]
+        assert following == {
+            "ok": False,
+            "error": "authentication_required" if change is None else "local_operator_required",
+        }
+        assert await stream.next() is None
+        await asyncio.wait_for(stream.task, 2)
+    assert api.live.streams == 0 and not broker.operator_changes._readers
 
 
-async def test_reader_limit_disconnect_and_cancellation_release_accounting(operator):
+async def test_stream_limit_disconnect_cancellation_and_close_release_accounting(operator):
     api, broker, _ = operator
-    _, initial = await answer(api, {"cursor": None})
-    readers = [request(api, {"cursor": initial["cursor"]}) for _ in range(8)]
-    await waiting(api, 8)
-    _, denied = await answer(api, {"cursor": initial["cursor"]})
-    assert denied == {"ok": False, "error": "unavailable"}
-    readers[0][2].put_nowait({"type": "http.disconnect"})
-    await readers[0][0]
-    assert readers[0][1] == []
-    readers[1][0].cancel()
+    streams = [(await opened(api))[0] for _ in range(operator_live.MAX_STREAMS)]
+    assert api.live.streams == operator_live.MAX_STREAMS
+    status, denied = await Stream(api).json_refusal()
+    assert (status, denied) == (200, {"ok": False, "error": "unavailable"})
+    await streams[0].disconnect()
+    streams[1].task.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await readers[1][0]
-    await waiting(api, 6)
+        await streams[1].task
+    await settled(api, operator_live.MAX_STREAMS - 2)
     broker._store().add_job("unblocked", "c" * 64)
-    await asyncio.gather(*(reader[0] for reader in readers[2:]))
-    assert api.live.waiters == 0 and broker._store().job("unblocked")["state"] == "queued"
-    assert not broker.operator_changes._readers
+    for stream in streams[2:]:
+        assert (await stream.next())["upsert"][0]["job_id"] == "unblocked"
+    api.live.close()
+    for stream in streams[2:]:
+        assert await stream.next() is None
+        await asyncio.wait_for(stream.task, 2)
+    assert api.live.streams == 0 and broker._store().job("unblocked")["state"] == "queued"
+    assert not broker.operator_changes._readers and not api.live._wakes
+    # Shutdown has begun: a new stream is refused before any response starts.
+    status, refused = await Stream(api).json_refusal()
+    assert (status, refused) == (200, {"ok": False, "error": "unavailable"})
+
+
+async def test_broker_close_ends_open_stream(tmp_path):
+    broker = Broker(Settings(state_dir=tmp_path / "state"), lock_path=tmp_path / "device.lock")
+    await broker.start()
+    api = OperatorAPI(None, broker, lambda header: actor())
+    try:
+        stream, _ = await opened(api)
+    finally:
+        await asyncio.wait_for(broker.close(), 5)
+    assert await stream.next() is None
+    await asyncio.wait_for(stream.task, 2)
+    assert api.live.streams == 0
+
+
+async def test_burst_is_coalesced_and_slow_consumer_holds_at_most_one_capture(operator):
+    api, broker, _ = operator
+    stream, first = await opened(api)
+    for index in range(20):
+        broker._store().add_job(f"burst-{index}", "c" * 64)
+    delta = await stream.next()
+    assert delta["kind"] == "delta" and len(delta["upsert"]) == 20
+    await asyncio.sleep(0.05)
+    assert not stream.pending()
+    await stream.disconnect()
+
+    gate = asyncio.Event()
+    gated = Stream(api, gate=gate)
+    await gated.start()
+    captures = []
+    original = api.live._capture
+
+    def counted(principal):
+        captures.append(principal)
+        return original(principal)
+
+    api.live._capture = counted
+    for index in range(50):
+        broker._store().add_job(f"slow-{index}", "c" * 64)
+        await asyncio.sleep(0)
+    await asyncio.sleep(0.05)
+    # The snapshot send is still blocked: nothing was captured or queued behind it.
+    assert captures == [] and gated.messages.empty()
+    gate.set()
+    assert (await gated.next())["kind"] == "snapshot"
+    following = await gated.next()
+    assert following["kind"] == "delta" and len(captures) == 1
+    await asyncio.sleep(0.05)
+    assert not gated.pending() and len(captures) == 1
+    await gated.disconnect()
+    assert api.live.streams == 0
+
+
+async def test_expiry_recaptures_without_a_notification(operator, monkeypatch):
+    api, broker, _ = operator
+    deadlines = [broker.clock() + 0.05]
+    monkeypatch.setattr(
+        OperatorLive, "_next_expiry", lambda self: deadlines.pop() if deadlines else None
+    )
+    stream, first = await opened(api)
+    revision = broker.operator_changes.revision()
+    expired = await stream.next()
+    assert expired["kind"] == "delta" and expired["logs_changed"] is True
+    assert expired["base_cursor"] == first["cursor"]
+    assert broker.operator_changes.revision()[1] == revision[1] + 1
+    await asyncio.sleep(0.05)
+    assert not stream.pending()
+    await stream.disconnect()
+
+
+async def test_idle_stream_sends_comment_heartbeats(operator, monkeypatch):
+    api, broker, _ = operator
+    monkeypatch.setattr(operator_live, "HEARTBEAT_SECONDS", 0.05)
+    stream, _ = await opened(api)
+    revision = broker.operator_changes.revision()
+    assert await stream.next() is PING
+    assert await stream.next() is PING
+    assert broker.operator_changes.revision() == revision
+    await stream.disconnect()
+    assert api.live.streams == 0 and not broker.operator_changes._readers
 
 
 @pytest.mark.parametrize(
-    "body,raw,status",
-    [
-        ({}, None, 400),
-        ({"cursor": None, "extra": True}, None, 400),
-        ({"cursor": {"epoch": "a" * 32, "sequence": True}}, None, 400),
-        ({"cursor": {"epoch": "A" * 32, "sequence": 0}}, None, 400),
-        ({"cursor": {"epoch": "a" * 32, "sequence": -1}}, None, 400),
-        (None, b'{"cursor":null,"cursor":null}', 400),
-        (None, b" " * 2049, 413),
-    ],
+    "method,query,status",
+    [("POST", b"", 405), ("GET", b"cursor=1", 400)],
 )
-async def test_strict_cursor_json(operator, body, raw, status):
+async def test_events_route_rejects_other_methods_and_queries(operator, method, query, status):
     api, _, _ = operator
-    assert (await answer(api, body, raw=raw))[0] == status
+    stream = Stream(api, method=method, query=query)
+    assert (await stream.json_refusal())[0] == status
+    assert api.live.streams == 0
+
+
+@pytest.mark.parametrize("route", ["live", "events-missing"])
+async def test_long_poll_route_is_removed(operator, route):
+    api, _, _ = operator
+    assert (await answer(api, {"cursor": None}, route))[0] == 404
+
+
+async def test_uvicorn_shutdown_ends_open_streams_before_waiting(tmp_path):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    settings = Settings(state_dir=tmp_path / "state", port=port)
+    resident = Broker(settings, lock_path=tmp_path / "device.lockfile")
+    app = create_app(
+        settings,
+        resident,
+        require_auth=True,
+        auth=AuthState({Origin.LOCAL: LOCAL, Origin.REMOTE: REMOTE}),
+    )
+    # No graceful-shutdown timeout: without the hook an open stream holds forever.
+    server = cli._Server(
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level=LOG_LEVEL,
+            access_log=False,
+            proxy_headers=False,
+        )
+    )
+    task = asyncio.create_task(server.serve())
+    try:
+        await wait_until_started(server, task, "Operator stream server")
+        async with httpx2.AsyncClient(
+            base_url=f"http://127.0.0.1:{port}",
+            trust_env=False,
+            headers={"Authorization": "Bearer " + LOCAL},
+            timeout=httpx2.Timeout(5.0),
+        ) as http:
+            async with http.stream("GET", "/operator/events") as response:
+                reader = Reader(response)
+                assert (await reader.next())["kind"] == "snapshot"
+                server.should_exit = True
+                assert b"data:" not in await reader.rest()
+        await asyncio.wait_for(task, 3)
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, 5)
+    assert resident.store is None and not server.server_state.connections
 
 
 @pytest.mark.parametrize(
@@ -240,7 +480,7 @@ async def test_owned_ram_logs_redaction_permission_expiry_and_no_receipt_io(
 
 
 @pytest.mark.parametrize("reason", ["revoked", "expired"])
-async def test_report_retention_wakes_reader_and_removes_metadata(tmp_path, reason, monkeypatch):
+async def test_report_retention_wakes_stream_and_removes_metadata(tmp_path, reason, monkeypatch):
     monkeypatch.setattr(operator_live, "HEARTBEAT_SECONDS", 0.02)
     config = SerialSettings(
         selector=DeviceSelector(vid=0xCAFE, pid=1, serial_number="synthetic"),
@@ -263,21 +503,22 @@ async def test_report_retention_wakes_reader_and_removes_metadata(tmp_path, reas
             DeviceLogCollector().finish(),
             clock.now + 200,
         )
-        _, first = await answer(api, {"cursor": None})
+        stream, first = await opened(api)
         assert first["timeline"]["cards"][0]["device_observation"]
-        held, output, _ = request(api, {"cursor": first["cursor"]})
-        await waiting(api)
         if reason == "revoked":
             broker.principal_valid = lambda principal_id, *_: principal_id != "synthetic-owner"
         else:
             clock.now += 201
-        await asyncio.wait_for(held, 2)
-        removed = json.loads(output[1]["body"])
+        removed = await stream.next()
+        while removed is PING:
+            removed = await stream.next()
         assert removed["kind"] == "delta"
         assert "device_observation" not in removed["upsert"][0]
         assert "one" not in broker.device_observations
-        _, reset = await answer(api, {"cursor": None})
+        await stream.disconnect()
+        again, reset = await opened(api)
         assert "device_observation" not in reset["timeline"]["cards"][0]
+        await again.disconnect()
         assert backend.calls == 0 and not backend.hardware_connected
 
 

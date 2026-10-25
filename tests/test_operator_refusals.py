@@ -89,7 +89,7 @@ def test_live_read_once_filters_refusals_without_retry(monkeypatch, code):
     runner = LiveRunner(OperatorClient(URL, TOKEN))
     try:
         result = asyncio.run_coroutine_threadsafe(
-            runner._request("/operator/job-logs", {"job_id": "job"}, read_once=True), runner._loop
+            runner._request("/operator/job-logs", {"job_id": "job"}), runner._loop
         ).result(timeout=2)
         assert result == ({"ok": False, "error": code} if code in CODES else {"ok": False})
         assert TOKEN not in json.dumps(result) and len(requests) == 1
@@ -130,17 +130,16 @@ def test_live_read_once_http_denial_ignores_body_and_keeps_global_auth_failure(
     runner = LiveRunner(OperatorClient(URL, TOKEN))
     try:
         result = asyncio.run_coroutine_threadsafe(
-            runner._request("/operator/image", {"job_id": "job"}, read_once=True), runner._loop
+            runner._request("/operator/image", {"job_id": "job"}), runner._loop
         ).result(timeout=2)
         assert result == {"ok": False, "error": code} and len(requests) == 1
-        future = asyncio.run_coroutine_threadsafe(
-            runner._request("/operator/live", {"cursor": None}), runner._loop
-        )
+        future = asyncio.run_coroutine_threadsafe(runner._follow(1), runner._loop)
         with pytest.raises(_TransportFailure) as failure:
             future.result(timeout=2)
         assert str(failure.value) == AUTH_FAILED
         assert failure.value.reason == "authentication_failed"
         assert failure.value.status == status and len(requests) == 2
+        assert (requests[1].method, requests[1].url.path) == ("GET", "/operator/events")
         assert TOKEN not in str(failure.value)
     finally:
         runner.close()

@@ -187,7 +187,7 @@ def test_cli_require_auth_needs_explicit_source(
     create = Mock()
     run = Mock()
     monkeypatch.setattr(cli, "create_app", create)
-    monkeypatch.setattr(cli.uvicorn, "run", run)
+    monkeypatch.setattr(cli, "_serve", run)
     monkeypatch.setattr("sys.argv", ["cardputer", *options, "serve", "--require-auth"])
     with pytest.raises(SystemExit, match="^1$"):
         cli.main()
@@ -216,7 +216,7 @@ def test_cli_require_auth_passes_explicit_source(
     run = Mock()
     monkeypatch.setattr(cli, "load_settings", lambda _: settings)
     monkeypatch.setattr(cli, "create_app", create)
-    monkeypatch.setattr(cli.uvicorn, "run", run)
+    monkeypatch.setattr(cli, "_serve", run)
     monkeypatch.setattr("sys.argv", ["cardputer", *argv])
     cli.main()
     create.assert_called_once_with(

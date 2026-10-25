@@ -77,7 +77,7 @@ class LiveState:
 
 
 def begin(state: LiveState) -> LiveState:
-    """Start a new generation; its runner must request a snapshot with cursor=None."""
+    """Start a new generation; its runner opens a new event stream (a full snapshot)."""
     if state.connection == "closed":
         return state
     return replace(

@@ -318,7 +318,8 @@ or not started. The follower still runs, just without priority.
 Deadline mutations: 640 and 653 (principal or work-session revoked → `min(deadline, now)`), and
 1334-1337 (`renew` replaces the deadline, capped by work deadline). There are no other writers in
 `src/` (`derby_fixed.py:334` is an unrelated attribute). Readers outside broker.py:
-home_recovery.py:134 (requires `None`), operator_live.py:128, operator_timeline.py:613.
+home_recovery.py:134 (requires `None`), operator_live.py:107 (`_next_expiry` of the operator
+event stream; was :128 under the long poll), operator_timeline.py:613.
 
 ### 3.2 `_end_ownership` (broker.py:587-604)
 

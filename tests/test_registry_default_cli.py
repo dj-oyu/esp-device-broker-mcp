@@ -15,7 +15,7 @@ def test_installed_serve_environment_needs_no_registry_flag(tmp_path, monkeypatc
     create = Mock(return_value=object())
     monkeypatch.setattr(cli, "load_settings", lambda _: settings)
     monkeypatch.setattr(cli, "create_app", create)
-    monkeypatch.setattr(cli.uvicorn, "run", Mock())
+    monkeypatch.setattr(cli, "_serve", Mock())
     monkeypatch.setattr("sys.argv", ["cardputer.exe", "--auth-source", "environment", "serve"])
     cli.main()
     assert create.call_args.kwargs["key_registry_path"] is None
