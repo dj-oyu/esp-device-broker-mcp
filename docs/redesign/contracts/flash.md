@@ -34,6 +34,7 @@ The write call must not change: `flash_lifecycle.py:294` `self.driver.write(segm
 | P5 | principal is required; USB fingerprint comes from `backend.prepare(RESTART)` (or a mock hash) | firmware_flash.py:341-346 |
 | P6 | Recovery input A, `backup_job_id`: `_backup` needs a succeeded `firmware_backup` job of the same principal; `BackupStore.load` re-hashes the bytes; the backup's device fingerprint and capacity must match | firmware_flash.py:248-262, 353-360 |
 | P6' | Recovery input B, LKG: `_known` uses an explicit `lkg_receipt` (history row) or the **current pointer, frozen into `lkg_receipt`**. The snapshot is loaded and its metadata must match device_id, principal, selector_sha256, flash_bytes and kind | firmware_flash.py:270-289, 361-373 |
+| P6'' | A P6/P6' refusal (`successful_owned_backup_required`, `backup_registered_device_mismatch`, `verified_lkg_or_initial_backup_required`) keeps its code; the public body adds the device's `flash_baseline`/`lkg_recorded` (as `status(view=targets)`) and one fixed `next_step` + `explanation`. No ids, principals or paths | firmware_flash.py `_recovery_point_details`; public_errors.py |
 | P7 | Build: `_build_context` (succeeded, owned, `firmware_build`), project == registration.project_id, `verify_bundle`, manifest export digest, app BIN + ELF receipts present, ELF file readable | firmware_flash.py:319-336, 374-393 |
 | P8 | `OperationPlan` digest (sha256 of `json.dumps(asdict)`) → `fingerprint` | firmware_flash.py:407-421; flash_lifecycle.py:93-110 |
 | P9 | Plan dict with fixed `FLASH_EFFECTS` / `FLASH_STAGES` / `argv_template` | firmware_flash.py:422-445, 43-88 |
@@ -325,7 +326,7 @@ Disclosure strings live in `FLASH_EFFECTS` (firmware_flash.py:51-88) and are **v
 |---|---|
 | P4 registration disabled by default / allow gate | tests/test_flash_broker.py::test_registration_default_disables_flash_and_restore; tests/test_flash_policy.py::test_allow_flash_still_gates_operation; ::test_registration_is_explicit_strict_and_flash_only |
 | P4 tool-hash changed (`registered_flash_tools_changed`) | ✗ (skipped with injected drivers) |
-| P6 backup ownership / device mismatch | tests/test_flash_backup.py::test_private_receipt_roundtrip_and_principal_binding, ::test_tampering_fails_closed, ::test_unknown_backup_never_restores, ::test_remote_path_and_existing_backup_cannot_overwrite; `backup_registered_device_mismatch` ✗ |
+| P6 backup ownership / device mismatch | tests/test_flash_backup.py::test_private_receipt_roundtrip_and_principal_binding, ::test_tampering_fails_closed, ::test_unknown_backup_never_restores, ::test_remote_path_and_existing_backup_cannot_overwrite; tests/test_flash_recovery_point_refusal.py::* (public refusal details); `backup_registered_device_mismatch` ✗ |
 | P6' LKG binding/kind changed | ✗ |
 | P7 build provenance | tests/test_flash_policy.py::test_successful_owned_source_provenance_is_required; tests/test_flash_binding.py::* |
 | E1 wrong tool for flash plans | ✗ (tests/test_chain_http.py::test_rules_for_after_and_wrong_tool tests only `after` rules) |

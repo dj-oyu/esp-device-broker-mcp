@@ -318,3 +318,56 @@ def public_broker_reason(exc: BaseException) -> str:
     if text in BROKER_REASON_CODES or text in PUBLIC_REASON_CODES:
         return text
     return "invalid_request"
+
+
+# A flash/restore refused for its recovery point carries the device's
+# `flash_baseline` and `lkg_recorded` (the values status(view=targets) reports)
+# and one fixed next step. Nothing else: no job ids, principals or paths.
+RECOVERY_POINT_REFUSAL_CODES: frozenset[str] = frozenset(
+    {
+        "backup_registered_device_mismatch",
+        "successful_owned_backup_required",
+        "verified_lkg_or_initial_backup_required",
+    }
+)
+FLASH_BASELINES: frozenset[str] = frozenset({"not_required", "flash_not_enabled"})
+RECOVERY_POINT_NEXT_STEPS: dict[str, str] = {
+    "choose_lkg_receipt_from_status_recovery": (
+        "lkg_receipt is not a verified LKG recorded for this device; read "
+        "status(view=recovery) for this device's receipts. A flash may instead omit "
+        "both lkg_receipt and backup_job_id to flash without a recovery point"
+    ),
+    "run_firmware_backup_then_pass_backup_job_id": (
+        "No verified LKG is recorded for this device; run firmware_backup on it, "
+        "then pass that job's id as backup_job_id"
+    ),
+    "name_own_succeeded_backup_of_this_device": (
+        "backup_job_id must name a succeeded firmware_backup job that the same "
+        "principal ran on this device; status(view=recovery) lists backups. Or run "
+        "firmware_backup on this device and pass that job's id"
+    ),
+    "backup_not_enabled_in_local_registration": (
+        "Backup is not enabled for this device in the local registration; an "
+        "operator must set allow_backup before a backup of it can be taken. A flash "
+        "may omit both lkg_receipt and backup_job_id to flash without a recovery point"
+    ),
+}
+
+
+def recovery_point_details(code: str, details: object) -> dict[str, object]:
+    """The reviewed public details of a recovery-point refusal, else nothing."""
+    if (
+        code not in RECOVERY_POINT_REFUSAL_CODES
+        or not isinstance(details, dict)
+        or set(details) != {"flash_baseline", "lkg_recorded", "next_step"}
+        or details["flash_baseline"] not in FLASH_BASELINES
+        or type(details["lkg_recorded"]) is not bool
+        or details["next_step"] not in RECOVERY_POINT_NEXT_STEPS
+    ):
+        return {}
+    return {
+        "flash_baseline": details["flash_baseline"],
+        "lkg_recorded": details["lkg_recorded"],
+        "next_step": details["next_step"],
+        "explanation": RECOVERY_POINT_NEXT_STEPS[details["next_step"]],
+    }

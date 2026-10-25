@@ -58,6 +58,14 @@ None of the TicketError/app codes are in `PUBLIC_REASON_CODES`. A single gate th
 
 `SourceError` (`source_snapshot.py:182-219`): code forced through `SOURCE_ERROR_CODES` by `safe_source_code`; `public()` adds fixed `explanation` for 5 codes and bounded `scan` counters for `CacheScanLimit`. `server.py:1007-1009` additionally copies `exc.code` / `scan` into `source_cache` usage on ancillary failure.
 
+`RecoveryPointRefusal` (`broker.py`, a `BrokerError`): a flash/restore prepare refused for its recovery
+point (`verified_lkg_or_initial_backup_required`, `successful_owned_backup_required`,
+`backup_registered_device_mismatch`) keeps its code and `to_public` adds `flash_baseline`, `lkg_recorded`,
+a fixed `next_step` id and its fixed `explanation` (`public_reasons.recovery_point_details`). The gate
+re-validates the exact key set, `FLASH_BASELINES`, a bool and `RECOVERY_POINT_NEXT_STEPS`; anything else
+yields the bare code. No job id, principal or path is ever included.
+Pinned by `tests/test_flash_recovery_point_refusal.py`.
+
 ### A4. Gate bypass found [verified]
 
 `surface._convert` echoes caller-chosen dictionary keys: `StatusRequest.cursor` is `dict[str, int|str]` (`surface.py:155`), then `LogCursor.model_validate(cursor)` / `AppEventCursor.model_validate(cursor)` runs **inside** `_convert` (`surface.py:551-553, 565, 578`). An extra key yields `loc=("<caller key>",)` and `_refuse("argument_invalid", "<caller key>")`. Reproduced locally:
@@ -273,7 +281,8 @@ Source fetch spawns no child (urllib zip download in `source_snapshot.py`) [obs]
 
 1. BrokerError/TicketError/app codes currently public must stay public (or the change must be deliberate and pinned) — add them to the allowlist rather than flattening.
 2. ValueError allowlist semantics: exact single-arg str membership; everything else `invalid_request`.
-3. SourceError `public()` shape incl. `explanation` and `scan`.
+3. SourceError `public()` shape incl. `explanation` and `scan`; `RecoveryPointRefusal` shape incl.
+   `flash_baseline`, `lkg_recorded`, `next_step` and `explanation` (fixed vocabulary only).
 4. `_convert` → `argument_invalid` + schema-owned `field` (fix the cursor-key echo).
 5. `read_capture` error result is `is_error=True` while other ops return `ok:false` with no `is_error`; status tool always `_wrap` without `is_error`.
 6. HTTP layers keep their own fixed bodies and 4xx body replacement; operator API keeps 200-for-BrokerError and 400-for-ValueError.

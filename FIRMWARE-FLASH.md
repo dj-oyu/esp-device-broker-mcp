@@ -169,6 +169,18 @@ Flashes that name `lkg_receipt` or `backup_job_id`, restore and backup are
 unchanged, including the pre-write fence. `status(view=targets)` reports
 `flash_baseline: "not_required"` whenever flash is enabled, plus `lkg_recorded`.
 
+A prepare refused for its named or implied recovery point
+(`verified_lkg_or_initial_backup_required`, `successful_owned_backup_required`,
+`backup_registered_device_mismatch`) keeps that error code and adds the same
+`flash_baseline` and `lkg_recorded`, plus one fixed `next_step` and its
+`explanation`: `choose_lkg_receipt_from_status_recovery` (the named
+`lkg_receipt` is not recorded for this device),
+`run_firmware_backup_then_pass_backup_job_id` (no LKG is recorded),
+`name_own_succeeded_backup_of_this_device` (the named backup is not a
+succeeded backup of this device by the same principal) or
+`backup_not_enabled_in_local_registration` (an operator must set
+`allow_backup`). The refusal never contains job ids, principals or paths.
+
 This protects the MCP write ranges, not subsequent firmware behavior. Firmware
 may erase or modify NVS/filesystems after boot, and firmware rollback cannot promise
 data compatibility or undo those changes. No implicit restore, data migration,
