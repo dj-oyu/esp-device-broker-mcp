@@ -18,6 +18,7 @@ from .broker_link import DEFAULT_BROKER_URL
 from .client import call, connect, validate_url
 from .config import load_settings
 from .history_archive import DEFAULT_KEEP_LATEST, HistoryArchiveError, archive_history
+from .key_operator import KeyOperatorError
 from .key_operator import run as manage_keys
 from .models import Origin, TestName
 from .operator import acknowledge_device_request_recovery, acknowledge_recovery
@@ -103,6 +104,13 @@ def parser() -> argparse.ArgumentParser:
     keys.add_argument("--control", action="store_true", help="Explicitly grant read + control")
     keys.add_argument("--ttl-seconds", type=int, default=3600)
     keys.add_argument("--key-id", help="Public ID only; never put the secret key in arguments")
+    keys.add_argument(
+        "--write-env",
+        type=Path,
+        metavar="ENV_FILE",
+        help="issue/rotate: write the new key into this existing private stdio env file "
+        "(absolute path) instead of displaying it",
+    )
     gui = sub.add_parser("gui", help="Local operator queue window; uses the resident broker only")
     gui.add_argument("--config", type=Path)
     stdio = sub.add_parser("stdio", help="Forward MCP stdio to the existing authenticated broker")
@@ -415,6 +423,7 @@ def main() -> None:
                     control=args.control,
                     ttl_seconds=args.ttl_seconds,
                     key_id=args.key_id,
+                    write_env=args.write_env,
                 )
             )
         elif args.command == "stdio":
@@ -472,7 +481,14 @@ def main() -> None:
             asyncio.run(run_client(args))
     except KeyboardInterrupt:
         pass
-    except (AuthError, BrokerError, OperatorClientError, HistoryArchiveError) as error:
+    except (
+        AuthError,
+        BrokerError,
+        OperatorClientError,
+        HistoryArchiveError,
+        KeyOperatorError,
+    ) as error:
+        # Each of these carries only a fixed, sanitized message.
         print(f"Request failed: {error}", file=sys.stderr)
         raise SystemExit(1) from None
     except Exception:

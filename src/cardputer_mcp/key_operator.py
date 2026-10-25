@@ -1,8 +1,10 @@
 """Local terminal key management; deliberately never exposed as MCP tools.
 
-Only issue/rotate reveal a token, once, directly on the confirmed operator's
-terminal. Their return values are metadata-only and safe for ordinary CLI JSON.
-No secret is accepted in an argument or copied to a file/clipboard/environment.
+Only issue/rotate reveal a token: once, directly on the confirmed operator's
+terminal, or, only with an explicit ``write_env`` path, into that already
+existing private stdio env file (see env_file_writer) without displaying it.
+Their return values are metadata-only and safe for ordinary CLI JSON. No secret
+is accepted in an argument or copied to any other file, clipboard or environment.
 Tests must inject synthetic registry randomness, terminal streams and inputs.
 """
 
@@ -14,6 +16,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, Protocol, TextIO
 
+from .env_file_writer import (
+    EnvFileWriteError,
+    PreparedEnvWrite,
+    check_env_file,
+    prepare_env_write,
+)
 from .key_registry import (
     DEFAULT_TTL_SECONDS,
     MAX_TTL_SECONDS,
@@ -38,6 +46,12 @@ _WARNING = (
     "Anyone with the key can use its granted access until expiry or revocation. "
     "Only its hash is stored in the registry. Keep the displayed key private; "
     "do not paste it into logs or shell arguments."
+)
+_ENV_WARNING = (
+    "The new persistent key will be written into the selected existing private env "
+    "file, replacing only its CARDPUTER_CLIENT_KEY line, and will not be displayed. "
+    "Anyone who can read that file can use the key until expiry or revocation. "
+    "Only its hash is stored in the registry."
 )
 
 
@@ -118,12 +132,98 @@ def _expiry(ttl_seconds: int) -> None:
         raise KeyOperatorError("invalid_key_expiry")
 
 
-def _description(label: str, origin: Origin, control: bool, ttl_seconds: int) -> str:
+def _description(
+    label: str, origin: Origin, control: bool, ttl_seconds: int, to_env: bool = False
+) -> str:
     return (
         f"Client: {label}\nOrigin: {origin.value}\n"
         f"Scopes: {'read, control' if control else 'read'}\n"
-        f"Expires after: {ttl_seconds} seconds\n{_WARNING}"
+        f"Expires after: {ttl_seconds} seconds\n{_ENV_WARNING if to_env else _WARNING}"
     )
+
+
+def _revoke_or_flag(registry: KeyRegistry, key_id: str, revoked_code: str) -> KeyOperatorError:
+    try:
+        registry.revoke(key_id)
+    except KeyRegistryError:
+        return KeyOperatorError("key_env_write_failed_check_registry_and_revoke")
+    return KeyOperatorError(revoked_code)
+
+
+def _write_env(
+    issued: IssuedKey,
+    prepared: PreparedEnvWrite,
+    registry: KeyRegistry,
+    output_stream: TextIO,
+    *,
+    rotated: bool,
+) -> dict[str, object]:
+    """Deliver an already committed key into the prepared env file.
+
+    On failure an issued key is revoked. A rotation has already revoked its
+    predecessor, so it falls back to the one-time terminal display; if that
+    also fails the new key is revoked and a fresh issuance is required.
+    """
+    key_id = issued.metadata.key_id
+    try:
+        prepared.commit(issued.token)
+    except EnvFileWriteError as failure:
+        # Rare Windows case: the original was renamed to the hidden backup and
+        # the new file could not take its name, so the env file is missing.
+        kept = str(failure).endswith("_original_kept_as_backup")
+        if not rotated:
+            code = "key_env_write_failed_new_key_revoked"
+            raise _revoke_or_flag(
+                registry, key_id, code + ("_original_kept_as_backup" if kept else "")
+            ) from None
+        try:
+            _write(
+                output_stream,
+                "Writing the selected env file failed: it was NOT updated, or the update "
+                "could not be verified. The replacement key is shown once below instead; "
+                "put it into the env file's CARDPUTER_CLIENT_KEY line yourself.\n"
+                + (
+                    "The env file is missing; its previous content was kept beside it as "
+                    "a hidden .bak file. Rename that back first.\n"
+                    if kept
+                    else ""
+                ),
+            )
+            shown = _show_once(issued, registry, output_stream)
+        except KeyOperatorError:
+            # _show_once revokes on its own failure; revoking again is idempotent.
+            raise _revoke_or_flag(
+                registry, key_id, "key_env_write_and_display_failed_new_key_revoked_run_keys_issue"
+            ) from None
+        return {**shown, "env_file_updated": False}
+    except (KeyboardInterrupt, SystemExit) as failure:
+        # The swap outcome is uncertain; invalidate the new key, then propagate.
+        error = _revoke_or_flag(registry, key_id, "key_env_write_interrupted_new_key_revoked")
+        if error.args[0] != "key_env_write_interrupted_new_key_revoked":
+            raise error from None
+        if isinstance(failure, KeyboardInterrupt):
+            raise KeyboardInterrupt from None
+        raise SystemExit(failure.code if type(failure.code) is int else 1) from None
+    return {"key": _metadata(issued.metadata), "token_shown": False, "env_file_updated": True}
+
+
+def _check_env(write_env: Path | None, expected_key_id: str | None) -> None:
+    if write_env is None:
+        return
+    try:
+        check_env_file(write_env, expected_key_id=expected_key_id)
+    except EnvFileWriteError as error:
+        # EnvFileWriteError messages are fixed codes without paths or values.
+        raise KeyOperatorError(str(error)) from None
+
+
+def _prepare(write_env: Path | None, expected_key_id: str | None) -> PreparedEnvWrite | None:
+    if write_env is None:
+        return None
+    try:
+        return prepare_env_write(write_env, expected_key_id=expected_key_id)
+    except EnvFileWriteError as error:
+        raise KeyOperatorError(str(error)) from None
 
 
 def _show_once(
@@ -173,12 +273,16 @@ def run(
     input_stream: TextIO | None = None,
     output_stream: TextIO | None = None,
     registry_factory: RegistryFactory = KeyRegistry,
+    write_env: Path | None = None,
 ) -> dict[str, object]:
     """Perform one local command, returning only JSON-compatible safe metadata.
 
     The parent directory must exist. A new registry may be created only after
     confirmed issue; all other commands require an existing registry. No command
     supports a noninteractive bypass for confirmation or secret input/output.
+    ``write_env`` (issue/rotate only) names an existing private env file that
+    receives the new key instead of the terminal. It is fully validated and a
+    temporary file is prepared before the registry changes.
     """
     automatic_path = path is None
     path = default_key_registry_path() if path is None else path
@@ -195,6 +299,8 @@ def run(
     outgoing = sys.stdout if output_stream is None else output_stream
     if command not in ("issue", "list", "revoke", "rotate", "verify"):
         raise KeyOperatorError("invalid_key_command")
+    if write_env is not None and command not in ("issue", "rotate"):
+        raise KeyOperatorError("key_write_env_not_supported")
     if command != "list":
         _tty(incoming, outgoing)
     if command in ("issue", "rotate"):
@@ -206,25 +312,34 @@ def run(
             raise KeyOperatorError("invalid_key_origin")
         if type(control) is not bool:
             raise KeyOperatorError("invalid_key_scopes")
+        _check_env(write_env, None)
         _confirm(
             "ISSUE",
-            _description(label, origin, control, ttl_seconds),
+            _description(label, origin, control, ttl_seconds, write_env is not None),
             confirm,
             incoming,
             outgoing,
         )
-        # This is deliberately after confirmation: denial creates no DB or key.
-        registry = registry_factory(path, create=True)
+        # Validate again and prepare the temporary file before any DB or key exists.
+        prepared = _prepare(write_env, None)
         try:
-            issued = registry.issue(
-                label,
-                origin,
-                scopes={"read", "control"} if control else {"read"},
-                ttl_seconds=ttl_seconds,
-            )
-            return _show_once(issued, registry, outgoing)
+            # This is deliberately after confirmation: denial creates no DB or key.
+            registry = registry_factory(path, create=True)
+            try:
+                issued = registry.issue(
+                    label,
+                    origin,
+                    scopes={"read", "control"} if control else {"read"},
+                    ttl_seconds=ttl_seconds,
+                )
+                if prepared is None:
+                    return _show_once(issued, registry, outgoing)
+                return _write_env(issued, prepared, registry, outgoing, rotated=False)
+            finally:
+                registry.close()
         finally:
-            registry.close()
+            if prepared is not None:
+                prepared.discard()
     identifier = _identifier(key_id) if command in ("revoke", "rotate") else None
     registry = registry_factory(path, create=False)
     try:
@@ -251,15 +366,33 @@ def run(
                 outgoing,
             )
             return {"key_id": identifier, "revoked": registry.revoke(identifier)}
+        to_env = write_env is not None
+        # A key line holding a different valid key is refused: wrong file.
+        _check_env(write_env, identifier)
         _confirm(
             f"ROTATE {identifier}",
-            _description(metadata.label, metadata.origin, "control" in metadata.scopes, ttl_seconds)
+            _description(
+                metadata.label, metadata.origin, "control" in metadata.scopes, ttl_seconds, to_env
+            )
             + f"\nKey {identifier} will be revoked immediately when replacement succeeds.\n"
-            "If displaying the replacement fails, a new issuance may be needed.",
+            + (
+                "If writing the env file fails, the replacement is shown once here instead.\n"
+                if to_env
+                else ""
+            )
+            + "If displaying the replacement fails, a new issuance may be needed.",
             confirm,
             incoming,
             outgoing,
         )
-        return _show_once(registry.rotate(identifier, ttl_seconds=ttl_seconds), registry, outgoing)
+        prepared = _prepare(write_env, identifier)
+        try:
+            rotated = registry.rotate(identifier, ttl_seconds=ttl_seconds)
+            if prepared is None:
+                return _show_once(rotated, registry, outgoing)
+            return _write_env(rotated, prepared, registry, outgoing, rotated=True)
+        finally:
+            if prepared is not None:
+                prepared.discard()
     finally:
         registry.close()

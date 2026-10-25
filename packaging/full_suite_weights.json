@@ -57,6 +57,7 @@
   "test_durable_device_logs.py": 1.1,
   "test_durable_job_log_streams.py": 0.3,
   "test_durable_session_flash_records.py": 5.9,
+  "test_env_file_writer.py": 1.4,
   "test_explicit_request_store.py": 1.2,
   "test_failure_diagnostics.py": 0.8,
   "test_firmware_build.py": 1.0,
