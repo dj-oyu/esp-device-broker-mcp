@@ -1,10 +1,8 @@
 """Independent adversarial review: synthetic processes/streams, never cloud or USB."""
 
-import asyncio
 import threading
 from datetime import UTC, datetime
 
-import httpx2
 import pytest
 
 from cardputer_mcp import tunnel_manager
@@ -230,58 +228,6 @@ def test_exit_during_health_request_discards_success_and_stops_remaining_subtree
     for _ in range(3):
         manager.poll()
     assert len(launches) == 1  # A completed poll never schedules reconnect.
-
-
-def test_health_slow_body_is_cancelled_by_the_total_request_budget(monkeypatch):
-    consumed, requests, closed, cancelled = [], [], [], []
-
-    class Drip(httpx2.AsyncByteStream):
-        async def __aiter__(self):
-            for index in range(64):
-                await asyncio.sleep(0.005)
-                consumed.append(index)
-                yield b"x"
-
-        async def aclose(self):
-            closed.append(True)
-
-    async def handle(request):
-        requests.append(str(request.url))
-        return httpx2.Response(200, stream=Drip())
-
-    real_client = httpx2.AsyncClient
-
-    def fake_client(**kwargs):
-        assert kwargs["trust_env"] is False
-        assert kwargs["follow_redirects"] is False
-        assert kwargs["headers"]["Accept-Encoding"] == "identity"
-        return real_client(transport=httpx2.MockTransport(handle), **kwargs)
-
-    monkeypatch.setattr(tunnel_manager.httpx2, "AsyncClient", fake_client)
-    monkeypatch.setattr(tunnel_manager, "HEALTH_TOTAL_SECONDS", 0.025)
-    result = tunnel_manager.health_probe(28766)
-    assert len(consumed) <= 11, "health read buffered beyond the overall deadline"
-    assert requests == ["http://127.0.0.1:28766/readyz"]
-    assert closed
-    assert result["ready_status"] == 0 and result["control_status"] == 0
-    # A header stall is bounded by the same total budget and the request is cancelled.
-    cancelled.clear()
-
-    async def hang(request):
-        try:
-            await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            cancelled.append(True)
-            raise
-
-    monkeypatch.setattr(
-        tunnel_manager.httpx2,
-        "AsyncClient",
-        lambda **kwargs: real_client(transport=httpx2.MockTransport(hang), **kwargs),
-    )
-    result = tunnel_manager.health_probe(28766)
-    assert cancelled == [True]
-    assert result["ready_status"] == 0 and result["control_status"] == 0
 
 
 def test_real_manager_gui_contract_retains_uncertain_owner_and_hides_credentials(review_manager):

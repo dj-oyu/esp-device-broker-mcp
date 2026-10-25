@@ -19,15 +19,17 @@ import hashlib
 import json
 import math
 import os
+import ssl
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-import httpx2
+import httpcore2
 from filelock import FileLock, Timeout
+from httpcore2 import SOCKET_OPTION
 
 from .client import SURFACE_TOOLS, call
 from .client import connect as connect_mcp
@@ -112,57 +114,137 @@ def broker_probe(url: str, bearer: str) -> dict[str, Any]:
     raise TunnelError("tunnel_worker_required")
 
 
-async def _health_probe_async(port: int) -> dict[str, Any]:
-    result: dict[str, Any] = {"ready_status": 0, "control_status": 0, "control_plane": None}
-    try:
-        # Covers connect, slowly dripped headers, body reads, and context cleanup;
-        # per-I/O timeouts alone cannot bound a peer that keeps sending bytes.
-        async with asyncio.timeout(HEALTH_TOTAL_SECONDS):
-            async with httpx2.AsyncClient(
-                trust_env=False,
-                follow_redirects=False,
-                timeout=HEALTH_TIMEOUT_SECONDS,
-                headers={"Accept-Encoding": "identity"},
-            ) as http:
-                for path, key, limit in (
-                    ("/readyz", "ready_status", 512),
-                    ("/health/control-plane", "control_status", HEALTH_MAX_BYTES),
-                ):
-                    try:
-                        async with http.stream("GET", f"http://127.0.0.1:{port}{path}") as response:
-                            if response.headers.get("content-encoding", "identity") != "identity":
-                                continue
-                            data = bytearray()
-                            async for chunk in response.aiter_raw():
-                                if len(data) + len(chunk) > limit:
-                                    raise ValueError("health_body_limit")
-                                data.extend(chunk)
-                            result[key] = response.status_code
-                            if key == "control_status" and response.status_code == 200:
-                                payload = json.loads(data)
-                                if isinstance(payload, dict):
-                                    result["control_plane"] = payload
-                    except Exception:
-                        # Cancellation from the total timeout is a BaseException
-                        # here, so it escapes to close the stream and client.
-                        result[key] = 0
-    except Exception:
-        # Never return raw HTTP exception, body, error text, or header.
-        pass
-    return result
+class _DeadlineStream(httpcore2.NetworkStream):
+    """Clamp every socket wait to the remaining overall health budget."""
+
+    def __init__(self, stream: httpcore2.NetworkStream, deadline: float) -> None:
+        self._stream = stream
+        self._deadline = deadline
+
+    def _budget(self, timeout: float | None, error: type[Exception]) -> float:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise error("health_deadline")
+        return remaining if timeout is None else min(timeout, remaining)
+
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        return self._stream.read(max_bytes, self._budget(timeout, httpcore2.ReadTimeout))
+
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        self._stream.write(buffer, self._budget(timeout, httpcore2.WriteTimeout))
+
+    def close(self) -> None:
+        self._stream.close()
+
+    def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> httpcore2.NetworkStream:
+        raise httpcore2.UnsupportedProtocol("health_plain_http_only")
+
+    def get_extra_info(self, info: str) -> Any:
+        return self._stream.get_extra_info(info)
+
+
+class _DeadlineBackend(httpcore2.NetworkBackend):
+    """Synchronous loopback TCP only; no event loop, resolver thread, or proxy."""
+
+    def __init__(self, deadline: float) -> None:
+        self._inner = httpcore2.SyncBackend()
+        self._deadline = deadline
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> httpcore2.NetworkStream:
+        if host != "127.0.0.1":
+            raise httpcore2.ConnectError("health_loopback_only")
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise httpcore2.ConnectTimeout("health_deadline")
+        wait = remaining if timeout is None else min(timeout, remaining)
+        stream = self._inner.connect_tcp(host, port, wait, local_address, socket_options)
+        return _DeadlineStream(stream, self._deadline)
+
+    def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> httpcore2.NetworkStream:
+        raise httpcore2.ConnectError("health_tcp_only")
+
+    def sleep(self, seconds: float) -> None:
+        # Retries are disabled; never wait past the overall budget either way.
+        time.sleep(max(0.0, min(seconds, self._deadline - time.monotonic())))
 
 
 def health_probe(port: int) -> dict[str, Any]:
     """Bound the entire loopback observation, including headers, to two seconds.
 
+    Synchronous on the calling worker thread: no per-poll event loop is created,
+    so a stalled Windows event-loop setup or teardown cannot wedge status polls.
+    Every connect/read/write wait is clamped to the remaining overall budget, so
+    a peer that drips header or body bytes is still cut off at the deadline.
     Uses no proxy, redirect, compressed body, credential, or abandoned worker.
     Raw component bytes are capped at the pinned native contract's 24 KiB.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(_health_probe_async(port))
-    raise TunnelError("tunnel_worker_required")
+        pass
+    else:
+        # Blocking I/O would stall the caller's loop; keep the worker contract.
+        raise TunnelError("tunnel_worker_required")
+    result: dict[str, Any] = {"ready_status": 0, "control_status": 0, "control_plane": None}
+    deadline = time.monotonic() + HEALTH_TOTAL_SECONDS
+    timeouts = {key: HEALTH_TIMEOUT_SECONDS for key in ("connect", "read", "write", "pool")}
+    try:
+        with httpcore2.ConnectionPool(
+            network_backend=_DeadlineBackend(deadline), max_connections=1, retries=0
+        ) as pool:
+            for path, key, limit in (
+                ("/readyz", "ready_status", 512),
+                ("/health/control-plane", "control_status", HEALTH_MAX_BYTES),
+            ):
+                try:
+                    with pool.stream(
+                        "GET",
+                        f"http://127.0.0.1:{port}{path}",
+                        headers=[(b"Accept", b"*/*"), (b"Accept-Encoding", b"identity")],
+                        extensions={"timeout": timeouts},
+                    ) as response:
+                        encodings = [
+                            value.strip().lower()
+                            for name, value in response.headers
+                            if name.lower() == b"content-encoding"
+                        ]
+                        if any(value != b"identity" for value in encodings):
+                            continue
+                        data = bytearray()
+                        for chunk in response.iter_stream():
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError("health_deadline")
+                            if len(data) + len(chunk) > limit:
+                                raise ValueError("health_body_limit")
+                            data.extend(chunk)
+                        result[key] = response.status
+                        if key == "control_status" and response.status == 200:
+                            payload = json.loads(data)
+                            if isinstance(payload, dict):
+                                result["control_plane"] = payload
+                except Exception:
+                    result[key] = 0
+    except Exception:
+        # Never return raw HTTP exception, body, error text, or header.
+        pass
+    return result
 
 
 def _timestamp(value: Any) -> float | None:
@@ -277,6 +359,8 @@ class TunnelManager:
         self._uncertain = False
         self._backend: str | None = None
         self._exit_code: int | None = None
+        # True while poll's network probe runs outside the operation lock.
+        self._probing = False
 
     def __repr__(self) -> str:
         return "TunnelManager(<private configuration; credentials not retained>)"
@@ -295,7 +379,7 @@ class TunnelManager:
                 "cloud_poll_observed": self._cloud,
                 "app_verified": False,
                 "ownership_uncertain": self._uncertain,
-                "busy": self._operation.locked(),
+                "busy": self._operation.locked() or self._probing,
             }
 
     def _result(self) -> dict[str, Any]:
@@ -539,48 +623,85 @@ class TunnelManager:
         return True
 
     def poll(self) -> dict[str, Any]:
+        """Observe the owned client without holding the operation lock over HTTP.
+
+        The bounded loopback probe runs between two short critical sections, so
+        a slow or wedged probe can never block disconnect/close of the owned
+        client. Evidence from a probe whose client was stopped or replaced while
+        it ran is discarded; the probe never touches process or ownership state.
+        """
         if not self._operation.acquire(blocking=False):
             return self._busy()
         try:
+            if self._probing:
+                return self._busy()
             if self._process is None or self._state != "running":
                 return self._result()
             try:
                 if self._check_exit():
                     return self._result()
                 assert self._settings is not None
-                health = self._health_probe(self._settings.health_port)
-                if self._check_exit():
-                    return self._result()
-                ready = health.get("ready_status") == 200
-                cloud, code = classify_control_plane(
-                    health.get("control_plane") if health.get("control_status") == 200 else None,
-                    now=self._clock(),
-                    started_at=self._started_at,
-                )
-                with self._state_lock:
-                    self._alive = True
-                    self._ready = ready
-                    self._cloud = cloud
-                if code == "tunnel_cloud_auth_failed":
-                    self._cleanup(code)
-                else:
-                    if code == "tunnel_cloud_poll_unobserved":
-                        if ready:
-                            code = "tunnel_local_ready"
-                        elif (
-                            self._monotonic() - self._started_monotonic >= READINESS_TIMEOUT_SECONDS
-                        ):
-                            code = "tunnel_readiness_unconfirmed"
-                        else:
-                            code = "tunnel_starting"
-                    self._set(code)
+                port = self._settings.health_port
             except Exception:
                 with self._state_lock:
                     self._ready = self._cloud = False
                 self._set("tunnel_health_unavailable")
+                return self._result()
+            process = self._process
+            with self._state_lock:
+                self._probing = True
         finally:
             self._operation.release()
+        try:
+            health: dict[str, Any] | None = self._health_probe(port)
+        except Exception:
+            health = None
+        try:
+            if not self._operation.acquire(blocking=False):
+                # A disconnect/close owns the client now; its result is authoritative.
+                return self._busy()
+            try:
+                if self._process is not process or self._state != "running":
+                    return self._result()  # Stale evidence for a stopped/replaced client.
+                self._apply_health(health)
+            finally:
+                self._operation.release()
+        finally:
+            with self._state_lock:
+                self._probing = False
         return self._result()
+
+    def _apply_health(self, health: dict[str, Any] | None) -> None:
+        try:
+            if health is None:
+                raise TunnelError("tunnel_health_unavailable")
+            if self._check_exit():
+                return
+            ready = health.get("ready_status") == 200
+            cloud, code = classify_control_plane(
+                health.get("control_plane") if health.get("control_status") == 200 else None,
+                now=self._clock(),
+                started_at=self._started_at,
+            )
+            with self._state_lock:
+                self._alive = True
+                self._ready = ready
+                self._cloud = cloud
+            if code == "tunnel_cloud_auth_failed":
+                self._cleanup(code)
+            else:
+                if code == "tunnel_cloud_poll_unobserved":
+                    if ready:
+                        code = "tunnel_local_ready"
+                    elif self._monotonic() - self._started_monotonic >= READINESS_TIMEOUT_SECONDS:
+                        code = "tunnel_readiness_unconfirmed"
+                    else:
+                        code = "tunnel_starting"
+                self._set(code)
+        except Exception:
+            with self._state_lock:
+                self._ready = self._cloud = False
+            self._set("tunnel_health_unavailable")
 
     def disconnect(self) -> dict[str, Any]:
         if not self._operation.acquire(blocking=False):

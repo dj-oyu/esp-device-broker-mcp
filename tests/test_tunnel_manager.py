@@ -1,6 +1,6 @@
 """Deterministic synthetic Tunnel lifecycles; no client, account, or USB use."""
 
-import json
+import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -373,57 +373,93 @@ def test_default_broker_probe_only_read_only_tools(monkeypatch):
     assert calls == ["identity", "device"]
 
 
-def test_health_http_bounds_proxy_redirects_and_untrusted_body(monkeypatch):
-    requested = []
+def blocked_health(c):
+    """Install a health probe that parks inside the network call until released."""
+    entered, release = threading.Event(), threading.Event()
 
-    class Response:
-        status_code = 200
-        headers = {}
+    def probe(port):
+        entered.set()
+        assert release.wait(5), "test never released the parked probe"
+        return c.health
 
-        async def __aenter__(self):
-            return self
+    c.manager._health_probe = probe
+    return entered, release
 
-        async def __aexit__(self, *args):
-            pass
 
-        async def aiter_raw(self):
-            if requested[-1].endswith("readyz"):
-                yield b"ready"
-            else:
-                yield json.dumps(healthy()["control_plane"]).encode()
+def test_stalled_health_probe_never_blocks_disconnect_or_reapplies_evidence(configured):
+    # Real HTTP bounds live in test_tunnel_health_probe.py. Here: lock scope (#126).
+    c = configured
+    c.manager.connect(KEY, BEARER)
+    entered, release = blocked_health(c)
+    results = []
+    poller = threading.Thread(target=lambda: results.append(c.manager.poll()))
+    poller.start()
+    try:
+        assert entered.wait(5)
+        assert c.manager.snapshot()["busy"] is True
+        assert c.manager.poll()["status_code"] == "tunnel_busy"  # One probe at a time.
+        state = c.manager.disconnect()  # Not tunnel_busy: the probe holds no lock.
+        assert state["status_code"] == "tunnel_disconnected" and not state["owned"]
+        assert c.process.stop_calls == 1 and not c.lock.held
+    finally:
+        release.set()
+        poller.join(5)
+    assert not poller.is_alive()
+    # The late probe saw a stopped client: its evidence is discarded, not applied.
+    assert results[0]["status_code"] == "tunnel_disconnected"
+    assert not results[0]["local_readiness"] and not results[0]["owned"]
+    assert c.capture["starts"] == 1 and c.process.stop_calls == 1
 
-    class HTTP:
-        def __init__(self, **options):
-            assert options["trust_env"] is False
-            assert options["follow_redirects"] is False
-            assert options["timeout"] <= 1
-            assert options["headers"] == {"Accept-Encoding": "identity"}
 
-        async def __aenter__(self):
-            return self
+def test_late_probe_for_a_replaced_client_is_discarded(configured):
+    c = configured
+    c.manager.connect(KEY, BEARER)
+    entered, release = blocked_health(c)
+    results = []
+    poller = threading.Thread(target=lambda: results.append(c.manager.poll()))
+    poller.start()
+    try:
+        assert entered.wait(5)
+        assert c.manager.disconnect()["status_code"] == "tunnel_disconnected"
+        replacement = FakeProcess()
+        c.manager._factory = lambda args, env, cwd: replacement
+        assert c.manager.connect(KEY, BEARER)["status_code"] == "tunnel_started"
+    finally:
+        release.set()
+        poller.join(5)
+    # Readiness belongs to the old client and is not credited to the new one.
+    assert results[0]["status_code"] == "tunnel_started"
+    assert not c.manager.snapshot()["local_readiness"]
+    c.manager._health_probe = lambda port: c.health
+    assert c.manager.poll()["status_code"] == "tunnel_cloud_poll_observed"
 
-        async def __aexit__(self, *args):
-            pass
 
-        def stream(self, method, url):
-            assert method == "GET"
-            requested.append(url)
-            return Response()
+def test_close_during_a_stalled_probe_confirms_and_late_probe_is_ignored(configured):
+    c = configured
+    c.manager.connect(KEY, BEARER)
+    entered, release = blocked_health(c)
+    poller = threading.Thread(target=c.manager.poll)
+    poller.start()
+    try:
+        assert entered.wait(5)
+        assert c.manager.close() is True and not c.lock.held
+    finally:
+        release.set()
+        poller.join(5)
+    assert c.manager.snapshot()["state"] == "closed"
 
-    monkeypatch.setattr(tm.httpx2, "AsyncClient", HTTP)
-    assert tm.health_probe(18766)["control_plane"]["schema_version"] == 1
-    assert requested == [
-        "http://127.0.0.1:18766/readyz",
-        "http://127.0.0.1:18766/health/control-plane",
-    ]
 
-    async def overflow(self):
-        yield PRIVATE.encode() * tm.HEALTH_MAX_BYTES
+def test_probe_exception_reports_unavailable_without_raw_text(configured):
+    c = configured
+    c.manager.connect(KEY, BEARER)
 
-    monkeypatch.setattr(Response, "aiter_raw", overflow)
-    result = tm.health_probe(18766)
-    assert result == {"ready_status": 0, "control_status": 0, "control_plane": None}
-    assert PRIVATE not in repr(result)
+    def fail(port):
+        raise RuntimeError(PRIVATE)
+
+    c.manager._health_probe = fail
+    state = c.manager.poll()
+    assert state["status_code"] == "tunnel_health_unavailable" and state["owned"]
+    assert PRIVATE not in repr(state) and not state["busy"]
 
 
 def test_native_process_status_failure_retains_uncertain_ownership(configured):

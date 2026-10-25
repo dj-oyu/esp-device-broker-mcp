@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import threading
-from collections.abc import Callable, Mapping
+import time
+import traceback
+from collections import deque
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -25,6 +29,23 @@ if TYPE_CHECKING:
 
 
 REVIEW_WARNING = "Tunnel stop was not confirmed. Keep this window open and review the owned client."
+POLL_STALLED = (
+    "Tunnel status check did not finish; the GUI still owns the Tunnel client. "
+    "Disconnect is still available."
+)
+WORKER_STOPPED = (
+    "The Tunnel background worker stopped unexpectedly; ownership is retained. "
+    "Review the owned client and use Disconnect."
+)
+PANEL_FAILED = (
+    "The Tunnel panel hit an internal error; status may be stale. Ownership is unchanged."
+)
+# A healthy poll is bounded by the 2 s health budget plus, when the client exited
+# or cloud auth failed, one 5 s owned-process stop and two process-status reads.
+# 15 s leaves twice that margin before declaring the status check stalled.
+POLL_RESULT_SECONDS = 15.0
+DIAGNOSTIC_FRAMES = 8
+DIAGNOSTIC_CHARS = 600
 REQUEST_FAILED = "Tunnel request failed. Review the configuration and current status."
 CONFIG_FAILED = "Tunnel configuration could not be loaded or saved. Check the broker TOML."
 CONFIG_MESSAGES = {
@@ -223,7 +244,11 @@ class TunnelOutcome:
 class TunnelController:
     """Headless repeated-click, stale-result, shutdown, and restart policy."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._monotonic = monotonic
+        self.started = 0.0
+        # Sequence of a poll abandoned at its deadline whose worker has not returned.
+        self.stalled_poll: int | None = None
         self.view = TunnelView()
         self.path: Path | None = None
         self.metadata: dict[str, Any] = {}
@@ -265,6 +290,7 @@ class TunnelController:
             return None
         self.sequence += 1
         self.busy, self.action = True, action
+        self.started = self._monotonic()
         self.failed = False
         self.message = {
             "load": "Loading Tunnel metadata...",
@@ -302,7 +328,25 @@ class TunnelController:
     def poll(self) -> TunnelOperation | None:
         if not (self.view.owned or self.view.process_alive) or self.closing:
             return None
+        if self.stalled_poll is not None:
+            return None  # Never queue another probe behind a stalled one.
         return self._begin("poll")
+
+    def expire(self) -> bool:
+        """Give up waiting for one overdue poll; other actions keep their semantics.
+
+        Only the poll's busy state is cleared. Ownership, view, and the worker are
+        untouched, so Disconnect/close stay available. A late result for the
+        abandoned sequence is dropped by accept().
+        """
+        if not self.busy or self.action != "poll":
+            return False
+        if self._monotonic() - self.started < POLL_RESULT_SECONDS:
+            return False
+        self.stalled_poll = self.sequence
+        self.busy, self.action = False, None
+        self.failed, self.message = True, POLL_STALLED
+        return True
 
     def disconnect(self) -> TunnelOperation | None:
         return self._begin("disconnect") if self.can_disconnect() else None
@@ -329,6 +373,10 @@ class TunnelController:
         return self._begin("close") if self.closing and not self.busy else None
 
     def accept(self, result: TunnelOutcome) -> bool:
+        if result.action == "poll" and result.sequence == self.stalled_poll:
+            # The abandoned probe finally returned; its evidence is stale.
+            self.stalled_poll = None
+            return False
         if (
             self.closed
             or not self.busy
@@ -476,30 +524,105 @@ def perform_tunnel(
         key = bearer = ""
 
 
+def _lost_outcome(manager: TunnelAPI, operation: TunnelOperation) -> TunnelOutcome:
+    """A worker-side failure that escaped perform_tunnel; never echo it."""
+    operation.take_credentials()
+    view = None
+    if operation.action not in ("connect", "disconnect", "restart_stop", "close"):
+        try:
+            view = TunnelView.parse(manager.snapshot())
+        except Exception:
+            pass
+    return TunnelOutcome(operation.sequence, operation.action, view, REQUEST_FAILED, True)
+
+
+def _frames(frames: Iterable[traceback.FrameSummary]) -> str:
+    """File basenames, function names, and line numbers only: no paths or values."""
+    return " > ".join(
+        f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}"
+        for frame in list(frames)[-DIAGNOSTIC_FRAMES:]
+    )
+
+
+def thread_stack(thread: threading.Thread) -> str:
+    frame = sys._current_frames().get(thread.ident) if thread.ident is not None else None
+    return _frames(traceback.extract_stack(frame)) if frame is not None else "no stack"
+
+
 class TunnelWorker:
+    """Control actions and status polls on separate threads.
+
+    A stalled status probe therefore cannot delay Disconnect/close, whose
+    manager calls only contend for the manager's short critical sections.
+    """
+
     def __init__(self, manager: TunnelAPI, broker_url: str, project: Path) -> None:
         self.manager, self.broker_url, self.project = manager, broker_url, project
         self.commands: queue.Queue[TunnelOperation | None] = queue.Queue()
+        self.poll_commands: queue.Queue[TunnelOperation | None] = queue.Queue()
         self.results: queue.Queue[TunnelOutcome] = queue.Queue()
         self.stopped = threading.Event()
-        self.thread = threading.Thread(target=self.run, name="cardputer-tunnel", daemon=True)
-        self.thread.start()
+        self.thread = self._start(self.commands, "cardputer-tunnel")
+        self.poll_thread = self._start(self.poll_commands, "cardputer-tunnel-poll")
 
-    def run(self) -> None:
+    def _start(self, commands: queue.Queue[TunnelOperation | None], name: str) -> threading.Thread:
+        thread = threading.Thread(target=self.run, args=(commands,), name=name, daemon=True)
+        thread.start()
+        return thread
+
+    def thread_for(self, action: Action) -> threading.Thread:
+        return self.poll_thread if action == "poll" else self.thread
+
+    def submit(self, operation: TunnelOperation) -> None:
+        if self.stopped.is_set():
+            operation.take_credentials()
+            return
+        if operation.action == "poll":
+            if not self.poll_thread.is_alive():
+                self.poll_commands = self._discard(self.poll_commands)
+                self.poll_thread = self._start(self.poll_commands, "cardputer-tunnel-poll")
+            self.poll_commands.put(operation)
+        else:
+            if not self.thread.is_alive():
+                self.commands = self._discard(self.commands)
+                self.thread = self._start(self.commands, "cardputer-tunnel")
+            self.commands.put(operation)
+
+    @staticmethod
+    def _discard(
+        commands: queue.Queue[TunnelOperation | None],
+    ) -> queue.Queue[TunnelOperation | None]:
+        # A dead thread's leftovers are stale; never replay them (or their keys).
+        while True:
+            try:
+                stale = commands.get_nowait()
+            except queue.Empty:
+                return queue.Queue()
+            if stale is not None:
+                stale.take_credentials()
+
+    def run(self, commands: queue.Queue[TunnelOperation | None] | None = None) -> None:
+        commands = self.commands if commands is None else commands
         while not self.stopped.is_set():
-            operation = self.commands.get()
+            operation = commands.get()
             if operation is None:
                 return
             if self.stopped.is_set():
                 operation.take_credentials()
                 return
-            result = perform_tunnel(self.manager, operation, self.broker_url, self.project)
+            try:
+                result = perform_tunnel(self.manager, operation, self.broker_url, self.project)
+            except BaseException:
+                # perform_tunnel handles Exception; anything else must still
+                # produce a result instead of silently ending this thread.
+                result = _lost_outcome(self.manager, operation)
             self.results.put(result)
             del operation
 
     def stop(self) -> None:
         self.stopped.set()
         self.commands.put(None)
+        self.poll_commands.put(None)
 
 
 class TunnelPanel:
@@ -526,6 +649,9 @@ class TunnelPanel:
         self.on_closed: Callable[[], None] | None = None
         self.rendered_metadata: dict[str, Any] | None = None
         self.updating = False
+        # Bounded, path-free records for support; never exception text or values.
+        self.diagnostics: deque[str] = deque(maxlen=8)
+        self.diagnostic_var: Any = None
         if broker_config is not None:
             self._submit(self.controller.load(broker_config))
         root.after(75, self._drain)
@@ -533,8 +659,22 @@ class TunnelPanel:
 
     def _submit(self, operation: TunnelOperation | None) -> None:
         if operation is not None:
-            self.worker.commands.put(operation)
+            self.worker.submit(operation)
         self._render()
+
+    def _record(self, kind: str, detail: str) -> None:
+        text = f"{kind}: {detail}"[:DIAGNOSTIC_CHARS]
+        self.diagnostics.append(text)
+        if self.diagnostic_var is not None:
+            self.diagnostic_var.set("Diagnostic (no secrets): " + text)
+
+    def _callback_failed(self, error: BaseException) -> None:
+        try:
+            self._record(type(error).__name__, _frames(traceback.extract_tb(error.__traceback__)))
+            self.controller.failed, self.controller.message = True, PANEL_FAILED
+            self._render()
+        except Exception:
+            pass
 
     def show(self) -> None:
         import tkinter as tk
@@ -634,6 +774,12 @@ class TunnelPanel:
         ttk.Label(outer, textvariable=self.ingress_var, wraplength=700).grid(
             row=12, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
+        self.diagnostic_var = tk.StringVar(
+            value="Diagnostic (no secrets): " + self.diagnostics[-1] if self.diagnostics else ""
+        )
+        ttk.Label(outer, textvariable=self.diagnostic_var, wraplength=700).grid(
+            row=13, column=0, columnspan=3, sticky="w", pady=(8, 0)
+        )
         self.rendered_metadata = None
         self._render()
 
@@ -712,7 +858,7 @@ class TunnelPanel:
             remote_key = runtime_remote_key(remote.get(), os.environ)
             operation = self.controller.connect(key, remote_key)
             if operation is not None:
-                self.worker.commands.put(operation)
+                self.worker.submit(operation)
             # Clear even invalid input immediately; never retain keys for a retry.
             key = remote_key = ""
             clear_and_close()
@@ -767,34 +913,77 @@ class TunnelPanel:
         if self.worker.stopped.is_set():
             return
         try:
-            while True:
+            self._drain_results()
+            if not self.worker.stopped.is_set():
+                self._check_progress()
+        except Exception as error:
+            self._callback_failed(error)
+        finally:
+            # Reschedule unconditionally: one failed callback must never freeze the panel.
+            if not self.worker.stopped.is_set():
+                self._after(75, self._drain)
+
+    def _drain_results(self) -> None:
+        while not self.worker.stopped.is_set():
+            try:
                 result = self.worker.results.get_nowait()
-                if not self.controller.accept(result):
-                    continue
+            except queue.Empty:
+                return
+            if self.controller.accept(result):
+                self._accepted()
+
+    def _accepted(self) -> None:
+        self._render()
+        if self.controller.closed:
+            self.worker.stop()
+            callback, self.on_closed = self.on_closed, None
+            if callback is not None:
+                callback()
+            return
+        if self.controller.closing:
+            self._submit(self.controller.pending_close())
+        elif self.controller.prompt_after_stop:
+            self.controller.prompt_after_stop = False
+            self._credentials()
+        elif self.controller.stop_unconfirmed:
+            self.on_closed = None
+            self.show()
+
+    def _check_progress(self) -> None:
+        model = self.controller
+        if model.busy and model.action is not None:
+            thread = self.worker.thread_for(model.action)
+            if not thread.is_alive():
+                # The result can never arrive. Fail closed: a lost connect/stop
+                # keeps ownership uncertain exactly like a failed result.
+                self._record("tunnel_worker_stopped", model.action)
+                if model.accept(
+                    TunnelOutcome(model.sequence, model.action, None, WORKER_STOPPED, True)
+                ):
+                    self._accepted()
+                return
+            if model.expire():
+                self._record("tunnel_poll_deadline", thread_stack(thread))
                 self._render()
-                if self.controller.closed:
-                    self.worker.stop()
-                    callback, self.on_closed = self.on_closed, None
-                    if callback is not None:
-                        callback()
-                    return
-                if self.controller.closing:
-                    self._submit(self.controller.pending_close())
-                elif self.controller.prompt_after_stop:
-                    self.controller.prompt_after_stop = False
-                    self._credentials()
-                elif self.controller.stop_unconfirmed:
-                    self.on_closed = None
-                    self.show()
-        except queue.Empty:
-            pass
-        self.root.after(75, self._drain)
+        if model.stalled_poll is not None and not self.worker.poll_thread.is_alive():
+            model.stalled_poll = None  # The next poll starts a fresh poll thread.
+
+    def _after(self, delay: int, callback: Callable[[], None]) -> None:
+        try:
+            self.root.after(delay, callback)
+        except Exception as error:
+            self._callback_failed(error)
 
     def _poll(self) -> None:
         if self.worker.stopped.is_set():
             return
-        self._submit(self.controller.poll())
-        self.root.after(2000, self._poll)
+        try:
+            self._submit(self.controller.poll())
+        except Exception as error:
+            self._callback_failed(error)
+        finally:
+            if not self.worker.stopped.is_set():
+                self._after(2000, self._poll)
 
     def request_close(self, callback: Callable[[], None]) -> None:
         from tkinter import messagebox
