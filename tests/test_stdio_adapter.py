@@ -707,6 +707,9 @@ META = {
 
 def _write_env(path: Path, url: str, key: str) -> Path:
     path.write_bytes(f"CARDPUTER_BROKER_URL={url}\nCARDPUTER_CLIENT_KEY={key}\n".encode())
+    if os.name == "posix":
+        # The env-file reader requires an owner-only 0600/0400 file on POSIX.
+        path.chmod(0o600)
     return path
 
 
