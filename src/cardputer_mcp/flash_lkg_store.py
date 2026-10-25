@@ -10,6 +10,7 @@ from typing import Any
 
 from .flash_backup import BackupStore, _not_link
 from .flash_lifecycle import FlashFailure
+from .flash_lkg_models import LkgEnvelope
 
 
 class FirmwareSnapshots:
@@ -110,14 +111,10 @@ class FirmwareSnapshots:
 
     def load(self, receipt: str) -> tuple[dict[str, Any], dict[str, bytes]]:
         try:
-            value = json.loads(self.get(receipt, 1048576))
-            if (
-                set(value) != {"schema_version", "metadata", "files"}
-                or value["schema_version"] != 1
-            ):
-                raise ValueError
-            return value["metadata"], {
-                name: self.get(digest) for name, digest in value["files"].items()
+            # Validate the parsed value only; the stored bytes are never re-dumped.
+            envelope = LkgEnvelope.model_validate(json.loads(self.get(receipt, 1048576)))
+            return envelope.metadata, {
+                name: self.get(digest) for name, digest in envelope.files.items()
             }
         except Exception:
             raise FlashFailure("lkg_snapshot_missing_or_changed") from None

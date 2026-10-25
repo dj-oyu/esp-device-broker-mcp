@@ -13,6 +13,12 @@ import test_flash_policy
 
 from cardputer_mcp.broker import BrokerError
 from cardputer_mcp.flash_lifecycle import FlashFailure
+from cardputer_mcp.flash_lkg_models import (
+    LkgEnvelope,
+    LkgMetadata,
+    bound_lkg_metadata,
+    lkg_compat,
+)
 from cardputer_mcp.flash_lkg_store import FirmwareSnapshots
 from cardputer_mcp.models import TestName as Action
 
@@ -330,3 +336,39 @@ async def test_current_lkg_compat_dict_is_matched_at_execution(env, compat):
     }[compat]
     assert (job["state"], job["result"], job["stage"]) == expected
     assert env.driver.writes == writes
+
+
+# ---------------------------------------------------------------------------
+# The models themselves (validate-only)
+# ---------------------------------------------------------------------------
+
+BOUND = dict(device_id="fixture", principal="alice", selector_sha256="b" * 64, flash_bytes=4)
+
+
+def test_metadata_view_keeps_compat_absent_distinct_from_null_and_keeps_extras():
+    compat = {"table_offset": 32768}
+    absent = LkgMetadata.model_validate(BOUND | {"kind": "full_backup"})
+    null = LkgMetadata.model_validate(BOUND | {"kind": "full_backup", "compat": None})
+    stored = LkgMetadata.model_validate(BOUND | {"compat": compat, "future": 1})
+    assert (absent.compat, absent.compat_stored) == (None, False)
+    assert (null.compat, null.compat_stored) == (None, True)
+    assert stored.compat is compat and stored.compat_stored
+    assert stored.model_extra == {"future": 1}
+
+
+def test_bound_metadata_is_not_copied_or_changed():
+    metadata = BOUND | {"kind": "artifact_bundle", "compat": {"table_offset": 1}, "x": [1]}
+    before = json.dumps(metadata)
+    view = bound_lkg_metadata(metadata, BOUND, "artifact_bundle")
+    assert view.compat is metadata["compat"]
+    assert json.dumps(metadata) == before
+    assert lkg_compat(metadata) is metadata["compat"]
+
+
+def test_envelope_model_keeps_the_parsed_metadata_object():
+    metadata = {"b": 1, "a": [2]}
+    envelope = LkgEnvelope.model_validate(
+        {"schema_version": 1, "metadata": metadata, "files": {"x": "0" * 64}}
+    )
+    assert envelope.metadata is metadata
+    assert list(envelope.files) == ["x"]
