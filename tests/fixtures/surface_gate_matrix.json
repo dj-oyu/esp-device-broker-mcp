@@ -1,0 +1,3057 @@
+{
+  "auth_required": {
+    "cancel.job": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.job.session": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.request": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.ticket": {
+      "body": {
+        "error": "ticket_invalid",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.app_input": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.home_recovery": {
+      "body": {
+        "error": "home_recovery_source_not_eligible",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.continues": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.hint": {
+      "body": {
+        "error": "argument_required",
+        "field": "continues",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.session": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "flash": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "flash.session": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.close": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open": {
+      "body": {
+        "keys": [
+          "expires_in_seconds",
+          "lease",
+          "ok",
+          "owner",
+          "principal_id",
+          "request",
+          "request_id",
+          "resume_token",
+          "scopes",
+          "state",
+          "work_session_id"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease": {
+      "body": {
+        "keys": [
+          "lease_seconds",
+          "ok",
+          "owner",
+          "session"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease.wait": {
+      "body": {
+        "device_request": {
+          "keys": [
+            "expires_in_seconds",
+            "lease",
+            "ok",
+            "owner",
+            "principal_id",
+            "request",
+            "request_id",
+            "scopes",
+            "state",
+            "work_session_id"
+          ],
+          "ok": true
+        },
+        "keys": [
+          "device_request",
+          "expires_in_seconds",
+          "lease",
+          "ok",
+          "owner",
+          "principal_id",
+          "request",
+          "request_id",
+          "resume_token",
+          "scopes",
+          "state",
+          "work_session_id"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease_with_ttl": {
+      "body": {
+        "error": "argument_not_allowed",
+        "field": "ttl_seconds",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.other_owner": {
+      "body": {
+        "error": "authenticated_owner_mismatch",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.wait_without_lease": {
+      "body": {
+        "error": "argument_required",
+        "field": "lease_seconds",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.release": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.renew": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.request": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "status.apps": {
+      "body": {
+        "keys": [
+          "apps",
+          "firmware_verification",
+          "fresh",
+          "observed_at",
+          "ok",
+          "protocol",
+          "source"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.capture": {
+      "body": {
+        "error": "capture_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "plain",
+      "is_error": true
+    },
+    "status.device": {
+      "body": {
+        "keys": [
+          "active_job",
+          "backend",
+          "broker_epoch",
+          "connection",
+          "device",
+          "device_hold",
+          "execution_policy",
+          "execution_uncertain",
+          "hardware_backend",
+          "hardware_connected",
+          "history",
+          "lease_remaining_seconds",
+          "needs_review",
+          "ok",
+          "owner",
+          "ownership_uncertain",
+          "profile_active_job",
+          "profile_execution_policy",
+          "profile_queue_depth",
+          "profile_uncertain",
+          "queue_depth",
+          "safety",
+          "tunnel",
+          "tunnel_ingress_enabled",
+          "wait_queue_depth",
+          "work_session_count"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.identity": {
+      "body": {
+        "keys": [
+          "authenticated",
+          "ok",
+          "origin",
+          "principal_id",
+          "scopes",
+          "tool_set_version",
+          "tunnel_ingress_enabled"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.job": {
+      "body": {
+        "error": "job_not_found",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.jobs": {
+      "body": {
+        "keys": [
+          "has_more",
+          "jobs",
+          "next_cursor",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.jobs.cursor": {
+      "body": {
+        "error": "argument_invalid",
+        "field": "cursor",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.app": {
+      "body": {
+        "error": "app_events_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.broker": {
+      "body": {
+        "keys": [
+          "entries",
+          "gap",
+          "has_more",
+          "next_cursor",
+          "ok",
+          "oldest_sequence"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.broker.cursor": {
+      "body": {
+        "error": "argument_invalid",
+        "field": "cursor",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.build": {
+      "body": {
+        "error": "build_log_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.device": {
+      "body": {
+        "error": "device_logs_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.recovery": {
+      "body": {
+        "keys": [
+          "devices",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.session": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.source": {
+      "body": {
+        "error": "registered_source_repository_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.targets": {
+      "body": {
+        "keys": [
+          "build_projects",
+          "flash_devices",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "submit.after": {
+      "body": {
+        "error": "ticket_invalid",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.after.backup": {
+      "body": {
+        "error": "argument_not_allowed",
+        "field": "after",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.backup": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.build": {
+      "body": {
+        "error": "registered_build_project_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.capture": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.fetch": {
+      "body": {
+        "error": "registered_build_project_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.flash": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.flash.null_session": {
+      "body": {
+        "error": "device_session_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.hello": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    }
+  },
+  "mock_anonymous": {
+    "cancel.job": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.job.session": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.request": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.ticket": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.app_input": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.home_recovery": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run": {
+      "body": {
+        "error": "plan_not_found_or_changed",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.continues": {
+      "body": {
+        "error": "plan_not_found_or_changed",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.hint": {
+      "body": {
+        "error": "argument_required",
+        "field": "continues",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.session": {
+      "body": {
+        "error": "plan_not_found_or_changed",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "flash": {
+      "body": {
+        "error": "plan_not_found_or_changed",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "flash.session": {
+      "body": {
+        "error": "plan_not_found_or_changed",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.close": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease": {
+      "body": {
+        "keys": [
+          "lease_seconds",
+          "ok",
+          "owner",
+          "session"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease.wait": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease_with_ttl": {
+      "body": {
+        "error": "argument_not_allowed",
+        "field": "ttl_seconds",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.other_owner": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.wait_without_lease": {
+      "body": {
+        "error": "argument_required",
+        "field": "lease_seconds",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.release": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.renew": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.request": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "status.apps": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.capture": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "plain",
+      "is_error": true
+    },
+    "status.device": {
+      "body": {
+        "keys": [
+          "active_job",
+          "backend",
+          "broker_epoch",
+          "connection",
+          "device",
+          "device_hold",
+          "execution_policy",
+          "execution_uncertain",
+          "hardware_backend",
+          "hardware_connected",
+          "history",
+          "lease_remaining_seconds",
+          "needs_review",
+          "ok",
+          "owner",
+          "ownership_uncertain",
+          "profile_active_job",
+          "profile_execution_policy",
+          "profile_queue_depth",
+          "profile_uncertain",
+          "queue_depth",
+          "safety",
+          "tunnel",
+          "tunnel_ingress_enabled",
+          "wait_queue_depth",
+          "work_session_count"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.identity": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.job": {
+      "body": {
+        "error": "job_not_found",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.jobs": {
+      "body": {
+        "keys": [
+          "has_more",
+          "jobs",
+          "next_cursor",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.jobs.cursor": {
+      "body": {
+        "error": "argument_invalid",
+        "field": "cursor",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.app": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.broker": {
+      "body": {
+        "keys": [
+          "entries",
+          "gap",
+          "has_more",
+          "next_cursor",
+          "ok",
+          "oldest_sequence"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.broker.cursor": {
+      "body": {
+        "error": "argument_invalid",
+        "field": "cursor",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.build": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.device": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.recovery": {
+      "body": {
+        "keys": [
+          "devices",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.session": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.source": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.targets": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "submit.after": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.after.backup": {
+      "body": {
+        "error": "argument_not_allowed",
+        "field": "after",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.backup": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.build": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.capture": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.fetch": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.flash": {
+      "body": {
+        "error": "authentication_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.flash.null_session": {
+      "body": {
+        "error": "device_session_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.hello": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    }
+  },
+  "mock_bearer": {
+    "cancel.job": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.job.session": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.request": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.ticket": {
+      "body": {
+        "error": "ticket_invalid",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.app_input": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.home_recovery": {
+      "body": {
+        "error": "home_recovery_source_not_eligible",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run": {
+      "body": {
+        "error": "plan_not_found_or_changed",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.continues": {
+      "body": {
+        "error": "plan_not_found_or_changed",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.hint": {
+      "body": {
+        "error": "argument_required",
+        "field": "continues",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.session": {
+      "body": {
+        "error": "plan_not_found_or_changed",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "flash": {
+      "body": {
+        "error": "plan_not_found_or_changed",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "flash.session": {
+      "body": {
+        "error": "plan_not_found_or_changed",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.close": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open": {
+      "body": {
+        "keys": [
+          "expires_in_seconds",
+          "lease",
+          "ok",
+          "owner",
+          "principal_id",
+          "request",
+          "request_id",
+          "resume_token",
+          "scopes",
+          "state",
+          "work_session_id"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease": {
+      "body": {
+        "keys": [
+          "lease_seconds",
+          "ok",
+          "owner",
+          "session"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease.wait": {
+      "body": {
+        "device_request": {
+          "keys": [
+            "expires_in_seconds",
+            "lease",
+            "ok",
+            "owner",
+            "principal_id",
+            "request",
+            "request_id",
+            "scopes",
+            "state",
+            "work_session_id"
+          ],
+          "ok": true
+        },
+        "keys": [
+          "device_request",
+          "expires_in_seconds",
+          "lease",
+          "ok",
+          "owner",
+          "principal_id",
+          "request",
+          "request_id",
+          "resume_token",
+          "scopes",
+          "state",
+          "work_session_id"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease_with_ttl": {
+      "body": {
+        "error": "argument_not_allowed",
+        "field": "ttl_seconds",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.other_owner": {
+      "body": {
+        "error": "authenticated_owner_mismatch",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.wait_without_lease": {
+      "body": {
+        "error": "argument_required",
+        "field": "lease_seconds",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.release": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.renew": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.request": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "status.apps": {
+      "body": {
+        "keys": [
+          "apps",
+          "firmware_verification",
+          "fresh",
+          "observed_at",
+          "ok",
+          "protocol",
+          "source"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.capture": {
+      "body": {
+        "error": "capture_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "plain",
+      "is_error": true
+    },
+    "status.device": {
+      "body": {
+        "keys": [
+          "active_job",
+          "backend",
+          "broker_epoch",
+          "connection",
+          "device",
+          "device_hold",
+          "execution_policy",
+          "execution_uncertain",
+          "hardware_backend",
+          "hardware_connected",
+          "history",
+          "lease_remaining_seconds",
+          "needs_review",
+          "ok",
+          "owner",
+          "ownership_uncertain",
+          "profile_active_job",
+          "profile_execution_policy",
+          "profile_queue_depth",
+          "profile_uncertain",
+          "queue_depth",
+          "safety",
+          "tunnel",
+          "tunnel_ingress_enabled",
+          "wait_queue_depth",
+          "work_session_count"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.identity": {
+      "body": {
+        "keys": [
+          "authenticated",
+          "ok",
+          "origin",
+          "principal_id",
+          "scopes",
+          "tool_set_version",
+          "tunnel_ingress_enabled"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.job": {
+      "body": {
+        "error": "job_not_found",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.jobs": {
+      "body": {
+        "keys": [
+          "has_more",
+          "jobs",
+          "next_cursor",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.jobs.cursor": {
+      "body": {
+        "error": "argument_invalid",
+        "field": "cursor",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.app": {
+      "body": {
+        "error": "app_events_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.broker": {
+      "body": {
+        "keys": [
+          "entries",
+          "gap",
+          "has_more",
+          "next_cursor",
+          "ok",
+          "oldest_sequence"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.broker.cursor": {
+      "body": {
+        "error": "argument_invalid",
+        "field": "cursor",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.build": {
+      "body": {
+        "error": "build_log_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.device": {
+      "body": {
+        "error": "device_logs_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.recovery": {
+      "body": {
+        "keys": [
+          "devices",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.session": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.source": {
+      "body": {
+        "error": "registered_source_repository_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.targets": {
+      "body": {
+        "keys": [
+          "build_projects",
+          "flash_devices",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "submit.after": {
+      "body": {
+        "error": "ticket_invalid",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.after.backup": {
+      "body": {
+        "error": "argument_not_allowed",
+        "field": "after",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.backup": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.build": {
+      "body": {
+        "error": "registered_build_project_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.capture": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.fetch": {
+      "body": {
+        "error": "registered_build_project_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.flash": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.flash.null_session": {
+      "body": {
+        "error": "device_session_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.hello": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    }
+  },
+  "registry_control_only": {
+    "cancel.job": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.job.session": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.request": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.ticket": {
+      "body": {
+        "error": "ticket_invalid",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.app_input": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.home_recovery": {
+      "body": {
+        "error": "home_recovery_source_not_eligible",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.continues": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.hint": {
+      "body": {
+        "error": "argument_required",
+        "field": "continues",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.session": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "flash": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "flash.session": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.close": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open": {
+      "body": {
+        "keys": [
+          "expires_in_seconds",
+          "lease",
+          "ok",
+          "owner",
+          "principal_id",
+          "request",
+          "request_id",
+          "resume_token",
+          "scopes",
+          "state",
+          "work_session_id"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease": {
+      "body": {
+        "keys": [
+          "lease_seconds",
+          "ok",
+          "owner",
+          "session"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease.wait": {
+      "body": {
+        "device_request": {
+          "keys": [
+            "expires_in_seconds",
+            "lease",
+            "ok",
+            "owner",
+            "principal_id",
+            "request",
+            "request_id",
+            "scopes",
+            "state",
+            "work_session_id"
+          ],
+          "ok": true
+        },
+        "keys": [
+          "device_request",
+          "expires_in_seconds",
+          "lease",
+          "ok",
+          "owner",
+          "principal_id",
+          "request",
+          "request_id",
+          "resume_token",
+          "scopes",
+          "state",
+          "work_session_id"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease_with_ttl": {
+      "body": {
+        "error": "argument_not_allowed",
+        "field": "ttl_seconds",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.other_owner": {
+      "body": {
+        "error": "authenticated_owner_mismatch",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.wait_without_lease": {
+      "body": {
+        "error": "argument_required",
+        "field": "lease_seconds",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.release": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.renew": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.request": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "status.apps": {
+      "body": {
+        "keys": [
+          "apps",
+          "firmware_verification",
+          "fresh",
+          "observed_at",
+          "ok",
+          "protocol",
+          "source"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.capture": {
+      "body": {
+        "error": "capture_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "plain",
+      "is_error": true
+    },
+    "status.device": {
+      "body": {
+        "keys": [
+          "active_job",
+          "backend",
+          "broker_epoch",
+          "connection",
+          "device",
+          "device_hold",
+          "execution_policy",
+          "execution_uncertain",
+          "hardware_backend",
+          "hardware_connected",
+          "history",
+          "lease_remaining_seconds",
+          "needs_review",
+          "ok",
+          "owner",
+          "ownership_uncertain",
+          "profile_active_job",
+          "profile_execution_policy",
+          "profile_queue_depth",
+          "profile_uncertain",
+          "queue_depth",
+          "safety",
+          "tunnel",
+          "tunnel_ingress_enabled",
+          "wait_queue_depth",
+          "work_session_count"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.identity": {
+      "body": {
+        "keys": [
+          "authenticated",
+          "ok",
+          "origin",
+          "principal_id",
+          "scopes",
+          "tool_set_version",
+          "tunnel_ingress_enabled"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.job": {
+      "body": {
+        "error": "job_not_found",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.jobs": {
+      "body": {
+        "keys": [
+          "has_more",
+          "jobs",
+          "next_cursor",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.jobs.cursor": {
+      "body": {
+        "error": "argument_invalid",
+        "field": "cursor",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.app": {
+      "body": {
+        "error": "app_events_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.broker": {
+      "body": {
+        "keys": [
+          "entries",
+          "gap",
+          "has_more",
+          "next_cursor",
+          "ok",
+          "oldest_sequence"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.broker.cursor": {
+      "body": {
+        "error": "argument_invalid",
+        "field": "cursor",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.build": {
+      "body": {
+        "error": "build_log_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.device": {
+      "body": {
+        "error": "device_logs_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.recovery": {
+      "body": {
+        "keys": [
+          "devices",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.session": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.source": {
+      "body": {
+        "error": "registered_source_repository_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.targets": {
+      "body": {
+        "keys": [
+          "build_projects",
+          "flash_devices",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "submit.after": {
+      "body": {
+        "error": "ticket_invalid",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.after.backup": {
+      "body": {
+        "error": "argument_not_allowed",
+        "field": "after",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.backup": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.build": {
+      "body": {
+        "error": "registered_build_project_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.capture": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.fetch": {
+      "body": {
+        "error": "registered_build_project_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.flash": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.flash.null_session": {
+      "body": {
+        "error": "device_session_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.hello": {
+      "body": {
+        "error": "invalid_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    }
+  },
+  "registry_read_only": {
+    "cancel.job": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.job.session": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.request": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "cancel.ticket": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.app_input": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.home_recovery": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.continues": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.hint": {
+      "body": {
+        "error": "argument_required",
+        "field": "continues",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "execute.run.session": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "flash": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "flash.session": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.close": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease.wait": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.lease_with_ttl": {
+      "body": {
+        "error": "argument_not_allowed",
+        "field": "ttl_seconds",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.other_owner": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.open.wait_without_lease": {
+      "body": {
+        "error": "argument_required",
+        "field": "lease_seconds",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.release": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.renew": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "session.request": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "status.apps": {
+      "body": {
+        "keys": [
+          "apps",
+          "firmware_verification",
+          "fresh",
+          "observed_at",
+          "ok",
+          "protocol",
+          "source"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.capture": {
+      "body": {
+        "error": "capture_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "plain",
+      "is_error": true
+    },
+    "status.device": {
+      "body": {
+        "keys": [
+          "active_job",
+          "backend",
+          "broker_epoch",
+          "connection",
+          "device",
+          "device_hold",
+          "execution_policy",
+          "execution_uncertain",
+          "hardware_backend",
+          "hardware_connected",
+          "history",
+          "lease_remaining_seconds",
+          "needs_review",
+          "ok",
+          "owner",
+          "ownership_uncertain",
+          "profile_active_job",
+          "profile_execution_policy",
+          "profile_queue_depth",
+          "profile_uncertain",
+          "queue_depth",
+          "safety",
+          "tunnel",
+          "tunnel_ingress_enabled",
+          "wait_queue_depth",
+          "work_session_count"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.identity": {
+      "body": {
+        "keys": [
+          "authenticated",
+          "ok",
+          "origin",
+          "principal_id",
+          "scopes",
+          "tool_set_version",
+          "tunnel_ingress_enabled"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.job": {
+      "body": {
+        "error": "job_not_found",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.jobs": {
+      "body": {
+        "keys": [
+          "has_more",
+          "jobs",
+          "next_cursor",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.jobs.cursor": {
+      "body": {
+        "error": "argument_invalid",
+        "field": "cursor",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.app": {
+      "body": {
+        "error": "app_events_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.broker": {
+      "body": {
+        "keys": [
+          "entries",
+          "gap",
+          "has_more",
+          "next_cursor",
+          "ok",
+          "oldest_sequence"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.broker.cursor": {
+      "body": {
+        "error": "argument_invalid",
+        "field": "cursor",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.build": {
+      "body": {
+        "error": "build_log_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.logs.device": {
+      "body": {
+        "error": "device_logs_not_available",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.recovery": {
+      "body": {
+        "keys": [
+          "devices",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.session": {
+      "body": {
+        "error": "invalid_work_session",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.source": {
+      "body": {
+        "error": "registered_source_repository_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "status.targets": {
+      "body": {
+        "keys": [
+          "build_projects",
+          "flash_devices",
+          "ok"
+        ],
+        "ok": true
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "sorted",
+      "is_error": false
+    },
+    "submit.after": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.after.backup": {
+      "body": {
+        "error": "argument_not_allowed",
+        "field": "after",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.backup": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.build": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.capture": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.fetch": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.flash": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.flash.null_session": {
+      "body": {
+        "error": "device_session_required",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    },
+    "submit.hello": {
+      "body": {
+        "error": "insufficient_scope",
+        "ok": false
+      },
+      "content": [
+        "text"
+      ],
+      "encoding": "indented",
+      "is_error": false
+    }
+  }
+}

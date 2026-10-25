@@ -1,22 +1,28 @@
 """The six-tool MCP surface: status, submit, execute, flash, cancel, session.
 
-A thin layer over the existing handlers. Each tool takes one required discriminator
+This is the only MCP tool layer. Each tool takes one required discriminator
 (view/kind/op/target/action); the per-value required and forbidden arguments are
-checked here and refused with fixed reason codes. The broker still performs every
-authentication, ownership, plan-hash and lease check; this layer only chooses which
-existing operation an explicit request names.
+checked here and refused with fixed reason codes. Each tool then calls the broker
+and domain functions directly. The principal/scope check is the one `require(ctx,
+scope)` passed in by `server.create_server`, and every failure leaves through the one
+public-error gate (`_result` / `public_errors.refusal`). The broker still performs
+every ownership, plan-hash and lease check; this layer only chooses which operation
+an explicit request names.
 """
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
+from functools import partial
 from typing import Any, Literal, TypeVar, cast
 
 from mcp.server.mcpserver import Context, MCPServer
-from mcp.types import CallToolResult, TextContent, ToolAnnotations
-from pydantic import BaseModel, Field, ValidationError
+from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from . import cancellation, job_reads
 from .app_models import (
@@ -29,10 +35,12 @@ from .app_models import (
     AppSessionOptions,
 )
 from .broker import BrokerError
-from .derby_reports import shared_job
+from .derby_reports import binding_unchanged, private_job, shared_job
+from .firmware_flash import flash_readiness
 from .home_recovery import CancelHomeRecovery, RequestHomeRecovery
 from .models import (
     DEFERRED_DEVICE_TESTS,
+    FLASH_TESTS,
     AcquireRequest,
     BuildLogLevel,
     BuildLogRequest,
@@ -45,7 +53,6 @@ from .models import (
     Digest,
     ExecuteRequest,
     Identifier,
-    JobRequest,
     LeaseRequest,
     LogCursor,
     LogRequest,
@@ -54,12 +61,14 @@ from .models import (
     RenewRequest,
     RequestDeviceRequest,
     ResumeWorkSessionRequest,
-    SourceResourcesRequest,
     StrictModel,
     TestName,
 )
 from .public_errors import refusal
 from .public_reasons import public_broker_reason, public_reason
+from .source_preflight import settings_identity, source_inventory, source_usage
+from .source_resources import resource_report
+from .source_snapshot import SourceError
 
 TOOL_SET_VERSION = 2
 
@@ -67,7 +76,6 @@ TOOL_SET_VERSION = 2
 # the broker derives this from the stored plan, never from the request.
 DESTRUCTIVE_TESTS = frozenset({TestName.FLASH.value, TestName.RESTORE.value})
 
-Handler = Callable[..., Awaitable[Any]]
 _T = TypeVar("_T")
 _M = TypeVar("_M", bound=BaseModel)
 
@@ -445,27 +453,60 @@ def _wrap(body: dict[str, Any]) -> CallToolResult:
     )
 
 
+def _result(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """The one exception gate for a tool body: `to_public` refusals; anything else re-raises."""
+    try:
+        return {"ok": True, **call()}
+    except ValueError as exc:
+        return refusal(exc)
+
+
+async def _result_async(call: Callable[[], Awaitable[dict[str, Any]]]) -> dict[str, Any]:
+    """`_result` for a body that awaits (file IO off the loop, source scans)."""
+    try:
+        return {"ok": True, **await call()}
+    except ValueError as exc:
+        return refusal(exc)
+
+
 def register_surface(
     server: MCPServer[Any],
     *,
-    ops: dict[str, Handler],
     resident: Any,
     require: Callable[..., Any],
     auth_required: bool,
+    tunnel_ingress_enabled: bool,
     read_only: ToolAnnotations,
     mutating: ToolAnnotations,
     destructive: ToolAnnotations,
 ) -> None:
+    """Register the six tools. `require(ctx, scope, honor_auth_required=...)` is the only
+    principal/scope check; every body below leaves through `_result`/`refusal`."""
+    identifier = TypeAdapter(Identifier)
+
+    def registered_ids(registrations: dict[str, Any]) -> list[str]:
+        ids = []
+        for key in registrations:
+            try:
+                ids.append(identifier.validate_python(key, strict=True))
+            except ValidationError:
+                # Legacy local config can contain names that no MCP request accepts.
+                continue
+        return sorted(ids)
+
+    def bind_lease(owner: Any, capability: str | None) -> None:
+        """The lease must belong to this principal; nothing is bound when auth was skipped."""
+        if owner is not None:
+            resident.require_owner(capability, owner.origin.value, principal_id=owner.principal_id)
+
+    def bind_origin(owner: Any, requested: Origin) -> None:
+        if requested != owner.origin:
+            raise BrokerError("authenticated_owner_mismatch")
+
     def _reader(ctx: Context[Any, Any]) -> str | None:
         """The caller's principal for owned_by_caller; None on an unauthenticated mock."""
         principal = require(ctx, "read", honor_auth_required=True)
         return principal.principal_id if principal is not None else None
-
-    def _read_body(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-        try:
-            return {"ok": True, **call()}
-        except ValueError as exc:
-            return refusal(exc)
 
     def plan_for(plan_hash: str) -> dict[str, Any] | None:
         plan = resident._store().plan(plan_hash)
@@ -496,6 +537,376 @@ def register_surface(
             return _refuse("wrong_flash_tool", use="execute")
         return None
 
+    # --- status bodies -----------------------------------------------------------------
+
+    def identity_body(ctx: Context[Any, Any]) -> dict[str, Any]:
+        """This request's principal/scopes; never credentials or capabilities."""
+
+        def identify() -> dict[str, Any]:
+            owner = require(ctx, "read", honor_auth_required=False)
+            return {
+                "authenticated": True,
+                "origin": owner.origin.value,
+                "principal_id": owner.principal_id,
+                "scopes": sorted(owner.scopes),
+                "tunnel_ingress_enabled": tunnel_ingress_enabled,
+            }
+
+        return _result(identify)
+
+    def targets_body(ctx: Context[Any, Any]) -> dict[str, Any]:
+        """Registered IDs a request can name; registration is not eligibility or connection."""
+
+        def targets() -> dict[str, Any]:
+            require(ctx, "read", honor_auth_required=False)
+            current = resident.settings
+            store = resident._store()
+            return {
+                "build_projects": [
+                    {"project_id": project_id}
+                    for project_id in registered_ids(current.build_projects)
+                ],
+                "flash_devices": [
+                    {
+                        "device_id": device_id,
+                        **flash_readiness(
+                            current.flash_devices[device_id],
+                            store.firmware_current(device_id) is not None,
+                        ),
+                    }
+                    for device_id in registered_ids(current.flash_devices)
+                ],
+            }
+
+        return _result(targets)
+
+    async def source_body(project_id: str, ctx: Context[Any, Any]) -> dict[str, Any]:
+        """One fresh bounded cache inventory and the caller's retained-source references.
+
+        Never deletes or grants cleanup. The read grant and broker identity are
+        rechecked after the scan, which runs off the loop.
+        """
+
+        async def report() -> dict[str, Any]:
+            owner = require(ctx, "read", honor_auth_required=False)
+            store, settings, epoch = resident._store(), resident.settings, resident.epoch
+            captured = settings.model_copy(deep=True)
+            identity = settings_identity(captured)
+            failure: SourceError | None = None
+            inventory: dict[str, Any] = {}
+            try:
+                inventory = await resident.profile_jobs.source_reads.run(
+                    partial(source_inventory, captured, project_id)
+                )
+            except SourceError as exc:
+                failure = exc
+            current = require(ctx, "read", honor_auth_required=False)
+            if (
+                resident.closing
+                or resident.store is not store
+                or resident.epoch != epoch
+                or resident.settings is not settings
+                or settings_identity(resident.settings) != identity
+                or current.principal_id != owner.principal_id
+                or current.origin != owner.origin
+            ):
+                raise BrokerError("source_log_not_available")
+            if failure is not None:
+                raise failure
+            return resource_report(
+                store,
+                project_id,
+                owner.principal_id,
+                inventory,
+                epoch=epoch,
+                now=resident.clock(),
+            )
+
+        return await _result_async(report)
+
+    def job_body(job_id: str, ctx: Context[Any, Any]) -> dict[str, Any]:
+        """Persisted job state; any read-scoped principal, derby private extras owner-only."""
+
+        def get_job() -> dict[str, Any]:
+            job = resident.job(job_id)
+            store = resident._store()
+            plan = store.plan(job["plan_hash"])
+            if plan is not None and plan.get("test") in (
+                TestName.DERBY.value,
+                TestName.DERBY_FIXED.value,
+            ):
+                try:
+                    owner = require(ctx, "read", honor_auth_required=False)
+                except BrokerError:
+                    if auth_required:
+                        raise
+                    return shared_job(job)
+                epoch = resident.epoch
+                result = private_job(store, job, plan, owner.principal_id)
+                if "derby_diagnostics" in result or "fixed_trial" in result:
+                    try:
+                        current = require(ctx, "read", honor_auth_required=False)
+                    except BrokerError:
+                        if auth_required:
+                            raise
+                        return shared_job(job)
+                    if (
+                        resident.store is not store
+                        or resident.epoch != epoch
+                        or resident.closing
+                        or current.principal_id != owner.principal_id
+                        or current.origin != owner.origin
+                        or not binding_unchanged(store, job, plan, current.principal_id)
+                    ):
+                        return shared_job(job)
+                return result
+            # Status is readable by any read-scoped principal, whoever started the job.
+            if plan is not None and plan.get("operation") == "home_recovery":
+                require(ctx, "read", honor_auth_required=False)
+                job["recovery_audit"] = [
+                    dict(row)
+                    for row in resident._store().db.execute(
+                        "SELECT sequence,event,created FROM home_recovery_audit "
+                        "WHERE source_job=? AND recovery_job IN ('',?) ORDER BY sequence LIMIT 64",
+                        (plan["source_job_id"], job_id),
+                    )
+                ]
+            if plan is not None and plan.get("execution_context") == "registered_project":
+                require(ctx, "read", honor_auth_required=False)
+            return shared_job(job)
+
+        def checked() -> dict[str, Any]:
+            require(ctx, "read", honor_auth_required=True)
+            return get_job()
+
+        return _result(checked)
+
+    async def build_logs_body(request: BuildLogRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
+        """Bounded shared source/flash/build output by job, read through the owner's reader.
+
+        The current read grant and the exact broker/job/registration are rechecked
+        after any IO off the loop, before private receipts are returned.
+        """
+
+        async def get_logs() -> dict[str, Any]:
+            owner = require(ctx, "read", honor_auth_required=False)
+            store = resident._store()
+            job = store.job(request.job_id)
+            plan = store.plan(job["plan_hash"]) if job is not None else None
+            # Any read-scoped caller reads the output through the job owner's reader,
+            # so the body (and its redaction) is exactly what the owner would get.
+            reader = job_reads.log_stream(resident, plan, request.job_id)[0] if plan else None
+            if not isinstance(reader, str) or not reader:
+                reader = None
+            if plan is not None and job is not None and plan.get("test") == TestName.SOURCE.value:
+                if reader is None:
+                    raise BrokerError("source_log_not_available")
+                source = resident.firmware_source
+                epoch, settings = resident.epoch, resident.settings
+                captured = settings.model_copy(deep=True)
+                identity = settings_identity(captured)
+                result: dict[str, Any] = source.read_logs(request, reader, include_cache=False)
+                usage: dict[str, Any] = {"available": False, "reason": "not_requested"}
+                if request.include_source_cache:
+                    try:
+                        usage = await resident.profile_jobs.source_reads.run(
+                            partial(source_usage, captured, plan["project_id"])
+                        )
+                    except SourceError as exc:
+                        # Ancillary inventory failure must not hide durable job
+                        # results. No partial/previous totals become current usage.
+                        usage = {"available": False, "code": exc.code}
+                        if "scan" in exc.public():
+                            usage["scan"] = exc.public()["scan"]
+                current_owner = require(ctx, "read", honor_auth_required=False)
+                if (
+                    resident.closing
+                    or resident.store is not store
+                    or resident.epoch != epoch
+                    or resident.firmware_source is not source
+                    or resident.settings is not settings
+                    or settings_identity(resident.settings) != identity
+                    or current_owner.principal_id != owner.principal_id
+                    or current_owner.origin != owner.origin
+                    or store.job(request.job_id) != job
+                    or store.plan(job["plan_hash"]) != plan
+                ):
+                    raise BrokerError("source_log_not_available")
+                # The cache read can outlive RAM retention or log eviction. Read
+                # the same cursor again only after the current grant is checked.
+                result = source.read_logs(request, reader, include_cache=False)
+                result["source_cache"] = usage
+                return result
+            if plan is not None and plan.get("test") in {t.value for t in FLASH_TESTS}:
+                if reader is None:
+                    raise BrokerError("flash_log_not_available")
+                return cast(dict[str, Any], resident.firmware_flash.read_logs(request, reader))
+            if (
+                plan is None
+                or plan.get("test") != TestName.BUILD.value
+                or reader is None
+                or job is None
+            ):
+                raise BrokerError("build_log_not_available")
+            builder = resident.firmware_build
+            epoch = resident.epoch
+            settings = resident.settings
+            build_settings = builder.settings
+            project_id = plan.get("project_id") if job["state"] == "succeeded" else None
+            project = build_settings.build_projects.get(project_id) if project_id else None
+            registration = project.model_dump_json() if project is not None else None
+            try:
+                built: dict[str, Any] = await asyncio.to_thread(
+                    builder.read_logs,
+                    request,
+                    reader,
+                    project_id=project_id,
+                    broker_epoch=epoch,
+                )
+            except ValueError as exc:
+                raise BrokerError(str(exc)) from None
+            # Hash IO awaited another thread. Recheck the current read grant and
+            # the exact broker/job/registration before returning private receipts.
+            current_owner = require(ctx, "read", honor_auth_required=False)
+            if (
+                resident.closing
+                or resident.store is not store
+                or resident.epoch != epoch
+                or resident.firmware_build is not builder
+                or resident.settings is not settings
+                or builder.settings is not build_settings
+            ):
+                raise BrokerError("build_log_not_available")
+            current_job = store.job(request.job_id)
+            current_project = (
+                builder.settings.build_projects.get(project_id) if project_id else None
+            )
+            current_registration = (
+                current_project.model_dump_json() if current_project is not None else None
+            )
+            if (
+                current_owner.principal_id != owner.principal_id
+                or current_owner.origin != owner.origin
+                or current_registration != registration
+                or current_job is None
+                or current_job["plan_hash"] != job["plan_hash"]
+                or (project_id is not None and current_job["state"] != "succeeded")
+                or store.plan(job["plan_hash"]) != plan
+            ):
+                raise BrokerError("build_log_not_available")
+            return built
+
+        return await _result_async(get_logs)
+
+    def capture_result(job_id: str, ctx: Context[Any, Any]) -> CallToolResult:
+        """A succeeded job's capture from RAM, then the saved copy; never opens USB.
+
+        The only status path whose domain refusal is isError=true (unsorted JSON text).
+        """
+        try:
+            caller = require(ctx, "read", honor_auth_required=False)
+            reader = job_reads.capture_owner(resident, job_id)
+            captured = resident.read_capture(job_id, reader or caller.principal_id)
+        except BrokerError as exc:
+            body = {"ok": False, "error": public_broker_reason(exc)}
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(body))],
+                structured_content=body,
+                is_error=True,
+            )
+        metadata = {"ok": True, **captured.metadata()}
+        return CallToolResult(
+            content=[
+                TextContent(type="text", text=json.dumps(metadata, sort_keys=True)),
+                ImageContent(
+                    type="image",
+                    mime_type="image/png",
+                    data=base64.b64encode(captured.png).decode("ascii"),
+                ),
+            ],
+            structured_content=metadata,
+        )
+
+    # --- submit / execute bodies -------------------------------------------------------
+
+    async def prepare_body(request: PrepareRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
+        """Prepare an immutable plan; nothing is queued and serial preflight never opens USB."""
+        if request.test == TestName.SOURCE:
+
+            def current_owner() -> tuple[str, str]:
+                owner = require(ctx, "control", honor_auth_required=False)
+                if "read" not in owner.scopes:
+                    raise BrokerError("insufficient_scope")
+                return owner.principal_id, owner.origin.value
+
+            async def fetch() -> dict[str, Any]:
+                owner_id, origin = current_owner()
+                return cast(
+                    dict[str, Any],
+                    await resident.profile_jobs.prepare_source(
+                        request, owner_id, origin, reauthorize=current_owner
+                    ),
+                )
+
+            return await _result_async(fetch)
+
+        def prepare() -> dict[str, Any]:
+            if request.after is not None and request.test not in (
+                TestName.BUILD,
+                TestName.SOURCE,
+            ):
+                waiter = require(ctx, "control", honor_auth_required=False)
+                return cast(
+                    dict[str, Any],
+                    resident.prepare_deferred(request, waiter.principal_id, waiter.origin.value),
+                )
+            if request.test in (TestName.BUILD, TestName.SOURCE):
+                owner = require(ctx, "control", honor_auth_required=False)
+                return cast(
+                    dict[str, Any],
+                    resident.profile_jobs.prepare(request, owner.principal_id, owner.origin.value),
+                )
+            if request.test in (
+                TestName.CAPTURE,
+                TestName.DERBY,
+                TestName.DERBY_FIXED,
+                TestName.FIRMWARE,
+                TestName.RESTART,
+                *FLASH_TESTS,
+            ):
+                # Always authenticated (even on a mock server), then the gated check.
+                bind_lease(require(ctx, "control", honor_auth_required=False), request.session)
+            bind_lease(require(ctx, "control", honor_auth_required=True), request.session)
+            return cast(dict[str, Any], resident.prepare(request))
+
+        return _result(prepare)
+
+    async def execute_body(request: ExecuteRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
+        """Queue one exact plan on its explicit request; the same job ID never replays."""
+
+        def authorize() -> None:
+            bind_lease(require(ctx, "control", honor_auth_required=True), request.session)
+
+        async def execute() -> dict[str, Any]:
+            plan = resident._store().plan(request.plan_hash)
+            if plan is not None and plan.get("test") in (
+                TestName.BUILD.value,
+                TestName.SOURCE.value,
+            ):
+                owner = require(ctx, "control", honor_auth_required=False)
+                job = resident.profile_jobs.execute(request, owner.principal_id, owner.origin.value)
+            elif plan is not None and plan.get("execution_context") == "device_deferred":
+                waiter = require(ctx, "control", honor_auth_required=False)
+                job = resident.execute_deferred(request, waiter.principal_id, waiter.origin.value)
+            else:
+                authorize()
+                # Firmware file verification runs off the loop; authority is checked
+                # again before the final synchronous checks and the enqueue.
+                job = await resident.execute_async(request, reauthorize=authorize)
+            return shared_job(job)
+
+        return await _result_async(execute)
+
     async def enqueue(
         ctx: Context[Any, Any],
         plan_hash: str,
@@ -516,13 +927,15 @@ def register_surface(
             ):
                 return _refuse("argument_not_allowed", "continues")
         model, error = _convert(lambda: ExecuteRequest(plan_hash=plan_hash, session=session))
-        body: dict[str, Any] = error or await ops["execute_test"](model, ctx)
+        body: dict[str, Any] = error or await execute_body(model, ctx)
         if continues and body.get("ok") and isinstance(body.get("id"), str):
             try:
                 body["continuation_ticket"] = resident.issue_ticket(body["id"], hint)
             except BrokerError as exc:
                 body["continuation_error"] = public_broker_reason(exc)
         return body
+
+    # --- the six tools -----------------------------------------------------------------
 
     @server.tool(annotations=read_only)
     async def status(request: StatusRequest, ctx: Context[Any, Any]) -> CallToolResult:
@@ -543,23 +956,36 @@ def register_surface(
             return _wrap(refused)
         view = request.view
         if view is View.IDENTITY:
-            body = await ops["client_identity"](ctx)
+            body = identity_body(ctx)
             if body.get("ok"):
                 body["tool_set_version"] = TOOL_SET_VERSION
         elif view is View.TARGETS:
-            body = await ops["list_registered_targets"](ctx)
+            body = targets_body(ctx)
         elif view is View.SOURCE:
             assert request.project_id is not None
-            body = await ops["read_source_resources"](
-                SourceResourcesRequest(project_id=request.project_id), ctx
-            )
+            body = await source_body(request.project_id, ctx)
         elif view is View.DEVICE:
-            body = await ops["device_status"](ctx)
+
+            def device() -> dict[str, Any]:
+                require(ctx, "read", honor_auth_required=True)
+                return cast(dict[str, Any], resident.status())
+
+            body = _result(device)
         elif view is View.SESSION:
             assert request.resume_token is not None
-            body = await ops["resume_work_session"](
-                ResumeWorkSessionRequest(resume_token=_req(request.resume_token)), ctx
-            )
+            resume = ResumeWorkSessionRequest(resume_token=_req(request.resume_token))
+
+            def resumed() -> dict[str, Any]:
+                # Logical sessions are always authenticated, including on a legacy mock server.
+                owner = require(ctx, "read", honor_auth_required=False)
+                return cast(
+                    dict[str, Any],
+                    resident.resume_work_session(
+                        resume, principal_id=owner.principal_id, scopes=owner.scopes
+                    ),
+                )
+
+            body = _result(resumed)
         elif view is View.JOB:
             assert request.job_id is not None
             job_id = _req(request.job_id)
@@ -583,7 +1009,7 @@ def register_surface(
                         **({"chain": chain} if chain is not None else {}),
                     }
                 )
-            body = await ops["job_status"](JobRequest(job_id=job_id), ctx)
+            body = job_body(job_id, ctx)
             if body.get("ok") and isinstance(body.get("plan_hash"), str):
                 plan = plan_for(body["plan_hash"])
                 mine = plan is not None and job_reads.same_principal(
@@ -600,7 +1026,7 @@ def register_surface(
                         body["chain"] = chain
         elif view is View.JOBS:
             jobs_cursor, error = _cursor(JobListCursor, request.cursor)
-            body = error or _read_body(
+            body = error or _result(
                 lambda: job_reads.list_jobs(
                     resident,
                     _reader(ctx),
@@ -610,13 +1036,18 @@ def register_surface(
                 )
             )
         elif view is View.RECOVERY:
-            body = _read_body(lambda: job_reads.recovery(resident, _reader(ctx)))
+            body = _result(lambda: job_reads.recovery(resident, _reader(ctx)))
         elif view is View.APPS:
-            body = await ops["list_apps"](ctx)
+
+            def catalog() -> dict[str, Any]:
+                # The cached app-control catalog and freshness; never opens USB.
+                require(ctx, "read", honor_auth_required=False)
+                return cast(dict[str, Any], resident.app_sessions.list_apps())
+
+            body = _result(catalog)
         elif view is View.CAPTURE:
             assert request.job_id is not None
-            result = await ops["read_capture"](JobRequest(job_id=_req(request.job_id)), ctx)
-            return cast(CallToolResult, result)
+            return capture_result(_req(request.job_id), ctx)
         else:
             assert request.stream is not None
             required, optional = STREAM_RULES[request.stream]
@@ -637,8 +1068,17 @@ def register_surface(
             if error is not None:
                 return error
             model, error = _convert(lambda: LogRequest(cursor=log_cursor, **extra))
-            return error or await ops["read_logs"](model, ctx)
+            if error is not None:
+                return error
+
+            def broker_logs() -> dict[str, Any]:
+                # Bounded cached events; never acquires or reads a serial port.
+                require(ctx, "read", honor_auth_required=True)
+                return cast(dict[str, Any], resident.read_logs(model))
+
+            return _result(broker_logs)
         assert request.job_id is not None
+        job_id = _req(request.job_id)
         if stream is Stream.BUILD:
             for name in ("levels", "context", "include_source_cache"):
                 if getattr(request, name) is not None:
@@ -647,21 +1087,40 @@ def register_surface(
             if error is not None:
                 return error
             model, error = _convert(
-                lambda: BuildLogRequest(job_id=_req(request.job_id), cursor=log_cursor, **extra)
+                lambda: BuildLogRequest(job_id=job_id, cursor=log_cursor, **extra)
             )
-            return error or await ops["read_build_logs"](model, ctx)
+            return error or await build_logs_body(model, ctx)
         if stream is Stream.DEVICE:
-            device: dict[str, Any] = await ops["read_device_logs"](
-                JobRequest(job_id=_req(request.job_id)), ctx
-            )
-            return device
+
+            def report() -> dict[str, Any]:
+                # The owner's bounded redacted firmware_observe/restart_and_observe report.
+                caller = require(ctx, "read", honor_auth_required=False)
+                reader = job_reads.device_log_owner(resident, job_id)
+                return cast(
+                    dict[str, Any],
+                    resident.read_device_logs(job_id, reader or caller.principal_id),
+                )
+
+            return _result(report)
         app_cursor, error = _cursor(AppEventCursor, cursor)
         if error is not None:
             return error
-        model, error = _convert(
-            lambda: AppEventsRequest(job_id=_req(request.job_id), cursor=app_cursor, **extra)
+        events_request, error = _convert(
+            lambda: AppEventsRequest(job_id=job_id, cursor=app_cursor, **extra)
         )
-        return error or await ops["read_app_events"](model, ctx)
+        if error is not None:
+            return error
+
+        def events() -> dict[str, Any]:
+            # Private bounded control ACKs and redacted logs, read through the owner.
+            caller = require(ctx, "read", honor_auth_required=False)
+            reader = job_reads.app_event_owner(resident, job_id)
+            return cast(
+                dict[str, Any],
+                resident.read_app_events(events_request, reader or caller.principal_id),
+            )
+
+        return _result(events)
 
     @server.tool(annotations=mutating)
     async def submit(request: SubmitRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -696,7 +1155,7 @@ def register_surface(
         model, error = _convert(lambda: PrepareRequest(test=test, **fields))
         if error is not None:
             return error
-        body: dict[str, Any] = await ops["prepare_test"](model, ctx)
+        body = await prepare_body(model, ctx)
         if body.get("ok"):
             body["execute_tool"] = "flash" if test.value in DESTRUCTIVE_TESTS else "execute"
         return body
@@ -729,14 +1188,33 @@ def register_surface(
                 name: getattr(request, name) for name in request.model_fields_set if name != "op"
             }
             app_model, error = _convert(lambda: AppCommandRequest(**fields))
-            return error or await ops["app_command"](app_model, ctx)
+            if error is not None:
+                return error
+
+            def command() -> dict[str, Any]:
+                # Typed input inside one exact app_session plan; status never replays.
+                bind_lease(require(ctx, "control", honor_auth_required=False), app_model.session)
+                return cast(dict[str, Any], resident.app_command(app_model))
+
+            return _result(command)
         assert request.job_id is not None and request.source_job_id is not None
         recovery, error = _convert(
             lambda: RequestHomeRecovery(
                 job_id=_req(request.job_id), source_job_id=_req(request.source_job_id)
             )
         )
-        return error or await ops["request_home_recovery"](recovery, ctx)
+        if error is not None:
+            return error
+
+        def home_recovery() -> dict[str, Any]:
+            # One bounded q after a proved-closed DERBY capture failure; no retry.
+            owner = require(ctx, "control", honor_auth_required=False)
+            return cast(
+                dict[str, Any],
+                resident.home_recovery.request(recovery, owner.principal_id, owner.origin.value),
+            )
+
+        return _result(home_recovery)
 
     @server.tool(annotations=destructive)
     async def flash(request: FlashToolRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -772,12 +1250,22 @@ def register_surface(
                 return _refuse(public_broker_reason(exc))
         if request.target is Target.REQUEST:
             assert request.resume_token is not None and request.request_id is not None
-            model, error = _convert(
+            wait, error = _convert(
                 lambda: CancelDeviceRequest(
                     resume_token=_req(request.resume_token), request_id=_req(request.request_id)
                 )
             )
-            return error or await ops["cancel_device_request"](model, ctx)
+            if error is not None:
+                return error
+
+            def cancel_wait() -> dict[str, Any]:
+                # Logical sessions are always authenticated, including on a legacy mock server.
+                owner = require(ctx, "control", honor_auth_required=False)
+                return cancellation.cancel_job(
+                    resident, cancellation.DeviceRequestWait(wait, owner.principal_id, owner.scopes)
+                )
+
+            return _result(cancel_wait)
         assert request.job_id is not None
         try:
             cancelled = cancellation.cancel_job(
@@ -817,11 +1305,43 @@ def register_surface(
                     job_id=_req(request.job_id), plan_hash=_req(request.plan_hash)
                 )
             )
-            return error or await ops["cancel_home_recovery"](recovery, ctx)
-        model, error = _convert(
+            if error is not None:
+                return error
+            # Stop this principal's exact recovery; ownership is kept until confirmed close.
+            return _result(
+                lambda: cancellation.cancel_job(
+                    resident,
+                    cancellation.HomeRecoveryJob(
+                        recovery, require(ctx, "control", honor_auth_required=False).principal_id
+                    ),
+                )
+            )
+        stop, error = _convert(
             lambda: CancelRequest(job_id=_req(request.job_id), session=request.session)
         )
-        return error or await ops["cancel_job"](model, ctx)
+        if error is not None:
+            return error
+
+        def cancel_owned() -> dict[str, Any]:
+            # Source/build stops use the current control principal and no USB lease;
+            # device jobs keep their lease ownership and interruption rules.
+            stored = resident._store().job(stop.job_id)
+            stored_plan = (
+                resident._store().plan(stored["plan_hash"]) if stored is not None else None
+            )
+            if stored_plan is not None and stored_plan.get("test") in (
+                TestName.BUILD.value,
+                TestName.SOURCE.value,
+            ):
+                owner = require(ctx, "control", honor_auth_required=False)
+                return cancellation.cancel_job(
+                    resident,
+                    cancellation.ProfileJob(stop, owner.principal_id, owner.origin.value),
+                )
+            bind_lease(require(ctx, "control", honor_auth_required=True), stop.session)
+            return cancellation.cancel_job(resident, cancellation.LeasedDeviceJob(stop))
+
+        return _result(lambda: shared_job(cancel_owned()))
 
     @server.tool(annotations=mutating)
     async def session(request: SessionRequest, ctx: Context[Any, Any]) -> dict[str, Any]:
@@ -835,6 +1355,34 @@ def register_surface(
         refused = _check(request, "action", required, optional)
         if refused is not None:
             return refused
+
+        # Logical work sessions are always authenticated, including on a legacy mock
+        # server; lease actions on a session capability and the immediate acquire are not.
+        def create_work(work: CreateWorkSessionRequest) -> dict[str, Any]:
+            def create() -> dict[str, Any]:
+                owner = require(ctx, "control", honor_auth_required=False)
+                bind_origin(owner, work.owner)
+                return cast(
+                    dict[str, Any],
+                    resident.create_work_session(
+                        work, principal_id=owner.principal_id, scopes=owner.scopes
+                    ),
+                )
+
+            return _result(create)
+
+        def request_device(queued: RequestDeviceRequest) -> dict[str, Any]:
+            def queue() -> dict[str, Any]:
+                owner = require(ctx, "control", honor_auth_required=False)
+                return cast(
+                    dict[str, Any],
+                    resident.request_device(
+                        queued, principal_id=owner.principal_id, scopes=owner.scopes
+                    ),
+                )
+
+            return _result(queue)
+
         action = request.action
         if action is SessionAction.OPEN:
             assert request.owner is not None
@@ -846,21 +1394,33 @@ def register_surface(
                 work, error = _convert(
                     lambda: CreateWorkSessionRequest(owner=_req(request.owner), **ttl)
                 )
-                return error or await ops["create_work_session"](work, ctx)
+                return error or create_work(work)
             if not request.wait_seconds:
                 if request.ttl_seconds is not None:
                     return _refuse("argument_not_allowed", "ttl_seconds")
                 acquire, error = _convert(
                     lambda: AcquireRequest(owner=_req(request.owner), lease_seconds=lease)
                 )
-                return error or await ops["acquire_session"](acquire, ctx)
+                if error is not None:
+                    return error
+
+                def reserve() -> dict[str, Any]:
+                    owner = require(ctx, "control", honor_auth_required=True)
+                    if owner is None:
+                        return cast(dict[str, Any], resident.acquire(acquire))
+                    bind_origin(owner, acquire.owner)
+                    return cast(
+                        dict[str, Any], resident.acquire(acquire, principal_id=owner.principal_id)
+                    )
+
+                return _result(reserve)
             ttl = {"ttl_seconds": request.ttl_seconds} if request.ttl_seconds else {}
             work, error = _convert(
                 lambda: CreateWorkSessionRequest(owner=_req(request.owner), **ttl)
             )
             if error is not None:
                 return error
-            created: dict[str, Any] = await ops["create_work_session"](work, ctx)
+            created = create_work(work)
             if not created.get("ok"):
                 return created
             queued, error = _convert(
@@ -872,7 +1432,7 @@ def register_surface(
             )
             if error is not None:
                 return {**created, "device_request": error}
-            return {**created, "device_request": await ops["request_device"](queued, ctx)}
+            return {**created, "device_request": request_device(queued)}
         if action is SessionAction.REQUEST:
             assert request.resume_token is not None
             extra: dict[str, Any] = {}
@@ -887,7 +1447,7 @@ def register_surface(
             queued, error = _convert(
                 lambda: RequestDeviceRequest(resume_token=_req(request.resume_token), **extra)
             )
-            return error or await ops["request_device"](queued, ctx)
+            return error or request_device(queued)
         if action is SessionAction.RENEW:
             assert request.session is not None
             renew_extra = (
@@ -898,13 +1458,42 @@ def register_surface(
             renew, error = _convert(
                 lambda: RenewRequest(session=_req(request.session), **renew_extra)
             )
-            return error or await ops["renew_session"](renew, ctx)
+            if error is not None:
+                return error
+
+            def extend() -> dict[str, Any]:
+                # Extend a live lease using its in-memory bearer capability.
+                bind_lease(require(ctx, "control", honor_auth_required=True), renew.session)
+                return cast(dict[str, Any], resident.renew(renew))
+
+            return _result(extend)
         if action is SessionAction.RELEASE:
             assert request.session is not None
             lease_model, error = _convert(lambda: LeaseRequest(session=_req(request.session)))
-            return error or await ops["release_session"](lease_model, ctx)
+            if error is not None:
+                return error
+
+            def release() -> dict[str, Any]:
+                # Release an idle session; active work cannot be cancelled or released here.
+                bind_lease(require(ctx, "control", honor_auth_required=True), lease_model.session)
+                return cast(dict[str, Any], resident.release(lease_model))
+
+            return _result(release)
         assert request.resume_token is not None
         close, error = _convert(
             lambda: CloseWorkSessionRequest(resume_token=_req(request.resume_token))
         )
-        return error or await ops["close_work_session"](close, ctx)
+        if error is not None:
+            return error
+
+        def close_work() -> dict[str, Any]:
+            # Close the logical workflow safely; it cannot stop an active physical job.
+            owner = require(ctx, "control", honor_auth_required=False)
+            return cast(
+                dict[str, Any],
+                resident.close_work_session(
+                    close, principal_id=owner.principal_id, scopes=owner.scopes
+                ),
+            )
+
+        return _result(close_work)

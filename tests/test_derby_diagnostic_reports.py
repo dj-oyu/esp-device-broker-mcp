@@ -13,7 +13,7 @@ from test_derby_telemetry import wire as telemetry_wire
 from test_http_integration import _service
 from test_serial_http import serial_service as serial_service
 
-from cardputer_mcp import derby_reports, server
+from cardputer_mcp import derby_reports, surface
 from cardputer_mcp.broker import Broker, digest_plan
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import SerialSettings, Settings
@@ -148,7 +148,7 @@ async def test_actual_job_status_rechecks_authority_and_owned_row_before_private
     store, job, _, _ = retained(broker)
     changed = [False]
     authenticate = RequestAuth.authenticate
-    project = server.private_job
+    project = surface.private_job
 
     def current(auth, header):
         owner = authenticate(auth, header)
@@ -177,7 +177,7 @@ async def test_actual_job_status_rechecks_authority_and_owned_row_before_private
         return result
 
     monkeypatch.setattr(RequestAuth, "authenticate", current)
-    monkeypatch.setattr(server, "private_job", after_projection)
+    monkeypatch.setattr(surface, "private_job", after_projection)
     async with connect(url, REMOTE) as client:
         response = await client.session.send_request(
             CallToolRequest(

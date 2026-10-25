@@ -16,6 +16,8 @@ import pytest
 from surface_harness import REMOTE, raw, serve
 
 from cardputer_mcp.client import SURFACE_TOOLS, connect
+from cardputer_mcp.config import Settings
+from cardputer_mcp.server import create_server
 
 SNAPSHOT = Path(__file__).parent / "fixtures" / "surface_tools_list.json"
 
@@ -128,3 +130,37 @@ async def test_text_content_encoding_per_tool(
         assert text == json.dumps(body, indent=2)
         assert list(body) == list(json.loads(text))  # insertion order, not sorted
         assert text != json.dumps(body, indent=2, sort_keys=True)
+
+
+INSTRUCTIONS = (
+    "Single-owner Cardputer broker. Mock mode is the default. Explicit serial mode "
+    "supports bounded observation, HELLO and HOME render-buffer capture, with "
+    "authenticated, scoped clients. Acquire, prepare, then explicitly execute_test. "
+    "Preparation alone never requests execution. Capture uses a fresh HOME handshake; "
+    "Esc can exit another app. Any caller with current read scope can read a "
+    "succeeded capture; it is kept in RAM for five minutes and saved in state "
+    "until the oldest are pruned beyond 200 images or 64 MiB. "
+    "Pixels do not prove LCD transfer. "
+    "request_home_recovery explicitly requests one bounded DERBY q exit "
+    "only after a recorded capture failure and confirmed close; no prior HOME "
+    "attestation is asserted. It cannot resolve flash reviews or retry itself. "
+    "No arbitrary shell/raw serial commands are available. Flash requires "
+    "registered device/build/backup and verified identities. "
+    "Restart executes only on an explicit exact-plan request."
+)
+
+
+@pytest.mark.parametrize("require_auth", [True, False])
+async def test_in_process_catalog_and_instructions_match(
+    tmp_path: Path, require_auth: bool
+) -> None:
+    # No listener or lifespan: the registered catalog itself, plus what hosts import with it.
+    settings = Settings(state_dir=tmp_path / "state", port=8765)
+    server = create_server(settings, require_auth=require_auth)
+    tools = await server.list_tools()
+    actual = [tool.model_dump(mode="json", by_alias=True, exclude_none=True) for tool in tools]
+    assert json.dumps(actual, indent=2, sort_keys=True) + "\n" == SNAPSHOT.read_text(
+        encoding="utf-8"
+    )
+    assert (server.name, server.version) == ("Cardputer Device Broker", "0.13.0")
+    assert server.instructions == INSTRUCTIONS

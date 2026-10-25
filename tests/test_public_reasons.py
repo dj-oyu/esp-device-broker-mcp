@@ -13,8 +13,8 @@ from cardputer_mcp.public_reasons import (
     SUPPRESSED_REASON_CODES,
     public_reason,
 )
-from cardputer_mcp.server import _result
 from cardputer_mcp.source_snapshot import SourceError
+from cardputer_mcp.surface import _result
 
 SOURCE = Path(__file__).resolve().parents[1] / "src" / "cardputer_mcp"
 # Modules on the MCP request path whose ValueError text can reach _result().

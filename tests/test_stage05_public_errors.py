@@ -18,9 +18,8 @@ from cardputer_mcp.client import connect
 from cardputer_mcp.continuation import TicketError
 from cardputer_mcp.models import LogCursor
 from cardputer_mcp.public_reasons import PUBLIC_REASON_CODES
-from cardputer_mcp.server import _result
 from cardputer_mcp.source_snapshot import CacheScanLimit, SourceError
-from cardputer_mcp.surface import _convert
+from cardputer_mcp.surface import _convert, _result
 
 SECRET = "C:/SYNTHETIC_PRIVATE_PATH/secret.txt"
 GENERIC = {

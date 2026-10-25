@@ -23,6 +23,7 @@
 
 - MCP ツールは `status` / `submit` / `execute` / `flash` / `cancel` / `session` の 6 本だけ。旧 25 本の `@op` は、
   内部の `ops` 辞書(`server.py:596-599`)の入口にすぎない。したがって、旧層は外部の契約を変えずに畳める。
+  (段階 3c で畳んだ。`ops` 辞書と `@op` はもうない。§5.4)
 - 入力は、どのツールも `{"request": {...}}`。余分なフィールドは拒否する。
 - 注釈: 読み取り専用は `status` だけ、破壊的は `flash` だけ。`openWorldHint` はすべて false。
   `idempotentHint` は付けない。
@@ -259,7 +260,7 @@
 | 2c | `LeaseManager`、`Broker.cancel_job`、`require(ctx, scope)` | 不変 | 不要 |
 | 3a | `_work` の分割(`admit` / 登録表 / `finish`)と `JobKind` | 不変 | **要**(書き込みなしの hello→observe) |
 | 3b | `ExecutionAuthority` | 不変 | **要**(フラッシュは明示の承認後) |
-| 3c | 旧 `@op` 層を 6 ツールに畳む | 不変(tools/list も同じ) | 不要 |
+| 3c | 旧 `@op` 層を 6 ツールに畳む(**済**、§5.4) | 不変(tools/list も同じ) | 不要 |
 | 4 | 周辺(`broker_link.py`、永続 JSON を検証だけの厳格モデルへ、小モジュールの統合)。Tunnel の監督の統一は、最後 | 不変 | Tunnel だけ確認 |
 | 修正 | §2.1 と §2.2 の穴を 1 つずつ別の PR で | **変わる** | 内容による |
 
@@ -330,6 +331,28 @@
 - `lkg_receipt` か `backup_job_id` を明示したフラッシュ、リストア、バックアップは変えない(フェンスも残す)。
 - `status(view=targets)` の `flash_baseline` は、`allow_flash` が true なら `"not_required"`。
   `lkg_recorded` を足した。§5.2 の「行き止まりを示す」は、行き止まりがなくなったので不要になった。
+
+### 5.4 段階 3c: 旧 `@op` 層を畳んだ(2026-10-25)
+
+- `server.py` の `op` デコレーター、`ops` 辞書、25 本の `@op` ハンドラー、`bind_lease` / `bind_origin`、
+  `_result` を消した。6 ツールは `surface.py` の中で、ブローカーとドメインの関数を直接呼ぶ。
+  ツールでない内部の処理(旧 `read_capture`、`job_status`、`read_build_logs`、`read_source_resources`、
+  `prepare_test`、`execute_test` など)は、`register_surface` の中の普通の関数
+  (`capture_result`、`job_body`、`build_logs_body`、`source_body`、`prepare_body`、`execute_body` など)にした。
+- 主体とスコープの検査は、`server.create_server` の `require(ctx, scope, honor_auth_required=...)` の 1 か所のまま。
+  各経路が `honor_auth_required` に渡す値は変えていない。外に出る失敗は、`surface._result` /
+  `_result_async`(どちらも `public_errors.refusal`)の 1 つの関所を通る。旧 4 本の except ラダーは、この 2 つにまとめた。
+- `server.py` に残すもの: `Principal`、`RequestAuth`、`require_principal`、`SafeMCPServer`、`LoopbackOnly`、
+  `TunnelIngress`、`create_server`(認証、lifespan、instructions、注釈)、`create_app`(HTTP、operator API)。
+  stdio アダプターは変えていない。
+- 変わらないことの確かめ:
+  - `tests/fixtures/surface_tools_list.json` は変えていない。`tests/test_surface_snapshot.py` は、HTTP の
+    `tools/list` に加えて、プロセス内の `list_tools()` とサーバーの名前・版・instructions を照合する。
+  - 先に足した `tests/test_surface_gate_matrix.py` は、47 の要求を 5 つの呼び出し側(認証なしのモックで
+    bearer なし/あり、認証必須のモック、`read` だけ/`control` だけのレジストリの鍵)で呼び、拒否の本文、
+    成功の鍵の集合、`isError`、本文の直列化を固定する。旧コードで作った値のまま通る。
+- 契約台帳(`docs/redesign/contracts/`)の `server.py:<行>` は、`5d79d2d` の時点の行。旧ハンドラーの
+  今の場所は、`surface.md` §0.1 の対応表にある。
 
 ## 6. 未検証
 
