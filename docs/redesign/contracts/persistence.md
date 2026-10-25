@@ -121,6 +121,60 @@ All paths are relative to `src/cardputer_mcp/` unless they say otherwise. Anythi
 | `firmware-builds/<fp64>/<env64>/` (layout v1, when build_root is None) | build_locations.claim_build_directory :131 | resolve_build_manifest :282 | build dir | mkdir | — |
 | `firmware-builds/.locks/<slot>.lock` (or `<build_root>/.locks/`) | filelock (build_locations.py:270; firmware_build.py:845) | — | lock | — | — |
 | `compiler-cache/<sha256([project,principal])>/` | build_ccache.py:93-97 | ccache | ccache dir | — | — |
+| `job-logs/<job_id>.jsonl` (schema_version 1) | job_logs.JobLogStore.begin / JobLog.append / JobLog.record | JobLogStore.read / build_read / device_report / app_events_read / records | header `{"schema_version":1,"job_id","principal_id","kind","created"}`, then stream entries `{"seq","t","stream","level","text"}` (streams `source`, `build`, `flash`, `device`, `app`) and structured records `{"seq","t","record","data"}` (`flash_outcome`, `app_event`) | O_APPEND + flush per line, fsync on close; a crash leaves at most one partial final line, which readers skip | `_load` (header schema_version==1, job_id/principal_id match the requester) |
+| `captures/<job_id>/capture.png` + `capture.json` (schema_version 1) | capture_store.CaptureStore.save (broker worker, after the capture job's port is confirmed closed) | CaptureStore.load (broker.read_capture after the RAM copy is gone) | exact PNG bytes; metadata `{"schema_version":1,"job_id","principal_id","origin","mime_type","size_bytes","sha256","width","height","source","captured_utc"}` | temp file + fsync + `os.replace`, PNG first, metadata last | `load` (schema_version, owner, mime, source, size and sha256 re-verified) |
+
+### 3.1 Durable job logs, app-session records, flash outcomes and captures
+
+Saving is unconditional and never changes a job's outcome; a store failure
+marks the log unavailable (non-flash jobs get the same-state
+`job_log_unavailable` annotation). Everything written passes the job-log
+redaction (`build_logs.redact_log_text`, plus the job's env-secret
+redactions); structured records are redacted value by value. No record holds
+firmware bytes, device output beyond the redacted log lines, absolute paths or
+credentials.
+
+- **App sessions** (`app_session` jobs). The broker opens the job's log before
+  the session starts and passes it to `AppSessions.execute`. `AppEvents` tees
+  every control event as an `app_event` record (the RAM event dict, including
+  its `sequence`) and every app log line to the `app` stream, for every
+  outcome (stopped/timeout/cancelled/authority lost/teardown unconfirmed). The
+  broker closes the log in the worker's `finally`. `read_app_events` serves
+  RAM while the run is retained and not expired; after expiry, eviction from
+  the bounded app job table or a restart it serves the durable copy to the
+  job's own principal only, for a terminal job (`source:
+  "durable_job_log"`, a durable cursor epoch, `state`/`result` added).
+- **Flash outcome** (`firmware_flash` / `firmware_backup` / `firmware_restore`
+  jobs the worker ran). After the terminal transition and before the logs close,
+  the broker appends one `flash_outcome` record (`schema_version` 1):
+  state, reason code, last stage, phase reached and phase times,
+  `write_started` / `close_confirmed` (the same evidence the failure
+  classification uses), plan hash, device id / fingerprint / expected and bound
+  device identity, referenced `lkg_receipt` / `backup_job_id` /
+  `backup_sha256` / `build_job_id` / `manifest_sha256`, the backup receipt, the
+  staged LKG receipt and whether it was selected, bounded verification fields
+  and timings. It is written with a small reserve beyond the 8 MiB per-job cap,
+  so it survives a truncated stream. `read_firmware_flash_logs` returns the
+  latest one as `flash_outcome` to the owner, after RAM loss and restart. A
+  broker crash mid-flash leaves no `flash_outcome`; the `-- <stage>` lines in
+  the `flash` stream still show the phase reached. Flash jobs cancelled while
+  still queued never ran and get no record.
+- **Captures.** The worker persists a validated capture before placing it in
+  the five-minute RAM cache (also while closing). It is served only for a
+  succeeded `capture_home` / `derby_smoke` job, to the same principal, after
+  the same per-request `principal_valid` check against the recorded origin;
+  a quarantined (unconfirmed-close) capture is never saved. The operator GUI
+  image preview (`operator_images` / `operator_image`) still lists only the
+  RAM cache.
+- **Retention.** Job logs: 500 files / 512 MiB total, 8 MiB per job. Queued /
+  running jobs are never pruned. Eviction is by retention tier, then oldest
+  first: tier 0 succeeded non-flash jobs (and logs with no job row), tier 1
+  other ordinary jobs, tier 2 `needs_review`, any flash/backup/restore job and
+  any job that produced an LKG (`firmware_lkg` / `firmware_lkg_history`
+  `completed_job`). Captures: 200 directories / 64 MiB total, oldest first.
+- **Compatibility.** The job-log schema stays 1: the `app` stream and the
+  record lines are additive. Stream readers select by `stream`, so records are
+  skipped by older brokers, and older logs (no records) read unchanged.
 
 ## 4. Build output (`build_root/<slot>/` or `state_dir/firmware-builds/<fp>/<env>/`)
 
@@ -271,6 +325,7 @@ Already pydantic: DerbyProvenance (derby_provenance.py:54), DerbyDiagnostics, al
 | Legacy DERBY photo-timing fallback plan | tests/test_derby_photo_timing.py::test_legacy_fallback_plan_cannot_open_or_execute_new_behavior |
 | J1 legacy descriptor hash / omitted collector digest | tests/test_diagnostic_registry.py::test_legacy_descriptor_hash_and_exact_omission_boundary_are_preserved, ::test_binding_null_and_mode_downgrade_never_select_legacy; tests/test_dma_collector_binding.py::test_collector_dma_axis_has_no_legacy_default |
 | Flash plan without manifest_export_sha256 | tests/test_manifest_export.py::test_fixed_plan_commitment_rejects_rehashed_other_job_or_manifest (legacy block :152-155); tests/test_manifest_export_binding.py::test_commitment_damage_cannot_reuse_a_fixed_trusted_plan_hash |
+| Job log schema_version 1 written before records / `app` stream existed | tests/test_durable_session_flash_records.py::test_pre_record_v1_job_log_still_reads |
 | keys.sqlite3 user_version | tests/test_key_registry.py::test_schema_version_not_silently_downgraded |
 | Legacy flat tunnel.local.toml | tests/test_tunnel_config.py::test_conflicting_legacy_metadata_fails_closed_in_both_entry_points |
 | Durable build reference after restart | tests/test_build_artifact_persistence.py::test_flash_owned_context_uses_durable_reference_after_restart |

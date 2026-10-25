@@ -25,6 +25,7 @@ from .backend import Backend, BackendResult, DeviceDisconnected, DeviceOperation
 from .build_locations import BuildLocationError
 from .cancellation import DeviceStop, device_stop
 from .capture import CapturedImage
+from .capture_store import CaptureStore
 from .collector_binding import collector_live, prepare_collector
 from .config import Settings
 from .continuation import (
@@ -228,6 +229,7 @@ class Broker:
         self.operator_changes = OperatorNotifications()
         self.logs = LogBook(settings.log_capacity, on_change=self.operator_changes.notify)
         self.job_logs = JobLogStore(settings.state_dir / "job-logs")
+        self.capture_store = CaptureStore(settings.state_dir / "captures")
         self._job_log_failures: set[str] = set()
         from .firmware_build import FirmwareBuild
 
@@ -2137,10 +2139,41 @@ class Broker:
                     "SELECT id FROM jobs WHERE state IN ('queued','running','awaiting_approval')"
                 )
             }
-            return self.job_logs.begin(job_id, principal_id, kind, keep=active)
+            return self.job_logs.begin(
+                job_id, principal_id, kind, keep=active, tiers=self._job_log_tiers(store)
+            )
         except Exception:
             self._job_log_failures.add(job_id)
             return None
+
+    @staticmethod
+    def _job_log_tiers(store: Store) -> dict[str, int]:
+        """Retention value per job for log pruning; unlisted ids rank 0.
+
+        0: succeeded non-flash job (evicted first); 1: other ordinary jobs;
+        2: needs_review, any flash/backup/restore job, or a job that produced an LKG.
+        """
+        flash = tuple(test.value for test in FLASH_TESTS)
+        tiers: dict[str, int] = {}
+        try:
+            rows = store.db.execute(
+                "SELECT j.id, j.state, json_extract(p.payload,'$.test') FROM jobs j "
+                "LEFT JOIN plans p ON p.hash=j.plan_hash"
+            ).fetchall()
+            for job_id, state, test in rows:
+                if state == "needs_review" or test in flash:
+                    tiers[str(job_id)] = 2
+                elif state != "succeeded":
+                    tiers[str(job_id)] = 1
+            for (job_id,) in store.db.execute(
+                "SELECT completed_job FROM firmware_lkg_history "
+                "UNION SELECT completed_job FROM firmware_lkg"
+            ).fetchall():
+                tiers[str(job_id)] = 2
+        except Exception:
+            # Ranking only orders eviction; plain oldest-first stays safe.
+            return tiers
+        return tiers
 
     def _open_device_job_log(
         self, job_id: str, principal_id: str | None, test: str
@@ -2148,8 +2181,11 @@ class Broker:
         """Unconditionally record what the serial reader receives for a device job.
 
         Passive only: the backend tees bytes it already read. A store failure
-        never fails the job; it is recorded as ``job_log_unavailable``.
+        never fails the job; it is recorded as ``job_log_unavailable``. An app
+        session's own control link tees its events/logs into the returned log.
         """
+        if test == TestName.APP_SESSION.value:
+            return self._open_job_log(job_id, principal_id or "", test), None
         if test in _NON_DEVICE_LOG_TESTS or not hasattr(self.backend, "device_log"):
             return None, None
         job_log = self._open_job_log(job_id, principal_id or "", test)
@@ -2192,6 +2228,23 @@ class Broker:
                     store.ledger.annotate(job_id, {"job_log_unavailable": True})
         except Exception:
             # Logging is never allowed to change the job outcome.
+            pass
+
+    def _record_flash_outcome(self, job_id: str, plan: dict[str, Any]) -> None:
+        """Persist the structured outcome of every flash/backup/restore the worker ran.
+
+        Runs after the terminal transition and before the job's logs close; it
+        only reads committed state and never changes the job outcome.
+        """
+        try:
+            if plan.get("test") not in {test.value for test in FLASH_TESTS}:
+                return
+            job = self._store().job(job_id)
+            if job is None:
+                return
+            if not self.firmware_flash.record_outcome(plan, job):
+                self._job_log_failures.add(job_id)
+        except Exception:
             pass
 
     def _durable_device_logs(self, job_id: str, principal_id: str) -> dict[str, Any]:
@@ -2245,11 +2298,50 @@ class Broker:
             "metadata": retained.observation.metadata(),
         }
 
+    def _durable_capture(self, job_id: str, principal_id: str) -> CapturedImage:
+        """The persisted copy of a succeeded capture, with the RAM read's checks."""
+        job = self._store().job(job_id)
+        plan = self._store().plan(job["plan_hash"]) if job is not None else None
+        if (
+            self.closing
+            or job is None
+            or plan is None
+            or plan.get("test") not in (TestName.CAPTURE.value, TestName.DERBY.value)
+            or job["state"] != "succeeded"
+            or not isinstance(principal_id, str)
+            or not principal_id
+        ):
+            raise BrokerError("capture_not_available")
+        loaded = self.capture_store.load(job_id, principal_id)
+        if loaded is None:
+            raise BrokerError("capture_not_available")
+        image, metadata = loaded
+        epoch = self.epoch
+        valid = self.principal_valid
+        try:
+            authorized = (
+                valid is not None
+                and valid(principal_id, metadata["origin"], frozenset({"read"})) is True
+            )
+        except Exception:
+            authorized = False
+        if not authorized or self.principal_valid is not valid or self.epoch != epoch:
+            raise BrokerError("capture_not_available")
+        if self.closing:
+            raise BrokerError("capture_not_available")
+        return image
+
     def read_capture(self, job_id: str, principal_id: str) -> CapturedImage:
-        """Read completed pixels from memory only, after per-request authentication."""
+        """Read completed pixels after per-request authentication.
+
+        The five-minute RAM copy is served while retained; afterwards (expiry,
+        eviction or restart) the owner-bound durable copy under the state dir.
+        """
         self._store()
         self._prune_captures()
         retained = self.captures.get(job_id)
+        if retained is None:
+            return self._durable_capture(job_id, principal_id)
         job = self._store().job(job_id)
         if (
             self.closing
@@ -2402,13 +2494,48 @@ class Broker:
             raise BrokerError(str(exc)) from None
 
     def read_app_events(self, request: AppEventsRequest, principal_id: str) -> dict[str, Any]:
+        """RAM events while retained; after expiry/eviction/restart the durable copy."""
         run = self.app_sessions.jobs.get(request.job_id)
-        if self.closing or run is None or run.principal != principal_id:
+        if self.closing:
+            raise BrokerError("app_events_not_available")
+        if run is None:
+            return self._durable_app_events(request, principal_id)
+        if run.principal != principal_id:
             raise BrokerError("app_events_not_available")
         try:
-            return run.events.read(principal_id, request)
+            result = run.events.read(principal_id, request)
         except ValueError as exc:
             raise BrokerError(str(exc)) from None
+        if result["expired"] and not run.running:
+            try:
+                return self._durable_app_events(request, principal_id)
+            except BrokerError:
+                return result
+        return result
+
+    def _durable_app_events(self, request: AppEventsRequest, principal_id: str) -> dict[str, Any]:
+        """Owner-only persisted app session events/logs for a terminal job."""
+        job = self._store().job(request.job_id)
+        plan = self._store().plan(job["plan_hash"]) if job is not None else None
+        if (
+            job is None
+            or plan is None
+            or plan.get("test") != TestName.APP_SESSION.value
+            or job["state"] not in _TERMINAL_LOG_STATES
+            or not isinstance(principal_id, str)
+            or not principal_id
+        ):
+            raise BrokerError("app_events_not_available")
+        owner = self.job_principal(request.job_id)
+        if owner is not None and not secrets.compare_digest(owner, principal_id):
+            raise BrokerError("app_events_not_available")
+        try:
+            result = self.job_logs.app_events_read(request.job_id, principal_id, request)
+        except ValueError as exc:
+            raise BrokerError(str(exc)) from None
+        if result is None:
+            raise BrokerError("app_events_not_available")
+        return {**result, "state": job["state"], "result": job["result"]}
 
     def read_logs(self, request: LogRequest) -> dict[str, Any]:
         return self.logs.read(request)
@@ -2641,6 +2768,7 @@ class Broker:
                             capture_principal or "",
                             on_stage,
                             running_authorized,
+                            job_log,
                         )
                     elif plan["test"] in {t.value for t in FLASH_TESTS}:
                         if capture_principal != plan.get("flash_principal"):
@@ -2807,6 +2935,14 @@ class Broker:
                             )
                         ):
                             raise BrokerError("capture_result_invalid")
+                        # Durable copy first, unconditionally (also while closing);
+                        # it is served only after the job commits as succeeded.
+                        self.capture_store.save(
+                            job_id,
+                            capture_principal,
+                            self.session.owner if self.session is not None else "",
+                            result.image,
+                        )
                         if not self.closing:
                             self._prune_captures()
                             while len(self.captures) >= 8:
@@ -2994,6 +3130,7 @@ class Broker:
                         if fixed_review:
                             self._cancel_queued("recovery_review_required")
                 finally:
+                    self._record_flash_outcome(job_id, plan)
                     self._close_job_logs(job_id, job_log, device_tap)
                     job_log = device_tap = None
                     # Do not keep the last image alive in this suspended worker frame

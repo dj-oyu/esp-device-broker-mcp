@@ -4,6 +4,7 @@ import asyncio
 import base64
 import gc
 import json
+import os
 import weakref
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -144,7 +145,7 @@ async def test_capture_principal_isolation_release_and_repeated_reads_do_not_rec
 
 
 @pytest.mark.parametrize("prune", ["read", "maintenance"])
-async def test_capture_expires_at_five_minutes_without_read_refresh_or_recapture(
+async def test_capture_ram_expires_at_five_minutes_then_durable_copy_serves(
     tmp_path: Path, prune: str
 ) -> None:
     clock = Clock()
@@ -160,8 +161,11 @@ async def test_capture_expires_at_five_minutes_without_read_refresh_or_recapture
         if prune == "maintenance":
             broker.maintenance_tick()
             assert not broker.captures
-        unavailable(broker, "expires")
+        # The RAM copy is gone; the owner's durable copy serves the same bytes
+        # without re-adding a RAM entry or recapturing.
+        assert broker.read_capture("expires", PRINCIPAL).png == mock_image().png
         assert not broker.captures
+        unavailable(broker, "expires", "different-principal")
         assert broker.job("expires")["state"] == "succeeded"
         assert broker.backend.calls == 1
 
@@ -422,7 +426,9 @@ async def test_capture_restart_retains_history_but_never_pixels_or_pending_repla
         assert restarted.queue.empty()
 
 
-async def test_capture_pixels_never_enter_history_logs_or_files(tmp_path: Path) -> None:
+async def test_capture_pixels_only_in_private_capture_file_never_history_or_logs(
+    tmp_path: Path,
+) -> None:
     async with running(tmp_path) as broker:
         session = acquire(broker)
         enqueue(broker, session, "private-image")
@@ -452,13 +458,25 @@ async def test_capture_pixels_never_enter_history_logs_or_files(tmp_path: Path) 
             .fetchone()[0]
             == PRINCIPAL
         )
-        files = [path for path in broker.settings.state_dir.rglob("*") if path.is_file()]
+        state = broker.settings.state_dir
+        files = [path for path in state.rglob("*") if path.is_file()]
+        durable = state / "captures" / "private-image"
         assert {path.suffix for path in files} <= {
             ".sqlite3",
             ".sqlite3-wal",
             ".sqlite3-shm",
             ".lockfile",
+            ".png",
+            ".json",
         }
+        assert sorted(path for path in files if path.suffix in (".png", ".json")) == [
+            durable / "capture.json",
+            durable / "capture.png",
+        ]
+        assert (durable / "capture.png").read_bytes() == image.png
+        metadata = json.loads((durable / "capture.json").read_text("utf-8"))
+        assert metadata["sha256"] == image.sha256 and metadata["size_bytes"] == len(image.png)
+        assert session not in json.dumps(metadata)
         # Windows prevents reading an actively byte-locked lockfile. Its tiny
         # coordination record cannot contain the complete image either.
         assert all(
@@ -466,5 +484,66 @@ async def test_capture_pixels_never_enter_history_logs_or_files(tmp_path: Path) 
             if path.suffix == ".lockfile"
             else image.png not in path.read_bytes()
             for path in files
+            if path != durable / "capture.png"
         )
         assert image.png.hex() not in repr(broker.captures)
+
+
+async def test_capture_durable_copy_survives_restart_owner_only(tmp_path: Path) -> None:
+    async with running(tmp_path) as broker:
+        session = acquire(broker)
+        enqueue(broker, session, "kept")
+        await broker.queue.join()
+        assert_image_available(broker, "kept")
+    # Same state directory: the RAM cache is gone, the durable copy remains.
+    async with running(tmp_path) as restarted:
+        assert not restarted.captures
+        image = restarted.read_capture("kept", PRINCIPAL)
+        assert image.png == mock_image().png
+        assert image.metadata()["is_device_capture"] is False
+        unavailable(restarted, "kept", "different-principal")
+        unavailable(restarted, "kept", "")
+        assert restarted.backend.calls == 0
+    # Authorization is still rechecked per request against the recorded origin.
+    instance = Broker(
+        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        backend=MockBackend(0.001),
+        clock=Clock(),
+        lock_path=tmp_path / "device.lockfile",
+        principal_valid=lambda *args: False,
+    )
+    await instance.start()
+    try:
+        unavailable(instance, "kept")
+    finally:
+        await instance.close()
+
+
+async def test_capture_tampered_durable_copy_is_never_served(tmp_path: Path) -> None:
+    async with running(tmp_path) as broker:
+        session = acquire(broker)
+        enqueue(broker, session, "tampered")
+        await broker.queue.join()
+    png = tmp_path / "state" / "captures" / "tampered" / "capture.png"
+    png.write_bytes(png.read_bytes()[:-1] + b"!")
+    async with running(tmp_path) as restarted:
+        unavailable(restarted, "tampered")
+
+
+def test_capture_store_prunes_oldest_beyond_caps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cardputer_mcp import capture_store
+
+    monkeypatch.setattr(capture_store, "MAX_CAPTURES", 2)
+    store = capture_store.CaptureStore(tmp_path / "captures")
+    for index, job_id in enumerate(("one", "two", "three")):
+        assert store.save(job_id, PRINCIPAL, "remote", mock_image())
+        directory = tmp_path / "captures" / job_id
+        for child in directory.iterdir():
+            stamp = 1_000_000_000 + index
+            os.utime(child, (stamp, stamp))
+    assert sorted(path.name for path in (tmp_path / "captures").iterdir()) == ["three", "two"]
+    assert store.load("one", PRINCIPAL) is None
+    assert store.load("three", PRINCIPAL) is not None
+    assert store.load("three", "other") is None

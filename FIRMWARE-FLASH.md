@@ -236,8 +236,26 @@ PEM blocks and configured process secrets are redacted; unknown/obfuscated secre
 remain subject to the collector's documented best-effort limitations. Boot text
 is still unverified device-reported evidence, not cryptographic identity proof.
 
-Restart, eviction or expiry loses this diagnostic text; reads then report
-`expired`/`gap`. No post-restart durability or automatic replay/recovery is added.
+Restart, eviction or expiry loses the RAM copy; the owner's reads then fall back
+to the durable per-job log (`"source": "durable_job_log"`, DEVICE-LOGS.md). No
+automatic replay/recovery is added.
+
+## Durable flash outcome
+
+Every flash, backup or restore the worker ran (succeeded, failed, cancelled or
+needs_review) gets one `flash_outcome` record in its durable job log
+(`<state_dir>/job-logs/<job_id>.jsonl`), written after the terminal state is
+committed. It holds only ids, hashes, fixed codes and times: state and reason
+code, last stage, phase reached with phase times, `write_started` and
+`close_confirmed`, the plan hash, the device id/fingerprint and expected/bound
+device identity, referenced `lkg_receipt`/`backup_job_id`/`backup_sha256`/
+`build_job_id`/`manifest_sha256`, the backup receipt, the staged LKG receipt and
+whether it was selected, bounded verification fields and timings.
+`status(view=logs, stream=build)` for the flash job returns the latest one as
+`flash_outcome` to the owning principal, also after restart. A broker crash
+mid-flash writes none; the `-- <stage>` lines of the durable flash stream still
+show the phase reached. The record grants nothing and is not a recovery input.
+
 Failure still requires review and never promotes LKG. ESP-IDF 6.0.1, expected ELF
 prefix, full readback, final authority and confirmed close checks remain required.
 A slash in a plausible app version is accepted within the existing 31-byte ASCII

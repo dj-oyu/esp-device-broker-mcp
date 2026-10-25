@@ -395,7 +395,9 @@ class AppSessions:
         principal: str,
         stage: Callable[[str], None],
         live: Callable[[], bool],
+        durable: Any = None,
     ) -> str:
+        """``durable`` is the job's open JobLog; the broker closes it on every outcome."""
         options = AppSessionOptions.model_validate(plan["app"])
         for key in tuple(self.jobs):
             old = self.jobs[key]
@@ -408,6 +410,7 @@ class AppSessions:
             options,
             AppEvents(principal, options.log_bytes, on_logs_change=self.on_logs_change),
         )
+        run.events.attach_durable(durable)
         self.jobs[plan["job_id"]] = run
         loop = asyncio.get_running_loop()
 
