@@ -9,7 +9,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
+from pydantic import ValidationError
+
 from .registration_digest import source_digests
+from .source_receipt_model import ListedSourceReceipt, supported_schema
 from .source_snapshot import (
     EVIDENCE_BYTES,
     EVIDENCE_SNAPSHOTS,
@@ -64,7 +67,7 @@ def metadata(
         proof = {"plan": job["plan"]}
     expected = proof["plan"]
     if (
-        value.get("schema_version") not in (1, 2)
+        not supported_schema(value.get("schema_version"))
         or value.get("project_id") != plan["project_id"]
         or value.get("principal") != expected.get("source_principal")
         or value.get("repository") != registration.github_repository
@@ -73,6 +76,10 @@ def metadata(
         or expected.get("source_repository") != registration.github_repository
         or value.get("registration_sha256") not in source_digests(registration)
     ):
+        return None
+    try:
+        ListedSourceReceipt.model_validate(value)  # validate only; never dumped
+    except ValidationError:
         return None
     return cast(dict[str, Any], value)
 

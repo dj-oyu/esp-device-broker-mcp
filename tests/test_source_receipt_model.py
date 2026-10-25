@@ -14,11 +14,21 @@ import stat
 import tempfile
 import unittest
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
+from pydantic import ValidationError
+
+from cardputer_mcp import source_payloads, source_snapshot
 from cardputer_mcp.config import BuildProject, Settings, SourceRepository
 from cardputer_mcp.source_payloads import metadata
+from cardputer_mcp.source_receipt_model import (
+    ListedSourceReceipt,
+    ResolvedSourceReceipt,
+    supported_schema,
+)
 from cardputer_mcp.source_snapshot import (
     SourceError,
     SourceSnapshots,
@@ -58,7 +68,9 @@ SUBMODULES = [
 ]
 
 
-class SourceReceiptReaderTests(unittest.TestCase):
+class ReceiptFixture(unittest.TestCase):
+    """One real v1 fetch, then crafted receipts planted next to it."""
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -137,6 +149,8 @@ class SourceReceiptReaderTests(unittest.TestCase):
     def assert_unchanged(self, name: str, encoded: bytes) -> None:
         self.assertEqual((self.cache / name / "receipt.json").read_bytes(), encoded)
 
+
+class SourceReceiptReaderTests(ReceiptFixture):
     # Both readers accept the stored v1 receipt and hand back the parsed dict as is.
     def test_v1_receipt_reads_in_both_readers_without_rewriting_bytes(self) -> None:
         self.assertEqual(self.value["schema_version"], 1)
@@ -309,6 +323,56 @@ class SourceReceiptReaderTests(unittest.TestCase):
         name = self.plant(self.changed(repository="fixture/other"))
         self.assertIsNone(self.listed(name))
         self.assertIsNotNone(self.snapshots.resolve("fixture", name, "owner"))
+
+
+class SourceReceiptModelTests(ReceiptFixture):
+    """The models only restate what each reader proved; they never mutate the dict."""
+
+    def test_models_accept_what_the_readers_return_without_mutation(self) -> None:
+        v2 = self.changed(schema_version=2, submodules=SUBMODULES, extra={"a": [1]})
+        for value in (self.value, v2, self.changed(schema_version=True)):
+            with self.subTest(version=value["schema_version"]):
+                before = deepcopy(value)
+                ResolvedSourceReceipt.model_validate(value)
+                ListedSourceReceipt.model_validate(value)
+                self.assertEqual(value, before)
+                self.assertEqual(canonical(value), canonical(before))
+
+    def test_models_reject_shapes_no_reader_accepts(self) -> None:
+        cases = [
+            (ResolvedSourceReceipt, self.without("principal")),
+            (ResolvedSourceReceipt, self.changed(schema_version=3)),
+            (ResolvedSourceReceipt, self.changed(registration_sha256=["x"])),
+            (ResolvedSourceReceipt, self.changed(files=[])),
+            (ResolvedSourceReceipt, self.changed(schema_version=2)),
+            (ResolvedSourceReceipt, self.changed(schema_version=2, submodules=[{}])),
+            (ListedSourceReceipt, self.without("repository")),
+            (ListedSourceReceipt, self.changed(schema_version="1")),
+        ]
+        for model, value in cases:
+            with self.subTest(model=model.__name__, keys=sorted(value)):
+                with self.assertRaises(ValidationError):
+                    model.model_validate(value)
+
+    def test_supported_schema_keeps_equality_semantics(self) -> None:
+        for version in (1, 2, True, 1.0, 2.0):
+            self.assertTrue(supported_schema(version))
+        for version in (0, False, 3, "1", None, [1], {"v": 1}):
+            self.assertFalse(supported_schema(version))
+
+    def test_each_reader_maps_a_model_rejection_to_its_own_failure(self) -> None:
+        with patch.object(
+            source_snapshot.ResolvedSourceReceipt,
+            "model_validate",
+            side_effect=ValidationError.from_exception_data("x", []),
+        ):
+            self.assertEqual(self.resolve_code(self.receipt), "source_snapshot_unavailable")
+        with patch.object(
+            source_payloads.ListedSourceReceipt,
+            "model_validate",
+            side_effect=ValidationError.from_exception_data("x", []),
+        ):
+            self.assertIsNone(self.listed(self.receipt))
 
 
 if __name__ == "__main__":
