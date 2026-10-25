@@ -248,8 +248,10 @@ input/save coverage. Cancellation, principal revocation or lease expiry blocks
 all new sends, including q; the game may remain running. Close is always allowed
 and uncertain close retains ownership/requires review. No arbitrary key, command,
 retry/reopen or firmware write API is added. Rendered pixels use the existing
-principal-bound, five-minute image cache; the current original principal may
-retrieve it with read scope without a separate image-delivery decision;
+capture cache (five minutes in RAM, then the saved copy in state until
+pruned beyond 200 images / 64 MiB); any read-scoped principal may retrieve it
+while the original principal is still valid, without a separate image-delivery
+decision;
 raw game logs and unknown text are not persisted or emitted.
 
 Firmware backup/flash/restore are implemented as separate explicitly requested broker operations; see FIRMWARE-FLASH.md.

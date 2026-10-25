@@ -962,7 +962,8 @@ class LiveWindow:
         request_id = self.runner.read_image(
             self.state.generation,
             self.preview_state.row.job_id,
-            expires_at=self.preview_state.row.expires_at,
+            # A saved copy has no timer; the transport only checks finite deadlines.
+            expires_at=None if self.preview_state.row.saved else self.preview_state.row.expires_at,
         )
         self.preview_state = self.preview_state.started(request_id)
         self._render_preview()
@@ -1005,7 +1006,8 @@ class LiveWindow:
         if hasattr(self, "image_context"):
             row = self.preview_state.row
             self.image_context.set(
-                f"Captured image | {SOURCES[row.source]} | Captured {row.born_utc} | Retained"
+                f"Captured image | {SOURCES[row.source]} | Captured {row.born_utc} | "
+                + ("Saved" if row.saved else "Retained")
                 if row
                 else "Captured image | No retained image metadata"
             )

@@ -167,8 +167,10 @@ credentials.
   (loaded under the recorded principal, see surface.md), after
   the same per-request `principal_valid` check against the recorded origin;
   a quarantined (unconfirmed-close) capture is never saved. The operator GUI
-  image preview (`operator_images` / `operator_image`) still lists only the
-  RAM cache.
+  timeline card and `operator_image` fall back to the saved copy once the RAM
+  copy is gone (`retention: "saved"`, `remaining_seconds: null`; metadata only
+  on the card, no origin or path); `operator_images` still lists only the RAM
+  cache.
 - **Retention.** Job logs: 500 files / 512 MiB total, 8 MiB per job. Queued /
   running jobs are never pruned. Eviction is by retention tier, then oldest
   first: tier 0 succeeded non-flash jobs (and logs with no job row), tier 1

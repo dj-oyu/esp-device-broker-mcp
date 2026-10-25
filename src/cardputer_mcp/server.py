@@ -546,8 +546,9 @@ def create_server(
             "supports bounded observation, HELLO and HOME render-buffer capture, with "
             "authenticated, scoped clients. Acquire, prepare, then explicitly execute_test. "
             "Preparation alone never requests execution. Capture uses a fresh HOME handshake; "
-            "Esc can exit another app. Read captures within five minutes using the same "
-            "authenticated identity and current read scope. "
+            "Esc can exit another app. Any caller with current read scope can read a "
+            "succeeded capture; it is kept in RAM for five minutes and saved in state "
+            "until the oldest are pruned beyond 200 images or 64 MiB. "
             "Pixels do not prove LCD transfer. "
             "request_home_recovery explicitly requests one bounded DERBY q exit "
             "only after a recorded capture failure and confirmed close; no prior HOME "
@@ -1171,10 +1172,13 @@ def create_server(
 
     @op
     async def read_capture(request: JobRequest, ctx: Context[Any, Any]) -> CallToolResult:
-        """Read a completed capture from five-minute memory cache; never opens USB.
+        """Read a succeeded job's capture; never opens USB.
 
+        Served from the five-minute RAM copy, then from the copy saved in state
+        (survives restarts; oldest pruned beyond 200 images or 64 MiB).
         Any principal with current read permission may read it, whoever requested
-        capture_home or derby_smoke. No separate image-delivery approval is required.
+        capture_home or derby_smoke, while the capturing principal stays valid.
+        No separate image-delivery approval is required.
         Mock images say TEST / NOT DEVICE. Render-buffer images do not
         prove snapshot coherence or LCD transfer acknowledgement. No automatic recapture.
         """
