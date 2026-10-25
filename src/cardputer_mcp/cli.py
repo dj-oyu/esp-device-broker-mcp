@@ -14,6 +14,7 @@ import uvicorn
 
 from .auth import AuthError, load_client_token, load_environment_token
 from .broker import BrokerError
+from .broker_link import DEFAULT_BROKER_URL
 from .client import call, connect, validate_url
 from .config import load_settings
 from .history_archive import DEFAULT_KEEP_LATEST, HistoryArchiveError, archive_history
@@ -72,7 +73,7 @@ def parser() -> argparse.ArgumentParser:
         description="Single-owner Cardputer MCP (mock default, opt-in serial)"
     )
     root.add_argument("--version", action="version", version=version("cardputer-device-mcp"))
-    root.add_argument("--url", default="http://127.0.0.1:8765/mcp")
+    root.add_argument("--url", default=DEFAULT_BROKER_URL)
     root.add_argument(
         "--auth-source", choices=("none", "environment", "file", "key-environment"), default="none"
     )
@@ -423,7 +424,7 @@ def main() -> None:
             if (
                 args.auth_source != "none"
                 or args.auth_file is not None
-                or args.url != "http://127.0.0.1:8765/mcp"
+                or args.url != DEFAULT_BROKER_URL
                 or args.client != Origin.LOCAL.value
             ):
                 print("stdio_adapter_use_private_env_file_only", file=sys.stderr)

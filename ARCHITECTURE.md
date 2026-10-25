@@ -44,7 +44,7 @@ both axes omitted do not select a diagnostic recipe. Unknown contracts, invalid
 known-contract evidence, and missing requested features are distinct concerns;
 none certifies quality or expands the registered project/device authority.
 
-`diagnostic_contracts.py` owns the two built-in recipe descriptors and typed
+`diagnostic_registry.py` owns the two built-in recipe descriptors and typed
 selection. The compatibility facade keeps existing APIs. `diagnostic_legacy.py`
 retains the historical source/recipe digest encoding and exact omitted-J1
 exception for reading old records. There is no `_ENTRIES` membership lookup.
@@ -62,3 +62,22 @@ Migrate one flow at a time. Existing wire APIs and records remain compatible.
 Rollback means selecting the previous code path, never replaying a physical
 operation, rewriting durable history, or implicitly restoring firmware. No
 new device operations, permissions, deployment or hardware acceptance are implied.
+
+## Shared helpers added by redesign stage 4
+
+These hold one copy of a check that several callers used to repeat. Each
+caller still passes its own policy, so the deliberate differences between
+callers stay visible (see `DESIGN-REDESIGN.md` section 5.8).
+
+- `broker_link.py`: the default loopback broker URL and the shared URL
+  parsing core with per-caller policies. `client_environment.py` stays
+  standard-library standalone and keeps copies that a test compares.
+- `tunnel_checks.py`: Tunnel configuration checks and the read-only broker
+  probe sequence shared by the console launcher and the GUI manager. Process
+  supervision and readiness loops are not shared.
+- `flash_lkg_models.py`: validate-only models for the LKG envelope and its
+  metadata.
+- `source_receipt_model.py`: validate-only shape of source snapshot receipts.
+
+The two model modules validate parsed JSON and are never dumped back, so
+stored bytes and their content hashes are unchanged.

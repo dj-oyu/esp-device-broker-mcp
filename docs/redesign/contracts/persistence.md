@@ -3,6 +3,8 @@
 This inventory comes from reading the source only. I did not open any installed state, run any server or touch hardware.
 All paths are relative to `src/cardputer_mcp/` unless they say otherwise. Anything I inferred rather than read in the code is marked **[speculation]**.
 
+**Refreshed after redesign stage 4 (DESIGN-REDESIGN §5.8).** `timeline_order.py` was merged into `store.py` (`initialize_timeline_order`), and the LKG envelope/metadata and source receipt readers now also check validate-only models (`flash_lkg_models.py`, `source_receipt_model.py`). Rows that these changes touch name the function; every other file:line reference is still from `5d79d2d`.
+
 ---
 
 ## 0. Roots and how they resolve
@@ -27,7 +29,7 @@ All paths are relative to `src/cardputer_mcp/` unless they say otherwise. Anythi
 - **Versioning: none.** There is no `PRAGMA user_version`; it stays 0. The schema evolves through `CREATE TABLE IF NOT EXISTS` plus three ad-hoc mechanisms:
   1. A column probe: `ALTER TABLE jobs ADD COLUMN diagnostic TEXT` when that column is missing (store.py:149-151).
   2. Marker rows in `operation_migrations(version)`. The only marker is `explicit_client_requests_v1` (store.py:155-176).
-  3. A trigger-existence probe for `timeline_order` (timeline_order.py:15-21).
+  3. A trigger-existence probe for `timeline_order` (`store.initialize_timeline_order`; moved from the former timeline_order.py in stage 4e).
 - **Indexes:** no `CREATE INDEX` exists anywhere. The only indexes are the implicit PK and UNIQUE autoindexes.
 - **Time encodings are mixed.** Some `created`/`finished` columns are TEXT from `CURRENT_TIMESTAMP` (`YYYY-MM-DD HH:MM:SS` UTC; parsed at continuation.py:243). `continuation_tickets.created`, `chain_started` and `deferred_jobs.created` are REAL `time.time()` values.
 
@@ -36,7 +38,7 @@ All paths are relative to `src/cardputer_mcp/` unless they say otherwise. Anythi
 | Table | Columns | Writers | Readers | JSON payload columns |
 |---|---|---|---|---|
 | `jobs` | id PK, plan_hash NN, state NN, stage, result, diagnostic, reviewed INT NN DEF 0, created TEXT DEF CURRENT_TIMESTAMP, finished | store.py:415 add_job, 424 enqueue_requested, 459 set_job, 475 finish_fixed_trial, 614 finish_firmware, 316 finish_home_recovery, 692 set_stage, 155/178 migrate/recover. **operator.py:37** (stray). | store.job 406; broker.py:482; build_artifacts.py:46,136; derby_provenance.py:148; home_recovery.py:178; operator_timeline.py:506; source_resources.py:28; source_retention.py:37,48 | `diagnostic`: free-form JSON object (see §1.2) |
-| `plans` | hash PK, payload NN | store.put_plan 367 (callers: broker.py:933,1776; profile_jobs.py:280,331; home_recovery.py:260) | store.plan 402; build_artifacts.py:46; derby_provenance.py:155; plan_approval.py:69; profile_jobs.py:243 (json_extract); operator_timeline.py:426,532; source_retention.py:37; timeline_order.py:23,36 | `payload`: plan JSON (§1.1) |
+| `plans` | hash PK, payload NN | store.put_plan 367 (callers: broker.py:933,1776; profile_jobs.py:280,331; home_recovery.py:260) | store.plan 402; build_artifacts.py:46; derby_provenance.py:155; plan_approval.py:69; profile_jobs.py:243 (json_extract); operator_timeline.py:426,532; source_retention.py:37; store.initialize_timeline_order (backfill and the `timeline_plan_registered` trigger) | `payload`: plan JSON (§1.1) |
 | `execution_requests` | job_id PK, plan_hash, principal_id, created | store.py:449 | store 287,537,566; broker.py:1084; derby_provenance.py:148; derby_reports.py:43; operator_api.py:216 | — |
 | `execution_audit` | sequence PK, job_id, plan_hash, principal_id NULL, event, created | store.py:165,453 | none found in src (audit only) | — |
 | `operation_migrations` | version PK, created | store.py:175 | store.py:159 | — |
@@ -56,7 +58,7 @@ All paths are relative to `src/cardputer_mcp/` unless they say otherwise. Anythi
 | `source_publications` | receipt PK, job_id UNIQUE, project_id, principal | store.record_source_publication 374 | source_retention.py:177 | — |
 | `continuation_tickets` | ticket_id PK, parent_job_id UNIQUE, principal_id, epoch, state, reason, hold, consumed_by_job, chain_started REAL, chain_total, fence_seq, created REAL | continuation.py:103,113,122,129,150,159,175,184 | continuation.py:60,75,81,86,167,195,203; broker.py:1042 | `hold` ∈ NULL, 'none', 'ended' (broker.py:714,1048) |
 | `deferred_jobs` | job_id PK, plan_hash, parent_job_id, principal_id, origin, epoch, ticket_id, wait_id, state, reason, resolved_plan_hash, created REAL | continuation.py:291,308,313(DELETE),325,335 | continuation.py:266,273,287 | — |
-| `timeline_order` (timeline_order.py:11) | sequence INTEGER PK AUTOINCREMENT, job_id UNIQUE, created TEXT NULL | Triggers `timeline_plan_registered` (AFTER INSERT ON plans) and `timeline_job_registered` (AFTER INSERT ON jobs), timeline_order.py:35-50. One-time backfill at :23-34. | operator_timeline.py:520,534,643 | — |
+| `timeline_order` (`store.initialize_timeline_order`) | sequence INTEGER PK AUTOINCREMENT, job_id UNIQUE, created TEXT NULL | Triggers `timeline_plan_registered` (AFTER INSERT ON plans) and `timeline_job_registered` (AFTER INSERT ON jobs), created by the same function, which also runs the one-time backfill. | operator_timeline.py:520,534,643 | — |
 
 **Job states persisted:** awaiting_approval, queued, running, succeeded, failed, cancelled, needs_review (operator_timeline.py:275). Plans may also carry legacy GUI labels approval_required, approved and ready (gui_job_status.py:16-19).
 
@@ -64,7 +66,7 @@ All paths are relative to `src/cardputer_mcp/` unless they say otherwise. Anythi
 
 - **Old `jobs` without a `diagnostic` column.** The column is added on open (store.py:149). Test: tests/test_failure_diagnostics.py::test_old_history_gets_nullable_diagnostic_without_clearing_review.
 - **Old `awaiting_approval`/`queued`/`running` rows.** One-time migration `explicit_client_requests_v1` rewrites them to cancelled or needs_review, with audit rows (store.py:155-176). Every startup `recover()` then also rewrites awaiting_approval/queued/running (store.py:178-193). Note: this *mutates* existing state on open, so it is a migration that already exists. Tests: tests/test_explicit_request_store.py::test_migration_never_replays_or_invents_an_execution_request and ::test_migration_failure_rolls_back_cancellation_audit_and_marker. This file's fixture builds a legacy DB with an `approvals` table (test_explicit_request_store.py:24-26).
-- **Old plans without jobs (unexecuted).** These get an *undated* prefix in timeline_order with created=NULL (timeline_order.py:7-9,23-32), and the GUI shows "time unknown (legacy history)" (gui_live.py:762). **There is no test that calls `initialize_timeline_order` on a pre-existing DB.**
+- **Old plans without jobs (unexecuted).** These get an *undated* prefix in timeline_order with created=NULL (`store.initialize_timeline_order`), and the GUI shows "time unknown (legacy history)" (gui_live.py:762). Pinned on a pre-existing DB by tests/test_store_timeline_order.py (stage 4e).
 - **Legacy `approvals` and `home_recovery_approvals` tables** are kept as historical evidence. Nothing reads them.
 
 ### 1.1 `plans.payload` — plan JSON shapes
@@ -200,7 +202,7 @@ credentials.
 |---|---|---|---|---|---|
 | `.source-cache.lock` | source_cache_lock.py:29-71 | same | 64 ascii hex = sha256(normcase(state_dir.resolve())) | O_CREAT + msvcrt/flock | size==64 and bytes match (:68) |
 | `pending-<uuid32>/reservation.json` | source_snapshot.py:1028-1040 (`open("xb")`, fsync) | source_payloads._pending :190-218 | canonical `{job_id, project_id, principal, registration_sha256}`. Unknown or legacy reservations are skipped (:197). | exclusive + fsync | ad hoc .get checks |
-| `<receipt64>/receipt.json` (receipt = sha256 of the canonical bytes) | source_snapshot.py:1049-1091 (`xb`, fsync, then `pending.rename(target)`) | source_snapshot._resolve :1146-1196; source_payloads.metadata :28-79; `_evidence_only` :1200 | **schema_version 1** {fetch_job_id, principal, project_id, repository, commit, tree_sha1, archive_sha256, source_sha256, files{name:{bytes,mode,git_sha1,sha256?}}, registration_sha256}; **schema_version 2** adds `submodules`, `root_source_sha256` | fsync file; directory rename (no dir fsync) | :1161-1174 (schema ∈{1,2}, owner, project, registration digest set per schema_version); source_payloads.py:66-77 |
+| `<receipt64>/receipt.json` (receipt = sha256 of the canonical bytes; validate-only models `ResolvedSourceReceipt` / `ListedSourceReceipt` in source_receipt_model.py, checked on each reader's success path only) | source_snapshot.py:1049-1091 (`xb`, fsync, then `pending.rename(target)`) | source_snapshot._resolve :1146-1196; source_payloads.metadata :28-79; `_evidence_only` :1200 | **schema_version 1** {fetch_job_id, principal, project_id, repository, commit, tree_sha1, archive_sha256, source_sha256, files{name:{bytes,mode,git_sha1,sha256?}}, registration_sha256}; **schema_version 2** adds `submodules`, `root_source_sha256` | fsync file; directory rename (no dir fsync) | :1161-1174 (schema ∈{1,2}, owner, project, registration digest set per schema_version); source_payloads.py:66-77 |
 | `<receipt64>/source/` | rename from pending | `_resolve` re-hashes every file | tree | rename | file_receipt equality |
 | `<receipt64>/reclaim.json` + `reclaiming/` | source_payloads._reclaim :160-176 (`xb`, fsync) | :143-152 | canonical `{receipt, project_id, principal}`, ≤1024 B, byte-equality | exclusive + fsync | byte equality |
 | evidence-only dir (only receipt.json left after a payload is reclaimed) | — | `_evidence_only` :1200; admit_source restore path source_payloads.py:244 | — | — | — |
@@ -222,7 +224,7 @@ Tests:
 | `<job_id>.bin` | flash_backup.BackupStore.save :51-93 (O_EXCL, fsync) | BackupStore.load :95-140 | raw flash image | exclusive + fsync, no rename | size and sha check |
 | `<job_id>.json` | same (`json.dumps(asdict(RetainedBackup), sort_keys)`) | load :105 `RetainedBackup(**json.loads(...))` | {job_id, principal, device_sha256, device_fingerprint, flash_bytes, sha256}, ≤4096 B | exclusive + fsync | dataclass kwargs: a new or missing key fails as `backup_missing_or_changed` |
 | `lkg/<sha256>` (content-addressed objects) | flash_lkg_store.FirmwareSnapshots.put :47-75 (`<digest>.pending` O_EXCL, fsync, MoveFileExW WRITE_THROUGH no-replace / rename + dir fsync) | get :77-98 | raw bytes | yes | sha256 equality |
-| `lkg/<receipt>` envelope | stage :100-109 | load :111-122; firmware_flash._known :269-288 | `{schema_version:1, metadata, files{name:digest}}` | as above | flash_lkg_store.py:114-118 (exact key set, version==1); metadata checks firmware_flash.py:279-288 |
+| `lkg/<receipt>` envelope | stage :100-109 | `FirmwareSnapshots.load`; `FirmwareFlash._known` | `{schema_version:1, metadata, files{name:digest}}` | as above | `flash_lkg_models.LkgEnvelope` (exact key set, version `== 1`); metadata checks `flash_lkg_models.bound_lkg_metadata` |
 | `work/` (temp `job.json` for the esptool worker) | flash_driver.py:261-272 | flash_worker.py:279 | transient | — | — |
 
 **LKG metadata variants inside the envelope:**
@@ -230,7 +232,7 @@ Tests:
 - `kind:"full_backup"` written via restore has `compat: None` (:553-567).
 - `kind:"artifact_bundle"` has `bundle`, `manifest` and `compat` (:536-551).
 
-Readers use `.get("compat")` (firmware_flash.py:524,527), so both full_backup shapes stay readable. A strict model must allow the key to be absent and must keep that distinct from null. **There is no test pinning the absent-`compat` vs `compat: null` distinction.**
+Readers use `flash_lkg_models.lkg_compat` (the same value as `.get("compat")`), so both full_backup shapes stay readable. The permissive `LkgMetadata` view allows the key to be absent and keeps that distinct from null through `compat_stored`. Pinned by tests/test_flash_lkg_models.py::test_metadata_view_keeps_compat_absent_distinct_from_null_and_keeps_extras and ::test_artifact_bundle_lkg_without_compat_skips_the_layout_check.
 
 ## 7. Configuration: `device.local.toml` / broker profile TOML
 
@@ -286,8 +288,9 @@ Every one of these goes through `broker._store().db` (the shared loop connection
 | server.py:954 | SELECT home_recovery_audit | |
 | source_resources.py:28,76,82 | SELECT jobs⋈plans, firmware_lkg(_history) | |
 | source_retention.py:37,48,138,142,177 | SELECTs | |
-| timeline_order.py:11-50 | CREATE TABLE, INSERT backfill, 2 CREATE TRIGGERs | schema owned outside store.py |
 | key_registry.py:197-470 | keys.sqlite3 (separate DB) | |
+
+The `timeline_order` DDL, backfill and triggers used to live in timeline_order.py. Stage 4e moved them verbatim into `store.initialize_timeline_order`, so they are no longer SQL outside store.py.
 
 ---
 
@@ -296,9 +299,9 @@ Every one of these goes through `broker._store().db` (the shared loop connection
 1. auth.py:123 `_decode`: runtime-auth.json
 2. key_registry.py:279 `_metadata`: api_keys rows
 3. flash_backup.py:95-140 `BackupStore.load`: backup sidecar json
-4. flash_lkg_store.py:111-122 `load`: LKG envelope; firmware_flash.py:269-288 `_known`: LKG metadata
-5. source_snapshot.py:1146-1196 `_resolve`: receipt.json v1/v2
-6. source_payloads.py:28-79 `metadata`; :190-218 reservation.json; :143-152 reclaim.json
+4. `FirmwareSnapshots.load`: LKG envelope; `FirmwareFlash._known`: LKG metadata. **Stage 4b:** validate-only `LkgEnvelope` / `LkgMetadata` / `bound_lkg_metadata` in flash_lkg_models.py; never dumped back.
+5. `SourceSnapshots._resolve`: receipt.json v1/v2. **Stage 4c:** also checks `source_receipt_model.ResolvedSourceReceipt` on its success path; the ordered hand-written checks still decide the reason code.
+6. `source_payloads.metadata` (**stage 4c:** also checks `ListedSourceReceipt` on its success path); `_pending` reservation.json; `_reclaim` reclaim.json
 7. build_locations.py:89-114 `_json` + :117 identity receipt + :282-320 `resolve_build_manifest`
 8. build_artifacts.py:42-58 `_plan`; :104-127 `reference`
 9. firmware_build.py:1121-1187 `resolve_flash_manifest`; :1189-1215 `_verify_owned_artifacts`
@@ -325,6 +328,10 @@ Already pydantic: DerbyProvenance (derby_provenance.py:54), DerbyDiagnostics, al
 | Old-style registration digests (source / project / flash) and previous_cache_roots | tests/test_registration_digest.py::test_old_style_digests_are_reproduced_exactly, ::test_only_listed_previous_roots_are_trusted, ::test_old_style_receipt_is_rejected_after_a_move_unless_listed |
 | Source receipt schema_version 1 after submodule allowlist added | tests/test_source_snapshot.py::test_old_receipt_survives_allowlist_addition_without_mutation |
 | Source receipt schema_version 2 | tests/test_source_snapshot.py::test_fixed_gitlinks_recursive_receipt_and_build_provenance (current-format, not legacy) |
+| Source receipt v1/v2 in both readers (`_resolve`, `metadata`), extra keys, equality-compared versions | tests/test_source_receipt_model.py::test_v1_receipt_reads_in_both_readers_without_rewriting_bytes, ::test_v2_receipt_reads_in_both_readers_without_rewriting_bytes, ::test_v2_without_valid_submodules_differs_between_readers, ::test_bool_and_float_schema_versions_compare_equal_today |
+| LKG envelope schema_version 1 (exact keys, `== 1`, stored bytes never rewritten) | tests/test_flash_lkg_models.py::test_envelope_requires_every_key, ::test_envelope_version_check_is_equality_with_one, ::test_reading_never_rewrites_stored_objects |
+| LKG metadata with absent `compat` vs `compat: null`, extra keys | tests/test_flash_lkg_models.py::test_metadata_view_keeps_compat_absent_distinct_from_null_and_keeps_extras, ::test_artifact_bundle_lkg_without_compat_skips_the_layout_check, ::test_extra_metadata_key_is_accepted_and_kept |
+| `timeline_order` backfill on a pre-existing DB (undated legacy prefix, trigger probe) | tests/test_store_timeline_order.py::test_pre_timeline_history_gets_undated_plan_prefix_then_dated_jobs, ::test_incomplete_timeline_backfills_after_existing_rows, ::test_complete_triggers_skip_backfill_on_reopen |
 | Interrupted reclaim / reservation reconciliation | tests/test_source_lifecycle.py::test_restart_recovers_interrupted_reclamation_preserving_receipt, ::test_terminal_reservation_reconciled_on_restart_active_and_unknown_preserved |
 | DERBY fixed v1 (LEGACY_PLAN) trial evidence | tests/test_device_faults.py::test_legacy_evidence_is_readable_without_upgrading_old_success, ::test_owner_exit_contract_and_explicit_legacy_read |
 | Legacy DERBY job rows without new diagnostics/provenance | tests/test_derby_diagnostic_reports.py::test_legacy_row_and_missing_plan_never_acquire_or_leak_new_details, ::test_persisted_history_keeps_legacy_anonymous_summary_and_owned_restart_read |
@@ -339,11 +346,10 @@ Already pydantic: DerbyProvenance (derby_provenance.py:54), DerbyDiagnostics, al
 
 ### Formats with no read-compat test found
 
-- **timeline_order backfill on a pre-existing DB** (undated legacy prefix, trigger probe). There is no direct test of `initialize_timeline_order` on old history.
+Stage 4 removed three entries from this list (timeline_order backfill, absent vs null LKG `compat`, LKG envelope v1); they are now rows in the matrix above.
+
 - **Build manifest without `build_location`** (implicit layout v1). It has indirect fixtures only.
-- **LKG `full_backup` metadata with an absent `compat` key vs `compat: null`.**
 - **Backup sidecar `<job>.json`.** Its schema is only exercised by the current writer.
-- **LKG envelope schema_version 1.** Only the current-format round trip is tested (tests/test_flash_lkg_store.py).
 - **`broker-build-identity.json` receipt_version 1.** Current-format only.
 - **`runtime-auth.json` version 1.** Current-format only; POSIX.
 - **Plans JSON stored with non-compact separators.** Nothing pins that a stored row's text differs from its hash bytes, which is what lets a re-dump break the identity.
