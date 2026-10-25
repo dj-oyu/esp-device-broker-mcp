@@ -28,6 +28,7 @@ from mcp.types import (
     PROTOCOL_VERSION_META_KEY,
 )
 from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, LATEST_MODERN_VERSION
+from server_ready import LOG_LEVEL, wait_until_started
 from starlette.types import Receive, Scope, Send
 
 from cardputer_mcp.auth import AuthState
@@ -164,19 +165,14 @@ async def tunnel_contract(tmp_path: Path) -> AsyncIterator[ContractService]:
                 observed_app,
                 host="127.0.0.1",
                 port=port,
-                log_level="critical",
+                log_level=LOG_LEVEL,
                 access_log=False,
                 proxy_headers=False,
             )
         )
         task = asyncio.create_task(server.serve(sockets=[listener]))
         try:
-            async with asyncio.timeout(5):
-                while not server.started:
-                    if task.done():
-                        await task
-                        pytest.fail("Synthetic HTTP server stopped before readiness")
-                    await asyncio.sleep(0.01)
+            await wait_until_started(server, task, "Synthetic HTTP server")
             async with httpx2.AsyncClient(
                 base_url=f"http://127.0.0.1:{port}", trust_env=False, timeout=5
             ) as http:

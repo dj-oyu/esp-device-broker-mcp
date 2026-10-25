@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import httpx2
 import pytest
 import uvicorn
+from server_ready import LOG_LEVEL, wait_until_started
 
 from cardputer_mcp import cli
 from cardputer_mcp.auth import AuthError, AuthState
@@ -61,7 +62,7 @@ async def authenticated_mock(
             app,
             host="127.0.0.1",
             port=port,
-            log_level="critical",
+            log_level=LOG_LEVEL,
             access_log=False,
             proxy_headers=False,
             # A rejected HTTP stream can keep a connection task open after the
@@ -71,12 +72,7 @@ async def authenticated_mock(
     )
     task = asyncio.create_task(server.serve())
     try:
-        async with asyncio.timeout(5):
-            while not server.started:
-                if task.done():
-                    await task
-                    pytest.fail("Authenticated mock server stopped before readiness")
-                await asyncio.sleep(0.01)
+        await wait_until_started(server, task, "Authenticated mock server")
         yield f"http://127.0.0.1:{port}/mcp", resident
     finally:
         server.should_exit = True

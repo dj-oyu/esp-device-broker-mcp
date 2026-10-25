@@ -21,6 +21,7 @@ from mcp.types import (
     Tool,
     ToolAnnotations,
 )
+from server_ready import LOG_LEVEL, wait_until_started
 from test_registry_http import registry_service as registry_service
 
 from cardputer_mcp.client import connect
@@ -204,19 +205,14 @@ async def synthetic_service() -> AsyncIterator[SyntheticService]:
             app,
             host="127.0.0.1",
             port=port,
-            log_level="critical",
+            log_level=LOG_LEVEL,
             access_log=False,
             proxy_headers=False,
         )
     )
     task = asyncio.create_task(running.serve())
     try:
-        async with asyncio.timeout(5):
-            while not running.started:
-                if task.done():
-                    await task
-                    pytest.fail("Synthetic upstream stopped before readiness")
-                await asyncio.sleep(0.01)
+        await wait_until_started(running, task, "Synthetic upstream")
         service.url = f"http://127.0.0.1:{port}/mcp"
         yield service
     finally:
