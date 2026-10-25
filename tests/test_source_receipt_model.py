@@ -262,6 +262,24 @@ class SourceReceiptReaderTests(unittest.TestCase):
                 name = self.plant(value | {"case": index}, source=source)
                 self.assertEqual(self.resolve_code(name), code)
 
+    def test_file_entries_and_versions_compare_by_equality(self) -> None:
+        # mode is passed back into file_receipt, so any stored value compares equal; the
+        # source digest is over the recomputed table, whose sizes are ints.
+        recomputed = {name: file_receipt(data, 420) for name, data in FILES.items()}
+        stored = {
+            name: entry | {"bytes": float(entry["bytes"])} for name, entry in recomputed.items()
+        }
+        value = self.changed(files=stored, source_sha256=digest(canonical(recomputed)))
+        _, resolved = self.snapshots.resolve("fixture", self.plant(value), "owner")
+        self.assertEqual(resolved, value)
+        v2 = self.changed(schema_version=2.0, submodules=SUBMODULES)
+        _, resolved = self.snapshots.resolve("fixture", self.plant(v2), "owner")
+        self.assertEqual(resolved, v2)
+        missing = self.changed(schema_version=2.0)
+        self.assertEqual(
+            self.resolve_code(self.plant(missing)), "source_submodule_provenance_rejected"
+        )
+
     def test_metadata_compares_instead_of_hashing_unhashable_values(self) -> None:
         self.assertIsNone(self.listed(self.plant(self.changed(registration_sha256=["x"]))))
 
