@@ -22,7 +22,8 @@ def test_session_cli_never_accepts_raw_resume_argument():
 def test_cli_keys_have_no_token_argument():
     parser = cli.parser()
     args = parser.parse_args(["keys", "issue", "--registry", "synthetic.sqlite3"])
-    assert not args.control and args.ttl_seconds == 3600
+    # Unset so issue applies its 1-hour default and rotate keeps the old key's lifetime.
+    assert not args.control and args.ttl_seconds is None
     assert args.origin == "remote_mcp"
     with pytest.raises(SystemExit):
         parser.parse_args(["keys", "verify", "--registry", "fake.sqlite3", "--token", "secret"])
