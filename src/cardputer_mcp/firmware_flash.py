@@ -289,6 +289,11 @@ class FirmwareFlash:
         self.settings, self.backend, self.build, self.store = settings, backend, build, store
         self.driver_factory: Any = None  # Trusted test injection only, never configuration/MCP.
         self.resolver: Any = None
+        # (recorded, current) owner check for build/backup inputs; the broker injects
+        # its rotation-lineage aware check. Standalone default: exact principals.
+        self.same_owner: Callable[[object, object], bool] = lambda recorded, current: (
+            recorded == current
+        )
         self.engine: FlashLifecycle | None = None
         self.job_id: str | None = None
         self.logs: dict[str, BuildLogs] = {}
@@ -374,16 +379,18 @@ class FirmwareFlash:
             or job["state"] != "succeeded"
             or plan is None
             or plan.get("test") != "firmware_backup"
-            or plan.get("flash_principal") != principal
+            or not self.same_owner(plan.get("flash_principal"), principal)
         ):
             raise FlashFailure("successful_owned_backup_required")
+        # The retained backup stays keyed by the principal that took it; a rotated
+        # successor of that key reads it under the recorded owner.
         return pure_io(
             "backup_load",
             _load_backup,
             registration.backup_directory,
             registration.private_backup_acl_confirmed,
             job_id,
-            principal,
+            plan["flash_principal"],
         )
 
     def _snapshots(self, registration: Any) -> FirmwareSnapshots:
@@ -456,14 +463,17 @@ class FirmwareFlash:
             or job["state"] != "succeeded"
             or plan is None
             or plan.get("test") != TestName.BUILD.value
-            or plan.get("build_principal") != principal
+            or not self.same_owner(plan.get("build_principal"), principal)
         ):
             raise FlashFailure("successful_owned_build_required")
         resolver = self.resolver or getattr(self.build, "resolve_flash_manifest", None)
         if resolver is None:
             raise FlashFailure("build_manifest_resolver_unavailable")
         # Hashes every owned artifact; it uses its own read-only SQLite connection.
-        root, manifest = pure_io("build_manifest", resolver, job_id, principal, plan["project_id"])
+        # Resolved under the build's recorded principal (lineage checked above).
+        root, manifest = pure_io(
+            "build_manifest", resolver, job_id, plan["build_principal"], plan["project_id"]
+        )
         if not isinstance(root, Path) or not isinstance(manifest, dict):
             raise FlashFailure("invalid_internal_build_manifest_context")
         return root, manifest

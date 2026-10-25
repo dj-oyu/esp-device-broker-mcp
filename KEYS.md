@@ -17,7 +17,18 @@ No persistent user key is created merely by installing, starting or updating the
 - Every new HTTP/tool request checks current revocation/expiry/scope. Revocation
   does not terminate running hardware or transfer unresolved device ownership
 - Rotation creates a new principal and atomically revokes the old key. It does
-  not transfer an old device lease; release idle ownership first or wait safely
+  not transfer an old device lease; release idle ownership first or wait safely.
+  A running job of the old key stops being authorized at rotation, so rotate
+  between jobs
+- Rotation records lineage: the replacement continues the old key's owner
+  identity, so it can name builds and backups made under any earlier key of the
+  same rotation chain as inputs to a new flash/restore. Plans and stored records
+  keep their original principal. Only `rotate` links keys: a newly issued key,
+  even with the same label, inherits nothing. If a key may be compromised,
+  `revoke` it and `issue` a new key instead of rotating, so nothing it produced
+  can be reused. An expired or revoked key cannot be rotated; rotate before
+  expiry to keep access to its builds/backups as inputs. Reading redacted job
+  output needs no lineage (any read-scoped key can read any job)
 - Bounded registry/audit. No secret in list/audit/error output
 
 Use an existing directory private to your OS account. Windows ACL privacy is an

@@ -106,6 +106,7 @@ All paths are relative to `src/cardputer_mcp/` unless they say otherwise. Anythi
 - **Schema** (key_registry.py:211-232):
   - `api_keys(key_id PK, verifier BLOB CHECK len=32, label, origin CHECK IN('local_cli','remote_mcp'), scopes CHECK IN('read','control,read'), issued_at REAL, expires_at REAL, revoked_at REAL, CHECK expiry>issued, CHECK ttl≤2592000)`
   - `key_audit(sequence PK AUTOINCREMENT, event CHECK IN('key_issued','key_revoked','key_rotated'), key_id, at REAL)`, trimmed to `_MAX_AUDIT_ENTRIES` at :310
+  - `key_lineage(key_id PK, predecessor, owner_id, CHECK key_id!=predecessor)`: optional and additive within version 1. Created on registry creation or inside the first `rotate` transaction; one row per rotated replacement, `owner_id` is the chain's root key. Absent table = no lineage (exact principals). Read by `KeyRegistry.same_owner`.
 - **Versioning:** `PRAGMA user_version=1`. Opening accepts 0 or 1 when creating, and rejects other values (:197-202). Every connection after init requires exactly 1 (:260).
 - **Row validator:** `_metadata` at key_registry.py:279. File and ancestor safety checks: `_safe_file` / `_safe_directory`.
 - **Tests:** tests/test_key_registry.py::test_schema_version_not_silently_downgraded and ::test_open_existing_never_creates_missing_database; tests/test_registry_defaults.py. There is no "legacy" format to stay compatible with.

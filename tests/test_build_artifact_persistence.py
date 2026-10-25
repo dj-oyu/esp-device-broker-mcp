@@ -105,8 +105,27 @@ class DurableBuildArtifactTests(unittest.TestCase):
             self.skipTest(str(error))
         root, manifest = self.publish()
         self.restart()
-        flash = SimpleNamespace(store=lambda: self.store, build=self.builder, resolver=None)
+        # Same exact-principal owner check as a standalone FirmwareFlash.
+        flash = SimpleNamespace(
+            store=lambda: self.store,
+            build=self.builder,
+            resolver=None,
+            same_owner=lambda recorded, current: recorded == current,
+        )
         self.assertEqual((root, manifest), FirmwareFlash._build_context(flash, "build-0", "alice"))
+        with self.assertRaises(ValueError):
+            FirmwareFlash._build_context(flash, "build-0", "bob")
+        # A rotated successor resolves the durable reference under the recorded owner.
+        flash.same_owner = lambda recorded, current: (
+            (recorded, current)
+            in {
+                ("alice", "alice"),
+                ("alice", "alice-rotated"),
+            }
+        )
+        self.assertEqual(
+            (root, manifest), FirmwareFlash._build_context(flash, "build-0", "alice-rotated")
+        )
         with self.assertRaises(ValueError):
             FirmwareFlash._build_context(flash, "build-0", "bob")
 

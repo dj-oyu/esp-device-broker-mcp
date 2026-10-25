@@ -11,6 +11,13 @@ On Windows no private ACL guarantee is inferred from chmod: the operator must
 use an OS-user-private directory. Symlinks, junctions/reparse points and hardlinks
 are rejected, but this is not a defense against a hostile process running as the
 same OS user or an administrator. No raw key is needed to list or revoke keys.
+
+Lineage: an explicit `rotate` records that the replacement key continues the
+predecessor's owner identity (`key_lineage`). Nothing else links keys: a freshly
+issued key, even with the same label, starts its own lineage. The table is an
+additive, optional part of schema version 1; registries without it (older stores,
+or older broker versions writing rotations) simply have no lineage, which fails
+closed to exact-principal ownership.
 """
 
 import hashlib
@@ -39,6 +46,12 @@ _KEY_ID = re.compile(r"cpk_[a-f0-9]{32}\Z")
 _TOKEN = re.compile(r"(cpk_[a-f0-9]{32})\.([a-f0-9]{64})\Z")
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._@()\-]{0,63}\Z")
 _DUMMY_DIGEST = bytes(32)
+_LINEAGE_SCHEMA = """CREATE TABLE IF NOT EXISTS key_lineage (
+    key_id TEXT PRIMARY KEY,
+    predecessor TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    CHECK(key_id != predecessor)
+)"""
 Scope = Literal["read", "control"]
 AuditEventName = Literal["key_issued", "key_revoked", "key_rotated"]
 
@@ -205,6 +218,8 @@ class KeyRegistry:
                            issued_at,expires_at,revoked_at FROM api_keys LIMIT 0"""
                     )
                     db.execute("SELECT sequence,event,key_id,at FROM key_audit LIMIT 0")
+                    if self._has_lineage(db):
+                        db.execute("SELECT key_id,predecessor,owner_id FROM key_lineage LIMIT 0")
                     return
                 db.execute("PRAGMA journal_mode=DELETE")
                 db.execute("PRAGMA max_page_count=2048")
@@ -230,6 +245,7 @@ class KeyRegistry:
                     );
                     PRAGMA user_version=1;
                 """)
+                db.execute(_LINEAGE_SCHEMA)
         except (OSError, sqlite3.Error):
             raise KeyRegistryError("key_registry_unavailable") from None
         finally:
@@ -302,6 +318,23 @@ class KeyRegistry:
             )
         except (ValueError, TypeError, KeyError, IndexError):
             raise KeyRegistryError("invalid_key_registry_record") from None
+
+    @staticmethod
+    def _has_lineage(db: sqlite3.Connection) -> bool:
+        return (
+            db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='key_lineage'"
+            ).fetchone()
+            is not None
+        )
+
+    @classmethod
+    def _owner(cls, db: sqlite3.Connection, key_id: str) -> str:
+        """Owner identity of a key: its rotation root, or the key itself."""
+        if not cls._has_lineage(db):
+            return key_id
+        row = db.execute("SELECT owner_id FROM key_lineage WHERE key_id=?", (key_id,)).fetchone()
+        return key_id if row is None else _key_id(row["owner_id"])
 
     @staticmethod
     def _audit(db: sqlite3.Connection, event: AuditEventName, key_id: str, at: float) -> None:
@@ -444,7 +477,9 @@ class KeyRegistry:
         """Explicitly replace an active key and revoke its predecessor atomically.
 
         No automatic rotation. Scope/origin/label are retained; the replacement
-        gets a different principal. Failure rolls back both issuance and revocation.
+        gets a different principal but inherits the predecessor's owner identity
+        (see `same_owner`). Failure rolls back issuance, revocation and lineage.
+        Only an active key can be rotated; an expired or revoked key cannot.
         """
         identifier = _key_id(key_id)
         _ttl(ttl_seconds)
@@ -458,9 +493,38 @@ class KeyRegistry:
             if old.revoked_at is not None or not old.issued_at <= now < old.expires_at:
                 raise KeyRegistryError("key_not_active")
             issued = self._issue(db, old.label, old.origin, old.scopes, now, ttl_seconds)
+            owner = self._owner(db, identifier)
+            db.execute(_LINEAGE_SCHEMA)
+            db.execute(
+                "INSERT INTO key_lineage(key_id,predecessor,owner_id) VALUES (?,?,?)",
+                (issued.metadata.key_id, identifier, owner),
+            )
             db.execute("UPDATE api_keys SET revoked_at=? WHERE key_id=?", (now, identifier))
             self._audit(db, "key_rotated", identifier, now)
             return issued
+
+    def same_owner(self, first: str, second: str) -> bool:
+        """True only for one key, or two keys linked by explicit rotation.
+
+        Both keys must exist with the same origin. Validity is NOT checked here:
+        a rotated predecessor is always revoked, and callers authenticate the
+        current key separately. Unknown keys, malformed records and registry
+        failures all return False (exact-principal ownership).
+        """
+        try:
+            a, b = _key_id(first), _key_id(second)
+            with self._connection() as db:
+                rows = db.execute("SELECT * FROM api_keys WHERE key_id IN (?,?)", (a, b)).fetchall()
+                found = {row["key_id"]: self._metadata(row) for row in rows}
+                if a not in found or b not in found:
+                    return False
+                if a == b:
+                    return True
+                if found[a].origin != found[b].origin:
+                    return False
+                return self._owner(db, a) == self._owner(db, b)
+        except KeyRegistryError:
+            return False
 
     def audit_events(self, *, limit: int = 100) -> list[KeyAuditEvent]:
         if type(limit) is not int or not 1 <= limit <= _MAX_AUDIT_ENTRIES:
