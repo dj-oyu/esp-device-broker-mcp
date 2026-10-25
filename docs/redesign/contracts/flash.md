@@ -219,6 +219,16 @@ The duplicates are (#1) the enqueue final gate **broker.py:1875-1891**, (#2) the
 side effects, including immediately before and after `driver.write`. `running_authorized` (broker.py:2495-2529) is
 #3's non-flash sibling. It is shown for comparison but is not used for flash.
 
+> **Since stage 3b** (DESIGN-REDESIGN §5.6) all four are one `ExecutionAuthority` in
+> `src/cardputer_mcp/execution_authority.py`. Each column below is a `Checkpoint`
+> (`ENQUEUE` = #1, `DISPATCH` = #2, `FLASH_IO` / `FLASH_COMMIT` = #3 without / with `committing`,
+> `RUNNING` = `running_authorized`) whose row in `RULES` lists its checks in the order they
+> run, around the single principal callback. The differences in this table are kept as rows
+> of `RULES` (pinned by `tests/test_stage3b_authority_characterization.py` and
+> `tests/test_stage3b_execution_authority.py`). `Broker._execute`, `Broker.admit`,
+> `Broker._running_authorized` and `Broker._flash_live` call it. The line numbers below are those of
+> the commit the table was written at.
+
 | Condition | #1 enqueue | #2 dispatch | #3 flash_live | running_authorized |
 |---|---|---|---|---|
 | principal_valid(read,control) is True | 1864-1869 | 2404-2417 | 2583-2588 | 2505-2513 |
@@ -421,6 +431,7 @@ Untested or unenforced invariants that need attention:
     bounded diagnostics (broker.py:2720-2730).
 13. **The `wrong_tool` split is conditional on `auth_required`** (surface.py:634, 665). If the surface changes, keep the
     broker-side auth requirement for FLASH_TESTS (broker.py:1686-1702).
-14. **Duplicated gates are not identical** (§3). If they are merged into one helper, keep the differences: the enqueue gate has
+14. **Duplicated gates are not identical** (§3). Since stage 3b they are the checkpoints of
+    `ExecutionAuthority` (`execution_authority.py` `RULES`), and the differences below are rows there. Keep them: the enqueue gate has
     capacity and job-must-not-exist; the dispatch gate has `_physical_busy`/queued/epoch; `flash_live` has registration allow/digest
     and the committing branch, has no `collector_live`, and uses weaker `_execution_uncertain(allow_profile_cleanup=True)`.

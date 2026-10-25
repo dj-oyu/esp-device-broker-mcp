@@ -259,7 +259,7 @@
 | 2b | `JobLedger.transition()` と、散らばった SQL の `Store` への集約 | 不変。不正な遷移は今まで黙って書いていたが、記録してから拒否する | 不要 |
 | 2c | `LeaseManager`、`Broker.cancel_job`、`require(ctx, scope)` | 不変 | 不要 |
 | 3a | `_work` の分割(`admit` / 登録表 / `finish`)と `JobKind`。**実装済み**(§5.5。実機の確認は未実施) | 不変 | **要**(書き込みなしの hello→observe) |
-| 3b | `ExecutionAuthority` | 不変 | **要**(フラッシュは明示の承認後) |
+| 3b | `ExecutionAuthority`。**実装済み**(§5.6。実機の確認は未実施) | 不変 | **要**(フラッシュは明示の承認後) |
 | 3c | 旧 `@op` 層を 6 ツールに畳む(**済**、§5.4) | 不変(tools/list も同じ) | 不要 |
 | 4 | 周辺(`broker_link.py`、永続 JSON を検証だけの厳格モデルへ、小モジュールの統合)。Tunnel の監督の統一は、最後 | 不変 | Tunnel だけ確認 |
 | 修正 | §2.1 と §2.2 の穴を 1 つずつ別の PR で | **変わる** | 内容による |
@@ -378,6 +378,54 @@
 - `ProfileJobs._work`(プロファイルの列)は、別のキューと別の状態を持ち、この表に入れると危険が増えるので、
   そのまま残した。
 - 実機の確認(書き込みなしの hello→observe)は、利用者の実機で行う。まだ行っていない。
+
+### 5.6 段階 3b の結果(ExecutionAuthority)
+
+- 実行前・書き込み前の権限の判定を、`src/cardputer_mcp/execution_authority.py` の `ExecutionAuthority` の
+  1 か所にした。前は、次の 4 つが手で写した判定の列だった。
+  - enqueue の最後の判定(`Broker._execute`)
+  - dispatch の最後の判定(`Broker.admit`)
+  - `Broker._running_authorized`
+  - `Broker._flash_live`
+- 判定の場所を `Checkpoint` で名前を付けた。`ENQUEUE`、`DISPATCH`、`RUNNING`、`FLASH_IO`、`FLASH_COMMIT` の 5 つ。
+  `RULES` の表が、場所ごとに確かめることを、走る順に並べる。主体の確認(`principal_valid`)の呼び出しは、
+  各列に 1 つだけある。呼び出しの後に確かめることは、すべて表の中で呼び出しの後に並ぶ。
+  呼び出しの中で状態が変わっても、その後の確認が見る。
+- 4 か所の呼び出し側は、`self.authority.check(...)` か `allows(...)` を呼ぶだけになった。`_running_authorized` と
+  `_flash_live` の名前は残した(`job_kinds.py` が `partial` で渡す)。
+- 差は、意図して残した(`flash.md` §3 と落とし穴 14)。表の列の違いとして見える。
+
+| 確かめること | ENQUEUE | DISPATCH | RUNNING | FLASH_IO / FLASH_COMMIT |
+| --- | --- | --- | --- | --- |
+| 主体の確認の失敗 | `principal_not_authorized` | `execution_intent_not_available` | false | false |
+| 確認の呼び出しの例外 | 拒否 | 拒否 | 拒否(どの確認の例外も拒否) | **外へ出る** |
+| 主体のないリース | 拒否 | 呼び出しを飛ばす(true とみなす) | 拒否 | 呼び出しの前に拒否 |
+| 呼び出す関数 | 呼び出しの直前の写し | **今の属性**(写しは admission の前の方で取ったもの) | 直前の写し | 直前の写し |
+| `collector_live` | あり | あり | あり | **なし** |
+| 登録の `allow_<op>` と digest | — | — | — | **あり**(呼び出しの前だけ) |
+| `_runtime_binding` | 受け付けの前の方で取った値と同じ | 受け付け時と同じ | 受け付け時と同じ | 呼び出しの前後で同じ、かつ受け付け時と同じ |
+| `_execution_uncertain()` | 強い | 強い | 弱い(`allow_profile_cleanup=True`) | 弱い |
+| `_physical_busy` / `hardware_connected` | — | **あり** | — | — |
+| キューの空きと履歴の件数 | **あり** | — | — | — |
+| ジョブの行 | まだない | `queued`、同じ plan_hash | `running` | `running`。`FLASH_COMMIT` はトランザクションの中で、正確な結果の `succeeded` も受け入れる |
+| リースの期限 | 期限内 | 期限内、admission の始めと同じリース id | 期限は見ない。失効(`revoked`)で止まる | 期限は見ない。失効で止まる |
+| `active_job` | — | 空き(`_physical_busy`) | 自分 | 自分(`_running_job_binding_live`) |
+
+- dispatch の `requires_current_principal` は消した。直前で intent のない行を終えているので、いつも true だった
+  (`jobs.md` §5 の 4 が「dead flag」と書いていた)。消しても判定は同じ。
+- 既存の関所は変えていない: `FlashLifecycle.run` → `driver.write`、`Store.finish_firmware`(コミットの確認は
+  `BEGIN IMMEDIATE` の中)、`BuildProcess`、`_end_ownership`。
+- 同期区間: `ExecutionAuthority.check` / `allows` / `_run` に `@sync_section` を付けた。
+  `tests/test_stage3b_execution_authority.py` が AST で、このモジュール全体に `await` / `async with` /
+  `async for` / `async def` がないことを確かめる。表の差(上の表)が列として残っていること、4 か所が
+  authority を 1 回だけ呼んで写しの列を残していないことも確かめる。
+- `ProfileJobs._authorized`(プロファイルの列)は、そのまま残した。主体の確認の呼び出しだけで、上の判定の列とは
+  別のもの(段階 3a でプロファイルの列を分けて残したのと同じ理由)。
+- 確かめたこと: 作り直しの前に `tests/test_stage3b_authority_characterization.py` を足した。5 つの場所それぞれで、
+  上の表の条件を 1 つずつ、最後の主体の確認の呼び出しの中で反転させ、結果(許可・拒否・例外、
+  または理由コード)を固定する。モックと合成 ROM のドライバーだけで、実機は使わない。旧コードで作った値のまま通る。
+  `tools/list`(`tests/fixtures/surface_tools_list.json`)は変えていない。
+- 実機の確認(フラッシュ)は利用者の明示の承認の後。まだ行っていない。
 
 ## 6. 未検証
 

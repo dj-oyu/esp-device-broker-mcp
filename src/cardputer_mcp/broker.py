@@ -26,7 +26,7 @@ from .build_locations import BuildLocationError
 from .cancellation import DeviceStop, device_stop
 from .capture import CapturedImage
 from .capture_store import CaptureStore
-from .collector_binding import collector_live, prepare_collector
+from .collector_binding import prepare_collector
 from .config import Settings
 from .continuation import (
     HOLD_SECONDS,
@@ -41,8 +41,9 @@ from .derby_reports import PROVENANCE_KEY
 from .device_failure_outcome import FailureEvidence
 from .device_failure_outcome import classify as classify_failure
 from .device_observation import DeviceObservation
+from .execution_authority import Checkpoint, ExecutionAuthority, Gate
 from .firmware_build import BuildPreflightFailure
-from .flash_binding import FlashBinding, live_binding, prepare_binding, validate_binding
+from .flash_binding import FlashBinding, prepare_binding, validate_binding
 from .flash_lifecycle import FlashFailure, _bounded_read_diagnostic
 from .flash_manifest import FlashAdmissionError
 from .job_kinds import AdmittedJob, kind_for, sync_section
@@ -68,7 +69,6 @@ from .models import (
 )
 from .offload_io import IOMemo, complete, offload
 from .operator_notifications import OperatorNotifications
-from .registration_digest import flash_digests
 from .resource_recheck import uncertainty
 from .source_snapshot import SourceError
 from .store import Store
@@ -225,6 +225,8 @@ class Broker:
         # The only writer of the device lease and its deadline (jobs.md section 3).
         self.leases = LeaseManager(lambda: self._physical_busy())
         self.principal_valid = principal_valid
+        # The pre-run / pre-write checks of every checkpoint (stage 3b).
+        self.authority = ExecutionAuthority(self)
         # Rotation lineage (recorded, current) -> bool; None means exact principals only.
         self.principal_lineage: Callable[[str, str], bool] | None = None
         self.app_sessions = AppSessions()
@@ -2119,36 +2121,25 @@ class Broker:
             )
             if not done or flash_binding != snapshot:
                 raise BrokerError("execution_intent_not_available")
-        valid = self.principal_valid
-        try:
-            authorized = (
-                session.principal_id is not None
-                and valid is not None
-                and valid(session.principal_id, session.owner, frozenset({"read", "control"}))
-                is True
-            )
-        except Exception:
-            authorized = False
-        if not authorized or session.principal_id is None:
+        # The principal callback, then the callback-free final identity/lease/hash
+        # checks; no awaits until the enqueue (execution_authority ENQUEUE).
+        refused = self.authority.check(
+            Checkpoint.ENQUEUE,
+            Gate(
+                store=store,
+                job_id=job_id,
+                plan_hash=request.plan_hash,
+                plan=payload,
+                lease=session,
+                intent=intent,
+                runtime_binding=binding,
+                flash_binding=flash_binding,
+            ),
+        )
+        if refused is not None:
+            raise BrokerError(refused)
+        if session.principal_id is None:  # refused above; this only narrows the type
             raise BrokerError("principal_not_authorized")
-        # No callbacks or awaits after these final identity/lease/hash checks.
-        if (
-            self.principal_valid is not valid
-            or self._runtime_binding() != binding
-            or (flash_binding is not None and not live_binding(self, flash_binding, payload))
-            or not collector_live(self, payload, session.principal_id or "")
-            or self.session is not session
-            or not self._execution_intent_binding_live(intent)
-            or self.closing
-            or self._execution_uncertain()
-            or self._execution_capacity_full()
-            or store.record_count("jobs") >= 10000
-            or store.job(job_id) is not None
-            or store.plan(request.plan_hash) != payload
-            or not self._state_lock.is_locked
-            or not self._device_lock.is_locked
-        ):
-            raise BrokerError("execution_intent_not_available")
         store.enqueue_requested(job_id, request.plan_hash, session.principal_id)
         if session.chain_ticket is not None:
             self.tickets.note_consumer(session.chain_ticket, job_id)
@@ -2820,7 +2811,6 @@ class Broker:
                 job_id, "cancelled", "execution_intent_not_available", expect={"queued"}
             )
             return None
-        requires_current_principal = queued_intent is not None or self.principal_valid is not None
         queued_lease = self.session.id if self.session is not None else None
         self._expire()
         if self.job(job_id)["state"] != "queued":
@@ -2884,53 +2874,26 @@ class Broker:
             except Exception:
                 self._cancel_execution_intent(queued_intent, "collector_binding_changed")
                 return None
-        current_authorized = True
-        if lease.principal_id is not None and (
-            requires_current_principal or self.principal_valid is not None
-        ):
-            try:
-                current_authorized = (
-                    self.principal_valid is not None
-                    and self.principal_valid(
-                        lease.principal_id, lease.owner, frozenset({"read", "control"})
-                    )
-                    is True
-                )
-            except Exception:
-                current_authorized = False
-        # Authentication and policy callbacks above can
-        # change the queued row, original intent, lease or clock. Keep
-        # the original intent requirement through every callback, and
-        # check the durable row again before any backend work starts.
-        current_job = store.job(job_id)
-        current_plan = store.plan(job["plan_hash"])
-        if (
-            current_job is None
-            or not current_authorized
-            or queued_intent is None
-            or self.principal_valid is not current_valid
-            or self._runtime_binding() != current_binding
-            or (flash_binding is not None and not live_binding(self, flash_binding, plan))
-            or not collector_live(self, plan, lease.principal_id or "")
-            or not self._state_lock.is_locked
-            or current_job["state"] != "queued"
-            or current_job["plan_hash"] != job["plan_hash"]
-            or current_plan != plan
-            or digest_plan(plan) != job["plan_hash"]
-            or plan.get("broker_epoch") != self.epoch
-            or self.session is not lease
-            or lease.id != queued_lease
-            or not math.isfinite(lease.deadline)
-            or not math.isfinite(self.clock())
-            or self.clock() >= lease.deadline
-            or self.closing
-            or self._execution_uncertain()
-            or self._physical_busy()
-            or self.backend.hardware_connected
-            or not self._device_lock.is_locked
-            or (queued_intent is not None and not self._execution_intent_live(queued_intent))
-        ):
-            self._cancel_execution_intent(queued_intent, "execution_intent_not_available")
+        # The last principal callback, then the durable row and every binding again
+        # before any backend work starts: the callbacks above can change the queued
+        # row, the original intent, the lease or the clock (execution_authority DISPATCH).
+        refused = self.authority.check(
+            Checkpoint.DISPATCH,
+            Gate(
+                store=store,
+                job_id=job_id,
+                plan_hash=job["plan_hash"],
+                plan=plan,
+                lease=lease,
+                intent=queued_intent,
+                runtime_binding=current_binding,
+                flash_binding=flash_binding,
+                valid=current_valid,
+                queued_lease=queued_lease,
+            ),
+        )
+        if refused is not None:
+            self._cancel_execution_intent(queued_intent, refused)
             return None
         self._execution_intents.pop(job_id, None)
         if plan["test"] == TestName.BUILD.value:
@@ -2982,74 +2945,13 @@ class Broker:
         return scoped
 
     def _running_authorized(self, run: AdmittedJob) -> bool:
-        lease = run.lease
-        valid = self.principal_valid
-        try:
-            authorized = (
-                lease.principal_id is not None
-                and valid is not None
-                and valid(lease.principal_id, lease.owner, frozenset({"read", "control"})) is True
-            )
-            return bool(
-                authorized
-                and self.principal_valid is valid
-                and self._runtime_binding() == run.current_binding
-                and collector_live(self, run.plan, lease.principal_id or "")
-                and self.session is lease
-                and self._execution_lease_binding_live(run.queued_intent, running=True)
-                and self._device_lock.is_locked
-                and self._state_lock.is_locked
-                and self.active_job == run.job_id
-                and run.store.plan(run.job["plan_hash"]) == run.plan
-                and digest_plan(run.plan) == run.job["plan_hash"]
-                and self._running_job_binding_live(run.plan, run.queued_intent)
-            )
-        except Exception:
-            return False
+        """The RUNNING checkpoint: non-flash executors and their commits."""
+        return self.authority.allows(Checkpoint.RUNNING, Gate.admitted(run))
 
     def _flash_live(self, run: AdmittedJob, committing: bool = False) -> bool:
-        plan, lease, capture_principal = run.plan, run.lease, run.capture_principal
-        current = self.session
-        if (
-            self.closing
-            or current is None
-            or capture_principal is None
-            or current is not lease
-            or current.principal_id != capture_principal
-            or not math.isfinite(self.clock())
-            # A running flash keeps its lease past the deadline;
-            # only revocation stops it (see
-            # _execution_lease_binding_live).
-            or current.revoked
-        ):
-            return False
-        registration = self.settings.flash_devices.get(plan["device_id"])
-        if (
-            registration is None
-            or getattr(registration, "allow_" + plan["flash_operation"]) is not True
-            or plan["registration_sha256"] not in flash_digests(registration)
-        ):
-            return False
-        if not self._device_lock.is_locked or not self._state_lock.is_locked:
-            return False
-        if self.principal_valid is None:
-            return False
-        valid = self.principal_valid
-        binding = self._runtime_binding()
-        authorized = valid(capture_principal, current.owner, frozenset({"read", "control"})) is True
-        return bool(
-            authorized
-            and self.principal_valid is valid
-            and self._runtime_binding() == binding
-            and self._runtime_binding() == run.current_binding
-            and run.flash_binding is not None
-            and live_binding(self, run.flash_binding, plan)
-            and self.session is lease
-            and self._execution_lease_binding_live(run.queued_intent, running=True)
-            and self._device_lock.is_locked
-            and self._state_lock.is_locked
-            and self._running_job_binding_live(plan, run.queued_intent, committing=committing)
-        )
+        """FLASH_IO between device side effects; FLASH_COMMIT inside the final commit."""
+        checkpoint = Checkpoint.FLASH_COMMIT if committing else Checkpoint.FLASH_IO
+        return self.authority.allows(checkpoint, Gate.admitted(run))
 
     # --- after the executor: synchronous sections ---------------------------------------
 
