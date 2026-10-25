@@ -104,6 +104,9 @@ SUPPRESSED_REASON_CODES: frozenset[str] = frozenset(
         "source_publication_conflict",
         "source_publication_invalid",
         "source_publication_not_authorized",
+        # Offline `cardputer archive` only (Store.archive_rows); never a request path.
+        "history_archive_unavailable",
+        "history_archive_verification_failed",
     }
 )
 
