@@ -1,6 +1,7 @@
 """Real disposable subprocesses prove collection/test/shutdown evidence survives."""
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -252,3 +253,75 @@ def test_utf8_progress_remains_valid_across_file_read_boundaries(tmp_path):
     assert completed.returncode == result["exit_code"] == 0
     assert log.count("日本語") == completed.stdout.count("日本語") == 7000
     assert "\ufffd" not in completed.stdout
+
+
+def load_full_suite():
+    sys.path.insert(0, str(SCRIPT.parent))
+    try:
+        import full_suite
+    finally:
+        sys.path.remove(str(SCRIPT.parent))
+    return full_suite
+
+
+@pytest.mark.parametrize("shards", [1, 2, 3, 4, 7])
+def test_shards_cover_every_repository_test_file_exactly_once(shards):
+    full_suite = load_full_suite()
+    expected = sorted(path.name for path in (ROOT / "tests").glob("test_*.py"))
+    assert full_suite.TESTS == ROOT / "tests"
+
+    def partition():
+        return [
+            [path.name for path in full_suite.shard_files(full_suite.TESTS, shard, shards)]
+            for shard in range(1, shards + 1)
+        ]
+
+    selected = partition()
+    flattened = [name for names in selected for name in names]
+    assert sorted(flattened) == expected and len(flattened) == len(set(flattened))
+    assert all(selected) and "test_full_suite_watchdog.py" in flattened
+    assert selected == partition()
+
+
+def test_new_test_file_is_assigned_to_a_shard_automatically(tmp_path):
+    full_suite = load_full_suite()
+    for name, size in [("test_a.py", 50), ("test_b.py", 40), ("test_c.py", 30)]:
+        (tmp_path / name).write_text("#" * size, encoding="utf-8")
+    (tmp_path / "helper.py").write_text("#" * 500, encoding="utf-8")
+    before = [full_suite.shard_files(tmp_path, shard, 2, {}) for shard in (1, 2)]
+    assert [[path.name for path in names] for names in before] == [
+        ["test_a.py"],
+        ["test_b.py", "test_c.py"],
+    ]
+    (tmp_path / "test_new.py").write_text("#" * 10, encoding="utf-8")
+    after = [
+        path.name for shard in (1, 2) for path in full_suite.shard_files(tmp_path, shard, 2, {})
+    ]
+    assert sorted(after) == ["test_a.py", "test_b.py", "test_c.py", "test_new.py"]
+
+
+@pytest.mark.parametrize("shard_args", [["--shard", "0"], ["--shard", "3", "--shards", "2"]])
+def test_invalid_shard_is_rejected_before_any_diagnostics(tmp_path, shard_args):
+    output = tmp_path / "diagnostics"
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--output", str(output), *shard_args],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=25,
+    )
+    assert completed.returncode == 2 and "--shard" in completed.stderr
+    assert not output.exists()
+
+
+def test_measured_weights_override_size_and_table_is_well_formed(tmp_path):
+    full_suite = load_full_suite()
+    for name, size in [("test_big.py", 500), ("test_slow.py", 10), ("test_tiny.py", 20)]:
+        (tmp_path / name).write_text("#" * size, encoding="utf-8")
+    weights = {"test_slow.py": 1.0}
+    assert [path.name for path in full_suite.shard_files(tmp_path, 1, 2, weights)] == [
+        "test_slow.py"
+    ]
+    table = full_suite.load_weights()
+    assert table and all(name.startswith("test_") and name.endswith(".py") for name in table)
+    assert all(math.isfinite(seconds) and seconds >= 0 for seconds in table.values())

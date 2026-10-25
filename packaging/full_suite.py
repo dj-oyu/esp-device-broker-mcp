@@ -10,7 +10,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from pathlib import Path
 
 from ci_process_tree import ProcessTree
@@ -18,6 +18,10 @@ from ci_process_tree import ProcessTree
 TIMEOUT = 124
 RUNNER_ERROR = 125
 CONSOLE_LINE_BYTES = 2048
+TESTS = Path(__file__).resolve().parents[1] / "tests"
+WEIGHTS = Path(__file__).with_name("full_suite_weights.json")
+# Rough measured Windows throughput, used only for files absent from WEIGHTS.
+FALLBACK_BYTES_PER_SECOND = 3400.0
 
 
 class ConsoleProgress:
@@ -95,6 +99,41 @@ def positive_seconds(raw: str) -> float:
     if not math.isfinite(value) or value <= 0:
         raise argparse.ArgumentTypeError("a positive finite duration is required")
     return value
+
+
+def load_weights(path: Path = WEIGHTS) -> dict[str, float]:
+    return {str(name): float(seconds) for name, seconds in json.loads(path.read_text()).items()}
+
+
+def shard_files(
+    tests: Path, shard: int, shards: int, weights: Mapping[str, float] | None = None
+) -> list[Path]:
+    """Deterministically partition test files into duration-balanced shards.
+
+    Every ``test_*.py`` file directly under ``tests`` lands in exactly one
+    shard, so new files are included without editing a list. Weights are the
+    checked-in per-file seconds (max over the Windows legs' junit.xml of a
+    sharded run); a file missing from the table is weighted by its size.
+    Heaviest files are placed first onto the lightest shard (ties broken by
+    name, then shard index).
+    """
+    table = load_weights() if weights is None else weights
+
+    def weight(path: Path) -> float:
+        known = table.get(path.name)
+        return known if known is not None else path.stat().st_size / FALLBACK_BYTES_PER_SECOND
+
+    files = sorted(tests.glob("test_*.py"), key=lambda path: path.name)
+    loads = [0.0] * shards
+    chosen: list[Path] = []
+    for path, cost in sorted(
+        ((path, weight(path)) for path in files), key=lambda item: (-item[1], item[0].name)
+    ):
+        target = min(range(shards), key=lambda index: (loads[index], index))
+        loads[target] += cost
+        if target == shard - 1:
+            chosen.append(path)
+    return sorted(chosen, key=lambda path: path.name)
 
 
 class PhaseWatchdog:
@@ -264,11 +303,21 @@ def main() -> int:
     parser.add_argument("--deadline", type=positive_seconds, default=720.0)
     parser.add_argument("--phase-timeout", type=positive_seconds, default=120.0)
     parser.add_argument("--test-timeout", type=positive_seconds, default=90.0)
+    parser.add_argument("--shard", type=int, default=1, help="1-based shard index")
+    parser.add_argument("--shards", type=int, default=1, help="total shard count")
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     args.output = args.output.resolve()
     if args.pytest_args[:1] == ["--"]:
         args.pytest_args.pop(0)
+    if not 1 <= args.shard <= args.shards:
+        parser.error("--shard must be between 1 and --shards")
+    if not args.child and args.shards > 1:
+        selected = shard_files(TESTS, args.shard, args.shards)
+        if not selected:
+            # An empty selection would make pytest fall back to every testpath.
+            parser.error("the selected shard contains no test files")
+        args.pytest_args = [*map(str, selected), *args.pytest_args]
     return run_pytest(args) if args.child else supervise(args)
 
 
