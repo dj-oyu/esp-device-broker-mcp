@@ -141,6 +141,7 @@ RESULTS = (
             "external_toolchain_resolution_changed",
             "node_requires_explicit_local_registration",
             "build_inputs_changed",
+            "build_authority_check_timeout",
             "idf_build_failed_needs_review",
             "build_target_mismatch",
             "build_artifacts_missing",

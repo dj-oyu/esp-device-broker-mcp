@@ -647,7 +647,7 @@ async def test_registered_profile_forwards_explicit_source_mode(
     assert service.backend.calls == 0
 
 
-@pytest.mark.parametrize("known", [True, False])
+@pytest.mark.parametrize("known", ["build_inputs_changed", "build_authority_check_timeout", None])
 async def test_build_diagnostic_persists_bounded_status_without_exception_text(
     registry_service, tmp_path, monkeypatch, known
 ):
@@ -661,7 +661,7 @@ async def test_build_diagnostic_persists_bounded_status_without_exception_text(
     async def fail_build(plan, stage, *, defer_publish):
         stage("idf_build")
         if known:
-            failure = FixedDiagnosticFailure("build_inputs_changed")
+            failure = FixedDiagnosticFailure(known)
             failure.subprocess = {"profile_export": 0, "build_diagnostic": 0, "idf_build": 0}
             raise failure
         raise ValueError("token=synthetic-secret " + "private-path" * 10000)
@@ -677,7 +677,7 @@ async def test_build_diagnostic_persists_bounded_status_without_exception_text(
     expected = {"code": "firmware_build_failed"}
     if known:
         expected = {
-            "code": "build_inputs_changed",
+            "code": known,
             "subprocess_exit_codes": {"profile_export": 0, "build_diagnostic": 0, "idf_build": 0},
         }
     assert job["diagnostic"] == expected

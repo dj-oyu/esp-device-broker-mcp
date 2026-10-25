@@ -45,6 +45,7 @@ PUBLIC_REASON_CODES: frozenset[str] = frozenset(
         "artifact_count_limit",
         "build_artifacts_missing",
         "build_inputs_changed",
+        "build_authority_check_timeout",
         "build_target_mismatch",
         "idf_project_required",
         "linked_file_not_supported",

@@ -27,6 +27,7 @@ from cardputer_mcp.models import TestName as Action
         (True, "none", False),
         (False, "none", False),
         (True, "none", True),
+        (True, "cancel", False),
     ],
 )
 async def test_owned_cleanup_crosses_watchdog_without_revoking_build(
@@ -198,6 +199,8 @@ async def test_owned_cleanup_crosses_watchdog_without_revoking_build(
             assert job["state"] == "cancelled"
             assert published == []
             assert not process.active and not process.uncertain
+            assert broker.profile_jobs.active is None
+            assert broker.profile_jobs.queue.empty()
     finally:
         # Dispose synthetic readers only after asserting retained ownership.
         cleanup_release.set()

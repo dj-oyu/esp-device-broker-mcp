@@ -124,6 +124,7 @@ class FixedDiagnosticFailure(BuildPreflightFailure):
             "external_idf_environment_invalid",
             "compiler_cache_setting_invalid",
             "compiler_cache_diagnostic_failed",
+            "build_authority_check_timeout",
         }:
             raise ValueError("invalid_build_diagnostic_code")
         self.code = code
@@ -557,7 +558,13 @@ class FirmwareBuild:
             return self.authority is not None and self.authority() is True
 
         def monitor() -> None:
-            if asyncio.run_coroutine_threadsafe(authorized(), loop).result(timeout=5) is not True:
+            pending = asyncio.run_coroutine_threadsafe(authorized(), loop)
+            try:
+                valid = pending.result(timeout=5)
+            except TimeoutError:
+                pending.cancel()
+                raise FixedDiagnosticFailure("build_authority_check_timeout") from None
+            if valid is not True:
                 self.process.stop_requested.set()
                 raise ValueError("profile_or_principal_no_longer_valid")
 
@@ -924,7 +931,10 @@ class FirmwareBuild:
             build_args += ["-D", "POCKET_DERBY_DETAIL_MEASURE=" + plan["derby_detail_mode"]]
         if "derby_dma_mode" in plan:
             build_args += ["-D", "KASANE_DMA_OVERLAP=" + plan["derby_dma_mode"]]
-        build_args.append("build")
+        # The broker already owns and drains both output pipes. IDF's optional
+        # nested asyncio hints collector can stall after CMake exits on Windows;
+        # use IDF's direct subprocess path, retaining broker logs and teardown.
+        build_args.extend(["--no-hints", "build"])
         if run(
             build_args,
             env,
