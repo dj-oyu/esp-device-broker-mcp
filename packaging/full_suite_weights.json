@@ -72,6 +72,7 @@
   "test_flash_lease_renewal.py": 21.5,
   "test_flash_lifecycle.py": 0.0,
   "test_flash_lkg_geometry.py": 0.0,
+  "test_flash_lkg_models.py": 25.0,
   "test_flash_lkg_store.py": 0.6,
   "test_flash_manifest_contract.py": 0.1,
   "test_flash_no_recovery_point.py": 9.3,

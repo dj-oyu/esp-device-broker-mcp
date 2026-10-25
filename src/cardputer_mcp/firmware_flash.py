@@ -29,6 +29,7 @@ from .flash_lkg_bundle import (
     compatibility,
     same_layout,
 )
+from .flash_lkg_models import bound_lkg_metadata, lkg_compat
 from .flash_lkg_store import FirmwareSnapshots
 from .flash_manifest import _file, verify_bundle
 from .job_logs import attach
@@ -416,15 +417,14 @@ class FirmwareFlash:
             row["receipt"],
         )
         selector = hashlib.sha256(registration.selector.model_dump_json().encode()).hexdigest()
-        if (
-            metadata["device_id"] != device_id
-            or metadata["principal"] != row["principal"]
-            or metadata["selector_sha256"] != selector
-            or metadata["flash_bytes"] != registration.flash_bytes
-        ):
-            raise FlashFailure("lkg_device_binding_changed")
-        if metadata.get("kind") != row["kind"]:
-            raise FlashFailure("lkg_receipt_kind_changed")
+        binding = dict(
+            device_id=device_id,
+            principal=row["principal"],
+            selector_sha256=selector,
+            flash_bytes=registration.flash_bytes,
+        )
+        bound_lkg_metadata(metadata, binding, row["kind"])
+        # Callers keep the parsed object itself; it is never re-dumped.
         return row, metadata, files
 
     def commit_success(self, plan: dict[str, Any], result: str, live: Any) -> None:
@@ -765,10 +765,12 @@ class FirmwareFlash:
             # bundle and partition/NVS/data compatibility is not checked.
             if current is not None and known is None:
                 _, previous, _ = self._known(registration, plan["device_id"], current["receipt"])
-                if previous.get("compat") is not None:
-                    same_layout(previous["compat"], compat)
-            if known is not None and known[0].get("compat") is not None:
-                same_layout(known[0]["compat"], compat)
+                previous_compat = lkg_compat(previous)
+                if previous_compat is not None:
+                    same_layout(previous_compat, compat)
+            known_compat = lkg_compat(known[0]) if known is not None else None
+            if known_compat is not None:
+                same_layout(known_compat, compat)
             elif backup is not None:
                 table = next(
                     item for item in bundle.segments if item.offset == compat["table_offset"]
