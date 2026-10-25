@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import io
 import sys
 import threading
 import time
@@ -92,9 +91,35 @@ def _task_graph(task: asyncio.Task[Any]) -> str:
             return str(formatter(task))
         except Exception as exc:  # diagnostics must not mask the timeout
             return f"<call graph unavailable: {exc!r}>"
-    buffer = io.StringIO()
-    task.print_stack(file=buffer)
-    return buffer.getvalue()
+    # Task.print_stack shows only the outermost frame of a suspended task; follow
+    # the await chain instead so the innermost awaited frame is visible.
+    lines = [repr(task)]
+    awaited: Any = task.get_coro()
+    for _ in range(200):
+        if awaited is None:
+            break
+        frame = next(
+            (
+                getattr(awaited, name)
+                for name in ("cr_frame", "ag_frame", "gi_frame")
+                if getattr(awaited, name, None) is not None
+            ),
+            None,
+        )
+        if frame is None:
+            lines.append(f"  awaiting {awaited!r}")
+            break
+        code = frame.f_code
+        lines.append(f'  File "{code.co_filename}", line {frame.f_lineno}, in {code.co_qualname}')
+        awaited = next(
+            (
+                getattr(awaited, name)
+                for name in ("cr_await", "ag_await", "gi_yieldfrom")
+                if getattr(awaited, name, None) is not None
+            ),
+            None,
+        )
+    return "\n".join(lines)
 
 
 def _task_stacks(server_task: asyncio.Task[Any]) -> str:

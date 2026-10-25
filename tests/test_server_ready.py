@@ -25,7 +25,13 @@ def gated_app(gate: asyncio.Event) -> Any:
     return app
 
 
-async def test_timeout_reports_pending_stage_and_stacks(capsys) -> None:
+@pytest.mark.parametrize("call_graph", ["native", "await_chain"])
+async def test_timeout_reports_pending_stage_and_stacks(capsys, monkeypatch, call_graph) -> None:
+    if call_graph == "await_chain":
+        # Python < 3.14 has no asyncio.format_call_graph; exercise the fallback everywhere.
+        monkeypatch.delattr(asyncio, "format_call_graph", raising=False)
+    elif not hasattr(asyncio, "format_call_graph"):
+        pytest.skip("asyncio.format_call_graph requires Python 3.14")
     gate = asyncio.Event()
     server = uvicorn.Server(
         uvicorn.Config(
