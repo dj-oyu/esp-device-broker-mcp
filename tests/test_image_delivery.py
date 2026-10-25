@@ -97,12 +97,13 @@ async def test_previews_and_authenticated_reads_never_refresh_retention(tmp_path
             assert broker.read_capture("review", PRINCIPAL).png
             assert broker.captures["review"].deadline == 400.0
         clock.now = 400.0
-        # The RAM copy (and the RAM-only operator preview) expires; the owner's
-        # MCP read is then served from the durable copy without refreshing RAM.
+        # The RAM copy expires; the owner's MCP read and the operator preview are
+        # then served from the saved copy without refreshing RAM.
         assert broker.read_capture("review", PRINCIPAL).png
         assert "review" not in broker.captures
-        with pytest.raises(BrokerError, match="^capture_not_available$"):
-            broker.operator_image("review")
+        saved = broker.operator_image("review")
+        assert saved["retention"] == "saved" and saved["remaining_seconds"] is None
+        assert "review" not in broker.captures
         assert broker.operator_images()["images"] == []
         assert broker.job("review")["state"] == "succeeded"
         assert broker.backend.calls == 1
@@ -118,9 +119,37 @@ async def test_restart_drops_ram_pixels_keeps_durable_copy_without_replay(tmp_pa
         assert not restarted.captures
         assert restarted.read_capture("review", PRINCIPAL).png
         unavailable(restarted, "review", "different-principal")
+        saved = restarted.operator_image("review")
+        assert saved["retention"] == "saved" and saved["broker_epoch"] == restarted.epoch
+        assert saved["recipient_principal"] == PRINCIPAL
+        png = base64.b64decode(saved["image_base64"])
+        assert hashlib.sha256(png).hexdigest() == saved["sha256"]
+        assert not ({"origin", "path", "principal_id"} & set(saved))
+        assert "captures" not in json.dumps(saved)
         assert restarted.job("review")["state"] == "succeeded"
         await asyncio.sleep(0)
         assert restarted.backend.calls == 0 and restarted.queue.empty()
+
+
+@pytest.mark.parametrize("mutation", ["principal", "pixels", "absent"])
+async def test_saved_operator_preview_refuses_mismatched_or_missing_copy(
+    tmp_path: Path, mutation: str
+) -> None:
+    async with running(tmp_path) as original:
+        await completed_preview(original)
+        saved = original.capture_store.root / "review"
+    if mutation == "principal":
+        meta = json.loads((saved / "capture.json").read_text())
+        (saved / "capture.json").write_text(json.dumps(meta | {"principal_id": "intruder"}))
+    elif mutation == "pixels":
+        (saved / "capture.png").write_bytes(b"\x89PNG not the saved bytes")
+    else:
+        (saved / "capture.json").unlink()
+    async with running(tmp_path) as restarted:
+        with pytest.raises(BrokerError, match="^capture_not_available$"):
+            restarted.operator_image("review")
+        assert restarted.operator_saved_image_summary("review") is None or mutation == "pixels"
+        assert restarted.backend.calls == 0
 
 
 @pytest.mark.parametrize("mutation", ["missing", "failed"])
@@ -205,8 +234,7 @@ async def test_inventory_is_bounded_and_evicted_pixels_come_from_disk(tmp_path: 
         assert "review-0" not in broker.captures
         assert broker.read_capture("review-0", PRINCIPAL).png
         unavailable(broker, "review-0", "different-principal")
-        with pytest.raises(BrokerError, match="^capture_not_available$"):
-            broker.operator_image("review-0")
+        assert broker.operator_image("review-0")["retention"] == "saved"
         assert broker.backend.calls == 9
 
 

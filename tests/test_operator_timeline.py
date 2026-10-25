@@ -340,8 +340,19 @@ async def test_capture_card_only_explicit_execute_and_read_then_cache_expiry(tmp
         assert broker.backend.calls == 1
         clock.now = 400
         expired = card(timeline)
-        assert expired["state"] == "succeeded" and expired["image"] is None
+        # The RAM copy is gone; the card falls back to the saved copy's summary.
+        assert expired["state"] == "succeeded" and "one" not in broker.captures
+        saved = expired["image"]
+        assert saved["retention"] == "saved" and saved["remaining_seconds"] is None
+        assert saved["sha256"] == completed["image"]["sha256"]
+        assert saved["recipient_principal"] == "synthetic-owner"
+        assert not ({"origin", "image_base64", "principal_id"} & set(saved))
+        assert "captures" not in json.dumps(expired)
+        parsed = TimelineSnapshot.parse({"ok": True, **timeline.snapshot()}, 1000)
+        image = next(item for item in parsed.cards if item.job_id == "one").image
+        assert image is not None and image.saved and image.expires_at == float("inf")
         assert first["plan_hash"] == completed["plan_hash"] == expired["plan_hash"]
+        assert broker.backend.calls == 1
 
 
 async def test_old_prepared_plan_after_restart_never_executes_from_reading_timeline(tmp_path):

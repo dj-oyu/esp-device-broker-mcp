@@ -2427,7 +2427,8 @@ class Broker:
         """Read completed pixels after per-request authentication.
 
         The five-minute RAM copy is served while retained; afterwards (expiry,
-        eviction or restart) the owner-bound durable copy under the state dir.
+        eviction or restart) the saved copy under the state dir, until the
+        capture store's count/byte caps prune it.
         """
         self._store()
         self._prune_captures()
@@ -2504,7 +2505,74 @@ class Broker:
                 images.append(self._image_summary(job_id, retained))
         return {"broker_epoch": self.epoch, "images": images}
 
+    def operator_saved_image_summary(self, job_id: str) -> dict[str, Any] | None:
+        """Summary of a succeeded job's saved capture for the local GUI, or None.
+
+        Metadata only: no pixels, origin or storage path. Saved copies do not
+        expire on a timer, so ``remaining_seconds`` is None and ``retention``
+        says ``saved``; retention caps may still prune them.
+        """
+        job = self._store().job(job_id)
+        plan = self._store().plan(job["plan_hash"]) if job is not None else None
+        if (
+            self.closing
+            or job is None
+            or plan is None
+            or plan.get("test") not in (TestName.CAPTURE.value, TestName.DERBY.value)
+            or job["state"] != "succeeded"
+        ):
+            return None
+        metadata = self.capture_store.summary(job_id)
+        if metadata is None:
+            return None
+        owner = self.job_principal(job_id)
+        if owner is not None and not secrets.compare_digest(owner, metadata["principal_id"]):
+            return None
+        return {
+            "job_id": job_id,
+            "sha256": metadata["sha256"],
+            "source": metadata["source"],
+            "recipient_principal": metadata["principal_id"],
+            "born_utc": metadata["captured_utc"],
+            "remaining_seconds": None,
+            "retention": "saved",
+            "delivery_state": "available",
+            "policy_allowed": False,
+        }
+
+    def _operator_saved_image(self, job_id: str) -> dict[str, Any]:
+        summary = self.operator_saved_image_summary(job_id)
+        if summary is None:
+            raise BrokerError("capture_not_available")
+        loaded = self.capture_store.load(job_id, summary["recipient_principal"])
+        if loaded is None or loaded[0].sha256 != summary["sha256"]:
+            raise BrokerError("capture_not_available")
+        image = loaded[0]
+        if self.closing:
+            raise BrokerError("capture_not_available")
+        return {
+            "broker_epoch": self.epoch,
+            **summary,
+            "metadata": image.metadata(),
+            "image_base64": base64.b64encode(image.png).decode("ascii"),
+            "delivery_revision": digest_plan(
+                {
+                    "broker_epoch": self.epoch,
+                    "job_id": job_id,
+                    "sha256": image.sha256,
+                    "principal_id": summary["recipient_principal"],
+                    "born_utc": summary["born_utc"],
+                    "retention": "saved",
+                }
+            ),
+        }
+
     def operator_image(self, job_id: str) -> dict[str, Any]:
+        """The RAM capture while retained, else the job's saved copy (e.g. after restart)."""
+        self._store()
+        self._prune_captures()
+        if job_id not in self.captures:
+            return self._operator_saved_image(job_id)
         retained = self._operator_capture(job_id)
         job = self._store().job(job_id)
         plan = self._store().plan(job["plan_hash"]) if job else None

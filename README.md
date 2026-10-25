@@ -421,7 +421,7 @@ The endpoint is `http://127.0.0.1:8765/mcp`. Tools with arguments accept a neste
 
 | Tool | Distinguishing argument | Effect |
 | --- | --- | --- |
-| `status` | `view`: `identity`, `targets`, `source`, `device`, `session`, `job`, `logs` (with `stream`: `broker`, `build`, `device`, `app`), `capture`, `apps` | Read-only: backend/device/broker status, shared cached events, your completed device log report from RAM, durable job results, your completed PNG from the five-minute memory cache |
+| `status` | `view`: `identity`, `targets`, `source`, `device`, `session`, `job`, `logs` (with `stream`: `broker`, `build`, `device`, `app`), `capture`, `apps` | Read-only: backend/device/broker status, shared cached events, your completed device log report from RAM, durable job results, any read-scoped caller's view of a succeeded job's PNG (five-minute RAM copy, then the saved copy in state until pruned beyond 200 images / 64 MiB) |
 | `submit` | `kind`: `fetch`, `build`, `backup`, `flash`, `restore`, `app_session`, `derby_fixed`, `derby`, `capture`, `restart`, `observe`, `observe_firmware`, `hello`, `diagnostics`, `workflow`; `job_id`, and `session` for device kinds | Persist an immutable allowlisted plan; performs no device operation |
 | `execute` | `op`: `run` (`plan_hash`, optional `session`), `app_input`, `home_recovery` (`job_id`, `source_job_id`) | Queue the exact plan (any plan except flash/restore); device operations require an owned live lease. `home_recovery` requests one bounded DERBY exit after recorded capture failure/close |
 | `flash` | `plan_hash`, optional `session` | Queue the exact flash or restore plan; refuses any other plan |
@@ -519,8 +519,11 @@ local build profiles; MCP never supplies arbitrary project/profile paths. Paths
 and output-root overrides stay in that private configuration.
 
 The capture API returns a bounded, authenticated MCP ImageContent after a
-`capture` job (`capture_home` plan) succeeds. Pixels remain only in the broker's bounded memory
-cache for five minutes and are accessible to the requesting authenticated
-principal with current read permission. See [CAPTURE.md](CAPTURE.md) for the
+`capture` job (`capture_home` plan) succeeds. Pixels stay in the broker's bounded memory
+cache for five minutes and are also saved under `<state_dir>/captures/<job_id>/`
+(oldest pruned first beyond 200 images or 64 MiB), so they survive RAM expiry and
+broker restarts. Any authenticated principal with current read permission can
+read them, whoever requested the capture, while the capturing principal is still
+valid. The local GUI preview falls back to the saved copy too. See [CAPTURE.md](CAPTURE.md) for the
 HOME-only behavior and render-buffer evidence limits. No synthetic bitmap is
 presented as device evidence. Arbitrary current-app screenshots are unavailable.

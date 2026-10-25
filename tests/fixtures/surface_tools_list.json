@@ -5,7 +5,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read broker, job, log or session state. view selects what; no side effects.\n\nAny read-scoped caller can read any job (job, logs, capture), whoever\nstarted it; owned_by_caller says whether it is yours. Changes stay owner-only.\nview=job adds `chain` for your own chained jobs, like git log from that job:\nchain_position, chain_jobs_known, chain_open (the tip still accepts a child).\nview=jobs lists recent jobs, newest first (cursor from next_cursor).\nview=recovery lists per device the LKG receipts and full backups.\n",
+    "description": "Read broker, job, log or session state. view selects what; no side effects.\n\nAny read-scoped caller can read any job (job, logs, capture), whoever\nstarted it; owned_by_caller says whether it is yours. Changes stay owner-only.\nview=job adds `chain` for your own chained jobs, like git log from that job:\nchain_position, chain_jobs_known, chain_open (the tip still accepts a child).\nview=jobs lists recent jobs, newest first (cursor from next_cursor).\nview=recovery lists per device the LKG receipts and full backups.\nview=capture returns the PNG of a succeeded capture: RAM for five minutes,\nthen a saved copy kept across restarts (oldest pruned past 200 / 64 MiB).\n",
     "inputSchema": {
       "$defs": {
         "StatusRequest": {

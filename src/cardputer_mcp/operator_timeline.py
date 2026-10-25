@@ -440,6 +440,38 @@ class OperatorTimeline:
             except Exception:
                 return None
 
+    def _saved_image(self, job_id: str, plan: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The saved capture's summary once the RAM copy is gone (e.g. after restart)."""
+        if plan is None or plan.get("test") not in ("capture_home", "derby_smoke"):
+            return None
+        try:
+            row = self.broker.operator_saved_image_summary(job_id)
+            if type(row) is not dict:
+                return None
+            born = _utc(row.get("born_utc"))
+            if (
+                row.get("job_id") != job_id
+                or not _matches(row.get("sha256"), r"[a-f0-9]{64}")
+                or row.get("source") not in ("synthetic_fixture", "render_buffer")
+                or not _matches(row.get("recipient_principal"), r"[A-Za-z0-9_:.+-]{1,128}")
+                or born is None
+            ):
+                return None
+            # Project only the summary schema: never pixels, origin or a path.
+            return {
+                "job_id": job_id,
+                "sha256": row["sha256"],
+                "source": row["source"],
+                "recipient_principal": row["recipient_principal"],
+                "born_utc": row["born_utc"],
+                "remaining_seconds": None,
+                "retention": "saved",
+                "delivery_state": "available",
+                "policy_allowed": False,
+            }
+        except Exception:
+            return None
+
     def _images(self) -> dict[str, dict[str, Any]]:
         images: dict[str, dict[str, Any]] = {}
         try:
@@ -605,7 +637,7 @@ class OperatorTimeline:
                         card["state"], card["result"], row["fault_category"], row["fault_detail"]
                     )
                     if card["state"] == "succeeded":
-                        card["image"] = images.get(row["id"])
+                        card["image"] = images.get(row["id"]) or self._saved_image(row["id"], plan)
                 else:
                     plan = self._plan(row["hash"])
                     if plan is None:
@@ -654,7 +686,7 @@ class OperatorTimeline:
         broker._prune_captures()
         for card in selected:
             image = card["image"]
-            if image is not None:
+            if image is not None and image.get("retention") != "saved":
                 retained = broker.captures.get(card["job_id"])
                 if (
                     retained is None

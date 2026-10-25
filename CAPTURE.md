@@ -80,9 +80,11 @@ from the saved copy after re-verifying its size and sha256; a missing or changed
 copy returns `capture_not_available`. Reading never triggers a replacement
 capture. Saved captures are pruned oldest-first beyond 200 images or 64 MiB;
 delete the directory yourself if you need them gone sooner. An image from a job
-whose close was not confirmed is never saved. The operator GUI preview still
-shows only the RAM cache. The job's fixed success/failure result remains in
-ordinary durable history.
+whose close was not confirmed is never saved. The operator GUI preview shows
+the RAM copy while it is retained and otherwise falls back to the job's saved
+copy (marked "saved copy"; for example after a broker restart), through the same
+local operator API authentication; it never exposes storage paths. The job's
+fixed success/failure result remains in ordinary durable history.
 
 Every MCP image read requires a currently valid authenticated key with read scope,
 and a succeeded closed capture job. Since 2026-10-25 (owner decision) the reader
@@ -92,8 +94,8 @@ cache or the saved copy, so a local agent can inspect a capture started by the
 cloud client. The capture's own principal must also still be valid with read
 scope; revoking it ends delivery to everyone. Revoked or expired keys cannot
 retrieve images. Distinct work sessions are not distinct security identities.
-The trusted local operator can preview retained images through the local-only
-operator API.
+The trusted local operator can preview retained or saved images through the
+local-only operator API.
 
 After the client retrieves a PNG, this broker cannot control copies retained by
 the client, chat service, or user. Explicitly request capture only when the intended output
@@ -154,7 +156,8 @@ when all of them belong to that dropped fragment.
 
 For a failure with `expected_marker = "HOME_READY"`, the frame command has not
 yet been sent. A missing image in that case means no usable image was acquired,
-not that the five-minute image retention period elapsed. Interrupted/restarted
+not that the five-minute RAM retention period elapsed or the saved copy was
+pruned. Interrupted/restarted
 jobs can instead have an unknown outcome. Existing review requirements remain;
 upgrading, viewing diagnostics, or waiting never retries the job.
 

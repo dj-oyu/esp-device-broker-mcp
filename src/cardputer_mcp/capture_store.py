@@ -127,21 +127,36 @@ class CaptureStore:
         except Exception:
             return False
 
+    def _metadata(self, job_id: str) -> dict[str, Any] | None:
+        directory = self._directory(job_id)
+        if _linked(directory / _PNG) or _linked(directory / _META):
+            return None
+        metadata = json.loads(_read(directory / _META, 4096))
+        if (
+            type(metadata) is not dict
+            or metadata.get("schema_version") != SCHEMA_VERSION
+            or metadata.get("job_id") != job_id
+            or not metadata.get("principal_id")
+            or type(metadata.get("principal_id")) is not str
+            or metadata.get("mime_type") != "image/png"
+            or metadata.get("source") not in _SOURCES
+        ):
+            return None
+        return metadata
+
+    def summary(self, job_id: str) -> dict[str, Any] | None:
+        """Validated metadata of a saved capture without reading its pixels, or None."""
+        try:
+            return self._metadata(job_id)
+        except Exception:
+            return None
+
     def load(self, job_id: str, principal_id: str) -> tuple[CapturedImage, dict[str, Any]] | None:
         """The owner's verified capture and its metadata, or None."""
         try:
             directory = self._directory(job_id)
-            if _linked(directory / _PNG) or _linked(directory / _META):
-                return None
-            metadata = json.loads(_read(directory / _META, 4096))
-            if (
-                type(metadata) is not dict
-                or metadata.get("schema_version") != SCHEMA_VERSION
-                or metadata.get("job_id") != job_id
-                or metadata.get("principal_id") != principal_id
-                or metadata.get("mime_type") != "image/png"
-                or metadata.get("source") not in _SOURCES
-            ):
+            metadata = self._metadata(job_id)
+            if metadata is None or metadata.get("principal_id") != principal_id:
                 return None
             png = _read(directory / _PNG, MAX_IMAGE_BYTES)
             if (

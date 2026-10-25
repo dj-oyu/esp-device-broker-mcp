@@ -115,3 +115,56 @@ def test_failed_automatic_image_is_not_retried_until_selection_changes(window):
     window.job_tree.selection.return_value = ("job_image_1",)
     window._select()
     assert window.runner.read_image.call_count == 2
+
+
+def saved_row(**changes):
+    return row(detail(remaining_seconds=None)) | {"retention": "saved"} | changes
+
+
+def saved_result(**changes):
+    return result(remaining_seconds=None, retention="saved", **changes)
+
+
+def test_saved_copy_has_no_timer_and_reads_after_any_delay():
+    parsed = ImageRow.parse(saved_row(), 1000)
+    assert parsed.saved and parsed.expires_at == float("inf")
+    state = PreviewState().reconcile(1, EPOCH, parsed, True, 10**9)
+    assert state.can_read(10**9) and "Saved" in state.message
+    shown = state.started(8).accept(1, "job_image_1", 8, saved_result(), 10**9, 10**9 + 1)
+    assert shown.preview is not None and shown.message.endswith("(saved copy)")
+    assert shown.reconcile(1, EPOCH, parsed, True, 10**10).preview is not None
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"remaining_seconds": 200.0},
+        {"retention": "forever"},
+        {"retention": ""},
+    ],
+)
+def test_saved_row_requires_exact_retention_without_timer(changes):
+    with pytest.raises(ValueError):
+        ImageRow.parse(saved_row(**changes), 1000)
+
+
+def test_saved_and_ram_responses_never_substitute_for_each_other():
+    saved = PreviewState().reconcile(1, EPOCH, ImageRow.parse(saved_row(), 1000), True, 1000)
+    assert saved.started(8).accept(1, "job_image_1", 8, result(), 1000, 1001).message == FAILED
+    ram = available()
+    assert ram.started(8).accept(1, "job_image_1", 8, saved_result(), 1000, 1001).message == FAILED
+
+
+def test_saved_selection_reads_without_a_deadline(monkeypatch):
+    window = live_window()
+    window.state = select(ready(snapshot([card(image=saved_row())])), "job_image_1")
+    window.runner.read_image.side_effect = range(20, 100)
+    window.preview_button = Mock()
+    monkeypatch.setattr("cardputer_mcp.gui_live.time.monotonic", lambda: 10.0**9)
+    photo = Mock()
+    monkeypatch.setattr("tkinter.PhotoImage", photo)
+    drain(window)
+    window.runner.read_image.assert_called_once_with(1, "job_image_1", expires_at=None)
+    drain(window, image_event(window, window.preview_state.request_id, saved_result()))
+    assert window.preview_state.preview is not None and window.preview_state.preview.row.saved
+    assert window.preview_photo is photo.return_value

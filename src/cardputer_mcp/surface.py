@@ -534,6 +534,8 @@ def register_surface(
         chain_position, chain_jobs_known, chain_open (the tip still accepts a child).
         view=jobs lists recent jobs, newest first (cursor from next_cursor).
         view=recovery lists per device the LKG receipts and full backups.
+        view=capture returns the PNG of a succeeded capture: RAM for five minutes,
+        then a saved copy kept across restarts (oldest pruned past 200 / 64 MiB).
         """
         required, optional = STATUS_RULES[request.view]
         refused = _check(request, "view", required, optional)

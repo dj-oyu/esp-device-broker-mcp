@@ -42,7 +42,11 @@ class PreviewState:
                 generation,
                 epoch,
                 row,
-                message="Retained image available for automatic read.",
+                message=(
+                    "Saved image available for automatic read."
+                    if row.saved
+                    else "Retained image available for automatic read."
+                ),
             )
         else:
             bounded = replace(row, expires_at=min(row.expires_at, self.row.expires_at))
@@ -117,7 +121,8 @@ class PreviewState:
                 row=preview.row,
                 request_id=0,
                 preview=preview,
-                message=SOURCES[preview.row.source],
+                message=SOURCES[preview.row.source]
+                + (" (saved copy)" if preview.row.saved else ""),
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             return replace(self, request_id=0, preview=None, message=FAILED)

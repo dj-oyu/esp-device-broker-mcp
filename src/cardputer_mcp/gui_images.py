@@ -21,9 +21,11 @@ INVALID_IMAGE = "The broker returned an invalid image preview. Refresh the image
 REQUEST_FAILED = "Image request failed. Refresh to check the retained image; no retry was sent."
 EXPIRED = "This retained image has expired. This request was not sent; refresh images."
 EMPTY_IMAGES = (
-    "No retained images available. Captures expire 5 minutes after completion; "
-    "this does not mean capture never ran. Refresh does not recapture."
+    "No retained images available. The RAM copy expires 5 minutes after completion; "
+    "a saved copy is shown on the job card while it is kept. This does not mean "
+    "capture never ran. Refresh does not recapture."
 )
+SAVED = "saved"
 SOURCES = {
     "synthetic_fixture": "TEST / NOT DEVICE",
     "render_buffer": "Device render buffer / LCD unverified",
@@ -78,12 +80,27 @@ class ImageRow:
     born_utc: str
     expires_at: float
     delivery_state: str = "available"
+    saved: bool = False
 
     @classmethod
     def parse(cls, data: dict[str, Any], started_at: float) -> ImageRow:
         source = data["source"]
         if source not in SOURCES:
             raise ValueError(INVALID_IMAGE)
+        retention = data.get("retention")
+        if retention is not None:
+            # A saved copy has no timer; only the broker's caps can prune it.
+            if retention != SAVED or data["remaining_seconds"] is not None:
+                raise ValueError(INVALID_IMAGE)
+            return cls(
+                _text(data["job_id"], r"[a-zA-Z0-9_-]{1,64}"),
+                _text(data["sha256"], r"[0-9a-f]{64}"),
+                cast(Source, source),
+                _recipient(data["recipient_principal"]),
+                _born(data["born_utc"]),
+                math.inf,
+                saved=True,
+            )
         return cls(
             _text(data["job_id"], r"[a-zA-Z0-9_-]{1,64}"),
             _text(data["sha256"], r"[0-9a-f]{64}"),
@@ -214,6 +231,7 @@ class ImagePreview:
             synthetic = source == "synthetic_fixture"
             if (
                 not row.same_image(expected)
+                or row.saved is not expected.saved
                 or data.get("source", source) != source
                 or metadata["label"] != SOURCES[source]
                 or metadata["is_device_capture"] is not (not synthetic)
