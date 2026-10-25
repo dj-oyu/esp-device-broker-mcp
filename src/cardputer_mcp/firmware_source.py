@@ -8,6 +8,7 @@ from typing import Any
 
 from .build_logs import BuildLogs
 from .job_logs import attach
+from .offload_io import pure_io
 from .source_retention import retention_evidence
 from .source_snapshot import SOURCE_ERROR_CODES, SourceError, SourceSnapshots
 
@@ -45,7 +46,10 @@ class FirmwareSource:
 
     def authorize_receipt(self, project_id: str, receipt: str, principal: str) -> None:
         self.snapshots.settings = self.settings
-        _, metadata = self.snapshots.resolve(project_id, receipt, principal)
+        # Reads and hashes the whole snapshot: pure file work (offload_io).
+        _, metadata = pure_io(
+            "source_resolve", self.snapshots.resolve, project_id, receipt, principal
+        )
         job = self.store().job(metadata["fetch_job_id"])
         plan = self.store().plan(job["plan_hash"]) if job is not None else None
         if (

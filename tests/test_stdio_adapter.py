@@ -568,3 +568,106 @@ async def test_stdio_eof_keeps_resident_job_and_ownership(registry_service):
         if process.returncode is None:
             process.kill()
             await process.communicate()
+
+
+async def _release_after(gate: asyncio.Event, seconds: float) -> None:
+    await asyncio.sleep(seconds)
+    gate.set()
+
+
+async def test_enqueue_tools_get_their_own_longer_deadline(synthetic_service, monkeypatch):
+    from cardputer_mcp import stdio_adapter
+
+    service = synthetic_service
+    monkeypatch.setattr(stdio_adapter, "_REQUEST_SECONDS", 1.0)
+    monkeypatch.setattr(stdio_adapter, "_TOOL_SECONDS", {"mixed": 8.0})
+    adapter = HTTPBrokerAdapter(service.url, KEY)
+    service.gate = asyncio.Event()
+    releasing = asyncio.create_task(_release_after(service.gate, 2.0))
+    result = await adapter.call_tool(CallToolRequestParams(name="mixed", arguments={}))
+    await releasing
+    assert result.content == MIXED.content
+    # Any other tool keeps the default deadline, which covers the whole request.
+    monkeypatch.setattr(stdio_adapter, "_TOOL_SECONDS", {})
+    service.gate = asyncio.Event()
+    releasing = asyncio.create_task(_release_after(service.gate, 2.0))
+    with pytest.raises(StdioAdapterError, match="^stdio_adapter_tool_outcome_unknown$"):
+        await adapter.call_tool(CallToolRequestParams(name="mixed", arguments={}))
+    await releasing
+    assert [name for name, _ in service.calls].count("mixed") == 2
+
+
+async def test_received_result_is_kept_when_teardown_overruns(synthetic_service, monkeypatch):
+    from cardputer_mcp import stdio_adapter
+
+    monkeypatch.setattr(stdio_adapter, "_TOOL_SECONDS", {"mixed": 2.0})
+    original = stdio_adapter.Client.__aexit__
+
+    async def slow_exit(self, *args):
+        try:
+            return await original(self, *args)
+        finally:
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(stdio_adapter.Client, "__aexit__", slow_exit)
+    adapter = HTTPBrokerAdapter(synthetic_service.url, KEY)
+    started = asyncio.get_running_loop().time()
+    result = await adapter.call_tool(CallToolRequestParams(name="mixed", arguments={}))
+    assert result.content == MIXED.content
+    assert asyncio.get_running_loop().time() - started < 10
+
+
+def test_outcome_unknown_guidance_echoes_only_the_callers_own_identifiers():
+    from cardputer_mcp.stdio_adapter import outcome_unknown_guidance
+
+    plan_hash = "e" * 64
+    guidance = json.loads(
+        outcome_unknown_guidance(
+            CallToolRequestParams(
+                name="flash",
+                arguments={
+                    "request": {"plan_hash": plan_hash, "session": SECRET, "job_id": "job-1"}
+                },
+            )
+        )
+    )
+    assert guidance["code"] == "stdio_adapter_tool_outcome_unknown"
+    assert guidance["plan_hash"] == plan_hash and guidance["job_id"] == "job-1"
+    assert "status(view=job)" in guidance["next_step"]
+    assert "deduplicated" in guidance["next_step"]
+    assert SECRET not in json.dumps(guidance)
+    malformed = json.loads(
+        outcome_unknown_guidance(
+            CallToolRequestParams(name="flash", arguments={"plan_hash": SECRET, "job_id": "x" * 65})
+        )
+    )
+    assert "plan_hash" not in malformed and "job_id" not in malformed
+    assert SECRET not in json.dumps(malformed)
+
+
+async def test_outcome_unknown_result_carries_fixed_guidance(monkeypatch):
+    from cardputer_mcp import stdio_adapter
+
+    captured: dict[str, Any] = {}
+
+    def fake_server(name, **kwargs):
+        captured.update(kwargs)
+
+    class Failing:
+        instructions = None
+        code = "stdio_adapter_tool_outcome_unknown"
+
+        async def call_tool(self, params):
+            raise StdioAdapterError(self.code)
+
+    monkeypatch.setattr(stdio_adapter, "Server", fake_server)
+    failing = Failing()
+    create_stdio_server(failing)
+    params = CallToolRequestParams(name="flash", arguments={"request": {"plan_hash": "f" * 64}})
+    result = await captured["on_call_tool"](None, params)
+    assert result.is_error
+    assert result.content[0].text == "stdio_adapter_tool_outcome_unknown"
+    assert json.loads(result.content[1].text)["plan_hash"] == "f" * 64
+    failing.code = "stdio_adapter_broker_unavailable"
+    result = await captured["on_call_tool"](None, params)
+    assert [item.text for item in result.content] == ["stdio_adapter_broker_unavailable"]

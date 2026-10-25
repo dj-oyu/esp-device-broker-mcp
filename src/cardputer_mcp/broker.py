@@ -66,6 +66,7 @@ from .models import (
     ResumeWorkSessionRequest,
     TestName,
 )
+from .offload_io import IOMemo, complete, offload
 from .operator_notifications import OperatorNotifications
 from .registration_digest import flash_digests
 from .resource_recheck import uncertainty
@@ -265,6 +266,9 @@ class Broker:
         self.captures: dict[str, RetainedCapture] = {}
         self.device_observations: dict[str, RetainedDeviceObservation] = {}
         self._flash_bindings: dict[str, FlashBinding] = {}
+        # One offloaded firmware verification at a time: the source-cache guard
+        # refuses (never waits for) a concurrent user, as the loop once serialized.
+        self._file_verification = asyncio.Lock()
         self._execution_bindings: dict[str, str] = {}
         self._execution_intents: dict[str, ExecutionIntent] = {}
         self._device_lock = FileLock(
@@ -1944,6 +1948,77 @@ class Broker:
         )
 
     def execute(self, request: ExecuteRequest) -> dict[str, Any]:
+        result = self._execute(request, "sync", None)
+        assert result is not None
+        return result
+
+    async def execute_async(
+        self, request: ExecuteRequest, reauthorize: Callable[[], None] | None = None
+    ) -> dict[str, Any]:
+        """Admit a request without blocking the loop on firmware file verification.
+
+        (a) Every cheap check, including deduplication, runs synchronously.
+        (b) Pure file reads/hashing of the flash binding run in worker threads
+            (offload_io); store access stays on the loop.
+        (c) Every check of (a) runs again, the binding is recomputed only from
+            (b)'s memoized reads and must equal (b)'s snapshot, then the final
+            check block and the enqueue follow with no await in between.
+        Other plans keep the unchanged synchronous path.
+        """
+        payload = self._store().plan(request.plan_hash)
+        if not isinstance(payload, dict) or payload.get("test") not in {
+            t.value for t in FLASH_TESTS
+        }:
+            return self.execute(request)
+        admitted = self._execute(request, "admit", None)
+        if admitted is not None:
+            return admitted
+        memo = IOMemo()
+
+        def verify() -> FlashBinding | None:
+            session = self._lease(request.session)
+            return self._verify_execution_inputs(request.plan_hash, session, payload)
+
+        async with self._file_verification:
+            # A concurrent request for the same plan may have queued it meanwhile.
+            admitted = self._execute(request, "admit", None)
+            if admitted is not None:
+                return admitted
+            try:
+                snapshot = await offload(verify, memo)
+            except BrokerError:
+                # The same plan may have been queued (and even finished) meanwhile:
+                # a repeated request stays deduplicated rather than refused.
+                repeated = self._execute(request, "admit", None)
+                if repeated is not None:
+                    return repeated
+                raise
+            if reauthorize is not None:
+                reauthorize()
+            result = self._execute(request, "commit", (memo, snapshot))
+        assert result is not None
+        return result
+
+    def _verify_execution_inputs(
+        self, plan_hash: str, session: Session, payload: dict[str, Any]
+    ) -> FlashBinding | None:
+        """Fresh preflight and flash provenance; firmware file work goes through pure_io."""
+        # Fresh preflight preserves device, firmware and registered-tool binding.
+        # It cannot grant authority: only this authenticated request can enqueue.
+        from .plan_approval import PlanApprovals
+
+        PlanApprovals(self).validate_current(plan_hash, session)
+        if payload["test"] in {t.value for t in FLASH_TESTS}:
+            return prepare_binding(self, payload)
+        return None
+
+    def _execute(
+        self,
+        request: ExecuteRequest,
+        phase: str,
+        prefetched: tuple[IOMemo, FlashBinding | None] | None,
+    ) -> dict[str, Any] | None:
+        """`phase`: "sync" (all inline), "admit" (stop before file work), "commit"."""
         store = self._store()
         payload = store.plan(request.plan_hash)
         if payload is None or digest_plan(payload) != request.plan_hash:
@@ -1983,17 +2058,22 @@ class Broker:
             raise BrokerError("queue_full")
         if store.record_count("jobs") >= 10000:
             raise BrokerError("history_full_archive_offline")
-        # Fresh preflight preserves device, firmware and registered-tool binding.
-        # It cannot grant authority: only this authenticated request can enqueue.
-        from .plan_approval import PlanApprovals
-
+        if phase == "admit" and payload["test"] in {t.value for t in FLASH_TESTS}:
+            return None
         binding = self._runtime_binding()
-        PlanApprovals(self).validate_current(request.plan_hash, session)
-        flash_binding = (
-            prepare_binding(self, payload)
-            if payload["test"] in {t.value for t in FLASH_TESTS}
-            else None
-        )
+        flash_binding: FlashBinding | None
+        if prefetched is None:
+            flash_binding = self._verify_execution_inputs(request.plan_hash, session, payload)
+        else:
+            memo, snapshot = prefetched
+            # Fresh durable checks over the memoized reads only; any new file
+            # work would need an await before the enqueue, so refuse instead.
+            done, flash_binding = complete(
+                partial(self._verify_execution_inputs, request.plan_hash, session, payload),
+                memo,
+            )
+            if not done or flash_binding != snapshot:
+                raise BrokerError("execution_intent_not_available")
         valid = self.principal_valid
         try:
             authorized = (
@@ -2540,12 +2620,36 @@ class Broker:
     def read_logs(self, request: LogRequest) -> dict[str, Any]:
         return self.logs.read(request)
 
+    async def _prefetch_flash_binding(self, job_id: str) -> IOMemo | None:
+        store = self._store()
+        binding = self._flash_bindings.get(job_id)
+        row = store.job(job_id) if binding is not None else None
+        plan = store.plan(row["plan_hash"]) if row is not None else None
+        if binding is None or row is None or row["state"] != "queued" or plan is None:
+            return None
+        memo = IOMemo()
+        async with self._file_verification:
+            await offload(partial(validate_binding, self, binding, plan), memo)
+        return memo
+
+    def _flash_binding_current(
+        self, binding: FlashBinding, plan: dict[str, Any], reads: IOMemo | None
+    ) -> bool:
+        if reads is None:
+            return validate_binding(self, binding, plan)
+        done, valid = complete(partial(validate_binding, self, binding, plan), reads)
+        return done and valid is True
+
     async def _work(self) -> None:
         while True:
             job_id = await self.queue.get()
             try:
                 if job_id is None:
                     return
+                # Pure file verification for a flash binding runs in worker threads
+                # before any check below; those checks then run synchronously
+                # through the running transition, using only the memoized reads.
+                binding_reads = await self._prefetch_flash_binding(job_id)
                 store = self._store()
                 job = self.job(job_id)
                 if job["state"] != "queued":
@@ -2617,7 +2721,9 @@ class Broker:
                 current_valid = self.principal_valid
                 current_binding = self._execution_bindings.get(job_id)
                 flash_binding = self._flash_bindings.get(job_id)
-                if flash_binding is not None and not validate_binding(self, flash_binding, plan):
+                if flash_binding is not None and not self._flash_binding_current(
+                    flash_binding, plan, binding_reads
+                ):
                     self._cancel_execution_intent(queued_intent, "flash_binding_invalid")
                     continue
                 if "flash_job_id" in plan:
