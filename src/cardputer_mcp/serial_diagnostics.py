@@ -48,6 +48,9 @@ _SUMMARY_KEYS = frozenset(
 _MAX_BYTES = 1048576
 _MAX_LINES = 65536
 _MAX_PENDING_BYTES = 16384
+# Mirrors serial_backend.STALE_OPEN_FRAGMENT_MAX (USB Serial/JTAG TX FIFO size).
+_MAX_STALE_OPEN_FRAGMENT_BYTES = 64
+_OPTIONAL_KEYS = frozenset({"home_marker_shape", "stale_open_fragment_bytes"})
 _SHAPE_COUNTS = {
     "candidate_lines": 2,
     "standard_prefix_count": 4,
@@ -116,6 +119,7 @@ class ReceiveDiagnostics:
         "_home_shape",
         "_home_candidates",
         "_cross_command_partial",
+        "_stale_open_fragment_bytes",
     )
 
     def __init__(self) -> None:
@@ -126,6 +130,7 @@ class ReceiveDiagnostics:
         self._home_shape: dict[str, Any] | None = None
         self._home_candidates = 0
         self._cross_command_partial = False
+        self._stale_open_fragment_bytes = 0
 
     def _increment(self, name: str, amount: int = 1) -> None:
         self._counts[name] = _bounded_count(self._counts[name] + amount, _count_limit(name))
@@ -133,6 +138,11 @@ class ReceiveDiagnostics:
     def observe_bytes(self, data: bytes) -> None:
         """Count bytes without retaining a chunk or interpreting its contents."""
         self._increment("bytes", len(data))
+
+    def observe_stale_open_fragment(self, length: int) -> None:
+        """Record only the length of a dropped stale head on the first line after open."""
+        if type(length) is int:
+            self._stale_open_fragment_bytes = _bounded_count(length, _MAX_STALE_OPEN_FRAGMENT_BYTES)
 
     def observe_line(self, raw: bytes) -> None:
         """Classify one complete line, retaining only fixed bounded counters."""
@@ -188,6 +198,8 @@ class ReceiveDiagnostics:
             },
             "pending_bytes": _bounded_count(pending, _MAX_PENDING_BYTES),
         }
+        if self._stale_open_fragment_bytes:
+            result["stale_open_fragment_bytes"] = self._stale_open_fragment_bytes
         if self._home_shape is not None:
             result["home_marker_shape"] = dict(
                 self._home_shape, candidate_lines=self._home_candidates
@@ -218,7 +230,7 @@ def sanitize_receive_summary(value: object) -> dict[str, Any] | None:
     """
     if type(value) is not dict or any(type(key) is not str for key in value):
         return None
-    if value.keys() not in (_SUMMARY_KEYS, _SUMMARY_KEYS | {"home_marker_shape"}):
+    if not _SUMMARY_KEYS <= value.keys() or not value.keys() - _SUMMARY_KEYS <= _OPTIONAL_KEYS:
         return None
     command = value["last_command"]
     completed = value["command_write_completed"]
@@ -238,6 +250,11 @@ def sanitize_receive_summary(value: object) -> dict[str, Any] | None:
         "after_command": after,
         "pending_bytes": _bounded_count(pending, _MAX_PENDING_BYTES),
     }
+    if "stale_open_fragment_bytes" in value:
+        fragment = value["stale_open_fragment_bytes"]
+        if type(fragment) is not int or not 0 < fragment <= _MAX_STALE_OPEN_FRAGMENT_BYTES:
+            return None
+        result["stale_open_fragment_bytes"] = fragment
     if "home_marker_shape" in value:
         shape = value["home_marker_shape"]
         keys = set(_SHAPE_COUNTS) | set(_SHAPE_FLAGS) | {"normalization"}

@@ -139,6 +139,19 @@ The metadata travels through existing failure diagnostics/history; it does not
 enable raw previews, retain text/fragments/hashes, add reads or
 commands, alter exact marker acceptance, or acknowledge a review.
 
+After a port open, the ESP32-S3 USB Serial/JTAG interface can first deliver up
+to one 64-byte TX FIFO of the line it was logging when the previous session
+closed the port, without that line's newline. For the first complete line of a
+session only, when a standard ESP log prefix (`I (<n>) <tag>: `, optionally
+ANSI-colored) starts after offset 0 and within those first 64 bytes, the bytes
+before it are dropped as a stale fragment and the embedded record is judged by
+the unchanged exact-line rule, for every marker. Text without such a prefix, a
+longer head, or a glued record on any later line is never split. The dropped
+length appears as `receive_summary.stale_open_fragment_bytes` (1–64); its text
+is not retained (the device log tap still records the raw bytes it already
+receives). Pending bytes at a command write void the next line as before, except
+when all of them belong to that dropped fragment.
+
 For a failure with `expected_marker = "HOME_READY"`, the frame command has not
 yet been sent. A missing image in that case means no usable image was acquired,
 not that the five-minute image retention period elapsed. Interrupted/restarted

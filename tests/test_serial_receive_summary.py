@@ -92,7 +92,9 @@ def test_receive_summary_retains_no_input_in_attributes() -> None:
         "_home_shape",
         "_home_candidates",
         "_cross_command_partial",
+        "_stale_open_fragment_bytes",
     }
+    assert type(state["_stale_open_fragment_bytes"]) is int
     assert all(type(value) is int for value in state["_counts"].values())
     assert all(type(value) is int for value in state["_before_command"].values())
     assert "INVENTED" not in json.dumps(state)

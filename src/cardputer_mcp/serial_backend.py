@@ -30,6 +30,12 @@ from .serial_diagnostics import ReceiveDiagnostics
 
 ANSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 PREFIX = re.compile(rb"^[IWEVD] \([^\r\n)]*\) [A-Za-z0-9_.-]+: ")
+# A standard ESP log record prefix, optionally colored, embedded after offset 0.
+EMBEDDED_PREFIX = re.compile(b"(?:" + ANSI.pattern + b")?" + PREFIX.pattern.removeprefix(b"^"))
+# ESP32-S3 USB Serial/JTAG TX FIFO. When the host closes the port mid-line, the
+# device can hold at most this many bytes of that line and send them, without
+# their newline, on the next open. Only such a bounded head can be stale.
+STALE_OPEN_FRAGMENT_MAX = 64
 FINAL_MEMORY = re.compile(rb"MEM free=(\d+) largest=(\d+) js=(\d+) frames=(\d+)")
 KNOWN = {
     b"HOME_READY": "serial_home_ready",
@@ -113,6 +119,21 @@ def clean_line(line: bytes) -> bytes:
     return PREFIX.sub(b"", ANSI.sub(b"", line).rstrip(b"\r"), count=1)
 
 
+def stale_open_fragment_length(raw: bytes) -> int:
+    """Length of a possible stale head on the first line after a port open, else 0.
+
+    Callers pass only the first complete line of a session, so the bytes before
+    the embedded record contain no LF and are the first bytes received after
+    open. A split is made only at a standard ESP log record prefix that starts
+    within the first FIFO-sized chunk. The embedded record is then judged by the
+    unchanged exact-line rule; text without a standard prefix is never split.
+    """
+    match = EMBEDDED_PREFIX.search(raw, 1, STALE_OPEN_FRAGMENT_MAX + 64)
+    if match is None or match.start() > STALE_OPEN_FRAGMENT_MAX:
+        return 0
+    return match.start()
+
+
 class Reader:
     """The only serial reader. Bounded framing retains fragmented/coalesced markers."""
 
@@ -141,6 +162,12 @@ class Reader:
         self.capture_decoder: LegacyCaptureDecoder | None = None
         self.receive_diagnostics = ReceiveDiagnostics()
         self.diagnostic_pending_bytes = 0
+        # The first complete line after open may carry a stale FIFO head from the
+        # previous session. Each pass (diagnostic, protocol) handles it once.
+        self.first_diagnostic_line_seen = False
+        self.first_line_framed = False
+        self.stale_open_fragment_bytes = 0
+        self.stale_open_fragment_line: int | None = None
         # Passive durable job log tee; it only sees bytes this reader already read.
         self.device_tap: DeviceLogTap | None = None
 
@@ -199,6 +226,12 @@ class Reader:
             diagnostic_lines = (self.pending + incoming).split(b"\n")
             self.diagnostic_pending_bytes = len(diagnostic_lines[-1])
             for diagnostic_line in diagnostic_lines[:-1]:
+                if not self.first_diagnostic_line_seen:
+                    self.first_diagnostic_line_seen = True
+                    if fragment := stale_open_fragment_length(diagnostic_line):
+                        # Record only the dropped length, never the fragment text.
+                        self.receive_diagnostics.observe_stale_open_fragment(fragment)
+                        diagnostic_line = diagnostic_line[fragment:]
                 self.receive_diagnostics.observe_line(diagnostic_line)
                 if self.derby_diagnostics is not None:
                     # Feed exact complete wire lines before normalization and
@@ -239,6 +272,15 @@ class Reader:
             raise self.failure("serial_line_limit")
         while b"\n" in self.pending:
             raw, self.pending = self.pending.split(b"\n", 1)
+            split_record = False
+            if not self.first_line_framed:
+                self.first_line_framed = True
+                if fragment := stale_open_fragment_length(raw):
+                    # Drop the stale head; the embedded record still has to be
+                    # an exact marker. The raw bytes stay in the device log tap.
+                    raw = raw[fragment:]
+                    self.stale_open_fragment_bytes = fragment
+                    split_record = True
             line = clean_line(raw)
             if self.capture_guard:
                 if line.startswith(b"APP_ID"):
@@ -256,6 +298,8 @@ class Reader:
             # The capture decoder owns frame bytes. They must never enter the
             # marker history, public event cache or serial diagnostics.
             if self.capture_decoder is None:
+                if split_record:
+                    self.stale_open_fragment_line = len(self.lines)
                 # Capture only needs exact allowlisted marker history. Unknown
                 # lines count toward framing limits without keeping a second
                 # private copy alongside the explicitly consented local probe.
@@ -293,6 +337,11 @@ class Reader:
         start = len(self.lines)
         # An old partial line cannot be accepted as the new command's acknowledgement.
         stale_partial = bool(self.pending)
+        # Pending bytes that all lie inside a stale open fragment, dropped once
+        # its line completes, are not part of the embedded record: that record
+        # began after this write. Any other pending byte still voids the line.
+        pending_at_command = len(self.pending)
+        open_line_pending = stale_partial and not self.first_line_framed
         self.receive_diagnostics.begin_command(
             {
                 b"\x1b": "home_escape",
@@ -322,8 +371,13 @@ class Reader:
                 examined += 1
                 if stale_partial:
                     stale_partial = False
-                    start = examined
-                    continue
+                    if not (
+                        open_line_pending
+                        and self.stale_open_fragment_line == examined - 1
+                        and pending_at_command <= self.stale_open_fragment_bytes
+                    ):
+                        start = examined
+                        continue
                 if pattern.fullmatch(line):
                     return self.lines[start:examined]
         raise self.failure("serial_marker_timeout")
