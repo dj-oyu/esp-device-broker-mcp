@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/flash-contract.yml'
+      - 'packaging/ci_defender_scratch.ps1'
       - 'src/cardputer_mcp/flash*.py'
       - 'src/cardputer_mcp/firmware_flash.py'
       - 'tests/test_flash*.py'
@@ -75,6 +76,10 @@ jobs:
         with:
           python-version: '3.13.16'
           architecture: x64
+      # Tests only: a dedicated TMP/TEMP outside Defender real-time scanning.
+      # The checkout and .venv stay scanned; the script logs Defender state.
+      - name: Exclude test scratch from Defender real-time scanning
+        run: ./packaging/ci_defender_scratch.ps1 -Path "$env:RUNNER_TEMP\test-scratch"
       - name: Offline contract tests without hardware
         run: |
           foreach ($pattern in @('test_flash_manifest_contract.py','test_flash_lifecycle.py','test_flash_backup.py','test_flash_worker.py','test_flash_security.py')) {

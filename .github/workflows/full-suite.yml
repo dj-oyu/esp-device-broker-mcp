@@ -143,6 +143,12 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --no-deps uv==0.12.19
           uv sync --frozen --python python
+      # Tests only: a dedicated TMP/TEMP outside Defender real-time scanning.
+      # The checkout and .venv stay scanned; the script logs Defender state.
+      - name: Exclude test scratch from Defender real-time scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/ci_defender_scratch.ps1 -Path "$env:RUNNER_TEMP\test-scratch"
       - name: Install Linux compiler-cache contract fixture
         if: runner.os == 'Linux'
         run: |
