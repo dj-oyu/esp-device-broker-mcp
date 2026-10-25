@@ -445,7 +445,7 @@ def main() -> None:
                 raise SystemExit(1)
             try:
                 private = load_client_environment(args.env_file)
-                asyncio.run(run_stdio(private.url, private.token))
+                asyncio.run(run_stdio(private.url, private.token, args.env_file))
             except (ClientEnvironmentError, StdioAdapterError) as error:
                 print(str(error), file=sys.stderr)
                 raise SystemExit(1) from None

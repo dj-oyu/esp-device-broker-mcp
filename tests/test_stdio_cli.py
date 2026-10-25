@@ -25,7 +25,8 @@ def test_stdio_cli_loads_only_explicit_file_and_forwards_without_stdout(monkeypa
     monkeypatch.setattr(sys, "argv", ["cardputer", "stdio", "--env-file", PRIVATE_PATH])
     cli.main()
     load.assert_called_once_with(Path(PRIVATE_PATH))
-    run.assert_awaited_once_with("http://127.0.0.1:9876/mcp", TOKEN)
+    # The same explicit file is the only source a key rejection may re-read.
+    run.assert_awaited_once_with("http://127.0.0.1:9876/mcp", TOKEN, Path(PRIVATE_PATH))
     assert capsys.readouterr() == ("", "")
 
 

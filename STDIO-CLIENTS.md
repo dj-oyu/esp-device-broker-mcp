@@ -114,14 +114,51 @@ stdio の接続や切断では、自動で作業セッションを作ったり�
 
 - `invalid_client_environment`: ファイルの場所・権限・文字コード・上記の厳密な書式を確認
 - `stdio_adapter_broker_unavailable`: 同じ PC の既存 broker が動いているかを確認
-- `stdio_adapter_authentication_failed`: 対象 registry とキーの有効期限・失効状態を確認
+- `stdio_adapter_client_key_rejected`: broker がキーを拒否した (期限切れ・失効・台帳に無い) うえ、
+  env ファイルにも新しいキーが無い。後述の「キーのローテーション」で env ファイルへ有効なキーを入れ、
+  同じ呼び出しをやり直す。クライアントの再起動は不要
+- `stdio_adapter_client_environment_invalid`: キー拒否の後に env ファイルを読み直したが、起動時と同じ
+  場所・権限・書式の検査に通らなかった。adapter は以前のキーのまま何も再送していない。ファイルを直して再試行
+- `stdio_adapter_broker_url_changed`: キー拒否の後に読み直した env ファイルの `CARDPUTER_BROKER_URL` が
+  変わっていた。実行中の adapter は接続先 broker を切り替えない。URL を戻して再試行するか、クライアントを再起動
+- `stdio_adapter_authentication_failed`: 上記以外の 401/403 (Host・Origin 等の拒否を含む)。対象 registry、
+  broker URL、キーの有効期限・失効状態を確認。env ファイルの読み直しや再送はしない
 - `stdio_adapter_remote_read_key_required`: local operator key ではなく remote/read キーが必要
 - `stdio_adapter_tool_outcome_unknown`: 要求の結果が不明。実行済みの可能性があるため、同じ job ID を
   `status(view=job)` で確認し、adapter が自動再実行したとは考えない
 
-adapter は失敗した呼び出しを再送しません。後から明示された別の要求では、新しい HTTP 接続を
+adapter は失敗した呼び出しを再送しません。唯一の例外は次節のキー拒否で、broker が実行しなかったことを
+証明できる場合に限り1回だけ送り直します。後から明示された別の要求では、新しい HTTP 接続を
 使えます。各要求の待ち時間は接続待ちを含め最大30秒、並列接続は4個までです。
 キャンセルや EOF は transport を閉じるだけで、broker 内の実行中 job や所有権は継続します。
+
+## キーのローテーション (再起動不要)
+
+`cardputer.exe keys rotate --key-id <key-id> --write-env <env-file>` で、adapter の起動に使った
+同じ private env ファイルの `CARDPUTER_CLIENT_KEY` を書き換えれば、Claude Code / Codex の再起動は不要です。
+ローテーションで古いキーは即時に失効し、adapter の次の要求は broker に拒否されます。そのとき adapter は:
+
+1. broker の認証ガードによる拒否 (HTTP 401 と固定本文 `{"error":"authentication_required"}`) だけを対象にします。
+   このガードは MCP handler より前に応答するため、拒否された要求は broker で実行されていません。
+2. 起動時と同じ `--env-file` を、同じ場所・権限・書式の検査で1回だけ読み直します。
+3. 別の有効なキーがあり、broker URL が同じ場合だけ、新しいキーで接続し直して同じ要求を **1回だけ** 送ります。
+   tool 呼び出しは、その呼び出し自体が拒否されたか、まだ送っていなかった場合に限ります。
+   以後の要求は新しいキーを使います。2回目も拒否されたら、それ以上は読み直しも再送もしません。
+4. キーが変わっていなければ再送せず、`stdio_adapter_client_key_rejected` を返します。
+
+`stdio_adapter_client_key_rejected` の tool 結果には、固定コードの後に JSON の案内
+(`detail`、`next_step`) が付きます。`tools/list` の失敗では MCP エラーの `data` に同じ案内が入ります。
+案内にはキー、key id、ファイルパス、broker の応答本文を含めません。意味は次のとおりです。
+
+- キーが期限切れ・失効・未登録で、env ファイルにも新しいキーが無い
+- まだ有効なキーの置き換えは `keys rotate --key-id <key-id> --write-env <env-file>`
+- 期限切れ・失効したキーはローテーションできないため、`keys issue` で新しいキーを発行し、同じ env ファイルへ入れる
+- その後、同じ呼び出しをやり直す (adapter が env ファイルを読み直すので再起動不要)
+
+起動時の確認でキーが拒否された場合は、adapter はこのコードを標準エラーへ出して終了します。
+ファイルを直した後、クライアントの MCP 一覧から再接続します。送り直しも同じ要求ごとの時間上限を持つため、
+キー拒否の後の1要求は最大で2回分の待ち時間になります。読み直しは拒否の後だけで、
+ファイルの変更を監視したり、broker URL を切り替えたりはしません。
 
 標準出力は MCP 専用です。adapter のエラーは固定コードを標準エラーへ出し、
 SDK の payload を含み得るログも抑制します。認証キーを引数、表示、ログへ書きません。
