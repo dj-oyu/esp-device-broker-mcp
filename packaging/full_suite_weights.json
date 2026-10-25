@@ -190,6 +190,7 @@
   "test_surface_reasons.py": 8.7,
   "test_surface_redaction.py": 2.3,
   "test_surface_snapshot.py": 2.6,
+  "test_tunnel_check_precedence.py": 1.1,
   "test_tunnel_config.py": 0.2,
   "test_tunnel_ingress.py": 10.0,
   "test_tunnel_ingress_config.py": 0.1,

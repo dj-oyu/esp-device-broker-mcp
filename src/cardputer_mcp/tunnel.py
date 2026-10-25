@@ -30,6 +30,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from .broker_link import DEFAULT_BROKER_URL, canonical_broker_port
 from .client import SURFACE_TOOLS, call, connect, validate_url
 from .config import Settings, TunnelMetadata, load_settings
+from .tunnel_checks import (
+    CONSOLE_CONFIGURATION,
+    CONSOLE_IDENTITY,
+    PLACEHOLDER_TUNNEL_ID,
+    configuration_refusal,
+    console_device_refusal,
+    discovery_refusal,
+    identity_refusal,
+    ingress_refusal,
+    read_broker,
+)
 
 RELEASE = "0.0.15"
 ARCHIVE_SHA256 = "3b53133a1e24d43f63088d843860cb1701a4c3ed6390de2e19f69089e43bddc1"
@@ -325,15 +336,13 @@ def check_listener(port: int) -> None:
 
 
 def preflight(settings: TunnelSettings, *, enable_serial: bool = False) -> dict[str, Any]:
-    if settings.tunnel_id == "tunnel_" + "0" * 32:
+    if settings.tunnel_id == PLACEHOLDER_TUNNEL_ID:
         raise TunnelError("tunnel_id_placeholder")
     broker = load_settings(settings.broker_config)
-    if settings.ingress_enabled != (broker.tunnel.ingress_enabled if broker.tunnel else False):
-        raise TunnelError("tunnel_config_conflict")
-    if broker.backend == "serial" and not enable_serial:
-        raise TunnelError("serial_tunnel_requires_explicit_enable_serial")
-    if settings.health_port == broker.port:
-        raise TunnelError("health_port_conflicts_with_broker")
+    if code := configuration_refusal(
+        settings, broker, CONSOLE_CONFIGURATION, enable_serial=enable_serial
+    ):
+        raise TunnelError(code)
     verify_release(settings)
     check_listener(settings.health_port)
     try:
@@ -389,11 +398,8 @@ def _local_broker_url(url: str) -> str:
 
 def check_ingress_mode(identity: dict[str, Any], ingress_enabled: bool) -> None:
     """A stale or older broker must never silently receive a different route."""
-    if (
-        type(ingress_enabled) is not bool
-        or identity.get("tunnel_ingress_enabled") is not ingress_enabled
-    ):
-        raise TunnelError("tunnel_broker_ingress_mismatch")
+    if code := ingress_refusal(identity, ingress_enabled):
+        raise TunnelError(code)
 
 
 def client_arguments(settings: TunnelSettings, url: str) -> list[str]:
@@ -429,26 +435,25 @@ def client_arguments(settings: TunnelSettings, url: str) -> list[str]:
 
 
 async def check_broker(url: str, bearer: str, *, ingress_enabled: bool = False) -> dict[str, Any]:
+    """Console policy: remote read identity, then an idle broker with closed hardware.
+
+    Identity refusals stop before the device status and tool list are read; the
+    idle, hardware and discovery gates apply after the session closes.
+    """
     url = _local_broker_url(url)
+
+    def identity_gate(identity: dict[str, Any]) -> None:
+        if code := identity_refusal(identity, CONSOLE_IDENTITY, ingress_enabled=ingress_enabled):
+            raise TunnelError(code)
+
     async with asyncio.timeout(5):
-        async with connect(url, bearer.removeprefix("Bearer ")) as client:
-            identity = await call(client, "status", {"view": "identity"})
-            if identity.get("ok") is not True or identity.get("authenticated") is not True:
-                raise TunnelError("tunnel_broker_auth_failed")
-            if identity.get("origin") != "remote_mcp":
-                raise TunnelError("tunnel_broker_origin_rejected")
-            scopes = identity.get("scopes")
-            if not isinstance(scopes, list) or "read" not in scopes:
-                raise TunnelError("tunnel_broker_scope_rejected")
-            check_ingress_mode(identity, ingress_enabled)
-            status = await call(client, "status", {"view": "device"})
-            tools = await client.list_tools()
-    if not status.get("ok") or status.get("active_job") or status.get("owner"):
-        raise TunnelError("broker_not_idle")
-    if status.get("hardware_connected") or status.get("ownership_uncertain"):
-        raise TunnelError("broker_hardware_not_closed")
-    if not set(SURFACE_TOOLS) <= {item.name for item in tools.tools}:
-        raise TunnelError("mcp_discovery_failed")
+        _, status, tools = await read_broker(
+            connect, call, url, bearer, after_identity=identity_gate
+        )
+    if code := console_device_refusal(status) or discovery_refusal(
+        tools, SURFACE_TOOLS, "mcp_discovery_failed"
+    ):
+        raise TunnelError(code)
     return {
         "ok": True,
         "backend": status["backend"],
