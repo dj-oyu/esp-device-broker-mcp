@@ -37,6 +37,8 @@ RECHECK_CONFIRM = (
     "Re-check owned resources?\n\n"
     "The broker checks each uncertainty flag (serial handle closed, owned processes "
     "exited, job state consistent) and clears only the flags whose check passes. "
+    "A finished job still recorded as active is dropped only when no device work, "
+    "registered-project job or recovery is running. "
     "A port is never opened and no job is retried."
 )
 
@@ -136,7 +138,14 @@ def perform_stop_job(api: StopAPI, job_id: str, plan_hash: str, epoch: str) -> s
 def recheck_available(snapshot: QueueSnapshot | None) -> bool:
     return bool(
         snapshot is not None
-        and (snapshot.uncertainty or snapshot.ownership_uncertain or snapshot.execution_uncertain)
+        and (
+            snapshot.uncertainty
+            or snapshot.ownership_uncertain
+            or snapshot.execution_uncertain
+            # A finished job can stay recorded as active; the broker drops it only
+            # when nothing holds the lane.
+            or snapshot.active_job
+        )
     )
 
 

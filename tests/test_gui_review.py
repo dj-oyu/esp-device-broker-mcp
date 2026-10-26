@@ -53,7 +53,7 @@ def test_snapshot_parses_recovery_requests_and_uncertainty():
     assert parsed.recovery_requests[0].reason == "broker_restart_no_replay"
     assert recheck_available(parsed)
     assert "Serial port close (serial_close_unconfirmed)" in uncertainty_summary(parsed)
-    plain = queue()
+    plain = queue(active_job=None)
     assert plain.recovery_requests == () and plain.uncertainty == ()
     assert not recheck_available(plain)
     assert uncertainty_summary(plain) == "Uncertainty flags: none reported"
@@ -209,18 +209,21 @@ def test_acknowledge_button_follows_the_selected_card(reviewed):
     )
 
 
-@pytest.mark.parametrize("uncertain", [False, True])
-def test_recheck_button_is_enabled_only_with_uncertainty(uncertain):
+@pytest.mark.parametrize(
+    ("uncertain", "active_job"), [(False, None), (True, None), (False, "job_image_1")]
+)
+def test_recheck_button_needs_uncertainty_or_a_recorded_active_job(uncertain, active_job):
     window = live_window()
     state = queue_state(
         uncertainty=[{"flag": "execution", "reason": "job_final_commit_failed"}]
         if uncertain
-        else []
+        else [],
+        active_job=active_job,
     )
     window.state = ready(snapshot(state=state))
     controls(window)
     assert window.recheck_button.configure.call_args.kwargs["state"] == (
-        "normal" if uncertain else "disabled"
+        "normal" if uncertain or active_job else "disabled"
     )
 
 
