@@ -38,6 +38,23 @@ class TunnelMetadata(BaseModel):
         return value
 
 
+class GatewaySettings(BaseModel):
+    """Optional, non-secret Claude gateway settings; loading it never opens a listener.
+
+    The Google client secret is never read from this file.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    public_url: str = Field(
+        pattern=r"^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+    )
+    port: int = Field(default=8770, strict=True, ge=1024, le=65535)
+    google_client_id: str = Field(
+        pattern=r"^[0-9]{1,32}-[a-z0-9]{1,64}\.apps\.googleusercontent\.com$"
+    )
+    allowed_google_sub: str = Field(pattern=r"^[0-9]{1,64}$")
+
+
 class RegisteredBuildTool(BaseModel):
     """Trusted local executable receipt, not a remotely selectable command."""
 
@@ -153,6 +170,7 @@ class Settings(BaseModel):
     build_projects: dict[str, BuildProject] = Field(default_factory=dict, max_length=16)
     serial: SerialSettings | None = None
     tunnel: TunnelMetadata | None = None
+    gateway: GatewaySettings | None = None
 
     @model_validator(mode="after")
     def guard_real_mode(self) -> "Settings":
