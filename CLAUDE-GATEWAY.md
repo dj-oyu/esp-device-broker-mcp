@@ -214,6 +214,34 @@ gateway の標準エラーには、次のような固定のイベント名だけ
 
 トークン・コード・シークレットは出力しません。
 
+## まとめて起動する
+
+設定が済んだら、`Start-CardputerStack.ps1` で次の 3 つを順に起動できます。
+
+1. broker
+2. gateway（別のコンソール）
+3. GUI
+
+引数は `Start-CardputerGui.ps1` と同じです。
+いつもの PowerShell から `&` で実行します。ダブルクリックや `-File` で実行すると、broker のトークンがその窓に残りません。
+
+```powershell
+& 'C:\path\to\Start-CardputerStack.ps1' -Exe 'C:\path\to\cardputer.exe' -Profile 'C:\path\to\device.local.toml'
+```
+
+- gateway のコンソールには、`CARDPUTER_*` と `OPENAI_*` の環境変数を渡しません。gateway は TOML に書いた鍵ファイルだけを読みます。
+- TOML に `[gateway]` がない場合、gateway のコンソールは `gateway_config_missing` を出して終わります。broker と GUI はそのまま動きます。
+- GUI を閉じても、broker と gateway は止まりません。それぞれのコンソールで止めてください。
+
+自分の PC のパスを書いた短いラッパーをリポジトリの外（ホームディレクトリなど）に置いておくと、毎回パスを打たずに済みます。
+
+```powershell
+# 例: $HOME\Start-Cardputer-Mine.ps1（リポジトリには入れない）
+& 'C:\path\to\repo\Start-CardputerStack.ps1' `
+  -Exe "$env:LOCALAPPDATA\esp-device-broker-mcp\versions\<version>\cardputer.exe" `
+  -Profile "$env:LOCALAPPDATA\esp-device-broker-mcp\device.local.toml"
+```
+
 ## 停止と再起動
 
 - 停止するときは、gateway のターミナルで Ctrl+C を押します。Funnel を先に閉じてから待ち受けを止めます（`gateway_funnel_closed` → `gateway_stopped`）。
