@@ -512,7 +512,7 @@ def create_server(
 
     server: MCPServer[Any] = SafeMCPServer(
         "Cardputer Device Broker",
-        version="0.13.0",
+        version="0.13.1",
         lifespan=lifespan,
         instructions=(
             "Single-owner Cardputer broker. Mock mode is the default. Explicit serial mode "
