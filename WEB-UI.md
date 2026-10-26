@@ -1,0 +1,157 @@
+# 読み取り専用の Web UI
+
+`cardputer webui` は、broker の状態・ジョブ一覧・ジョブのログ・ライブ更新を、ブラウザ（iPhone・iPad を含む）から見るための画面です。
+
+- **見るだけです。** ジョブの取り消し・停止・確認などの操作はできません。
+- **tailnet の中だけに出します。** `tailscale serve` を使い、Funnel（インターネット公開）にはしません。
+- **tailnet の中でも Google ログインが必要です。** 指定した Google アカウント（`sub`）だけが入れます。
+
+```
+自分の端末（tailnet 内）──HTTPS──▶ tailscale serve (<machine>.<tailnet>.ts.net:8443)
+                                      │
+                                      ▼
+                        cardputer webui (127.0.0.1:8771)
+                          ├─ /login, /oauth/google/callback ◀── Google ログイン
+                          └─ /api/*（セッション必須）──(LOCAL の読み取り専用キー)──▶ broker /operator/*
+```
+
+gateway（Claude 用、Funnel）とは別のプロセス・別のポートです。Funnel が向く先に Web UI は含まれません。
+
+## 守っていること
+
+- **ログインなしでは何も見えません。** ログイン開始と Google のコールバック以外のすべてのパス（ページ、JS・CSS、API、ライブ更新、存在しないパス）でセッションを確かめます。
+  - 未ログインのとき、`/` はログインへ転送します。それ以外は `401 {"error":"authentication_required"}` だけを返します。
+  - broker の状態、ジョブ、エラーの詳細、バージョンは返しません。
+- **資格情報をブラウザに出しません。**
+  - broker のキーは、broker への要求の `Authorization` ヘッダーにしか載りません。
+  - Google のクライアントシークレットは、Google のトークン交換にしか使いません。
+  - ブラウザへ返す応答は、Web UI が組み立てます。broker の応答ヘッダーは転送しません。
+  - broker の応答やライブ更新の 1 イベントに、キーやシークレットの文字列が万一含まれていた場合は、送らずに `response_withheld` を返すか、ストリームを止めます。
+  - ページ・JS・CSS には、設定値・環境変数・キーを埋め込みません。`Start-CardputerStack.ps1` は、Web UI を起動する前に `CARDPUTER_*` と `OPENAI_*` の環境変数を消します。
+  - 例外の詳細（トレースバック）は応答に出しません。
+- **セッション**
+  - サーバー側のメモリに持ちます。cookie に入るのはランダムな値だけで、サーバーはその SHA-256 しか保存しません。
+  - cookie は `__Host-` 付きで、HttpOnly、Secure、SameSite=Strict です。
+  - 有効期限は 8 時間で、ログアウトするとその場で無効になります。Web UI を再起動すると、すべてのセッションが消えます。
+- **CSRF**
+  - POST（ログアウト、ログの読み取り）には、ページの CSRF トークンと、同じオリジンの `Origin` が必要です。
+- **ブラウザ側の制限**
+  - 応答には、すべて `Content-Security-Policy: default-src 'none'; script-src 'self'; ...` を付けます。インラインのスクリプトは使いません。
+  - ほかに `X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store` を付けます。
+  - JS は、broker の値を `textContent` で表示します（HTML として解釈しません）。
+- **Host の確認**
+  - `Host` が `public_url` のホスト名でない要求は 400 にします。
+- **broker の権限**
+  - Web UI のキーは、LOCAL の**読み取り専用**キーです（`--control` なし）。
+  - 起動時に、このキーが `/operator/state` を読めて、操作側の `/operator/images` は 403 になることを確かめます。操作できるキーなら、起動を拒否します（`webui_broker_key_not_read_only`）。
+- **記録**
+  - ログイン成功は `webui_login_accepted`、失敗は `webui_login_rejected reason=…` と記録します。
+  - アクセスは `webui_access <method> <既知のパスか other> <status>` の形で記録します。
+  - cookie、トークン、クエリ文字列、Google の応答は記録しません。
+
+## 前提
+
+- broker が、読み取り専用の LOCAL キーで `/operator/state`・`timeline`・`events`・`job-logs` を読める版であること（#142 以降）。
+- Claude gateway の手順（[CLAUDE-GATEWAY.md](CLAUDE-GATEWAY.md)）のうち、Tailscale の準備と Google Cloud の OAuth クライアントが済んでいること。Web UI は同じ Google クライアントとシークレットファイルを使えます。
+
+## 1. 読み取り専用の LOCAL キーを作る
+
+まず、プレースホルダーのキーを入れたファイルを作ります。置き場所の制約は gateway の鍵ファイルと同じで、リポジトリやインストール先の外に置きます。
+
+```dotenv
+CARDPUTER_BROKER_URL=http://127.0.0.1:8765/mcp
+CARDPUTER_CLIENT_KEY=REPLACE_WITH_ISSUED_KEY
+```
+
+次に、`--control` を**付けずに** LOCAL のキーを発行して、このファイルに書き込みます。
+
+```powershell
+.\cardputer.exe keys issue --origin local_cli --label webui `
+  --write-env 'C:\Users\YOUR_NAME\AppData\Local\DeviceBroker\webui-broker.env'
+```
+
+キーの有効期限は最長 30 日です。期限の前に `keys rotate --key-id <ID> --write-env <同じファイル>` で更新し、Web UI を起動し直してください。
+
+## 2. Google のリダイレクト URI を追加する
+
+Google Cloud Console で gateway と同じ OAuth クライアントを開き、**Authorized redirect URIs** に次の URI を 1 つ追加します。
+
+```
+https://<machine>.<tailnet>.ts.net:8443/oauth/google/callback
+```
+
+## 3. Tailscale で 8443 番に届く端末を絞る
+
+Web UI は tailnet の中にしか出しません。そのうえで、管理画面の **Access controls** で、この PC の `tcp:8443` に届く送信元を自分の端末（自分のユーザー）だけにしてください。
+
+自分 1 人だけの tailnet で、既定のポリシー（全員がすべてに届く）のままでも動きます。ただ、ほかの人を招待する前には必ず絞ってください。Google ログインは 2 段目の守りです。
+
+## 4. broker TOML に `[webui]` を書く
+
+```toml
+[webui]
+public_url = "https://<machine>.<tailnet>.ts.net:8443"   # ポートは必須
+port = 8771
+google_client_id = "<id>.apps.googleusercontent.com"
+allowed_google_sub = "<あなたの Google sub>"
+broker_env_file = 'C:\Users\YOUR_NAME\AppData\Local\DeviceBroker\webui-broker.env'
+google_client_secret_file = 'C:\Users\YOUR_NAME\AppData\Local\DeviceBroker\gateway-google.env'
+serve = false   # true で tailscale serve（tailnet 内だけ）を開く
+```
+
+- `port` は、broker、Tunnel の `health_port`、gateway のどの `port` とも違う値にします。
+- `public_url` のポートは、gateway の Funnel と同じ 443 にはできません。
+- v0.13.1 より前の broker は `[webui]` の入った TOML を読めません。broker を新しい版にしてから書き足してください。
+
+## 5. まず serve なしで確かめる
+
+```powershell
+.\cardputer.exe webui --config '.\device.local.toml'
+```
+
+`webui_listening 127.0.0.1:8771` と `webui_serve_disabled; listening on loopback only` が出れば、次のことは確認できています。
+
+- 設定を読めたこと
+- 鍵ファイルとシークレットファイルを読めたこと
+- キーが読み取り専用であること
+
+別のターミナルで、次のコマンドが 401 を返すことを確かめます。
+
+```powershell
+curl.exe -si http://127.0.0.1:8771/api/state -H 'Host: <machine>.<tailnet>.ts.net:8443'
+```
+
+## 6. serve を有効にして開く
+
+`serve = true` にして起動し直します。`webui_serve_open https://…:8443 (tailnet only)` が出たら、tailnet に入っている端末のブラウザで `https://<machine>.<tailnet>.ts.net:8443/` を開き、Google でログインします。
+
+- iPhone・iPad では、Safari の共有メニューから「ホーム画面に追加」できます。
+- Ctrl+C で止めると、serve を先に閉じてから待ち受けを止めます。
+- serve の設定が Funnel（公開）になっていたら、起動を拒否して閉じます（`webui_serve_is_public`）。
+
+`Start-CardputerStack.ps1` を使うと、broker → gateway → Web UI → GUI の順に起動できます。
+
+## エラー一覧
+
+| コード | 原因と対処 |
+| --- | --- |
+| `webui_config_invalid` | TOML を読めないか、値が不正です（`public_url` に `:ポート` がない、http になっている、など） |
+| `webui_config_missing` | `[webui]` 節がありません |
+| `webui_port_conflict` | `port` がほかのポートと重なっているか、gateway がある状態で `public_url` が 443 番です |
+| `webui_broker_env_invalid` / `webui_broker_port_mismatch` | broker のキーファイルを読めないか、URL のポートが broker と違います |
+| `webui_google_secret_invalid` | シークレットファイルを読めません |
+| `webui_broker_unavailable` | broker に接続できません（broker を先に起動してください） |
+| `webui_broker_key_rejected` | broker がキーを拒否しました。キーの期限切れ・失効か、broker が古い版です |
+| `webui_broker_key_not_read_only` | キーに `--control` が付いています。読み取り専用のキーを発行し直してください |
+| `webui_already_running` | Web UI はすでに動いています |
+| `webui_listen_failed` | `127.0.0.1:<port>` で待ち受けできません |
+| `tailscale_serve_port_already_configured` | そのポートには、すでに serve か Funnel の設定があります |
+| `webui_public_url_not_this_machine` | `public_url` がこの PC の Tailscale 名と違います |
+| `webui_serve_start_failed` / `webui_serve_exited` / `webui_serve_not_confirmed` | serve を開始できない、すぐに終了した、または 15 秒以内に確認できませんでした |
+| `webui_serve_is_public` | serve の設定が Funnel になっていました。閉じて止めます |
+
+## まだ確かめていないこと
+
+- 実際の iPhone・iPad での表示と、ライブ更新の続き方
+- `tailscale serve` が転送する `Host` ヘッダーの形（`ホスト名:8443` を想定しています）
+- PiP（canvas → video）は次の段階で入れます

@@ -41,6 +41,7 @@ class FakeGoogle:
         self.sub = OWNER
         self.claims_override: dict[str, object] = {}
         self.challenges: dict[str, tuple[str, str]] = {}  # code -> (challenge, nonce)
+        self.redirect_uri = PUBLIC + gw.GOOGLE_CALLBACK_PATH
 
     def approve(self, authorize_url: str) -> tuple[str, str]:
         query = parse_qs(urlparse(authorize_url).query)
@@ -55,7 +56,7 @@ class FakeGoogle:
         assert str(request.url) == gw.GOOGLE_TOKEN_URL
         form = parse_qs(request.content.decode())
         assert form["client_secret"] == ["google-secret"]
-        assert form["redirect_uri"] == [PUBLIC + gw.GOOGLE_CALLBACK_PATH]
+        assert form["redirect_uri"] == [self.redirect_uri]
         challenge, nonce = self.challenges.pop(form["code"][0])
         digest = hashlib.sha256(form["code_verifier"][0].encode()).digest()
         if base64.urlsafe_b64encode(digest).decode().rstrip("=") != challenge:
