@@ -19,7 +19,7 @@ PRIVATE = "synthetic-private-token-schema-path"
 
 def summary() -> dict[str, Any]:
     return {
-        "gui_version": "0.13.0",
+        "gui_version": "0.13.1",
         "server_version": "0.7.0",
         "tools_count": 17,
         "read_capture": True,
@@ -68,7 +68,7 @@ def catalog_api() -> Mock:
 
 def test_catalog_formatter_uses_exact_fixed_labels_and_values() -> None:
     assert mcp_catalog_summary(summary()) == (
-        "gui_version: 0.13.0\n"
+        "gui_version: 0.13.1\n"
         "server_version: 0.7.0\n"
         "tools_count: 17\n"
         "read_capture: true\n"
