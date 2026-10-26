@@ -503,6 +503,9 @@ Claude asks you to connect again.
 
 Step-by-step setup (Tailscale, Google Cloud, key and secret files, TOML, adding
 the connector in Claude, error codes): [CLAUDE-GATEWAY.md](CLAUDE-GATEWAY.md).
+`Start-CardputerStack.ps1` (same arguments as `Start-CardputerGui.ps1`) starts the
+broker, then the gateway in its own console without the broker tokens or Tunnel
+API key, then the GUI.
 
 Prerequisites (one-time, outside this repository):
 
