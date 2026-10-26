@@ -122,6 +122,12 @@ def parser() -> argparse.ArgumentParser:
     stdio.add_argument(
         "--env-file", type=Path, required=True, help="Absolute private env-file path"
     )
+    gateway = sub.add_parser(
+        "gateway",
+        help="Claude gateway (OAuth + MCP relay to the broker); opens Tailscale Funnel only "
+        "when the TOML's [gateway] sets funnel = true",
+    )
+    gateway.add_argument("--config", type=Path, required=True, help="Broker TOML with [gateway]")
     sub.add_parser(
         "http-diagnostics",
         help="Read safe HTTP denial counters from the resident broker; local environment auth only",
@@ -449,6 +455,18 @@ def main() -> None:
             except (ClientEnvironmentError, StdioAdapterError) as error:
                 print(str(error), file=sys.stderr)
                 raise SystemExit(1) from None
+        elif args.command == "gateway":
+            from .gateway_launch import run as run_gateway
+
+            if (
+                args.auth_source != "none"
+                or args.auth_file is not None
+                or args.url != DEFAULT_BROKER_URL
+                or args.client != Origin.LOCAL.value
+            ):
+                print("gateway_use_config_files_only", file=sys.stderr)
+                raise SystemExit(1)
+            raise SystemExit(run_gateway(args.config))
         elif args.command == "gui":
             from .gui import run as run_gui
 

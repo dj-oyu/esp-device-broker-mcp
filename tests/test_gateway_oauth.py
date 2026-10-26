@@ -2,8 +2,11 @@
 
 import base64
 import hashlib
+import json
 import secrets
+import tempfile
 import time
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import httpx2
@@ -18,7 +21,14 @@ from cardputer_mcp.config import GatewaySettings
 PUBLIC = "https://gw-a1.tail1234.ts.net"
 CLIENT_ID = "123-abc.apps.googleusercontent.com"
 OWNER = "1111111111"
-SETTINGS = GatewaySettings(public_url=PUBLIC, google_client_id=CLIENT_ID, allowed_google_sub=OWNER)
+PRIVATE = Path(tempfile.gettempdir())
+SETTINGS = GatewaySettings(
+    public_url=PUBLIC,
+    google_client_id=CLIENT_ID,
+    allowed_google_sub=OWNER,
+    broker_env_file=PRIVATE / "gateway-broker.env",
+    google_client_secret_file=PRIVATE / "gateway-google.env",
+)
 
 
 class FakeGoogle:
@@ -379,10 +389,21 @@ def test_gateway_section_loads_from_toml_without_secrets(tmp_path):
         "[gateway]\n"
         f'public_url = "{PUBLIC}"\n'
         f'google_client_id = "{CLIENT_ID}"\n'
-        f'allowed_google_sub = "{OWNER}"\n',
+        f'allowed_google_sub = "{OWNER}"\n'
+        f"broker_env_file = {json.dumps(str(SETTINGS.broker_env_file))}\n"
+        f"google_client_secret_file = {json.dumps(str(SETTINGS.google_client_secret_file))}\n",
         encoding="utf-8",
     )
+    valid = path.read_text("utf-8")
     assert load_settings(path).gateway == SETTINGS
-    path.write_text(path.read_text("utf-8") + 'google_client_secret = "x"\n', encoding="utf-8")
+    assert SETTINGS.funnel is False  # Funnel stays closed unless explicitly enabled
+    path.write_text(valid + 'google_client_secret = "x"\n', encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_settings(path)
+    relative = valid.replace(json.dumps(str(SETTINGS.broker_env_file)), '"relative.env"')
+    path.write_text(relative, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_settings(path)
+    path.write_text(valid + 'funnel = "yes"\n', encoding="utf-8")
     with pytest.raises(ValidationError):
         load_settings(path)

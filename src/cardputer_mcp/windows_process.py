@@ -51,6 +51,9 @@ _CREDENTIAL_ARGUMENTS = {
     "--mcp.discovery-extra-headers": "Authorization: env:CARDPUTER_TUNNEL_BEARER",
 }
 _TERMINATED_EXIT_CODE = 1
+# Executable file names a caller may launch; the caller still pins the exact path.
+TUNNEL_EXECUTABLES = frozenset({"tunnel-client.exe"})
+TAILSCALE_EXECUTABLES = frozenset({"tailscale.exe"})
 # Retain failed launches until their owner is explicitly, successfully closed.
 # No destructor is allowed to drop a live ownership handle or silently kill work.
 _RETAINED_OWNERS: set[OwnedWindowsProcess] = set()
@@ -201,13 +204,15 @@ class OwnedWindowsProcess:
             _RETAINED_OWNERS.discard(self)
 
 
-def _validate(args: Sequence[str], env: Mapping[str, str], cwd: str) -> None:
+def _validate(
+    args: Sequence[str], env: Mapping[str, str], cwd: str, executables: frozenset[str]
+) -> None:
     if isinstance(args, (str, bytes)) or not args:
         raise WindowsProcessError("invalid_owned_process_arguments")
     if any(not isinstance(arg, str) or "\0" in arg for arg in args):
         raise WindowsProcessError("invalid_owned_process_arguments")
     executable = PureWindowsPath(args[0])
-    if not executable.is_absolute() or executable.name.casefold() != "tunnel-client.exe":
+    if not executable.is_absolute() or executable.name.casefold() not in executables:
         raise WindowsProcessError("invalid_owned_process_executable")
     if not cwd or "\0" in cwd or not PureWindowsPath(cwd).is_absolute():
         raise WindowsProcessError("invalid_owned_process_directory")
@@ -241,6 +246,7 @@ def start(
     cwd: str | Path,
     *,
     api: WindowsAPI | None = None,
+    executables: frozenset[str] = TUNNEL_EXECUTABLES,
 ) -> OwnedWindowsProcess:
     """Launch a caller-verified client with only the supplied whitelisted env.
 
@@ -249,7 +255,7 @@ def start(
     only if shutdown/handle release is unconfirmed; preserve it for review/retry.
     """
     directory = str(cwd)
-    _validate(args, env, directory)
+    _validate(args, env, directory, executables)
     facade = api if api is not None else NativeWindowsAPI()
     try:
         job = facade.create_job()

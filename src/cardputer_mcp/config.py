@@ -53,6 +53,20 @@ class GatewaySettings(BaseModel):
         pattern=r"^[0-9]{1,32}-[a-z0-9]{1,64}\.apps\.googleusercontent\.com$"
     )
     allowed_google_sub: str = Field(pattern=r"^[0-9]{1,64}$")
+    # Private files outside repositories: the stdio-format broker key file and a
+    # file holding only CARDPUTER_GATEWAY_GOOGLE_CLIENT_SECRET=<value>.
+    broker_env_file: Path
+    google_client_secret_file: Path
+    # Funnel opens only when this is explicitly true, and closes with the gateway.
+    funnel: bool = Field(default=False, strict=True)
+    tailscale_exe: Path = Path(r"C:\Program Files\Tailscale\tailscale.exe")
+
+    @field_validator("broker_env_file", "google_client_secret_file", "tailscale_exe")
+    @classmethod
+    def require_absolute(cls, value: Path) -> Path:
+        if not value.is_absolute() or ".." in value.parts or "\x00" in str(value):
+            raise ValueError("absolute_gateway_path_required")
+        return value
 
 
 class RegisteredBuildTool(BaseModel):
