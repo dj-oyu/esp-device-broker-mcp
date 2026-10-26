@@ -21,7 +21,16 @@ uv sync --frozen
 右上の **Tunnel...** を開き、同じ broker TOML の `[tunnel]` を編集して明示的に保存します。
 公式 client の EXE/ZIP と、利用者が既に用意した Tunnel ID を設定してください。
 Save はコメント・書式を再生成しますが、broker/serial の設定値は保持します。
-実際の ID や key を自動発行したり、設定だけで接続したりしません。
+実際の ID や key を自動発行しません。
+
+`gui --config <broker TOML>` で起動すると、その TOML を自動で読み込みます。
+TOML が `backend = "serial"` なら「Allow Tunnel for a configured SERIAL broker」に自動でチェックが入ります
+（実行中の broker の backend と食い違えば、これまで通り拒否します）。
+読み込みに成功し、環境変数に Tunnel API key（`CARDPUTER_TUNNEL_API_KEY`、なければ `CONTROL_PLANE_API_KEY`）と
+`CARDPUTER_REMOTE_TOKEN` の両方があれば、起動時に1回だけ自動で接続します。
+どちらかが無ければ接続せず、Connect... を待ちます。切断や異常終了のあとに自動で再接続することはありません。
+チェックボックスを切り替えると、ファイルピッカーを開かずに同じ TOML を読み直します。
+未保存の入力がある場合は読み直さず、Save を待ちます。
 
 **Connect...** で OpenAI Tunnel runtime API key を非表示入力します。
 Cardputer の発行済み remote key を使う場合は、同じダイアログの別欄に入力します。
@@ -54,7 +63,7 @@ HTTP health は接続・ヘッダー・本文を含めた総時間とサイズ�
 ただし公式 client の実行と Windows Job Object は、この環境では実機 Windows 未検証です。
 
 以下のコンソール方式は互換用です。GUI 監視を使う場合は上の起動方法を選んでください。
-`Start-CardputerTunnel.ps1 -Gui` も同じ GUI 管理に入り、-Connect があっても自動接続しません。
+`Start-CardputerTunnel.ps1 -Gui` も同じ GUI 管理に入ります。-Connect は使われず、接続は上記の GUI 起動時の条件に従います。
 
 ## 1. API キー不要の準備確認
 
@@ -109,7 +118,8 @@ health_port = 8766
 
 相対パスはすべてプロジェクトフォルダー基準です。`[tunnel]` は省略可能で、ID 未入力や
 上記ゼロ ID のテンプレートでも mock broker を起動できます。接続時には完全な metadata と
-実際の既存 ID が必要です。設定の読込・保存・GUI 起動だけで Tunnel を接続しません。
+実際の既存 ID が必要です。設定の読込・保存だけで Tunnel を接続しません
+（GUI 起動時の1回だけの自動接続は、上記の環境変数が揃っているときに限ります）。
 API key、MCP/client key、bearer、autoconnect 等の追加フィールドは拒否します。
 
 旧 `tunnel.local.toml` も読めます。旧ファイルの `broker_config` が同じ broker ファイルを
