@@ -180,6 +180,16 @@ def _read_file(path: Path) -> bytes:
 
 
 def _parse(data: bytes) -> ClientEnvironment:
+    values = _assignments(data, _ALLOWED_KEYS)
+    token = values.get("CARDPUTER_CLIENT_KEY", "")
+    url = values.get("CARDPUTER_BROKER_URL", _DEFAULT_URL)
+    match = _URL.fullmatch(url)
+    if _KEY.fullmatch(token) is None or match is None or not 1024 <= int(match.group(1)) <= 65535:
+        raise ClientEnvironmentError()
+    return ClientEnvironment(url=url, token=token)
+
+
+def _assignments(data: bytes, allowed: set[str]) -> dict[str, str]:
     text = data.decode("utf-8-sig").replace("\r\n", "\n")
     # splitlines() accepts extra Unicode and control-character line separators.
     if any(character in text for character in "\r\x00\v\f\x85\u2028\u2029"):
@@ -189,15 +199,10 @@ def _parse(data: bytes) -> ClientEnvironment:
         if not line.strip(" \t") or line.lstrip(" \t").startswith("#"):
             continue
         key, separator, value = line.partition("=")
-        if not separator or key not in _ALLOWED_KEYS or key in values:
+        if not separator or key not in allowed or key in values:
             raise ClientEnvironmentError()
         values[key] = value
-    token = values.get("CARDPUTER_CLIENT_KEY", "")
-    url = values.get("CARDPUTER_BROKER_URL", _DEFAULT_URL)
-    match = _URL.fullmatch(url)
-    if _KEY.fullmatch(token) is None or match is None or not 1024 <= int(match.group(1)) <= 65535:
-        raise ClientEnvironmentError()
-    return ClientEnvironment(url=url, token=token)
+    return values
 
 
 def load_client_environment(path: Path) -> ClientEnvironment:
@@ -211,5 +216,29 @@ def load_client_environment(path: Path) -> ClientEnvironment:
         data = _read_file(path)
         _check_location(path)
         return _parse(data)
+    except (OSError, ValueError, RuntimeError):
+        raise ClientEnvironmentError() from None
+
+
+_GATEWAY_SECRET_KEY = "CARDPUTER_GATEWAY_GOOGLE_CLIENT_SECRET"
+_GATEWAY_SECRET = re.compile(r"[A-Za-z0-9_-]{8,256}\Z")
+
+
+def load_gateway_secret(path: Path) -> str:
+    """Read the Claude gateway's Google client secret from one private file.
+
+    Same location and file rules and the same line grammar as
+    ``load_client_environment``; the only key is
+    ``CARDPUTER_GATEWAY_GOOGLE_CLIENT_SECRET``.
+    """
+    try:
+        _check_location(path)
+        data = _read_file(path)
+        _check_location(path)
+        values = _assignments(data, {_GATEWAY_SECRET_KEY})
+        secret = values.get(_GATEWAY_SECRET_KEY, "")
+        if _GATEWAY_SECRET.fullmatch(secret) is None:
+            raise ClientEnvironmentError()
+        return secret
     except (OSError, ValueError, RuntimeError):
         raise ClientEnvironmentError() from None

@@ -176,6 +176,14 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
             f'state_dir = {json.dumps(str(folder / "state"))}\n'
             'allow_mock_execution = false\n', encoding="utf-8",
         )
+        # The frozen gateway imports its OAuth/JOSE stack, then refuses a TOML
+        # without [gateway]; it never listens or starts Tailscale here.
+        gateway = subprocess.run(
+            [str(exe), "gateway", "--config", str(config)], cwd=folder, env=env,
+            capture_output=True, text=True, timeout=45, check=False,
+        )
+        if gateway.returncode != 1 or gateway.stdout != "gateway_config_missing\n":
+            raise RuntimeError("packaged_gateway_check_failed")
         env["LOCALAPPDATA"] = private_state
         env["CARDPUTER_LOCAL_TOKEN"] = secrets.token_hex(32)
         env["CARDPUTER_REMOTE_TOKEN"] = secrets.token_hex(32)

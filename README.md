@@ -492,6 +492,51 @@ one broker and the adapter must also acquire OS-level serial exclusivity.
   Use a user-owned local directory on Windows; POSIX new directories use 0700 and
   the database uses 0600. Avoid shared/synchronized runtime-state folders
 
+## Claude gateway (Tailscale Funnel, optional)
+
+`cardputer gateway --config <broker TOML>` lets a claude.ai custom connector reach
+the broker. It runs an OAuth 2.1 server (Dynamic Client Registration for Claude's
+callback only) whose single user is one Google account, and relays authenticated
+MCP requests to the broker's `/tunnel/mcp` alias with its own `remote_mcp` key.
+`/operator/*` is never exposed. Tokens live in memory: after a gateway restart,
+Claude asks you to connect again.
+
+Prerequisites (one-time, outside this repository):
+
+- Tailscale: MagicDNS and HTTPS certificates enabled, and the `funnel` node
+  attribute for this machine. Nothing else may be configured on HTTPS 443.
+- Google Cloud: an OAuth web client with the redirect URI
+  `<public_url>/oauth/google/callback`. Note your Google account's `sub`.
+- A broker key: `cardputer keys issue --origin remote_mcp [--control] --write-env
+  <private env file>` (the stdio env-file format; `keys rotate --write-env` updates
+  it and the gateway re-reads it after the broker rejects the old key).
+- A private file containing only `CARDPUTER_GATEWAY_GOOGLE_CLIENT_SECRET=<secret>`.
+
+Both files must be outside repositories and the installation, like the stdio env
+file. The broker TOML needs `[tunnel] ingress_enabled = true` and a section:
+
+```toml
+[gateway]
+public_url = "https://<machine>.<tailnet>.ts.net"   # must be this machine's name
+port = 8770
+google_client_id = "<id>.apps.googleusercontent.com"
+allowed_google_sub = "<your Google sub>"
+broker_env_file = 'C:\path\to\private\gateway-broker.env'
+google_client_secret_file = 'C:\path\to\private\gateway-google.env'
+funnel = false   # true opens Funnel while the gateway runs
+```
+
+With `funnel = true` the gateway first checks Tailscale (machine name, Funnel
+permission, nothing on HTTPS 443), listens on 127.0.0.1, then runs
+`tailscale funnel --yes http://127.0.0.1:<port>` in the foreground as an owned
+child and waits until Funnel lists that target. Stopping the gateway (Ctrl+C)
+closes Funnel first; if Funnel exits, the gateway stops. In Claude, add a custom
+connector with the URL `<public_url>/mcp`.
+
+Unverified so far: a real Google login, a real Claude connection, and that a
+force-terminated foreground Funnel always clears its configuration (check
+`tailscale funnel status` after an abnormal exit).
+
 ## Verification and limits
 
 ```sh
