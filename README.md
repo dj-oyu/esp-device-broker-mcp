@@ -501,6 +501,9 @@ MCP requests to the broker's `/tunnel/mcp` alias with its own `remote_mcp` key.
 `/operator/*` is never exposed. Tokens live in memory: after a gateway restart,
 Claude asks you to connect again.
 
+Step-by-step setup (Tailscale, Google Cloud, key and secret files, TOML, adding
+the connector in Claude, error codes): [CLAUDE-GATEWAY.md](CLAUDE-GATEWAY.md).
+
 Prerequisites (one-time, outside this repository):
 
 - Tailscale: MagicDNS and HTTPS certificates enabled, and the `funnel` node
