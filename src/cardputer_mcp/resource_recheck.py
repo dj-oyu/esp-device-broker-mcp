@@ -174,6 +174,11 @@ def recheck(broker: Any) -> dict[str, Any]:
                 results["execution"] = consistent
         _release_stale_active_job(b)
         b.operator_changes.notify()
+    elif b.active_job is not None and _lane_idle(b):
+        # No latch, but a closed job is still recorded as active: drop it only when
+        # every owned resource is idle (the same checks as below).
+        _release_stale_active_job(b)
+        b.operator_changes.notify()
     after = uncertainty(b)
     return {
         "broker_epoch": b.epoch,

@@ -3190,10 +3190,17 @@ class Broker:
         self._record_flash_outcome(run.job_id, run.plan)
         self._close_job_logs(run.job_id, run.job_log, run.device_tap)
         run.job_log = run.device_tap = None
+        # A running registered-project job owns its own source/build activity
+        # (as in `_physical_busy`); it must not leave this device job active.
+        # A device-lane build/source job still counts its own surviving process.
+        profile_owned = self.profile_jobs.active is not None and run.plan["test"] not in (
+            TestName.BUILD.value,
+            TestName.SOURCE.value,
+        )
         if (
             not self.backend.active
-            and not self.firmware_source.active
-            and not self.firmware_build.process.active
+            and (profile_owned or not self.firmware_source.active)
+            and (profile_owned or not self.firmware_build.process.active)
             and not self.firmware_build.process.uncertain
             and not self.firmware_flash.active
             and not self.firmware_flash.uncertain
