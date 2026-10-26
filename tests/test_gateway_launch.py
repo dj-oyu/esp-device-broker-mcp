@@ -246,10 +246,17 @@ async def test_loopback_only_without_funnel_and_cancel_stops(tmp_path, capsys):
     task = asyncio.create_task(gateway_launch.serve(prepared, run=never, start_process=never))
     response = await _wait_listening(port)
     assert response.json()["resource"] == PUBLIC + "/mcp"
+    # The listener can answer before serve() notices it started; wait for its report.
+    out = ""
+    for _ in range(500):
+        out += capsys.readouterr().out
+        if "gateway_funnel_disabled" in out:
+            break
+        await asyncio.sleep(0.01)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    out = capsys.readouterr().out
+    out += capsys.readouterr().out
     assert "gateway_funnel_disabled" in out and "gateway_stopped" in out
     assert KEY not in out and SECRET not in out
 
