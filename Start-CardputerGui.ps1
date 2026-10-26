@@ -29,7 +29,7 @@ $arguments = @{ Exe = $exePath; Profile = $profilePath; Url = $Url }
 if ($NoSerial) { $arguments.NoSerial = $true }
 if ($KeyRegistry) { $arguments.KeyRegistry = $KeyRegistry }
 & (Join-Path $PSScriptRoot 'Start-Cardputer.ps1') @arguments
-Write-Host 'Opening local manager. Tunnel stays disconnected until you click Connect.'
+Write-Host 'Opening local manager. Tunnel connects once at startup when its API key and CARDPUTER_REMOTE_TOKEN are set; otherwise click Connect.'
 Write-Host 'Closing asks to stop this GUI-owned Tunnel only; broker and device jobs continue.'
 Push-Location -LiteralPath ([IO.Path]::GetDirectoryName($profilePath))
 try { & $exePath --auth-source environment gui --config $profilePath } finally { Pop-Location }

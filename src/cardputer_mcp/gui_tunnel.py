@@ -219,7 +219,8 @@ class TunnelOperation:
     action: Action
     path: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    enable_serial: bool = False
+    # None follows the TOML: a `backend = "serial"` profile is the explicit opt-in.
+    enable_serial: bool | None = False
     api_key: str = field(default="", repr=False)
     bearer: str = field(default="", repr=False)
 
@@ -239,6 +240,7 @@ class TunnelOutcome:
     path: Path | None = None
     metadata: dict[str, Any] | None = None
     close_confirmed: bool = False
+    enable_serial: bool | None = None
 
 
 class TunnelController:
@@ -251,6 +253,9 @@ class TunnelController:
         self.stalled_poll: int | None = None
         self.view = TunnelView()
         self.path: Path | None = None
+        # The last TOML asked for, kept even when loading it failed (for reload).
+        self.requested_path: Path | None = None
+        self.enable_serial = False
         self.metadata: dict[str, Any] = {}
         self.sequence = 0
         self.busy = False
@@ -303,10 +308,18 @@ class TunnelController:
         }[action]
         return TunnelOperation(self.sequence, action, **kwargs)
 
-    def load(self, path: Path, *, enable_serial: bool = False) -> TunnelOperation | None:
+    def load(self, path: Path, *, enable_serial: bool | None = False) -> TunnelOperation | None:
         if not self.can_edit():
             return None
+        self.requested_path = path
         return self._begin("load", path=path, enable_serial=enable_serial)
+
+    def reload(self) -> TunnelOperation | None:
+        """Load the current TOML again with the current SERIAL choice; no file picker."""
+        path = self.path or self.requested_path
+        if path is None:
+            return None
+        return self.load(path, enable_serial=self.enable_serial)
 
     def save(
         self, metadata: dict[str, Any], *, enable_serial: bool = False
@@ -398,6 +411,8 @@ class TunnelController:
         if result.metadata is not None:
             self.metadata = result.metadata
             self.dirty = result.failed
+        if result.enable_serial is not None:
+            self.enable_serial = result.enable_serial
         if result.action in ("disconnect", "restart_stop", "close"):
             stopped = (
                 result.view is not None
@@ -439,6 +454,7 @@ def perform_tunnel(
     try:
         metadata = None
         close_confirmed = False
+        enable_serial: bool | None = None
         if operation.action in ("load", "save"):
             from .config import load_settings
             from .tunnel import load_gui_config, save_gui_config
@@ -450,7 +466,13 @@ def perform_tunnel(
             config_path = (
                 operation.path if operation.path.is_absolute() else project / operation.path
             )
-            canonical = load_settings(config_path).tunnel
+            broker_settings = load_settings(config_path)
+            canonical = broker_settings.tunnel
+            enable_serial = (
+                broker_settings.backend == "serial"
+                if operation.enable_serial is None
+                else operation.enable_serial is True
+            )
             metadata = _display_metadata(canonical) if canonical is not None else {}
             if settings is not None:
                 metadata = _display_metadata(settings)
@@ -464,9 +486,7 @@ def perform_tunnel(
                             if value != ""
                         }
                     )
-                data = manager.configure(
-                    settings, broker_url, enable_serial=operation.enable_serial
-                )
+                data = manager.configure(settings, broker_url, enable_serial=enable_serial)
             else:
                 data = {"state": "not_configured", "status_code": "tunnel_not_configured"}
             message = (
@@ -503,6 +523,7 @@ def perform_tunnel(
             operation.path,
             metadata,
             close_confirmed,
+            enable_serial,
         )
     except Exception as error:
         # Never echo exceptions: a manager, OS, HTTP library, or parser may
@@ -652,8 +673,10 @@ class TunnelPanel:
         # Bounded, path-free records for support; never exception text or values.
         self.diagnostics: deque[str] = deque(maxlen=8)
         self.diagnostic_var: Any = None
+        # One connect after the startup load when the environment holds both keys.
+        self.connect_after_load = broker_config is not None
         if broker_config is not None:
-            self._submit(self.controller.load(broker_config))
+            self._submit(self.controller.load(broker_config, enable_serial=None))
         root.after(75, self._drain)
         root.after(2000, self._poll)
 
@@ -724,8 +747,8 @@ class TunnelPanel:
                 button = ttk.Button(outer, text="Choose...", command=partial(self._choose, key))
                 button.grid(row=row, column=2, padx=(8, 0))
                 self.file_buttons.append(button)
-        self.serial = tk.BooleanVar(value=False)
-        self.serial.trace_add("write", self._changed)
+        self.serial = tk.BooleanVar(value=self.controller.enable_serial)
+        self.serial.trace_add("write", self._serial_changed)
         self.serial_button = ttk.Checkbutton(
             outer,
             text="Allow Tunnel for a configured SERIAL broker (this session)",
@@ -767,7 +790,8 @@ class TunnelPanel:
             outer,
             text="Only this window's Tunnel client is stopped. The broker and jobs continue.\n"
             "Other clients are not monitored. Closing this panel hides it; monitoring continues.\n"
-            "No automatic connection or restart.",
+            "Connects once at startup when both keys are in the environment; "
+            "never reconnects or restarts automatically.",
             wraplength=700,
         ).grid(row=11, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self.ingress_var = tk.StringVar()
@@ -788,6 +812,23 @@ class TunnelPanel:
             self.controller.dirty = True
             self._render()
 
+    def _fields_edited(self) -> bool:
+        metadata = self.controller.metadata
+        return any(
+            var.get() != str(metadata.get(key, 8766 if key == "health_port" else ""))
+            for key, var in self.fields.items()
+        )
+
+    def _serial_changed(self, *_: str) -> None:
+        if self.updating:
+            return
+        self.controller.enable_serial = bool(self.serial.get())
+        if self._fields_edited():
+            # Keep typed metadata: Save applies it together with the new choice.
+            self._changed()
+            return
+        self._submit(self.controller.reload())
+
     def _choose(self, key: str) -> None:
         from tkinter import filedialog
 
@@ -804,7 +845,7 @@ class TunnelPanel:
             parent=self.dialog, title="Choose broker configuration", filetypes=[("TOML", "*.toml")]
         )
         if selected:
-            self._submit(self.controller.load(Path(selected), enable_serial=self.serial.get()))
+            self._submit(self.controller.load(Path(selected), enable_serial=None))
 
     def _save(self) -> None:
         metadata: dict[str, Any] = {key: value.get() for key, value in self.fields.items()}
@@ -815,7 +856,7 @@ class TunnelPanel:
             self._render()
             return
         metadata = {key: value for key, value in metadata.items() if value != ""}
-        self._submit(self.controller.save(metadata, enable_serial=self.serial.get()))
+        self._submit(self.controller.save(metadata, enable_serial=self.controller.enable_serial))
 
     def _credentials(self) -> None:
         import tkinter as tk
@@ -886,6 +927,10 @@ class TunnelPanel:
                 var.set(str(model.metadata.get(key, 8766 if key == "health_port" else "")))
             self.updating = False
             self.rendered_metadata = dict(model.metadata)
+        if bool(self.serial.get()) != model.enable_serial:
+            self.updating = True
+            self.serial.set(model.enable_serial)
+            self.updating = False
         self.path_var.set(str(model.path) if model.path else "Broker TOML: not configured")
         ingress = "enabled" if model.metadata.get("ingress_enabled") is True else "disabled"
         self.ingress_var.set(
@@ -931,6 +976,27 @@ class TunnelPanel:
                 return
             if self.controller.accept(result):
                 self._accepted()
+                if result.action == "load" and self.connect_after_load:
+                    self.connect_after_load = False
+                    self._connect_from_environment()
+
+    def _connect_from_environment(self) -> None:
+        """The startup connect: environment keys only, once, never a retry."""
+        if not self.controller.can_connect():
+            return
+        key = runtime_api_key("", os.environ)
+        remote_key = runtime_remote_key("", os.environ)
+        if not key or not remote_key:
+            key = remote_key = ""
+            self.controller.message = (
+                "Tunnel metadata loaded. Not connected at startup: set the Tunnel API key "
+                "and CARDPUTER_REMOTE_TOKEN in the environment, or use Connect..."
+            )
+            self._render()
+            return
+        operation = self.controller.connect(key, remote_key)
+        key = remote_key = ""
+        self._submit(operation)
 
     def _accepted(self) -> None:
         self._render()
