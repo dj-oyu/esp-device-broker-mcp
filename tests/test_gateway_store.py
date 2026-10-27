@@ -214,6 +214,7 @@ def test_store_refuses_unsafe_locations(tmp_path):
         open_at(tmp_path / "dir")
     bad = tmp_path / "bad.sqlite3"
     bad.write_bytes(b"not a database" * 100)
+    bad.chmod(0o600)  # private, so POSIX reaches the content check
     with pytest.raises(GatewayStoreError, match="gateway_store_unavailable"):
         open_at(bad)
 
