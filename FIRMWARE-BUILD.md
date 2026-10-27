@@ -489,6 +489,31 @@ unsuccessful jobs, another principal, concurrent-reader limits, event-loop progr
 and grant/registration/job invalidation during hash IO. Existing durable path/link
 and hash checks are reused; no native build, USB or production DB is involved.
 
+## Ordinary source DMA selection
+
+Ordinary source firmware can select copied LCD DMA explicitly with
+`submit(kind="build", project_id=..., source_receipt=..., job_id=...,
+ dma_overlap_mode="OFF")` or `"ON"`. The typed option requires a verified source
+receipt and excludes both diagnostic axes. Omit it to keep the firmware default.
+It passes only `-D KASANE_DMA_OVERLAP=OFF|ON`; it does not request telemetry,
+measurement, a fixed workload or a comparison seed. Firmware with the ordinary
+option (for example the extraction in firmware PR #94) needs no diagnostic proof
+producer. Existing diagnostic DMA hardware tests used diagnostic sources; this
+ordinary build option does not establish a hardware or performance result.
+
+The ordinary mode participates in the immutable plan, source/build fingerprint,
+compiler-cache namespace and output slot. The manifest records `dma_overlap_mode`
+and bounded `dma_overlap_evidence` under `kasane-dma-overlap-build-v1`. The broker
+checks the actual CMake BOOL (missing, duplicate, unused/untyped or mismatched
+settings fail), the native submit/finish functions in the ELF, artifact hashes and
+the BIN's IDF 6.0.1/ELF digest. The evidence binds source provenance and the cache
+hash without exporting private cache text. Resolving the owned build after a
+restart repeats these checks; stale cache or image bytes cannot reuse its receipt.
+This build evidence grants no flash authority and is independent of diagnostic
+proof contracts. The existing diagnostic selection and all its proof checks below
+are unchanged.
+
+
 ## Fixed diagnostic recipes and ON/OFF comparison
 
 `submit.request.derby_detail_mode` accepts only `ON` or `OFF` for a

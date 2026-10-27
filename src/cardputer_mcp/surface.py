@@ -51,6 +51,7 @@ from .models import (
     CreateWorkSessionRequest,
     DiagnosticMode,
     Digest,
+    DmaOverlapMode,
     ExecuteRequest,
     Identifier,
     LeaseRequest,
@@ -187,6 +188,9 @@ class SubmitRequest(StrictModel):
     build_job_id: Identifier | None = Field(default=None, description="flash")
     backup_job_id: Identifier | None = Field(default=None, description="flash|restore")
     lkg_receipt: Digest | None = Field(default=None, description="flash|restore")
+    dma_overlap_mode: DmaOverlapMode | None = Field(
+        default=None, description="build: ordinary source firmware DMA OFF/ON; omit diagnostic axes"
+    )
     derby_detail_mode: DiagnosticMode | None = Field(default=None, description="build")
     derby_dma_mode: DiagnosticMode | None = Field(default=None, description="build")
     flash_job_id: Identifier | None = Field(default=None, description="derby_fixed")
@@ -411,7 +415,7 @@ SUBMIT_RULES: dict[Kind, tuple[set[str], set[str]]] = {
     Kind.FETCH: ({"job_id", "project_id", "source_commit"}, set()),
     Kind.BUILD: (
         {"job_id", "project_id"},
-        {"source_receipt", "derby_detail_mode", "derby_dma_mode", "after"},
+        {"source_receipt", "derby_detail_mode", "derby_dma_mode", "dma_overlap_mode", "after"},
     ),
     Kind.BACKUP: ({"job_id", "session", "device_id"}, set()),
     Kind.FLASH: ({"job_id", "session", "device_id", "build_job_id"}, set(_RECOVERY)),

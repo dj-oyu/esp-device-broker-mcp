@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .diagnostic_registry import same_diagnostic_selection, same_entry_binding
+from .product_dma import same_dma_selection
 
 
 def manifest_digest(manifest: dict[str, Any]) -> str:
@@ -76,6 +77,7 @@ class BuildArtifacts:
                         or manifest.get("build_plan_hash") != digest
                         or manifest.get("fingerprint") != plan.get("fingerprint")
                         or not same_diagnostic_selection(manifest, plan)
+                        or not same_dma_selection(manifest, plan)
                     ):
                         raise ValueError("invalid_internal_artifact_receipt")
                     reference = {

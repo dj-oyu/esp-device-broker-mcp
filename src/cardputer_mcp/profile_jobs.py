@@ -216,6 +216,11 @@ class ProfileJobs:
                     if request.derby_dma_mode is not None
                     else {}
                 ),
+                **(
+                    {"dma_overlap_mode": request.dma_overlap_mode}
+                    if request.dma_overlap_mode is not None
+                    else {}
+                ),
             )
             storage = broker.firmware_build.storage(request.project_id)
         plan = dict(

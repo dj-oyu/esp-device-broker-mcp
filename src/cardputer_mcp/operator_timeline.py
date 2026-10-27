@@ -145,6 +145,7 @@ RESULTS = (
             "idf_build_failed_needs_review",
             "build_target_mismatch",
             "build_artifacts_missing",
+        "ordinary_dma_output_invalid",
             "artifact_count_limit",
             "trusted_powershell_missing",
             "external_idf_environment_invalid",

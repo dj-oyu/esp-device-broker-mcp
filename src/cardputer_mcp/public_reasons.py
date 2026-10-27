@@ -44,6 +44,7 @@ PUBLIC_REASON_CODES: frozenset[str] = frozenset(
         # Registered build and flash prerequisites.
         "artifact_count_limit",
         "build_artifacts_missing",
+        "ordinary_dma_output_invalid",
         "build_inputs_changed",
         "build_authority_check_timeout",
         "build_target_mismatch",

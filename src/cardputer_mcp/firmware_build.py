@@ -41,7 +41,8 @@ from .diagnostic_registry import (
 )
 from .job_logs import attach
 from .manifest_export import export_response
-from .models import DiagnosticMode
+from .models import DiagnosticMode, DmaOverlapMode
+from .product_dma import collect_dma_evidence, validate_dma_record
 
 ALLOWED_ENV = frozenset(
     {
@@ -119,6 +120,7 @@ class FixedDiagnosticFailure(BuildPreflightFailure):
             "idf_build_failed_needs_review",
             "build_target_mismatch",
             "build_artifacts_missing",
+            "ordinary_dma_output_invalid",
             "artifact_count_limit",
             "trusted_powershell_missing",
             "external_idf_environment_invalid",
@@ -412,6 +414,8 @@ class FirmwareBuild:
         source_receipt: str | None = None,
         derby_detail_mode: DiagnosticMode | str | None = None,
         derby_dma_mode: DiagnosticMode | str | None = None,
+        *,
+        dma_overlap_mode: DmaOverlapMode | str | None = None,
     ) -> dict[str, Any]:
         project, provenance = self._project(project_id, principal, source_receipt)
         if derby_detail_mode is not None:
@@ -426,6 +430,9 @@ class FirmwareBuild:
         )
         if derby_dma_mode is not None:
             selection["derby_dma_mode"] = derby_dma_mode
+        if dma_overlap_mode is not None:
+            selection["dma_overlap_mode"] = DmaOverlapMode(dma_overlap_mode).value
+            validate_dma_record(provenance or {}, selection)
         if hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
             self.settings.state_dir.resolve()
         ):
@@ -522,8 +529,8 @@ class FirmwareBuild:
                     else []
                 ),
                 *(
-                    ["-D", "KASANE_DMA_OVERLAP=" + derby_dma_mode]
-                    if derby_dma_mode is not None
+                    ["-D", "KASANE_DMA_OVERLAP=" + (derby_dma_mode or dma_overlap_mode or "")]
+                    if derby_dma_mode is not None or dma_overlap_mode is not None
                     else []
                 ),
                 "build",
@@ -619,6 +626,7 @@ class FirmwareBuild:
                     "idf_build_failed_needs_review",
                     "build_target_mismatch",
                     "build_artifacts_missing",
+            "ordinary_dma_output_invalid",
                     "artifact_count_limit",
                     "trusted_powershell_missing",
                     "external_idf_environment_invalid",
@@ -649,6 +657,11 @@ class FirmwareBuild:
                 plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
                 **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
+                **(
+                    {"dma_overlap_mode": plan["dma_overlap_mode"]}
+                    if "dma_overlap_mode" in plan
+                    else {}
+                ),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -880,7 +893,12 @@ class FirmwareBuild:
             plan["project_id"],
             principal,
             environment_fingerprint,
-            {key: plan.get(key) for key in ("derby_detail_mode", "derby_dma_mode")},
+            {key: plan.get(key) for key in ("derby_detail_mode", "derby_dma_mode")}
+            | (
+                {"dma_overlap_mode": plan["dma_overlap_mode"]}
+                if "dma_overlap_mode" in plan
+                else {}
+            ),
         )
         logs.append("-- Compiler cache: " + cache_receipt["reason"])
         cache_before = (
@@ -902,6 +920,11 @@ class FirmwareBuild:
                 plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
                 **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
+                **(
+                    {"dma_overlap_mode": plan["dma_overlap_mode"]}
+                    if "dma_overlap_mode" in plan
+                    else {}
+                ),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -931,6 +954,8 @@ class FirmwareBuild:
             build_args += ["-D", "POCKET_DERBY_DETAIL_MEASURE=" + plan["derby_detail_mode"]]
         if "derby_dma_mode" in plan:
             build_args += ["-D", "KASANE_DMA_OVERLAP=" + plan["derby_dma_mode"]]
+        if "dma_overlap_mode" in plan:
+            build_args += ["-D", "KASANE_DMA_OVERLAP=" + plan["dma_overlap_mode"]]
         # The broker already owns and drains both output pipes. IDF's optional
         # nested asyncio hints collector can stall after CMake exits on Windows;
         # use IDF's direct subprocess path, retaining broker logs and teardown.
@@ -962,6 +987,11 @@ class FirmwareBuild:
                 plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
                 **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
+                **(
+                    {"dma_overlap_mode": plan["dma_overlap_mode"]}
+                    if "dma_overlap_mode" in plan
+                    else {}
+                ),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -1008,6 +1038,16 @@ class FirmwareBuild:
             )
         manifest = dict(
             schema_version=1,
+            **(
+                {
+                    "dma_overlap_mode": plan["dma_overlap_mode"],
+                    "dma_overlap_evidence": collect_dma_evidence(
+                        build_dir, plan["dma_overlap_mode"], provenance or {}, artifacts
+                    ),
+                }
+                if "dma_overlap_mode" in plan
+                else {}
+            ),
             **(
                 {
                     "derby_detail_mode": plan["derby_detail_mode"],
@@ -1080,6 +1120,11 @@ class FirmwareBuild:
                 plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
                 **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
+                **(
+                    {"dma_overlap_mode": plan["dma_overlap_mode"]}
+                    if "dma_overlap_mode" in plan
+                    else {}
+                ),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -1184,6 +1229,16 @@ class FirmwareBuild:
             raise BuildLocationError("build_output_identity_mismatch")
         if self.artifacts.history is not None:
             self._verify_owned_artifacts(root, manifest)
+        validate_dma_record(manifest.get("source_provenance", {}), manifest)
+        if "dma_overlap_mode" in manifest:
+            verified_dma = collect_dma_evidence(
+                root,
+                manifest["dma_overlap_mode"],
+                manifest.get("source_provenance", {}),
+                manifest["artifacts"],
+            )
+            if verified_dma != manifest.get("dma_overlap_evidence"):
+                raise BuildLocationError("build_output_identity_mismatch")
         entry = validate_diagnostic_record(manifest.get("source_provenance", {}), manifest)
         if entry is not None:
             validate_entry_binding(manifest.get("source_provenance", {}), manifest)

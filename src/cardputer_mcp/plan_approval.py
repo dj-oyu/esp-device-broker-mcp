@@ -147,6 +147,13 @@ class PlanApprovals:
                 "argv_template",
                 "profile_execution_policy",
             }
+            if "dma_overlap_mode" in plan:
+                from .product_dma import validate_dma_record
+
+                expected_keys |= {"dma_overlap_mode"}
+                if "source_receipt" not in plan:
+                    raise ValueError
+                validate_dma_record(plan.get("source_provenance", {}), plan)
             if "derby_detail_mode" in plan:
                 expected_keys |= {"derby_detail_mode"}
                 if plan["derby_detail_mode"] not in ("ON", "OFF") or "source_receipt" not in plan:
@@ -235,6 +242,11 @@ class PlanApprovals:
                     *(
                         ["-D", "KASANE_DMA_OVERLAP=" + plan["derby_dma_mode"]]
                         if "derby_dma_mode" in plan
+                        else []
+                    ),
+                    *(
+                        ["-D", "KASANE_DMA_OVERLAP=" + plan["dma_overlap_mode"]]
+                        if "dma_overlap_mode" in plan
                         else []
                     ),
                     "build",
@@ -545,6 +557,11 @@ class PlanApprovals:
                         **(
                             {"derby_dma_mode": plan["derby_dma_mode"]}
                             if "derby_dma_mode" in plan
+                            else {}
+                        ),
+                        **(
+                            {"dma_overlap_mode": plan["dma_overlap_mode"]}
+                            if "dma_overlap_mode" in plan
                             else {}
                         ),
                     )

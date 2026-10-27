@@ -357,6 +357,8 @@ class FirmwareVerticalTests(unittest.TestCase):
         source_mode=False,
         cache_mode=None,
         mutate_during_build=False,
+        dma_mode=None,
+        dma_bad_cache=False,
     ):
         try:
             import filelock
@@ -444,7 +446,10 @@ class FirmwareVerticalTests(unittest.TestCase):
                 source_receipt = snapshots.fetch(fetch_plan, lambda: True, lambda _: None)[
                     "source_receipt"
                 ]
-            plan = builder.prepare("cardputer", "alice", source_receipt) | {"job_id": "job"}
+            plan = builder.prepare(
+                "cardputer", "alice", source_receipt,
+                **({"dma_overlap_mode": dma_mode} if dma_mode else {}),
+            ) | {"job_id": "job"}
             calls = []
             environments = []
             statistics_reads = 0
@@ -518,6 +523,12 @@ class FirmwareVerticalTests(unittest.TestCase):
                             '{"extra_esptool_args":{"chip":"esp32s3"},'
                             '"flash_files":{"0x10000":"firmware.bin"}}'
                         )
+                        if dma_mode:
+                            from test_product_dma import ordinary_outputs
+
+                            ordinary_outputs(directory, dma_mode)
+                            if dma_bad_cache:
+                                (directory / "CMakeCache.txt").write_text("stale cache")
                         if mutate_during_build:
                             (project / "sdkconfig").write_text("generated configuration")
                         emit("warning: synthetic token=hidden", "stderr")
@@ -529,10 +540,10 @@ class FirmwareVerticalTests(unittest.TestCase):
             original_hash = module.hash_file
             prepare_calls = 0
 
-            def prepare_hook(*args):
+            def prepare_hook(*args, **kwargs):
                 nonlocal prepare_calls
                 prepare_calls += 1
-                value = original_prepare(*args)
+                value = original_prepare(*args, **kwargs)
                 if cancel_at == "fingerprint" and prepare_calls == 3:
                     builder.request_stop("job")
                 return value
@@ -651,6 +662,13 @@ class FirmwareVerticalTests(unittest.TestCase):
                     self.assertNotIn("job", builder.manifests)
                     self.assertEqual([], list(root.rglob("broker-manifest.json")))
                     return
+                if dma_bad_cache:
+                    with self.assertRaisesRegex(ValueError, "ordinary_dma_output_invalid") as caught:
+                        builder._execute(plan, lambda _: None)
+                    self.assertEqual(caught.exception.subprocess["idf_build"], 0)
+                    self.assertFalse(builder.manifests)
+                    self.assertEqual([], list(root.rglob("broker-manifest*.json")))
+                    return
                 result = builder._execute(plan, lambda _: None)
             command = next(args for args in calls if args[-1] == "build")
             self.assertIn("--no-hints", command)
@@ -673,6 +691,12 @@ class FirmwareVerticalTests(unittest.TestCase):
             )
             report = builder.read_logs(SimpleNamespace(job_id="job", **vars(request())), "alice")
             self.assertFalse(report["manifest"]["flash_authorized"])
+            if dma_mode:
+                self.assertIn("KASANE_DMA_OVERLAP=" + dma_mode, build_call)
+                self.assertEqual(report["manifest"]["dma_overlap_mode"], dma_mode)
+                self.assertEqual(report["manifest"]["dma_overlap_evidence"]["mode"], dma_mode)
+                self.assertNotIn("diagnostic_modeproof", report["manifest"])
+                self.assertNotIn("diagnostic_entry_sha256", report["manifest"])
             receipt = report["manifest"]["compiler_cache"]
             self.assertEqual(receipt["enabled"], cache_mode == "on")
             self.assertIn("--ccache" if receipt["enabled"] else "--no-ccache", build_call)
@@ -708,6 +732,11 @@ class FirmwareVerticalTests(unittest.TestCase):
             self.assertNotIn("hidden", str(report))
             with self.assertRaises(ValueError):
                 builder.read_logs(SimpleNamespace(job_id="job", **vars(request())), "bob")
+
+    def test_ordinary_dma_builds_and_rejects_stale_output_without_publishing(self):
+        for mode in ("OFF", "ON"):
+            self._exercise_build(source_mode=True, dma_mode=mode, cache_mode="on")
+            self._exercise_build(source_mode=True, dma_mode=mode, dma_bad_cache=True)
 
     def test_missing_and_old_cache_use_explicit_uncached_build(self):
         for mode in ("missing", "old"):

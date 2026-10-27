@@ -66,6 +66,11 @@ class DiagnosticMode(StrEnum):
     OFF = "OFF"
 
 
+class DmaOverlapMode(StrEnum):
+    ON = "ON"
+    OFF = "OFF"
+
+
 class PrepareRequest(StrictModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -153,6 +158,13 @@ class PrepareRequest(StrictModel):
     )
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
     source_receipt: Digest | None = None
+    dma_overlap_mode: DmaOverlapMode | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Ordinary source build: explicit KASANE_DMA_OVERLAP, independent of diagnostics."
+        ),
+    )
     derby_detail_mode: DiagnosticMode | None = None
     derby_dma_mode: DiagnosticMode | None = Field(
         default=None, exclude_if=lambda value: value is None
@@ -183,6 +195,14 @@ class PrepareRequest(StrictModel):
                 raise ValueError("session_not_allowed_with_after")
         if self.lease_seconds is not None and self.after is None:
             raise ValueError("lease_seconds_only_with_after")
+        if "dma_overlap_mode" in self.model_fields_set and (
+            self.dma_overlap_mode is None
+            or self.test != TestName.BUILD
+            or self.source_receipt is None
+            or self.derby_detail_mode is not None
+            or "derby_dma_mode" in self.model_fields_set
+        ):
+            raise ValueError("ordinary_dma_requires_source_build_without_diagnostics")
         if "derby_dma_mode" in self.model_fields_set and (
             self.derby_dma_mode is None
             or self.derby_detail_mode is None

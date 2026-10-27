@@ -326,6 +326,14 @@
           "title": "DiagnosticMode",
           "type": "string"
         },
+        "DmaOverlapMode": {
+          "enum": [
+            "ON",
+            "OFF"
+          ],
+          "title": "DmaOverlapMode",
+          "type": "string"
+        },
         "Kind": {
           "enum": [
             "fetch",
@@ -441,6 +449,18 @@
               "default": null,
               "description": "backup|flash|restore",
               "title": "Device Id"
+            },
+            "dma_overlap_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DmaOverlapMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "build: ordinary source firmware DMA OFF/ON; omit diagnostic axes"
             },
             "flash_job_id": {
               "anyOf": [

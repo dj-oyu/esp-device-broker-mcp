@@ -1921,6 +1921,11 @@ class Broker:
                         if request.derby_dma_mode is not None
                         else {}
                     ),
+                    **(
+                        {"dma_overlap_mode": request.dma_overlap_mode}
+                        if request.dma_overlap_mode is not None
+                        else {}
+                    ),
                 )
                 storage = self.firmware_build.storage(request.project_id or "")
             elif request.test == TestName.DERBY_FIXED and request.flash_job_id is not None:
