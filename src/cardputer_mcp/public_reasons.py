@@ -78,6 +78,7 @@ PUBLIC_REASON_CODES: frozenset[str] = frozenset(
         "build_final_commit_not_authorized",
         "build_security_configuration_not_authorized",
         "firmware_final_commit_not_authorized",
+        "firmware_identity_mismatch",
         "home_recovery_final_commit_not_authorized",
         "home_recovery_history_full",
         "home_recovery_source_changed",

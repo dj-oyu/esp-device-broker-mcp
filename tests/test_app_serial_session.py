@@ -198,7 +198,7 @@ def test_serial_firmware_identity_mismatch_fails_before_open_or_start_commands()
         plan = {"job_id": "synthetic-job", **manager.prepare(backend, options)}
         with pytest.raises(AppFailure) as failure:
             await manager.execute(backend, plan, "owner", lambda _: None, lambda: True)
-        assert failure.value.code == "catalog_changed"
+        assert failure.value.code == "firmware_identity_mismatch"
         assert all(request.op == Op.CATALOG for request in port.requests)
         assert port.open_count == port.close_count == 1 and not port.is_open
         assert backend.active == 0 and not backend.hardware_connected
@@ -258,5 +258,25 @@ def test_serial_disconnect_after_consumption_never_replays_input_or_reopens():
         )
         assert AppSessions().jobs == {}
         assert port.open_count == 1
+
+    asyncio.run(scenario())
+
+
+def test_installed_flash_elf_replaces_stale_configured_pin():
+    async def scenario():
+        port = FramedSyntheticSerial()
+        backend, manager = backend_for(port), AppSessions()
+        # The configured value is an older BIN digest; the verified flash names the ELF.
+        backend.config = backend.config.model_copy(update={"expected_firmware_sha256": "11" * 32})
+        options = AppSessionOptions(app_id="local.hello", duration_ms=1000)
+        elf = "33" * 32
+        manager.installed_elf = lambda: elf
+        plan = {"job_id": "synthetic-job", **manager.prepare(backend, options)}
+        assert plan["expected_firmware_sha256"] == elf
+        manager.installed_elf = lambda: "22" * 32
+        plan = {"job_id": "synthetic-job-2", **manager.prepare(backend, options)}
+        with pytest.raises(AppFailure) as failure:
+            await manager.execute(backend, plan, "owner", lambda _: None, lambda: True)
+        assert failure.value.code == "firmware_identity_mismatch"
 
     asyncio.run(scenario())

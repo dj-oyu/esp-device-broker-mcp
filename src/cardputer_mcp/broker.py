@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -228,6 +229,7 @@ class Broker:
         # Rotation lineage (recorded, current) -> bool; None means exact principals only.
         self.principal_lineage: Callable[[str, str], bool] | None = None
         self.app_sessions = AppSessions()
+        self.app_sessions.installed_elf = self._installed_elf
         self.work_sessions: dict[str, WorkSession] = {}
         self.device_requests: dict[str, DeviceWait] = {}
         self.waiters: list[str] = []
@@ -311,6 +313,32 @@ class Broker:
             return lineage(recorded, current) is True
         except Exception:
             return False
+
+    def _installed_elf(self) -> str | None:
+        """ELF digest of the verified flash that is current on the serial device.
+
+        Flash selects the receipt only after readback and same-device boot, so its plan
+        names the image the device reports; the configured digest may be an older BIN pin.
+        """
+        serial = self.settings.serial
+        if serial is None:
+            return None
+        store = self._store()
+        for device_id, registration in self.settings.flash_devices.items():
+            if registration.selector != serial.selector:
+                continue
+            current = store.firmware_current(device_id)
+            job = store.job(current["completed_job"]) if current else None
+            plan = store.plan(job["plan_hash"]) if job else None
+            elf = plan.get("expected_elf_sha256") if plan else None
+            if (
+                current is not None
+                and current["kind"] == "artifact_bundle"
+                and type(elf) is str
+                and re.fullmatch(r"[a-f0-9]{64}", elf)
+            ):
+                return elf
+        return None
 
     def _store(self) -> Store:
         if self.store is None:
