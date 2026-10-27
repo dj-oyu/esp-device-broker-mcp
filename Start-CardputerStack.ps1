@@ -62,7 +62,7 @@ function Start-HelperConsole([string]$Subcommand, [string]$Title) {
         '-NoLogo -NoProfile -NoExit -EncodedCommand ' + $encoded))
 }
 Start-HelperConsole 'gateway' 'Cardputer gateway'
-Write-Host 'Gateway console opened. With funnel = true, wait for gateway_funnel_open there; after a gateway restart, reconnect the connector in Claude.'
+Write-Host 'Gateway console opened. With funnel = true, wait for gateway_funnel_open there; a connected Claude connector keeps working across gateway restarts.'
 Start-HelperConsole 'webui' 'Cardputer web UI'
 Write-Host 'Web UI console opened. With serve = true, wait for webui_serve_open there; after a restart, log in again.'
 

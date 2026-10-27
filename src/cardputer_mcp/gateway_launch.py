@@ -32,8 +32,9 @@ from filelock import FileLock, Timeout
 from . import client_environment, windows_process
 from .broker_link import canonical_broker_port
 from .config import GatewaySettings, Settings, load_settings
-from .gateway_oauth import create_gateway_app
+from .gateway_oauth import MCP_PATH, canonical_resource, create_gateway_app
 from .gateway_relay import BrokerRelay
+from .gateway_store import GatewayStore, GatewayStoreError, default_store_path
 
 _FUNNEL_ENV_KEYS = ("SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "TEMP", "TMP", "COMSPEC")
 _FUNNEL_CONFIRM_SECONDS = 15.0
@@ -225,10 +226,19 @@ async def serve(
     gateway = prepared.gateway
     if gateway.funnel:
         await asyncio.to_thread(check_tailscale, gateway, run)
+    try:
+        # Next to the gateway's broker key file, in the same private directory.
+        store = GatewayStore(
+            default_store_path(gateway.broker_env_file),
+            subject=gateway.allowed_google_sub,
+            resource=canonical_resource(gateway.public_url + MCP_PATH),
+        )
+    except GatewayStoreError as error:
+        raise GatewayLaunchError(error.reason) from None
     google_http = httpx2.AsyncClient(trust_env=False, follow_redirects=False)
     relay = BrokerRelay(prepared.broker.url, prepared.broker.token, gateway.broker_env_file)
     app, _provider = create_gateway_app(
-        gateway, prepared.google_secret, http=google_http, mcp_app=relay
+        gateway, prepared.google_secret, http=google_http, mcp_app=relay, store=store
     )
     server = _Server(
         uvicorn.Config(
@@ -309,6 +319,7 @@ async def serve(
             pass
         await relay.aclose()
         await google_http.aclose()
+        store.close()
         _event("gateway_stopped")
     return code
 
