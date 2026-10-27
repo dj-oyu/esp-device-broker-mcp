@@ -40,6 +40,7 @@ def page(
         f'<meta name="csrf-token" content="{escape(csrf, quote=True)}"></head>'
         "<body>"
         '<header><h1>Cardputer</h1><span id="live" class="live">接続中…</span>'
+        '<button type="button" id="pip" hidden>ミニ表示</button>'
         '<form method="post" action="/logout">'
         f'<input type="hidden" name="csrf" value="{escape(csrf, quote=True)}">'
         '<button type="submit">ログアウト</button></form></header>'
@@ -53,6 +54,7 @@ def page(
         '<pre id="log-lines"></pre>'
         '<button type="button" id="older" hidden>続きを読む</button></section>'
         "</main>"
+        '<video id="pip-video" class="pipvideo" muted playsinline></video>'
         '<script src="/static/app.js"></script>'
         "</body></html>"
     )
@@ -101,6 +103,8 @@ button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid
 .logs .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
 .l-error { color: var(--bad); } .l-warning { color: var(--warn); }
 .notice { padding: 48px 16px; text-align: center; }
+.pipvideo { position: fixed; right: 0; bottom: 0; width: 2px; height: 2px; opacity: 0;
+  pointer-events: none; }
 """
 
 APP_JS = r"""
@@ -205,6 +209,7 @@ function apply(message) {
   }
   renderState();
   renderJobs();
+  drawPip();
 }
 
 function connect() {
@@ -264,6 +269,103 @@ async function loadLogs(older) {
   }
   logCursor = result.next_cursor || null;
   document.getElementById("older").hidden = !result.has_more;
+}
+
+// Picture-in-picture: the latest job drawn on a canvas and shown as a <video> (iOS only
+// allows video). Nothing is sent: it draws what the page already received over SSE.
+const pipVideo = document.getElementById("pip-video");
+const pipButton = document.getElementById("pip");
+let pipCanvas = null;
+let pipTimer = null;
+
+function pipSupported() {
+  return typeof pipVideo.requestPictureInPicture === "function" ||
+    typeof pipVideo.webkitSetPresentationMode === "function";
+}
+
+function pipJob() {
+  const live = (card) => card.state === "running" || card.state === "queued";
+  return cards.find(live) || cards[0] || null;
+}
+
+function pipElapsed(card) {
+  if (!card || !card.created_utc) return "";
+  const start = new Date(card.created_utc).getTime();
+  const live = card.state === "running" || card.state === "queued";
+  const end = live || !card.finished_utc ? Date.now() : new Date(card.finished_utc).getTime();
+  if (isNaN(start) || isNaN(end)) return "";
+  const total = Math.max(0, Math.round((end - start) / 1000));
+  const two = (n) => String(n).padStart(2, "0");
+  return Math.floor(total / 60) + ":" + two(total % 60);
+}
+
+function drawPip() {
+  if (!pipCanvas) return;
+  const g = pipCanvas.getContext("2d");
+  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const fg = dark ? "#ececea" : "#1d1d1b";
+  const muted = dark ? "#a3a39d" : "#6b6b66";
+  const tone = { succeeded: "#1f7a3a", failed: "#b42318", cancelled: "#b42318",
+    running: "#1d4ed8", queued: "#1d4ed8", needs_review: "#a15c00" };
+  g.fillStyle = dark ? "#151514" : "#f7f7f5";
+  g.fillRect(0, 0, pipCanvas.width, pipCanvas.height);
+  const card = pipJob();
+  const text = (value, x, y, size, color, bold) => {
+    g.font = (bold ? "bold " : "") + size + "px system-ui, sans-serif";
+    g.fillStyle = color;
+    g.fillText(String(value).slice(0, 34), x, y);
+  };
+  if (!card) {
+    text("ジョブなし", 16, 60, 22, fg, true);
+  } else {
+    text(card.test || card.job_id, 16, 36, 22, fg, true);
+    text(card.state || "unknown", 16, 72, 26, tone[card.state] || muted, true);
+    text(pipElapsed(card), 200, 72, 26, fg, false);
+    if (card.stage) text(card.stage, 16, 104, 16, muted, false);
+    const detail = card.failure_reason ? "理由: " + card.failure_reason
+      : card.result ? "結果: " + card.result : "";
+    if (detail) text(detail, 16, 130, 16, muted, false);
+  }
+  const live = document.getElementById("live").textContent;
+  text(live + " " + new Date().toLocaleTimeString(), 16, 166, 14, muted, false);
+}
+
+function stopPip() {
+  if (pipTimer) clearInterval(pipTimer);
+  pipTimer = null;
+  pipCanvas = null;
+  pipVideo.pause();
+  pipVideo.srcObject = null;
+}
+
+async function startPip() {
+  if (pipCanvas) return;
+  pipCanvas = document.createElement("canvas");
+  pipCanvas.width = 320;
+  pipCanvas.height = 180;
+  drawPip();
+  pipVideo.srcObject = pipCanvas.captureStream(5);
+  pipTimer = setInterval(drawPip, 1000);
+  try {
+    await pipVideo.play();
+    if (typeof pipVideo.requestPictureInPicture === "function") {
+      await pipVideo.requestPictureInPicture();
+    } else {
+      pipVideo.webkitSetPresentationMode("picture-in-picture");
+    }
+  } catch (error) {
+    stopPip();
+    setLive("ミニ表示を開始できません", "off");
+  }
+}
+
+if (pipSupported()) {
+  pipButton.hidden = false;
+  pipButton.addEventListener("click", startPip);
+  pipVideo.addEventListener("leavepictureinpicture", stopPip);
+  pipVideo.addEventListener("webkitpresentationmodechanged", () => {
+    if (pipVideo.webkitPresentationMode !== "picture-in-picture") stopPip();
+  });
 }
 
 document.getElementById("close-logs").addEventListener("click", () => {
