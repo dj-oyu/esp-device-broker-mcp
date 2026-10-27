@@ -19,8 +19,9 @@ Supported operations:
   the same owner; see [restart effects and limits](DEVICE-LOGS.md#restart-once-and-observe-boot-output)
 - `hello`: exit the current app, select Apps category 0 and row 0, launch HELLO,
   press Enter once, validate startup/count/teardown markers, close
-- `capture_home`: start from verified physical HOME, send one Esc and confirm HOME,
-  receive one bounded render-buffer frame after a fixed s command, close
+- `capture_home`: send one fixed s command with no navigation and receive one bounded
+  render-buffer frame of the screen as it is now (HOME or a running app), close.
+  A text editor takes s as input and does not answer, so that capture fails
 
 This fixed serial backend has no flash, arbitrary reset command, JavaScript upload, generic shell, raw serial tool, GRID,
 fault injection, arbitrary current-app screenshot, project build, ESP-IDF subprocess, or Tunnel setup

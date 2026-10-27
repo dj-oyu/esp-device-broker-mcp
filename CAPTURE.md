@@ -22,15 +22,13 @@ and creates no access keys.
 
 ## Effects and evidence
 
-Real capture requires the operator to verify the physical device is already at
-HOME. It sends one fixed Esc (`0x1b`) and waits for a fresh `HOME_READY`, then
-establishes an empty quiet serial boundary and sends one
-fixed `s`. There is no raw serial or arbitrary key tool. The same serial worker
+Real capture captures the screen as it is now (HOME or a running app). It
+establishes an empty quiet serial boundary and sends one fixed `s`, with no Esc
+or other navigation. There is no raw serial or arbitrary key tool. The same serial worker
 receives the entire legacy frame, detects fault markers, and closes the port.
 Only a confirmed close and complete validated frame can publish the image.
-If the initial state is wrong, Esc can exit an app/editor and lose unsaved state.
-It is never repeated to force navigation. The text screen treats `q` as text,
-so it is not used as a Back command here. Opening/closing USB can still glitch
+A text editor treats `s` as input and does not answer, so that capture times
+out and fails; nothing is repeated or navigated to force a frame. Opening/closing USB can still glitch
 driver control lines or reset the device.
 
 The inspected PocketJS firmware emits a 240×135 RGB565 render buffer using
@@ -41,8 +39,8 @@ instantaneous snapshot or that the LCD accepted/displayed that frame. Metadata
 reports `coherent_frame` and `lcd_transfer_ack` as `unknown`.
 
 This legacy protocol has no request nonce and no cryptographic firmware identity.
-A fresh HOME acknowledgement and quiet boundary narrow stale-data confusion;
-they cannot attest the physical display. The local operator must verify the
+A quiet boundary narrows stale-data confusion;
+it cannot attest the physical display. The local operator must verify the
 configured firmware and close competing serial tools before explicitly executing a plan.
 No frame is returned after a timeout, invalid frame, unexpected app marker,
 disconnect, or uncertain close. Such jobs require review and are never retried.
@@ -61,8 +59,8 @@ disconnect, or uncertain close. Such jobs require review and are never retried.
 5. Release the idle lease. Retained-image reads remain possible until expiry.
 
 Serial startup still requires explicit opt-in and registered USB/firmware
-configuration. Establish that the target is at HOME and close competing serial
-applications before execution: Esc may exit an app and lose unsaved state.
+configuration. Close competing serial
+applications before execution.
 Configured hashes do not cryptographically attest the running firmware.
 Legacy local approval, image-decision and supervisor arming commands are retired.
 Installing this change does not acknowledge existing uncertain work.
