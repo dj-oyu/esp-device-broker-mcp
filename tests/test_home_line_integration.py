@@ -9,7 +9,7 @@ from test_serial_capture import device
 
 from cardputer_mcp.broker import Broker
 from cardputer_mcp.config import Settings
-from cardputer_mcp.models import AcquireRequest, ExecuteRequest, LogRequest, Origin, PrepareRequest
+from cardputer_mcp.models import AcquireRequest, ExecuteRequest, Origin, PrepareRequest
 from cardputer_mcp.models import TestName as Action
 
 PRINCIPAL = "ephemeral:local_cli"
@@ -62,23 +62,6 @@ async def test_normal_explicit_capture_never_installs_raw_home_retention(tmp_pat
         prepared = prepare(env)
         await execute(env, prepared)
         assert env.broker.job("private-home")["state"] == "succeeded"
-        assert env.port.writes == [b"\x1b", b"s"]
+        assert env.port.writes == [b"s"]
         assert_no_private(env.broker.status())
         assert_no_private(list(env.broker._store().db.iterdump()))
-
-
-async def test_failed_home_wait_keeps_metadata_but_no_raw_wire_or_storage(tmp_path):
-    async with running(tmp_path) as env:
-        prepared = prepare(env)
-        await execute(env, prepared)
-        job = env.broker.job("private-home")
-        # Review classification fix: a HOME wait timeout in a capture job (not a DERBY
-        # HOME recovery source) with a confirmed close is `failed` (was needs_review).
-        assert job["state"] == "failed"
-        assert job["diagnostic"]["receive_summary"]["after_command"]["home_ready_token_lines"] == 1
-        assert env.port.writes == [b"\x1b"] and env.port.closes == 1
-        assert_no_private(job)
-        assert_no_private(env.broker.read_logs(LogRequest()))
-        assert_no_private(list(env.broker._store().db.iterdump()))
-        for path in env.broker.settings.state_dir.glob("history.sqlite3*"):
-            assert SECRET.encode() not in path.read_bytes()

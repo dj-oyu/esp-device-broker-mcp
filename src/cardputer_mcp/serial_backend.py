@@ -413,23 +413,21 @@ class Reader:
 
 
 def capture_home(reader: Reader) -> CapturedImage:
-    """One explicitly requested legacy HOME capture; no retry, navigation loop or replay.
+    """One explicitly requested legacy render-buffer capture of the current screen.
 
-    Firmware 22f6d54 main/main.c:211-225 treats q/s as text in an editor,
-    but :214 and :361 map Esc to KEY_BACK. The operator must first verify HOME
-    and refrain from physical input: legacy firmware has no atomic capture op.
+    No navigation: the firmware treats s as a capture request on any non-text
+    screen (main/main.c:225; the running-app tick at :882 honours it too), so
+    the app that is running is captured as it is. A text editor takes s as input
+    and would not answer; the frame then times out and the job fails.
+    There is no retry, navigation loop or replay, and legacy firmware has no
+    atomic capture op.
     https://github.com/dj-oyu/cardputer-adv-pocketjs/blob/22f6d54a5c2fad6f7f40a8d5aa7cea7d7f371c51/main/main.c#L211-L225
-    https://github.com/dj-oyu/cardputer-adv-pocketjs/blob/22f6d54a5c2fad6f7f40a8d5aa7cea7d7f371c51/main/main.c#L360-L362
     https://github.com/dj-oyu/cardputer-adv-pocketjs/blob/22f6d54a5c2fad6f7f40a8d5aa7cea7d7f371c51/main/hal/board.c#L419-L439
     """
     reader.step = "capture_home"
-    reader.expected_marker = "HOME_READY"
+    reader.expected_marker = "CAPTURE_END"
     reader.capture_guard = True
     try:
-        reader.capture_quiet_boundary()
-        # Esc is intentionally fixed, and used only for this exact HOME marker.
-        # A modal/editor that does not reach HOME is a failure, never another Esc.
-        reader.command(b"\x1b", rb"HOME_READY", step="capture_home")
         reader.capture_quiet_boundary()
         reader.capture_decoder = LegacyCaptureDecoder()
         reader.expected_marker = "CAPTURE_END"
@@ -631,11 +629,11 @@ class SerialBackend:
         ]
         if test == TestName.CAPTURE:
             effects = [
-                "Operator must verify device is already HOME and firmware is correct; "
-                "do not use physical inputs until this job finishes",
+                "Operator must verify firmware is correct; captures the screen as it is "
+                "now, with no navigation; do not use physical inputs until this job finishes",
                 "Opens and closes USB serial; drivers may glitch control lines or reset device",
-                "Sends one fixed Esc, requires fresh HOME_READY, then sends one s; "
-                "a wrong initial screen can exit an app/editor and lose unsaved state",
+                "Sends one s without Esc or other navigation; "
+                "a text editor takes s as input and may not answer",
                 "Forces HOME redraw and transmits rendered pixels, which may contain private data",
                 "One frame only, 18-second reader budget, no automatic retry",
                 "Render-buffer capture does not prove LCD transfer or coherent snapshot",

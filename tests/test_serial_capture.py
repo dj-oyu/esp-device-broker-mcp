@@ -133,7 +133,7 @@ async def test_capture_uses_one_reader_one_escape_one_shot_and_confirmed_close(s
     assert result.image.png.startswith(b"\x89PNG")
     assert result.image.metadata()["coherent_frame"] == "unknown"
     assert result.image.metadata()["lcd_transfer_ack"] == "unknown"
-    assert port.writes == [b"\x1b", b"s"]
+    assert port.writes == [b"s"]
     assert port.opens == port.closes == 1
     assert not port.is_open and not backend.hardware_connected
     assert len(port.read_threads) == 1
@@ -148,7 +148,7 @@ def test_preflight_requires_expected_firmware_and_lists_true_effects_without_ope
     assert plan["protocol"] == "pocketjs-legacy-capture-v1"
     assert plan["firmware_verification"] == "configured_expected_hash_only"
     effects = " ".join(plan["effects"])
-    for phrase in ("already HOME", "one fixed Esc", "lose unsaved", "private data", "18-second"):
+    for phrase in ("without Esc", "no navigation", "private data", "18-second"):
         assert phrase in effects
     assert "does not prove LCD" in effects
     missing = backend.config.model_copy(update={"expected_firmware_sha256": None})
@@ -161,40 +161,34 @@ def test_preflight_requires_expected_firmware_and_lists_true_effects_without_ope
 @pytest.mark.parametrize(
     ("kwargs", "code", "writes"),
     [
-        ({"preloaded": [b"HOME_READY\n"], "home": b""}, "serial_capture_timeout", [b"\x1b"]),
         ({"preloaded": [b"HOME_RE"]}, "serial_capture_boundary", []),
-        ({"home": b"HOME_READY\npartial"}, "serial_capture_boundary", [b"\x1b"]),
-        ({"home": b"HOME_READY"}, "serial_capture_timeout", [b"\x1b"]),
-        ({"home": b"APP_ID local.wrong\nHOME_READY\n"}, "serial_capture_unexpected_app", [b"\x1b"]),
-        ({"home": b"HOME_READY\nAPP_ID local.wrong\n"}, "serial_capture_unexpected_app", [b"\x1b"]),
-        ({"home": b"CAPTURE_BEGIN 240 135\nHOME_READY\n"}, "serial_capture_boundary", [b"\x1b"]),
-        ({"shot": b""}, "serial_capture_timeout", [b"\x1b", b"s"]),
-        ({"shot": frame()[:-1]}, "serial_capture_timeout", [b"\x1b", b"s"]),
+        ({"shot": b""}, "serial_capture_timeout", [b"s"]),
+        ({"shot": frame()[:-1]}, "serial_capture_timeout", [b"s"]),
         (
             {"shot": b"CAPTURE_BEGIN 240 135\nCAPTURE_END\n"},
             "serial_capture_invalid",
-            [b"\x1b", b"s"],
+            [b"s"],
         ),
         (
             {"shot": frame().replace(b"PIX 12 ", b"PIX 11 ")},
             "serial_capture_invalid",
-            [b"\x1b", b"s"],
+            [b"s"],
         ),
         (
             {"shot": frame() + b"APP_ID local.wrong\n"},
             "serial_capture_unexpected_app",
-            [b"\x1b", b"s"],
+            [b"s"],
         ),
         (
             {"after_frame": [b"APP_ID local.wrong\n"]},
             "serial_capture_unexpected_app",
-            [b"\x1b", b"s"],
+            [b"s"],
         ),
-        ({"after_frame": [frame()]}, "serial_capture_invalid", [b"\x1b", b"s"]),
-        ({"after_frame": [b"CAPTURE_BEGIN"]}, "serial_capture_boundary", [b"\x1b", b"s"]),
-        ({"after_frame": [b"Guru Meditation Error\n"]}, "serial_fault_marker", [b"\x1b", b"s"]),
-        ({"after_frame": [OSError("SYNTHETIC_SECRET")]}, "serial_read_failed", [b"\x1b", b"s"]),
-        ({"partial_write": True}, "incomplete_serial_write", [b"\x1b", b"s"]),
+        ({"after_frame": [frame()]}, "serial_capture_invalid", [b"s"]),
+        ({"after_frame": [b"CAPTURE_BEGIN"]}, "serial_capture_boundary", [b"s"]),
+        ({"after_frame": [b"Guru Meditation Error\n"]}, "serial_fault_marker", [b"s"]),
+        ({"after_frame": [OSError("SYNTHETIC_SECRET")]}, "serial_read_failed", [b"s"]),
+        ({"partial_write": True}, "incomplete_serial_write", [b"s"]),
     ],
 )
 async def test_capture_failures_are_fixed_bounded_and_do_not_retry(kwargs, code, writes):
@@ -214,7 +208,7 @@ async def test_frame_after_fault_does_not_return_an_image():
     backend, port, plan = device(shot=b"panic'ed SYNTHETIC_SECRET\n" + frame())
     with pytest.raises(SerialFailure, match="^serial_fault_marker$"):
         await backend.execute(plan, lambda _: None)
-    assert port.writes == [b"\x1b", b"s"]
+    assert port.writes == [b"s"]
 
 
 async def test_image_is_withheld_if_port_close_fails():
