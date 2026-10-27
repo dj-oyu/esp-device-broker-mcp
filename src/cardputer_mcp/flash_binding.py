@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .diagnostic_registry import same_diagnostic_selection
-from .product_dma import same_dma_selection
 from .models import TestName
 from .offload_io import pure_io
+from .product_dma import same_dma_selection
 from .registration_digest import project_digest
 
 if TYPE_CHECKING:
@@ -68,7 +68,9 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             principal,
             project_id,
         )
-        if not same_diagnostic_selection(manifest, build) or not same_dma_selection(manifest, build):
+        if not same_diagnostic_selection(manifest, build) or not same_dma_selection(
+            manifest, build
+        ):
             raise ValueError
         receipt = build.get("source_receipt")
         provenance = manifest.get("source_provenance")

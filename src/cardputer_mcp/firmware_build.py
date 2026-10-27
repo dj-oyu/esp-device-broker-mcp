@@ -626,7 +626,7 @@ class FirmwareBuild:
                     "idf_build_failed_needs_review",
                     "build_target_mismatch",
                     "build_artifacts_missing",
-            "ordinary_dma_output_invalid",
+                    "ordinary_dma_output_invalid",
                     "artifact_count_limit",
                     "trusted_powershell_missing",
                     "external_idf_environment_invalid",
@@ -895,9 +895,7 @@ class FirmwareBuild:
             environment_fingerprint,
             {key: plan.get(key) for key in ("derby_detail_mode", "derby_dma_mode")}
             | (
-                {"dma_overlap_mode": plan["dma_overlap_mode"]}
-                if "dma_overlap_mode" in plan
-                else {}
+                {"dma_overlap_mode": plan["dma_overlap_mode"]} if "dma_overlap_mode" in plan else {}
             ),
         )
         logs.append("-- Compiler cache: " + cache_receipt["reason"])

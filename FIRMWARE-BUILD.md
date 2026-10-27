@@ -513,7 +513,6 @@ This build evidence grants no flash authority and is independent of diagnostic
 proof contracts. The existing diagnostic selection and all its proof checks below
 are unchanged.
 
-
 ## Fixed diagnostic recipes and ON/OFF comparison
 
 `submit.request.derby_detail_mode` accepts only `ON` or `OFF` for a

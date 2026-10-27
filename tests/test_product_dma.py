@@ -27,7 +27,9 @@ def ordinary_outputs(root, mode, **kwargs):
     artifacts = []
     for name, raw in files.items():
         (root / name).write_bytes(raw)
-        artifacts.append({"name": name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+        artifacts.append(
+            {"name": name, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        )
     for name in ("diagnostic-mode-proof.json", "dma-diagnostic-mode-proof.json"):
         (root / name).unlink()
     (root / "CMakeCache.txt").write_text(f"KASANE_DMA_OVERLAP:BOOL={mode}\n")
@@ -41,25 +43,42 @@ def test_ordinary_plan_schema_identity_and_cache_are_separate(tmp_path, mode):
     from cardputer_mcp.plan_approval import PlanApprovals
 
     builder, project, source, _ = build_fixture(tmp_path)
-    request = PrepareRequest(job_id="build", test="firmware_build", project_id="fixture",
-                             source_receipt="a" * 64, dma_overlap_mode=mode)
+    request = PrepareRequest(
+        job_id="build",
+        test="firmware_build",
+        project_id="fixture",
+        source_receipt="a" * 64,
+        dma_overlap_mode=mode,
+    )
     assert request.model_dump(mode="json")["dma_overlap_mode"] == mode
     with patch.object(builder, "_project", return_value=(project, source)):
         plan = builder.prepare("fixture", "owner", "a" * 64, dma_overlap_mode=mode)
         ordinary = builder.prepare("fixture", "owner", "a" * 64)
-        opposite = builder.prepare("fixture", "owner", "a" * 64,
-                                   dma_overlap_mode="ON" if mode == "OFF" else "OFF")
+        opposite = builder.prepare(
+            "fixture", "owner", "a" * 64, dma_overlap_mode="ON" if mode == "OFF" else "OFF"
+        )
         assert len({p["fingerprint"] for p in (plan, ordinary, opposite)}) == 3
         assert "diagnostic_entry_sha256" not in plan
         assert plan["argv_template"][-3:] == ["-D", "KASANE_DMA_OVERLAP=" + mode, "build"]
         assert not any("DETAIL" in arg for arg in plan["argv_template"])
-        schema_plan = dict(version=1, broker_epoch="e" * 32, session_id="a" * 32,
-                           device="mock-cardputer", backend="mock", job_id="build",
-                           test="firmware_build", **plan)
+        schema_plan = dict(
+            version=1,
+            broker_epoch="e" * 32,
+            session_id="a" * 32,
+            device="mock-cardputer",
+            backend="mock",
+            job_id="build",
+            test="firmware_build",
+            **plan,
+        )
         PlanApprovals._schema(schema_plan)
-        for key, value in (("dma_overlap_mode", None), ("dma_overlap_mode", True),
-                           ("derby_detail_mode", "ON"), ("source_receipt", None),
-                           ("argv_template", ordinary["argv_template"])):
+        for key, value in (
+            ("dma_overlap_mode", None),
+            ("dma_overlap_mode", True),
+            ("derby_detail_mode", "ON"),
+            ("source_receipt", None),
+            ("argv_template", ordinary["argv_template"]),
+        ):
             changed = copy.deepcopy(schema_plan)
             changed[key] = value
             with pytest.raises((ValueError, TypeError)):
@@ -69,12 +88,23 @@ def test_ordinary_plan_schema_identity_and_cache_are_separate(tmp_path, mode):
         for index, selected in enumerate((mode, "ON" if mode == "OFF" else "OFF")):
             output = tmp_path / str(index)
             output.mkdir()
-            receipt = configure_ccache(policy, {}, tmp_path / "cache", output, "fixture", "owner",
-                                       "e" * 64, {"dma_overlap_mode": selected})
+            receipt = configure_ccache(
+                policy,
+                {},
+                tmp_path / "cache",
+                output,
+                "fixture",
+                "owner",
+                "e" * 64,
+                {"dma_overlap_mode": selected},
+            )
             namespaces.append(receipt["namespace"])
         assert namespaces[0] != namespaces[1]
         (project.project_dir / "CMakeLists.txt").write_text("changed source")
-        assert builder.prepare("fixture", "owner", "a" * 64, dma_overlap_mode=mode)["fingerprint"] != plan["fingerprint"]
+        assert (
+            builder.prepare("fixture", "owner", "a" * 64, dma_overlap_mode=mode)["fingerprint"]
+            != plan["fingerprint"]
+        )
 
 
 def test_ordinary_request_rejects_invalid_or_ambiguous_selection():
@@ -82,8 +112,12 @@ def test_ordinary_request_rejects_invalid_or_ambiguous_selection():
     for value in (None, True, False, "AUTO", "on", "-DANY=ON"):
         with pytest.raises(ValueError):
             PrepareRequest(**fields, dma_overlap_mode=value)
-    for extra in ({"derby_detail_mode": "OFF"}, {"derby_dma_mode": "ON"},
-                  {"source_receipt": None}, {"test": "firmware_fetch_source"}):
+    for extra in (
+        {"derby_detail_mode": "OFF"},
+        {"derby_dma_mode": "ON"},
+        {"source_receipt": None},
+        {"test": "firmware_fetch_source"},
+    ):
         with pytest.raises(ValueError):
             PrepareRequest(**(fields | extra), dma_overlap_mode="ON")
     assert "dma_overlap_mode" not in PrepareRequest(**fields).model_dump(mode="json")
@@ -99,23 +133,39 @@ def test_actual_outputs_verify_without_diagnostic_producers(tmp_path, mode):
     assert evidence["mode"] == mode
     assert "cmake_cache" not in evidence
     assert "hardware_tested" not in evidence
-    assert evidence["native_symbols"] == (["board_present_finish", "board_present_submit"] if mode == "ON" else [])
-    for cache in ("", "KASANE_DMA_OVERLAP:BOOL=AUTO\n", "KASANE_DMA_OVERLAP:UNINITIALIZED=" + mode,
-                  f"KASANE_DMA_OVERLAP:BOOL={mode}\nKASANE_DMA_OVERLAP:BOOL={mode}\n",
-                  "KASANE_DMA_OVERLAP:BOOL=" + ("ON" if mode == "OFF" else "OFF")):
+    assert evidence["native_symbols"] == (
+        ["board_present_finish", "board_present_submit"] if mode == "ON" else []
+    )
+    for cache in (
+        "",
+        "KASANE_DMA_OVERLAP:BOOL=AUTO\n",
+        "KASANE_DMA_OVERLAP:UNINITIALIZED=" + mode,
+        f"KASANE_DMA_OVERLAP:BOOL={mode}\nKASANE_DMA_OVERLAP:BOOL={mode}\n",
+        "KASANE_DMA_OVERLAP:BOOL=" + ("ON" if mode == "OFF" else "OFF"),
+    ):
         (tmp_path / "CMakeCache.txt").write_text(cache)
         with pytest.raises(ValueError, match="ordinary_dma_output_invalid"):
             collect_dma_evidence(tmp_path, mode, source, artifacts)
 
 
 @pytest.mark.parametrize("mode", ["OFF", "ON"])
-@pytest.mark.parametrize("damage", ["symbols", "elf", "bin", "receipt", "missing", "duplicate"])
+@pytest.mark.parametrize("damage", ["symbols", "elf", "bin", "pair", "receipt", "missing", "duplicate"])
 def test_mismatched_linked_artifacts_are_rejected(tmp_path, mode, damage):
-    kwargs = {"native_symbols": () if mode == "ON" else ("board_present_submit",)} if damage == "symbols" else {}
+    kwargs = (
+        {"native_symbols": () if mode == "ON" else ("board_present_submit",)}
+        if damage == "symbols"
+        else {}
+    )
     source, artifacts = ordinary_outputs(tmp_path, mode, **kwargs)
     if damage in ("elf", "bin"):
         path = tmp_path / ("cardputer_pocketjs." + damage)
         path.write_bytes(path.read_bytes() + b"stale")
+    elif damage == "pair":
+        path = tmp_path / "cardputer_pocketjs.bin"
+        raw = bytearray(path.read_bytes())
+        raw[176:208] = bytes(32)
+        path.write_bytes(raw)
+        artifacts[0]["sha256"] = hashlib.sha256(raw).hexdigest()
     elif damage == "receipt":
         artifacts[0]["sha256"] = "f" * 64
     elif damage == "missing":
@@ -141,8 +191,13 @@ def test_restart_rechecks_cache_and_owned_manifest_mode(tmp_path, mode):
         case.store.put_plan(digest, plan)
         case.store.db.execute("UPDATE jobs SET plan_hash=? WHERE id=?", (digest, "build-0"))
         case.store.db.commit()
-        manifest.update(build_plan_hash=digest, source_provenance=source, dma_overlap_mode=mode,
-                        dma_overlap_evidence=evidence, artifacts=artifacts)
+        manifest.update(
+            build_plan_hash=digest,
+            source_provenance=source,
+            dma_overlap_mode=mode,
+            dma_overlap_evidence=evidence,
+            artifacts=artifacts,
+        )
         changed = copy.deepcopy(manifest)
         changed["dma_overlap_mode"] = "ON" if mode == "OFF" else "OFF"
         with pytest.raises(ValueError, match="invalid_internal_artifact_receipt"):

@@ -20,8 +20,13 @@ def validate_dma_record(provenance: dict[str, Any], record: dict[str, Any]) -> N
             raise ValueError(_ERROR)
         return
     mode = record["dma_overlap_mode"]
-    if type(mode) is not str or mode not in ("OFF", "ON") or any(
-        key in record for key in ("derby_detail_mode", "derby_dma_mode", "diagnostic_entry_sha256")
+    if (
+        type(mode) is not str
+        or mode not in ("OFF", "ON")
+        or any(
+            key in record
+            for key in ("derby_detail_mode", "derby_dma_mode", "diagnostic_entry_sha256")
+        )
     ):
         raise ValueError("ordinary_dma_requires_source_build_without_diagnostics")
     validate_source_identity(provenance)

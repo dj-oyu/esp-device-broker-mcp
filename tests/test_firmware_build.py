@@ -447,7 +447,9 @@ class FirmwareVerticalTests(unittest.TestCase):
                     "source_receipt"
                 ]
             plan = builder.prepare(
-                "cardputer", "alice", source_receipt,
+                "cardputer",
+                "alice",
+                source_receipt,
                 **({"dma_overlap_mode": dma_mode} if dma_mode else {}),
             ) | {"job_id": "job"}
             calls = []
@@ -663,7 +665,9 @@ class FirmwareVerticalTests(unittest.TestCase):
                     self.assertEqual([], list(root.rglob("broker-manifest.json")))
                     return
                 if dma_bad_cache:
-                    with self.assertRaisesRegex(ValueError, "ordinary_dma_output_invalid") as caught:
+                    with self.assertRaisesRegex(
+                        ValueError, "ordinary_dma_output_invalid"
+                    ) as caught:
                         builder._execute(plan, lambda _: None)
                     self.assertEqual(caught.exception.subprocess["idf_build"], 0)
                     self.assertFalse(builder.manifests)
