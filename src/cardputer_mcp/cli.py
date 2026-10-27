@@ -128,6 +128,12 @@ def parser() -> argparse.ArgumentParser:
         "when the TOML's [gateway] sets funnel = true",
     )
     gateway.add_argument("--config", type=Path, required=True, help="Broker TOML with [gateway]")
+    webui = sub.add_parser(
+        "webui",
+        help="Read-only web UI (Google login); runs tailscale serve (tailnet only) only "
+        "when the TOML's [webui] sets serve = true",
+    )
+    webui.add_argument("--config", type=Path, required=True, help="Broker TOML with [webui]")
     sub.add_parser(
         "http-diagnostics",
         help="Read safe HTTP denial counters from the resident broker; local environment auth only",
@@ -467,6 +473,18 @@ def main() -> None:
                 print("gateway_use_config_files_only", file=sys.stderr)
                 raise SystemExit(1)
             raise SystemExit(run_gateway(args.config))
+        elif args.command == "webui":
+            from .webui_launch import run as run_webui
+
+            if (
+                args.auth_source != "none"
+                or args.auth_file is not None
+                or args.url != DEFAULT_BROKER_URL
+                or args.client != Origin.LOCAL.value
+            ):
+                print("webui_use_config_files_only", file=sys.stderr)
+                raise SystemExit(1)
+            raise SystemExit(run_webui(args.config))
         elif args.command == "gui":
             from .gui import run as run_gui
 

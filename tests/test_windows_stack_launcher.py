@@ -9,23 +9,30 @@ def source():
     return SCRIPT.read_text()
 
 
-def test_order_is_broker_then_gateway_then_gui():
+def test_order_is_broker_then_gateway_then_webui_then_gui():
     text = source()
     broker = text.index("Start-Cardputer.ps1') @arguments")
-    gateway = text.index("Start-Process")
+    gateway = text.index("Start-HelperConsole 'gateway'")
+    webui = text.index("Start-HelperConsole 'webui'")
     gui = text.index("--auth-source environment gui --config")
-    assert broker < gateway < gui
+    assert broker < gateway < webui < gui
 
 
-def test_gateway_console_gets_paths_only_and_drops_secrets():
+def test_helper_consoles_get_paths_only_and_drop_secrets():
     text = source()
-    command = text.split("$gatewayCommand =", 1)[1].split("$encoded =", 1)[0]
+    command = text.split("$helperCommand =", 1)[1].split("$encoded =", 1)[0]
     assert "TOKEN" not in command and "API_KEY" not in command
     assert "Remove-Item -LiteralPath (''Env:'' + $_.Name)" in command
     assert "''CARDPUTER_*''" in command and "''OPENAI_*''" in command
-    # Secrets are removed before the gateway starts.
-    assert command.index("Remove-Item") < command.index("gateway --config")
+    # Secrets are removed before the helper starts.
+    assert command.index("Remove-Item") < command.index("$Subcommand")
     assert "--auth-source" not in command
+    # Only these two subcommands are started as helpers.
+    calls = [line for line in text.splitlines() if line.startswith("Start-HelperConsole ")]
+    assert calls == [
+        "Start-HelperConsole 'gateway' 'Cardputer gateway'",
+        "Start-HelperConsole 'webui' 'Cardputer web UI'",
+    ]
 
 
 def test_nothing_is_stopped_and_no_persistent_environment_is_written():

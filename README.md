@@ -504,8 +504,14 @@ Claude asks you to connect again.
 Step-by-step setup (Tailscale, Google Cloud, key and secret files, TOML, adding
 the connector in Claude, error codes): [CLAUDE-GATEWAY.md](CLAUDE-GATEWAY.md).
 `Start-CardputerStack.ps1` (same arguments as `Start-CardputerGui.ps1`) starts the
-broker, then the gateway in its own console without the broker tokens or Tunnel
-API key, then the GUI.
+broker, then the gateway and the web UI in their own consoles without the broker
+tokens or Tunnel API key, then the GUI.
+
+The read-only web UI (`cardputer webui --config <broker TOML>`, `[webui]`) shows
+the operator state, jobs, job logs and live updates to one Google account,
+tailnet-only through `tailscale serve`, with a local read-only broker key. It
+never exposes broker keys, the Google secret or environment variables to the
+browser. Setup and security model: [WEB-UI.md](WEB-UI.md).
 
 Prerequisites (one-time, outside this repository):
 

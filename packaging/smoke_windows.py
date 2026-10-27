@@ -184,6 +184,14 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
         )
         if gateway.returncode != 1 or gateway.stdout != "gateway_config_missing\n":
             raise RuntimeError("packaged_gateway_check_failed")
+        # Likewise the frozen web UI imports its app and assets, then refuses a
+        # TOML without [webui]; it never reads a key, listens or starts Tailscale.
+        webui = subprocess.run(
+            [str(exe), "webui", "--config", str(config)], cwd=folder, env=env,
+            capture_output=True, text=True, timeout=45, check=False,
+        )
+        if webui.returncode != 1 or webui.stdout != "webui_config_missing\n":
+            raise RuntimeError("packaged_webui_check_failed")
         env["LOCALAPPDATA"] = private_state
         env["CARDPUTER_LOCAL_TOKEN"] = secrets.token_hex(32)
         env["CARDPUTER_REMOTE_TOKEN"] = secrets.token_hex(32)

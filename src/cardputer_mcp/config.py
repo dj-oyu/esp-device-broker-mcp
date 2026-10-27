@@ -69,6 +69,41 @@ class GatewaySettings(BaseModel):
         return value
 
 
+class WebUISettings(BaseModel):
+    """Optional, non-secret read-only web UI settings; loading it never opens a listener.
+
+    The web UI is tailnet-only (``tailscale serve``, never Funnel) and requires a
+    Google login. It reads the broker with a local read-only key.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    # This machine's tailnet HTTPS URL with the serve port, e.g. https://host.tailnet.ts.net:8443
+    public_url: str = Field(
+        pattern=r"^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+"
+        r":[1-9][0-9]{2,4}$"
+    )
+    port: int = Field(default=8771, strict=True, ge=1024, le=65535)
+    google_client_id: str = Field(
+        pattern=r"^[0-9]{1,32}-[a-z0-9]{1,64}\.apps\.googleusercontent\.com$"
+    )
+    allowed_google_sub: str = Field(pattern=r"^[0-9]{1,64}$")
+    # Private files outside repositories: the stdio-format file holding a local
+    # read-only key (`keys issue --origin local_cli`, no --control) and the file
+    # holding only CARDPUTER_GATEWAY_GOOGLE_CLIENT_SECRET=<value>.
+    broker_env_file: Path
+    google_client_secret_file: Path
+    # `tailscale serve` (tailnet only) runs only when this is explicitly true.
+    serve: bool = Field(default=False, strict=True)
+    tailscale_exe: Path = Path(r"C:\Program Files\Tailscale\tailscale.exe")
+
+    @field_validator("broker_env_file", "google_client_secret_file", "tailscale_exe")
+    @classmethod
+    def require_absolute(cls, value: Path) -> Path:
+        if not value.is_absolute() or ".." in value.parts or "\x00" in str(value):
+            raise ValueError("absolute_webui_path_required")
+        return value
+
+
 class RegisteredBuildTool(BaseModel):
     """Trusted local executable receipt, not a remotely selectable command."""
 
@@ -185,6 +220,7 @@ class Settings(BaseModel):
     serial: SerialSettings | None = None
     tunnel: TunnelMetadata | None = None
     gateway: GatewaySettings | None = None
+    webui: WebUISettings | None = None
 
     @model_validator(mode="after")
     def guard_real_mode(self) -> "Settings":
