@@ -12,6 +12,12 @@ No persistent user key is created merely by installing, starting or updating the
   registered capabilities. The authenticated client explicitly executes each
   immutable plan without a separate local approval. Lease ownership, current
   scopes and needs_review barriers still apply
+- A local key without `--control` (`--origin local_cli`) may read the operator
+  views: `GET /operator/state`, `/operator/timeline`, `/operator/events` and
+  `POST /operator/job-logs` (app-session logs still need control). Its timeline
+  offers no cancel/stop. Every other operator route still needs local control;
+  remote keys never reach `/operator/*`. This is for a read-only viewer such as
+  a web UI
 - Each key has a distinct security principal. A shared key is one principal,
   even on several terminals; it is not physical-device identity
 - Every new HTTP/tool request checks current revocation/expiry/scope. Revocation

@@ -73,10 +73,19 @@ async def test_foreign_principal_cannot_read_local_app_logs(app_output, name):
     status, result = await answer(api, payload(), "job-logs")
     assert status == 200 and result == {"ok": False, "error": "not_authorized"}
     assert "SYNTHETIC_OWNED_TEXT" not in json.dumps(result) and broker.backend.calls == 0
-    for origin, scopes in ((Origin.LOCAL, {"read"}), (Origin.REMOTE, {"read", "control"})):
-        current[0] = SimpleNamespace(principal_id="owner", origin=origin, scopes=frozenset(scopes))
-        status, result = await answer(api, payload(), "job-logs")
-        assert status == 403 and result == {"ok": False, "error": "local_operator_required"}
+    # A read-only local key passes the operator read gate, but app-session logs still
+    # need control and the delivery principal.
+    current[0] = SimpleNamespace(
+        principal_id="owner", origin=Origin.LOCAL, scopes=frozenset({"read"})
+    )
+    status, result = await answer(api, payload(), "job-logs")
+    assert status == 200 and result == {"ok": False, "error": "not_authorized"}
+    assert "SYNTHETIC_OWNED_TEXT" not in json.dumps(result)
+    current[0] = SimpleNamespace(
+        principal_id="owner", origin=Origin.REMOTE, scopes=frozenset({"read", "control"})
+    )
+    status, result = await answer(api, payload(), "job-logs")
+    assert status == 403 and result == {"ok": False, "error": "local_operator_required"}
 
 
 @pytest.mark.parametrize("component", ["run", "events", "logs", "delivery", "origin"])

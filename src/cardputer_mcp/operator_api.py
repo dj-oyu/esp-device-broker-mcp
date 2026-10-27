@@ -11,11 +11,15 @@ from . import cancellation, job_reads, operator_review, operator_stop, resource_
 from .broker import Broker, BrokerError
 from .build_logs import BuildLogs
 from .models import BuildLogRequest, Digest, Identifier, Origin, TestName
-from .operator_live import OperatorLive
+from .operator_live import OperatorLive, operator_may_control, operator_may_read
 from .operator_timeline import OperatorTimeline
 from .plan_approval import PlanApprovals
 
 _MAX_BODY = 2048
+# Reads that a local read-only principal may use; every other route needs control.
+READ_ROUTES = frozenset(
+    {"/operator/state", "/operator/timeline", "/operator/events", "/operator/job-logs"}
+)
 RETIRED_ROUTES = frozenset(
     {
         "/operator/plans",
@@ -124,6 +128,12 @@ class OperatorAPI:
         self.timeline = OperatorTimeline(broker, self.plans)
         self.live = OperatorLive(broker, self._timeline)
 
+    @staticmethod
+    def _allowed(principal: OperatorPrincipal, path: str) -> bool:
+        if operator_may_control(principal):
+            return True
+        return path in READ_ROUTES and operator_may_read(principal)
+
     def _operator_profile(self, plan: dict[str, Any] | None, principal: OperatorPrincipal) -> bool:
         return self.broker.profile_jobs.operator_cancellable(
             plan, principal.principal_id, principal.origin.value
@@ -131,16 +141,20 @@ class OperatorAPI:
 
     def _timeline(self, principal: OperatorPrincipal) -> dict[str, Any]:
         result = self.timeline.snapshot()
+        control = operator_may_control(principal)
         for card in result["cards"]:
             job = self.broker._store().job(card["job_id"])
             plan = self.broker._store().plan(job["plan_hash"]) if job else None
             card["cancel_available"] = bool(
-                card["state"] in ("queued", "running") and self._operator_profile(plan, principal)
+                control
+                and card["state"] in ("queued", "running")
+                and self._operator_profile(plan, principal)
             )
             # A device-lane job of the current lease that the operator may stop
             # without interrupting a firmware write (see operator_stop.py).
             card["stop_available"] = bool(
-                not card["cancel_available"]
+                control
+                and not card["cancel_available"]
                 and card["state"] in ("queued", "running")
                 and operator_stop.stop_available(self.broker, card["job_id"])
             )
@@ -293,7 +307,7 @@ class OperatorAPI:
         if principal is None:
             await self._respond(send, 401, {"ok": False, "error": "authentication_required"})
             return
-        if principal.origin != Origin.LOCAL or "control" not in principal.scopes:
+        if not self._allowed(principal, path):
             await self._respond(send, 403, {"ok": False, "error": "local_operator_required"})
             return
         if scope.get("query_string"):
@@ -369,7 +383,7 @@ class OperatorAPI:
             if principal is None:
                 await self._respond(send, 401, {"ok": False, "error": "authentication_required"})
                 return
-            if principal.origin != Origin.LOCAL or "control" not in principal.scopes:
+            if not self._allowed(principal, path):
                 await self._respond(send, 403, {"ok": False, "error": "local_operator_required"})
                 return
         try:
