@@ -234,7 +234,22 @@ async def test_guarded_localhost_stream_snapshot_commit_log_wakeup_and_auth(auth
     assert broker.backend.calls == 0
 
 
-@pytest.mark.parametrize("change", [None, "read_only", "remote", "another_owner"])
+async def test_read_only_local_grant_keeps_the_stream_open(operator):
+    api, broker, current = operator
+    stream, initial = await opened(api)
+    assert initial["kind"] == "snapshot"
+    current[0].scopes = frozenset({"read"})
+    broker.operator_changes.notify()
+    await asyncio.sleep(0.2)
+    while stream.pending():
+        item = await stream.next()
+        assert item["ok"] is True, item
+    assert not stream.task.done()
+    await stream.disconnect()
+    assert api.live.streams == 0 and not broker.operator_changes._readers
+
+
+@pytest.mark.parametrize("change", [None, "no_scopes", "remote", "another_owner"])
 async def test_current_grant_rechecked_on_every_wake(operator, change):
     api, broker, current = operator
     stream, initial = await opened(api)
@@ -242,8 +257,8 @@ async def test_current_grant_rechecked_on_every_wake(operator, change):
     current[0] = (
         None if change is None else actor("other" if change == "another_owner" else "owner")
     )
-    if change == "read_only":
-        current[0].scopes = frozenset({"read"})
+    if change == "no_scopes":
+        current[0].scopes = frozenset()
     if change == "remote":
         current[0].origin = Origin.REMOTE
     broker.operator_changes.notify()

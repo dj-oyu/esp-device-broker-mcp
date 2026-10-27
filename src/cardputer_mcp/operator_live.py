@@ -49,6 +49,24 @@ def _event(payload: dict[str, Any]) -> bytes:
     return ("\n".join(lines) + "\n\n").encode("utf-8")
 
 
+def operator_may_control(principal: Any) -> bool:
+    """The local operator with control: every operator route."""
+    return bool(principal.origin == Origin.LOCAL and "control" in principal.scopes)
+
+
+def operator_may_read(principal: Any) -> bool:
+    """A local principal with read or control: the read-only operator routes.
+
+    A read-only local key (``keys issue --origin local_cli`` without ``--control``)
+    lets a viewer such as a web UI see state, timeline, live events and job logs
+    without any operator action.
+    """
+    return bool(
+        principal.origin == Origin.LOCAL
+        and ("read" in principal.scopes or "control" in principal.scopes)
+    )
+
+
 class OperatorLive:
     def __init__(self, broker: Any, timeline: Callable[[Any], dict[str, Any]]) -> None:
         self.broker = broker
@@ -255,7 +273,7 @@ class OperatorLive:
             principal = authenticate()
             if principal is None:
                 raise BrokerError("authentication_required")
-            if principal.origin != Origin.LOCAL or "control" not in principal.scopes:
+            if not operator_may_read(principal):
                 raise BrokerError("local_operator_required")
             self._refresh(base)
             if (

@@ -32,7 +32,12 @@ async def test_operator_requires_local_control_for_every_route(
     async with httpx2.AsyncClient(trust_env=False) as http:
         for credential in (REMOTE, service.keys["second"].token, read_only.token):
             headers = {"Authorization": f"Bearer {credential}"}
-            assert (await http.get(base + "/state", headers=headers)).status_code == 403
+            state = await http.get(base + "/state", headers=headers)
+            if credential == read_only.token:
+                # A local read-only key may read; every action below still needs control.
+                assert state.status_code == 200 and state.json()["ok"]
+            else:
+                assert state.status_code == 403
             for route, payload in (
                 ("cancel", {"request_id": "unknown"}),
                 ("reorder", {"request_id": "unknown", "position": 1}),
