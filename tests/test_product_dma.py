@@ -149,7 +149,9 @@ def test_actual_outputs_verify_without_diagnostic_producers(tmp_path, mode):
 
 
 @pytest.mark.parametrize("mode", ["OFF", "ON"])
-@pytest.mark.parametrize("damage", ["symbols", "elf", "bin", "pair", "receipt", "missing", "duplicate"])
+@pytest.mark.parametrize(
+    "damage", ["symbols", "elf", "bin", "pair", "receipt", "missing", "duplicate"]
+)
 def test_mismatched_linked_artifacts_are_rejected(tmp_path, mode, damage):
     kwargs = (
         {"native_symbols": () if mode == "ON" else ("board_present_submit",)}
