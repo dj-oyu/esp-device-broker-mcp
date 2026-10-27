@@ -3,8 +3,8 @@
 `cardputer webui` は、broker の状態・ジョブ一覧・ジョブのログ・ライブ更新を、ブラウザ（iPhone・iPad を含む）から見るための画面です。
 
 - **見るだけです。** ジョブの取り消し・停止・確認などの操作はできません。
-- **tailnet の中だけに出します。** `tailscale serve` を使い、Funnel（インターネット公開）にはしません。
-- **tailnet の中でも Google ログインが必要です。** 指定した Google アカウント（`sub`）だけが入れます。
+- **既定は tailnet の中だけです。** `tailscale serve` を使います。`funnel = true` を明示したときだけ、`tailscale funnel`（インターネット公開、8443 番）を使います。
+- **どちらの場合も Google ログインが必要です。** 指定した Google アカウント（`sub`）だけが入れます。
 
 ```
 自分の端末（tailnet 内）──HTTPS──▶ tailscale serve (<machine>.<tailnet>.ts.net:8443)
@@ -15,7 +15,7 @@
                           └─ /api/*（セッション必須）──(LOCAL の読み取り専用キー)──▶ broker /operator/*
 ```
 
-gateway（Claude 用、Funnel）とは別のプロセス・別のポートです。Funnel が向く先に Web UI は含まれません。
+gateway（Claude 用、Funnel の 443 番）とは別のプロセス・別のポートです。Web UI を Funnel にしても、gateway の Funnel の向き先は変わりません。
 
 ## 守っていること
 
@@ -82,7 +82,7 @@ https://<machine>.<tailnet>.ts.net:8443/oauth/google/callback
 
 ## 3. Tailscale で 8443 番に届く端末を絞る
 
-Web UI は tailnet の中にしか出しません。そのうえで、管理画面の **Access controls** で、この PC の `tcp:8443` に届く送信元を自分の端末（自分のユーザー）だけにしてください。
+既定では、Web UI は tailnet の中にしか出しません（`funnel = true` のときは公開されるので、この ACL では絞れず、Google ログインが守りです）。そのうえで、管理画面の **Access controls** で、この PC の `tcp:8443` に届く送信元を自分の端末（自分のユーザー）だけにしてください。
 
 自分 1 人だけの tailnet で、既定のポリシー（全員がすべてに届く）のままでも動きます。ただ、ほかの人を招待する前には必ず絞ってください。Google ログインは 2 段目の守りです。
 
@@ -97,10 +97,13 @@ allowed_google_sub = "<あなたの Google sub>"
 broker_env_file = 'C:\Users\YOUR_NAME\AppData\Local\DeviceBroker\webui-broker.env'
 google_client_secret_file = 'C:\Users\YOUR_NAME\AppData\Local\DeviceBroker\gateway-google.env'
 serve = false   # true で tailscale serve（tailnet 内だけ）を開く
+funnel = false  # true で tailscale funnel（インターネット公開）を開く。serve とは同時に true にできない
 ```
 
 - `port` は、broker、Tunnel の `health_port`、gateway のどの `port` とも違う値にします。
 - `public_url` のポートは、gateway の Funnel と同じ 443 にはできません。
+- `funnel = true` のポートは 8443 か 10000 だけです（Tailscale の Funnel の制約）。
+- `funnel = true` はインターネットに公開します。iCloud プライベートリレーが有効な iPhone の Safari は、tailnet 限定の `*.ts.net`（`100.x` に解決）に届かず開けません。その場合に使います。Google ログイン（`allowed_google_sub` のアカウントだけ）と読み取り専用の鍵が守りです。
 - v0.13.1 より前の broker は `[webui]` の入った TOML を読めません。broker を新しい版にしてから書き足してください。
 
 ## 5. まず serve なしで確かめる
@@ -127,7 +130,8 @@ curl.exe -si http://127.0.0.1:8771/api/state -H 'Host: <machine>.<tailnet>.ts.ne
 
 - iPhone・iPad では、Safari の共有メニューから「ホーム画面に追加」できます。
 - Ctrl+C で止めると、serve を先に閉じてから待ち受けを止めます。
-- serve の設定が Funnel（公開）になっていたら、起動を拒否して閉じます（`webui_serve_is_public`）。
+- `funnel = true` のときは、Funnel として確認できるまで待ちます。`funnel = false`（serve）のときに設定が Funnel（公開）になっていたら、起動を拒否して閉じます（`webui_serve_is_public`）。
+- Funnel で開くと `webui_funnel_open https://…:8443 (public; Google login required)` が出ます。
 
 `Start-CardputerStack.ps1` を使うと、broker → gateway → Web UI → GUI の順に起動できます。
 
@@ -148,7 +152,8 @@ curl.exe -si http://127.0.0.1:8771/api/state -H 'Host: <machine>.<tailnet>.ts.ne
 | `tailscale_serve_port_already_configured` | そのポートには、すでに serve か Funnel の設定があります |
 | `webui_public_url_not_this_machine` | `public_url` がこの PC の Tailscale 名と違います |
 | `webui_serve_start_failed` / `webui_serve_exited` / `webui_serve_not_confirmed` | serve を開始できない、すぐに終了した、または 15 秒以内に確認できませんでした |
-| `webui_serve_is_public` | serve の設定が Funnel になっていました。閉じて止めます |
+| `webui_serve_is_public` | `funnel = false` なのに、serve の設定が Funnel になっていました。閉じて止めます |
+| `tailscale_funnel_not_permitted` | `funnel = true` ですが、このノードに Funnel の権限がありません |
 
 ## まだ確かめていないこと
 
