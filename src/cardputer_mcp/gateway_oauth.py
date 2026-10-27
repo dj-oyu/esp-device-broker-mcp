@@ -5,8 +5,9 @@ and this server forwards the browser to Google. Google's answer comes back to
 ``/oauth/google/callback``; only an ID token whose signature, issuer, audience,
 expiry and nonce check out (via ``joserfc``) and whose ``sub`` equals the
 configured account produces an authorization code. Tokens are opaque, random,
-short-lived, held in memory only (a restart means Claude connects again) and bound
-to the canonical ``<public_url>/mcp`` resource.
+short-lived and bound to the canonical ``<public_url>/mcp`` resource. Completed
+connections are kept, tokens as hashes only, in a private store (``gateway_store``),
+so a gateway restart does not disconnect Claude.
 
 Nothing here relays MCP or holds a broker credential; the protected ``/mcp`` app is
 passed in. Logs carry fixed event names only, never tokens, codes or Google values.
@@ -18,7 +19,7 @@ import secrets
 import time
 from base64 import urlsafe_b64encode
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import httpx2
@@ -55,6 +56,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import GatewaySettings
+from .gateway_store import GatewayStore
 
 logger = logging.getLogger("cardputer_mcp.gateway")
 
@@ -224,36 +226,30 @@ class _PendingLogin:
     expires_at: float
 
 
-@dataclass
-class _Grant:
-    """One Claude connection: its refresh and access tokens are revoked together."""
-
-    client_id: str
-    subject: str
-    scopes: list[str]
-    resource: str
-    access: set[str] = field(default_factory=set)
-    refresh: set[str] = field(default_factory=set)
-
-
 class GatewayProvider:
-    """``OAuthAuthorizationServerProvider`` for one Google account; in-memory state."""
+    """``OAuthAuthorizationServerProvider`` for one Google account.
+
+    Logins in progress, authorization codes and never-used registrations are held in
+    memory. Completed connections (client, grant, token digests) are kept in
+    ``store`` so a gateway restart does not make Claude register again.
+    """
 
     def __init__(
         self,
         settings: GatewaySettings,
         google: GoogleOIDC,
         now: Callable[[], float] = time.time,
+        store: GatewayStore | None = None,
     ) -> None:
         self.resource = canonical_resource(settings.public_url + MCP_PATH)
         self.allowed_sub = settings.allowed_google_sub
         self.google = google
         self._now = now
-        self.clients: dict[str, OAuthClientInformationFull] = {}
+        self.store = store or GatewayStore(None, subject=self.allowed_sub, resource=self.resource)
+        self.store.purge(self._now())
+        self.clients: dict[str, OAuthClientInformationFull] = self.store.clients()
         self._pending: dict[str, _PendingLogin] = {}
         self._codes: dict[str, AuthorizationCode] = {}
-        self._access: dict[str, tuple[AccessToken, _Grant]] = {}
-        self._refresh: dict[str, tuple[RefreshToken, _Grant]] = {}
 
     # Housekeeping -----------------------------------------------------------------
 
@@ -263,15 +259,11 @@ class GatewayProvider:
             del self._pending[key]
         for key in [k for k, v in self._codes.items() if v.expires_at < now]:
             del self._codes[key]
-        for key in [k for k, (v, _) in self._access.items() if (v.expires_at or 0) < now]:
-            del self._access[key]
-        for key in [k for k, (v, _) in self._refresh.items() if (v.expires_at or 0) < now]:
-            del self._refresh[key]
+        self.store.purge(now)
 
     def _client_in_use(self, client_id: str) -> bool:
         return (
-            any(g.client_id == client_id for _, g in self._refresh.values())
-            or any(g.client_id == client_id for _, g in self._access.values())
+            self.store.has_grant(client_id)
             or any(c.client_id == client_id for c in self._codes.values())
             or any(p.client_id == client_id for p in self._pending.values())
         )
@@ -380,40 +372,24 @@ class GatewayProvider:
             return None
         return code
 
-    def _issue(self, grant: _Grant, old_refresh: str | None = None) -> OAuthToken:
+    def _issue(
+        self, grant_id: int, scopes: list[str], old_refresh: str | None = None
+    ) -> OAuthToken | None:
         now = int(self._now())
-        if old_refresh is not None:
-            self._refresh.pop(old_refresh, None)
-            grant.refresh.discard(old_refresh)
         access, refresh = _token(), _token()
-        self._access[_digest(access)] = (
-            AccessToken(
-                token=access,
-                client_id=grant.client_id,
-                scopes=grant.scopes,
-                expires_at=now + ACCESS_TTL,
-                resource=grant.resource,
-                subject=grant.subject,
-            ),
-            grant,
+        stored = self.store.issue(
+            grant_id,
+            scopes,
+            (_digest(access), now + ACCESS_TTL),
+            (_digest(refresh), now + REFRESH_TTL),
+            old_refresh,
         )
-        self._refresh[_digest(refresh)] = (
-            RefreshToken(
-                token=refresh,
-                client_id=grant.client_id,
-                scopes=grant.scopes,
-                expires_at=now + REFRESH_TTL,
-                resource=grant.resource,
-                subject=grant.subject,
-            ),
-            grant,
-        )
-        grant.access.add(_digest(access))
-        grant.refresh.add(_digest(refresh))
+        if not stored:
+            return None
         return OAuthToken(
             access_token=access,
             expires_in=ACCESS_TTL,
-            scope=" ".join(grant.scopes),
+            scope=" ".join(scopes),
             refresh_token=refresh,
         )
 
@@ -424,23 +400,30 @@ class GatewayProvider:
             raise TokenError("invalid_grant", "authorization code was already used")
         if authorization_code.subject is None or authorization_code.resource is None:
             raise TokenError("invalid_grant", "authorization code is incomplete")
-        grant = _Grant(
-            client_id=authorization_code.client_id,
-            subject=authorization_code.subject,
-            scopes=list(authorization_code.scopes),
-            resource=authorization_code.resource,
+        scopes = list(authorization_code.scopes)
+        grant_id = self.store.create_grant(
+            client, authorization_code.subject, scopes, authorization_code.resource
         )
+        tokens = self._issue(grant_id, scopes)
+        assert tokens is not None
         logger.info("gateway_token_issued")
-        return self._issue(grant)
+        return tokens
 
     async def load_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: str
     ) -> RefreshToken | None:
         self._purge()
-        entry = self._refresh.get(_digest(refresh_token))
-        if entry is None or entry[0].client_id != client.client_id:
+        stored = self.store.token(_digest(refresh_token), "refresh")
+        if stored is None or stored.client_id != client.client_id:
             return None
-        return entry[0]
+        return RefreshToken(
+            token=refresh_token,
+            client_id=stored.client_id,
+            scopes=stored.scopes,
+            expires_at=stored.expires_at,
+            resource=stored.resource,
+            subject=stored.subject,
+        )
 
     async def exchange_refresh_token(
         self,
@@ -449,33 +432,31 @@ class GatewayProvider:
         scopes: list[str],
     ) -> OAuthToken:
         key = _digest(refresh_token.token)
-        entry = self._refresh.get(key)
-        if entry is None:
-            raise TokenError("invalid_grant", "refresh token was already used")
-        grant = entry[1]
+        stored = self.store.token(key, "refresh")
         # The SDK already refused scopes the refresh token does not hold.
-        grant.scopes = list(scopes)
-        return self._issue(grant, old_refresh=key)
+        tokens = None if stored is None else self._issue(stored.grant_id, list(scopes), key)
+        if tokens is None:
+            raise TokenError("invalid_grant", "refresh token was already used")
+        return tokens
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        entry = self._access.get(_digest(token))
-        if entry is None or (entry[0].expires_at or 0) < self._now():
+        stored = self.store.token(_digest(token), "access")
+        if stored is None or stored.expires_at < self._now():
             return None
-        return entry[0]
-
-    def _revoke_grant(self, grant: _Grant) -> None:
-        for key in grant.access:
-            self._access.pop(key, None)
-        for key in grant.refresh:
-            self._refresh.pop(key, None)
-        grant.access.clear()
-        grant.refresh.clear()
+        return AccessToken(
+            token=token,
+            client_id=stored.client_id,
+            scopes=stored.scopes,
+            expires_at=stored.expires_at,
+            resource=stored.resource,
+            subject=stored.subject,
+        )
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
-        key = _digest(token.token)
-        entry = self._access.get(key) or self._refresh.get(key)
-        if entry is not None:
-            self._revoke_grant(entry[1])
+        # Revoking either token ends the whole connection (all its tokens).
+        grant_id = self.store.grant_of(_digest(token.token))
+        if grant_id is not None:
+            self.store.revoke_grant(grant_id)
 
     async def exchange_identity_assertion(
         self, client: OAuthClientInformationFull, params: IdentityAssertionParams
@@ -495,6 +476,7 @@ def create_gateway_app(
     http: httpx2.AsyncClient | None = None,
     mcp_app: ASGIApp | None = None,
     now: Callable[[], float] = time.time,
+    store: GatewayStore | None = None,
 ) -> tuple[Starlette, GatewayProvider]:
     """Build the Funnel-facing app: OAuth endpoints, Google callback and ``/mcp`` only."""
     issuer = _url(settings.public_url)
@@ -505,7 +487,7 @@ def create_gateway_app(
         http or httpx2.AsyncClient(),
         now,
     )
-    provider = GatewayProvider(settings, google, now)
+    provider = GatewayProvider(settings, google, now, store)
     resource_url = _url(provider.resource)
     protected = RequireAuthMiddleware(
         mcp_app or _NotConfigured(),

@@ -246,7 +246,11 @@ gateway の標準エラーには、次のような固定のイベント名だけ
 ## 停止と再起動
 
 - 停止するときは、gateway のターミナルで Ctrl+C を押します。Funnel を先に閉じてから待ち受けを止めます（`gateway_funnel_closed` → `gateway_stopped`）。
-- トークンはメモリにしか持っていません。gateway を再起動すると、Claude 側で再接続（再ログイン）が必要です。
+- gateway を再起動しても、Claude 側の再接続は要りません。ログインまで済んだ接続は、`broker_env_file` と同じフォルダの `gateway-grants.sqlite3` に保存されます。
+  - 保存するのは、Claude のクライアント登録、許可（Google の `sub`、スコープ、`/mcp` の URL）と、トークンの SHA-256 です。トークンそのもの、認可コード、ログイン途中の状態は保存しません。
+  - クライアント登録には、登録時に発行した client secret がそのまま入ります（MCP SDK が平文で照合するため）。secret だけではトークンを更新できません。このファイルは鍵ファイルと同じように扱ってください。
+  - `allowed_google_sub` か `public_url` を変えると、保存した接続は起動時に消え、Claude で接続し直しになります。
+  - すべての接続を切りたいときは、gateway を止めてから `gateway-grants.sqlite3` を削除します。
 - Funnel のプロセスが終了すると、gateway も止まります（`gateway_funnel_exited; stopping the gateway`）。
 - 異常終了したあとは、`tailscale funnel status --json` が `{}` に戻っていることを確認してください。
   強制終了で Funnel の設定が必ず消えるかどうかは、まだ確かめていません。
@@ -265,6 +269,7 @@ gateway の標準エラーには、次のような固定のイベント名だけ
 | `gateway_broker_port_mismatch` | env ファイルの URL の port が broker の `port` と違います |
 | `gateway_google_secret_invalid` | `google_client_secret_file` を読めません（置き場所、キー名、値の形式） |
 | `gateway_already_running` | gateway がすでに動いています |
+| `gateway_store_unavailable` / `gateway_store_unsafe_path` / `gateway_store_version_unsupported` | `gateway-grants.sqlite3` を開けない、置き場所が安全でない（リンクやフォルダなど）、または新しい版で作られたファイルです |
 | `gateway_listen_failed` | `127.0.0.1:<port>` で待ち受けできません（ほかのプロセスが使用中など） |
 | `tailscale_executable_missing` | `tailscale_exe` が見つかりません |
 | `tailscale_not_running` | Tailscale が接続されていません |

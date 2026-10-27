@@ -498,8 +498,9 @@ one broker and the adapter must also acquire OS-level serial exclusivity.
 the broker. It runs an OAuth 2.1 server (Dynamic Client Registration for Claude's
 callback only) whose single user is one Google account, and relays authenticated
 MCP requests to the broker's `/tunnel/mcp` alias with its own `remote_mcp` key.
-`/operator/*` is never exposed. Tokens live in memory: after a gateway restart,
-Claude asks you to connect again.
+`/operator/*` is never exposed. A completed connection survives a gateway restart:
+the client registration and grant, with token hashes only, are kept in
+`gateway-grants.sqlite3` beside the gateway's broker key file.
 
 Step-by-step setup (Tailscale, Google Cloud, key and secret files, TOML, adding
 the connector in Claude, error codes): [CLAUDE-GATEWAY.md](CLAUDE-GATEWAY.md).
