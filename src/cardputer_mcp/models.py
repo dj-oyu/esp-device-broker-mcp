@@ -162,7 +162,7 @@ class PrepareRequest(StrictModel):
         default=None,
         exclude_if=lambda value: value is None,
         description=(
-            "Ordinary source build: explicit KASANE_DMA_OVERLAP, independent of diagnostics."
+            "Cardputer source build: explicit KASANE_DMA_OVERLAP, independent of diagnostics."
         ),
     )
     derby_detail_mode: DiagnosticMode | None = None

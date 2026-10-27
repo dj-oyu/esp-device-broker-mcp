@@ -189,7 +189,7 @@ class SubmitRequest(StrictModel):
     backup_job_id: Identifier | None = Field(default=None, description="flash|restore")
     lkg_receipt: Digest | None = Field(default=None, description="flash|restore")
     dma_overlap_mode: DmaOverlapMode | None = Field(
-        default=None, description="build: ordinary source firmware DMA OFF/ON; omit diagnostic axes"
+        default=None, description="build: Cardputer source DMA OFF/ON; omit diagnostic axes"
     )
     derby_detail_mode: DiagnosticMode | None = Field(default=None, description="build")
     derby_dma_mode: DiagnosticMode | None = Field(default=None, description="build")

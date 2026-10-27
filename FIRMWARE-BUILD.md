@@ -489,17 +489,22 @@ unsuccessful jobs, another principal, concurrent-reader limits, event-loop progr
 and grant/registration/job invalidation during hash IO. Existing durable path/link
 and hash checks are reused; no native build, USB or production DB is involved.
 
-## Ordinary source DMA selection
+## Ordinary Cardputer source DMA selection
 
-Ordinary source firmware can select copied LCD DMA explicitly with
+Ordinary Cardputer source firmware can select copied LCD DMA explicitly with
 `submit(kind="build", project_id=..., source_receipt=..., job_id=...,
  dma_overlap_mode="OFF")` or `"ON"`. The typed option requires a verified source
 receipt and excludes both diagnostic axes. Omit it to keep the firmware default.
 It passes only `-D KASANE_DMA_OVERLAP=OFF|ON`; it does not request telemetry,
 measurement, a fixed workload or a comparison seed. Firmware with the ordinary
-option (for example the extraction in firmware PR #94) needs no diagnostic proof
-producer. Existing diagnostic DMA hardware tests used diagnostic sources; this
-ordinary build option does not establish a hardware or performance result.
+option (for example [firmware PR #94](https://github.com/dj-oyu/cardputer-adv-pocketjs/pull/94))
+needs no diagnostic proof producer. The supported output contract is Cardputer-specific: the
+`cardputer_pocketjs.bin` / `cardputer_pocketjs.elf` pair, with native
+`board_present_submit` and `board_present_finish` functions present only for DMA
+ON. CI coverage uses synthetic artifacts and mocked build processes. Real
+execution of ordinary DMA ON firmware and physical performance remain untested.
+Existing diagnostic DMA hardware tests used diagnostic sources; this ordinary
+build option does not establish a new hardware or performance result.
 
 The ordinary mode participates in the immutable plan, source/build fingerprint,
 compiler-cache namespace and output slot. The manifest records `dma_overlap_mode`

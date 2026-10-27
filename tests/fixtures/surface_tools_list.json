@@ -460,7 +460,7 @@
                 }
               ],
               "default": null,
-              "description": "build: ordinary source firmware DMA OFF/ON; omit diagnostic axes"
+              "description": "build: Cardputer source DMA OFF/ON; omit diagnostic axes"
             },
             "flash_job_id": {
               "anyOf": [
