@@ -72,8 +72,9 @@ class GatewaySettings(BaseModel):
 class WebUISettings(BaseModel):
     """Optional, non-secret read-only web UI settings; loading it never opens a listener.
 
-    The web UI is tailnet-only (``tailscale serve``, never Funnel) and requires a
-    Google login. It reads the broker with a local read-only key.
+    The web UI is tailnet-only (``tailscale serve``) unless ``funnel`` is explicitly
+    true, which publishes it on Funnel port 8443 or 10000. Either way it requires a
+    Google login and reads the broker with a local read-only key.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
@@ -94,6 +95,10 @@ class WebUISettings(BaseModel):
     google_client_secret_file: Path
     # `tailscale serve` (tailnet only) runs only when this is explicitly true.
     serve: bool = Field(default=False, strict=True)
+    # `tailscale funnel` (public internet, Google login still required) runs only when
+    # this is explicitly true; it is exclusive with `serve` and needs a Funnel-capable
+    # port (8443 or 10000) in public_url.
+    funnel: bool = Field(default=False, strict=True)
     tailscale_exe: Path = Path(r"C:\Program Files\Tailscale\tailscale.exe")
 
     @field_validator("broker_env_file", "google_client_secret_file", "tailscale_exe")
@@ -102,6 +107,14 @@ class WebUISettings(BaseModel):
         if not value.is_absolute() or ".." in value.parts or "\x00" in str(value):
             raise ValueError("absolute_webui_path_required")
         return value
+
+    @model_validator(mode="after")
+    def exclusive_exposure(self) -> "WebUISettings":
+        if self.serve and self.funnel:
+            raise ValueError("webui_serve_and_funnel_exclusive")
+        if self.funnel and int(self.public_url.rsplit(":", 1)[1]) not in (8443, 10000):
+            raise ValueError("webui_funnel_port_must_be_8443_or_10000")
+        return self
 
 
 class RegisteredBuildTool(BaseModel):

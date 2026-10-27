@@ -354,3 +354,74 @@ async def test_control_key_never_listens(tmp_path):
     with pytest.raises(httpx2.HTTPError):
         async with httpx2.AsyncClient(trust_env=False) as client:
             await client.get(f"http://127.0.0.1:{port}/", timeout=1)
+
+
+def _sub(tmp_path, name):
+    (tmp_path / name).mkdir()
+    return tmp_path / name
+
+
+def test_funnel_is_explicit_and_exclusive(tmp_path):
+    with pytest.raises(webui_launch.LaunchError, match="webui_config_invalid"):
+        webui_launch.prepare(_config(_sub(tmp_path, "a"), extra="serve = true\nfunnel = true\n"))
+    with pytest.raises(webui_launch.LaunchError, match="webui_config_invalid"):
+        webui_launch.prepare(
+            _config(_sub(tmp_path, "b"), public=f"https://{HOST}:9443", extra="funnel = true\n")
+        )
+    webui = _webui(_sub(tmp_path, "c"), extra="funnel = true\n")
+    assert webui.funnel and not webui.serve
+    args = webui_launch.serve_arguments(webui)
+    assert args[1:3] == ["funnel", "--https=8443"]
+    assert webui_launch.serve_arguments(_webui(_sub(tmp_path, "d")))[1] == "serve"
+
+
+def test_funnel_needs_the_funnel_capability(tmp_path):
+    webui = _webui(tmp_path, extra="funnel = true\n")
+    with pytest.raises(webui_launch.LaunchError, match="tailscale_funnel_not_permitted"):
+        webui_launch.check_tailscale(webui, _runner(_status()))
+    capable = json.dumps(
+        {"BackendState": "Running", "Self": {"DNSName": HOST + ".", "CapMap": {"funnel": []}}}
+    )
+    webui_launch.check_tailscale(webui, _runner(capable))
+
+
+def test_funnel_is_confirmed_only_when_public(tmp_path):
+    webui = _webui(tmp_path, extra="funnel = true\n")
+    assert webui_launch.serve_confirmed(json.loads(_served(webui, public=True)), webui)
+    assert not webui_launch.serve_confirmed(json.loads(_served(webui)), webui)
+    plain = _webui(_sub(tmp_path, "e"))
+    assert not webui_launch.serve_confirmed(json.loads(_served(plain, public=True)), plain)
+
+
+async def test_funnel_opens_and_closes_with_the_process(tmp_path, capsys):
+    port = _free_port()
+    prepared = webui_launch.prepare(_config(tmp_path, port=port, extra="funnel = true\n"))
+    events = []
+    process = FakeServe(events)
+    capable = json.dumps(
+        {"BackendState": "Running", "Self": {"DNSName": HOST + ".", "CapMap": {"funnel": []}}}
+    )
+
+    def run(args):
+        if args[1] == "status":
+            return capable
+        return _served(prepared.webui, public=True) if events else "{}"
+
+    def start_process(args, env, cwd, *, executables):
+        assert args[1] == "funnel"
+        events.append("serve_started")
+        return process
+
+    task = asyncio.create_task(
+        webui_launch.serve(
+            prepared,
+            run=run,
+            start_process=start_process,
+            poll_seconds=0.01,
+            broker_http=_broker_http(),
+        )
+    )
+    await _wait_for(capsys, "webui_funnel_open")
+    process.exit_code = 0
+    assert await asyncio.wait_for(task, 5) == 1
+    assert events == ["serve_started", "serve_stopped"] and process.closed

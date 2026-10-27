@@ -510,7 +510,7 @@ tokens or Tunnel API key, then the GUI.
 
 The read-only web UI (`cardputer webui --config <broker TOML>`, `[webui]`) shows
 the operator state, jobs, job logs and live updates to one Google account,
-tailnet-only through `tailscale serve`, with a local read-only broker key. It
+tailnet-only through `tailscale serve` by default (public through `tailscale funnel` only with `funnel = true`), with a local read-only broker key. It
 never exposes broker keys, the Google secret or environment variables to the
 browser. Setup and security model: [WEB-UI.md](WEB-UI.md).
 

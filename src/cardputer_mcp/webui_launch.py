@@ -1,11 +1,12 @@
-"""``cardputer webui``: run the read-only web UI and, only when configured, its tailnet serve.
+"""``cardputer webui``: run the read-only web UI and, only when configured, its serve or Funnel.
 
 Startup order: validate the broker TOML's ``[webui]`` section, the broker key file
 and the Google secret file; confirm the broker key reads the operator views and
 cannot act; check Tailscale (this machine's name, nothing on the serve port);
-listen on 127.0.0.1; then run ``tailscale serve --https=<port>`` in the foreground
-as an owned Job Object child and confirm that serve lists our target and that the
-port is not Funnel. Shutdown closes serve first, then the listener.
+listen on 127.0.0.1; then run ``tailscale serve --https=<port>`` (or, only with
+``funnel = true``, ``tailscale funnel --https=<port>``) in the foreground as an owned
+Job Object child and confirm that it lists our target and that the port is Funnel
+exactly when Funnel was asked for. Shutdown closes it first, then the listener.
 
 Nothing here starts or stops the broker, the gateway, the OpenAI Tunnel or any
 device work. Output is fixed event names; no secrets, tokens or file contents.
@@ -125,6 +126,13 @@ def check_tailscale(webui: WebUISettings, run: Runner = run_tailscale) -> None:
     name = str(me.get("DNSName", "")).rstrip(".").lower()
     if name != _host(webui):
         raise LaunchError("webui_public_url_not_this_machine")
+    if webui.funnel:
+        capabilities = [str(item) for item in me.get("Capabilities") or []]
+        capabilities += [str(key) for key in (me.get("CapMap") or {})]
+        if "funnel" not in capabilities and not any(
+            item.startswith("https://tailscale.com/cap/funnel") for item in capabilities
+        ):
+            raise LaunchError("tailscale_funnel_not_permitted")
     if _port_in_use(_json(run([str(exe), "serve", "status", "--json"])), webui):
         raise LaunchError("tailscale_serve_port_already_configured")
 
@@ -157,7 +165,7 @@ def serve_confirmed(config: Any, webui: WebUISettings) -> bool:
         )
         for node in _walk(config)
     )
-    return proxied and not serve_is_public(config, webui)
+    return proxied and serve_is_public(config, webui) is webui.funnel
 
 
 def serve_is_public(config: Any, webui: WebUISettings) -> bool:
@@ -169,10 +177,10 @@ def serve_is_public(config: Any, webui: WebUISettings) -> bool:
 
 
 def serve_arguments(webui: WebUISettings) -> list[str]:
-    # Foreground: the serve config lives only as long as this owned process. Never Funnel.
+    # Foreground: the config lives only as long as this owned process. Funnel only on request.
     return [
         str(webui.tailscale_exe),
-        "serve",
+        "funnel" if webui.funnel else "serve",
         f"--https={_serve_port(webui)}",
         "--yes",
         serve_target(webui),
@@ -202,7 +210,7 @@ async def serve(
     google_http = httpx2.AsyncClient(trust_env=False, follow_redirects=False)
     try:
         await check_broker_key(reader)
-        if webui.serve:
+        if webui.serve or webui.funnel:
             await asyncio.to_thread(check_tailscale, webui, run)
     except LaunchError:
         await reader.aclose()
@@ -230,7 +238,7 @@ async def serve(
                 raise LaunchError("webui_listen_failed")
             await asyncio.sleep(0.05)
         _event(f"webui_listening 127.0.0.1:{webui.port}")
-        if webui.serve:
+        if webui.serve or webui.funnel:
             try:
                 process = start_process(
                     serve_arguments(webui),
@@ -247,14 +255,17 @@ async def serve(
                 if process.poll() is not None:
                     raise LaunchError("webui_serve_exited")
                 config = _json(await asyncio.to_thread(run, status))
-                if serve_is_public(config, webui):
+                if serve_is_public(config, webui) and not webui.funnel:
                     raise LaunchError("webui_serve_is_public")
                 if serve_confirmed(config, webui):
                     break
                 if time.monotonic() > deadline:
                     raise LaunchError("webui_serve_not_confirmed")
                 await asyncio.sleep(poll_seconds)
-            _event("webui_serve_open " + webui.public_url + " (tailnet only)")
+            if webui.funnel:
+                _event("webui_funnel_open " + webui.public_url + " (public; Google login required)")
+            else:
+                _event("webui_serve_open " + webui.public_url + " (tailnet only)")
         else:
             _event("webui_serve_disabled; listening on loopback only")
         while not listener.done():
