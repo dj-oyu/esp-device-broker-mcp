@@ -310,3 +310,15 @@ async def test_nothing_served_carries_credentials_or_environment(ui, google, mon
     for text in bodies:
         for value in (KEY, "google-secret", "sk-env-fixture-value", OWNER, "CARDPUTER_"):
             assert value not in text
+
+
+async def test_pip_is_drawn_locally_and_adds_no_request(ui, google):
+    await login(ui, google)
+    page = await ui.get("/")
+    assert 'id="pip"' in page.text and 'id="pip-video"' in page.text
+    script = await ui.get("/static/app.js")
+    for needle in ("captureStream", "requestPictureInPicture", "webkitSetPresentationMode"):
+        assert needle in script.text
+    # Drawn from data the page already holds: no new route and no new fetch target.
+    assert script.text.count("fetch(") == 1
+    assert "innerHTML" not in script.text
