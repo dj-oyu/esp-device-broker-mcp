@@ -62,6 +62,7 @@ class AppFailure(DeviceOperationFailure):
             in {
                 "outcome_unknown",
                 "catalog_changed",
+                "firmware_identity_mismatch",
                 "unknown_app",
                 "unsupported",
                 "app_authority_lost",
@@ -333,6 +334,8 @@ class AppSessions:
         self.on_logs_change: Callable[[], None] | None = None
         self.catalog_cache: dict[str, Any] | None = None
         self.mock_link: MockLink | None = None
+        # ELF digest of the current verified flash receipt, if the broker has one.
+        self.installed_elf: Callable[[], str | None] | None = None
 
     def list_apps(self) -> dict[str, Any]:
         if self.catalog_cache is None:
@@ -384,7 +387,8 @@ class AppSessions:
             details.update(
                 port=port.port,
                 device_fingerprint=fingerprint(port),
-                expected_firmware_sha256=backend.config.expected_firmware_sha256,
+                expected_firmware_sha256=(self.installed_elf() if self.installed_elf else None)
+                or backend.config.expected_firmware_sha256,
             )
         return details
 
@@ -531,7 +535,7 @@ class AppSessions:
                 raise AppFailure("catalog_changed")
             configured = plan.get("expected_firmware_sha256")
             if configured and metadata.app_id != configured:
-                raise AppFailure("catalog_changed")
+                raise AppFailure("firmware_identity_mismatch")
             selected = next((d for d in descriptors if d["app_id"] == run.options.app_id), None)
             if selected is None:
                 raise AppFailure("unknown_app")
