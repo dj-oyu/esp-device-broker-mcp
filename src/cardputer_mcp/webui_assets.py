@@ -380,42 +380,45 @@ function drawPip() {
     stale ? tone.failed : muted, stale);
 }
 
-function stopPip() {
-  if (pipTimer) clearInterval(pipTimer);
-  pipTimer = null;
-  pipCanvas = null;
-  pipVideo.pause();
-  pipVideo.srcObject = null;
-}
-
-async function startPip() {
-  if (pipCanvas) return;
+// The video is made and played before the tap: Safari only enters PiP from the tap itself,
+// not after an awaited play(), and a stream with no data yet cannot enter at all.
+function preparePip() {
   pipCanvas = document.createElement("canvas");
   pipCanvas.width = 320;
   pipCanvas.height = 180;
   drawPip();
   pipVideo.srcObject = pipCanvas.captureStream(5);
   pipTimer = setInterval(drawPip, 1000);
+  pipVideo.play().catch(() => {});
+}
+
+function pipFailed(step, error) {
+  pipButton.textContent = "ミニ表示を開始できません（" + step + ": " +
+    ((error && error.name) || "unknown") + "）";
+  setTimeout(() => { pipButton.textContent = "ミニ表示"; }, 8000);
+}
+
+function startPip() {
   try {
-    await pipVideo.play();
     if (typeof pipVideo.requestPictureInPicture === "function") {
-      await pipVideo.requestPictureInPicture();
+      pipVideo.requestPictureInPicture().catch((error) => pipFailed("pip", error));
     } else {
       pipVideo.webkitSetPresentationMode("picture-in-picture");
+      setTimeout(() => {
+        if (pipVideo.webkitPresentationMode !== "picture-in-picture") {
+          pipFailed("pip", { name: "not_started readyState=" + pipVideo.readyState });
+        }
+      }, 1500);
     }
   } catch (error) {
-    stopPip();
-    setLive("ミニ表示を開始できません", "off");
+    pipFailed("pip", error);
   }
 }
 
 if (pipSupported()) {
   pipButton.hidden = false;
   pipButton.addEventListener("click", startPip);
-  pipVideo.addEventListener("leavepictureinpicture", stopPip);
-  pipVideo.addEventListener("webkitpresentationmodechanged", () => {
-    if (pipVideo.webkitPresentationMode !== "picture-in-picture") stopPip();
-  });
+  preparePip();
 }
 
 document.getElementById("close-logs").addEventListener("click", () => {
