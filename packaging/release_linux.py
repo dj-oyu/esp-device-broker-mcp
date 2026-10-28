@@ -19,6 +19,8 @@ PAYLOAD = (
     "LICENSE",
     "NOTICE",
     "LINUX-DISTRIBUTION.md",
+    "start-cardputer.sh",
+    "start-cardputer-stack.sh",
     "examples/mock-safe.toml",
 )
 MEMBERS = (*PAYLOAD, "build-runtime.json", "manifest.json", "SHA256SUMS.txt")

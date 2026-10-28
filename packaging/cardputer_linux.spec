@@ -1,4 +1,4 @@
-"""Linux x64 onefile build; no user config, ESP-IDF or native Tunnel client."""
+"""Linux x64 onefile build; no GUI, user config, ESP-IDF or native Tunnel client."""
 
 from pathlib import Path
 import runpy
@@ -20,13 +20,12 @@ analysis = Analysis(
         # Our application supplies its own CLI and never uses that extra.
         *collect_submodules("mcp", filter=lambda name: not name.startswith("mcp.cli")),
         *collect_submodules("uvicorn"),
-        "tkinter",
-        "tkinter.ttk",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["pytest", "mypy", "ruff"],
+    # The Linux build has no GUI, so Tk is neither needed nor bundled.
+    excludes=["pytest", "mypy", "ruff", "tkinter"],
     noarchive=False,
 )
 pyz = PYZ(analysis.pure)

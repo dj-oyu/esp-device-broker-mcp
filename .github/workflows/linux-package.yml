@@ -43,12 +43,10 @@ jobs:
         with:
           python-version: '3.13.16'
           architecture: x64
-      # The GUI is bundled with tkinter, which needs the system Tk runtime to
-      # be present at build time.
-      - name: Install system Tk and binutils
+      - name: Install binutils
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends binutils libtk8.6
+          sudo apt-get install -y --no-install-recommends binutils
       - name: Validate version and packaging tests
         run: |
           python packaging/release_linux.py --check-version --ref "$SOURCE_REF" --commit "$SOURCE_SHA"
