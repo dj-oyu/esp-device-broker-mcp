@@ -389,6 +389,10 @@ const KINDS = { firmware_build: "BUILD", firmware_fetch_source: "FETCH", firmwar
   restart_and_observe: "RESTART", derby_smoke: "DERBY", derby_fixed_workload: "DERBY",
   firmware_workflow: "WORKFLOW" };
 
+// DotGothic16 (a pixel font, SIL OFL; subset served at /static/pip.woff2) for the small text:
+// at 16 device pixels its dots land on whole pixels. Until it loads the system font is used.
+const DOT_SIZE = 16 / PIP_SCALE;
+const DOT_FONT = DOT_SIZE + 'px PipDot, system-ui, sans-serif';
 const TICKER_SPEED = 12;
 const TICKER_HOLD_MS = 2000;
 let tickerNote = "";
@@ -473,20 +477,23 @@ function drawTicker(g, note, color, now, calm) {
   }
   g.save();
   g.beginPath();
-  g.rect(6, 21, PIP_W - 12, 11);
+  g.rect(6, 19, PIP_W - 12, 13);
   g.clip();
-  g.font = "9px system-ui, sans-serif";
+  g.font = DOT_FONT;
   g.fillStyle = color;
   g.textAlign = "left";
   const width = g.measureText(note).width;
   let moving = false;
+  const baseline = 43 / PIP_SCALE;
+  // Whole device pixels only, so the dots of the pixel font are not smeared while moving.
+  const snap = (x) => Math.round(x * PIP_SCALE) / PIP_SCALE;
   if (width <= PIP_W - 12 || calm) {
-    g.fillText(note, 6, 29);
+    g.fillText(note, 6, baseline);
   } else {
     const span = width + 48;
     const offset = (Math.max(0, now - tickerAt - TICKER_HOLD_MS) / 1000) * TICKER_SPEED % span;
-    g.fillText(note, 6 - offset, 29);
-    g.fillText(note, 6 - offset + span, 29);
+    g.fillText(note, snap(6 - offset), baseline);
+    g.fillText(note, snap(6 - offset + span), baseline);
     moving = true;
   }
   g.restore();
@@ -531,6 +538,12 @@ function drawPip() {
   const ink = tone ? "#ffffff" : dark ? "#ececea" : "#1d1d1b";
   const sub = tone ? "rgba(255,255,255,.8)" : dark ? "rgba(236,236,234,.8)" : "rgba(29,29,27,.75)";
   let scrolling = false;
+  const dot = (value, x, y, color) => {
+    g.font = DOT_FONT;
+    g.fillStyle = color;
+    g.textAlign = "right";
+    g.fillText(String(value), x, y);
+  };
   const text = (value, x, y, size, color, bold, align) => {
     g.font = (bold ? "bold " : "") + size + "px system-ui, sans-serif";
     g.fillStyle = color;
@@ -543,7 +556,7 @@ function drawPip() {
     drawIcon(g, card.state, 14, 10, now, 0.5);
     text(shortKind(card), 28, 15, 13, ink, true);
     // Elapsed time is the page's own clock: a frozen figure means the page is suspended.
-    text(pipElapsed(card) || "--:--", 190, 18, 18, ink, true, "right");
+    text(pipElapsed(card) || "--:--", 180, 18, 18, ink, true, "right");
     scrolling = drawTicker(g, tickerText(card), sub, now, calm);
   }
   // Seconds since the last server message: this one shows whether the stream is alive.
@@ -552,9 +565,9 @@ function drawPip() {
   if (age > STALE_MS) {
     g.fillStyle = rgb(TONES.failed);
     g.fillRect(0, 0, PIP_W, 2);
-    text("停止 " + seconds + "s", PIP_W - 6, 14, 10, "#ffffff", true, "right");
+    dot("停止 " + seconds + "s", PIP_W - 6, 14, "#ffffff");
   } else {
-    text(seconds + "s", PIP_W - 6, 14, 10, sub, false, "right");
+    dot(seconds + "s", PIP_W - 6, 14, sub);
   }
   setFast(scrolling || pulsing || tint.some((v, i) => Math.abs(v - goal[i]) > 1.5));
 }
@@ -596,6 +609,12 @@ function startPip() {
   } catch (error) {
     pipFailed("pip", error);
   }
+}
+
+if (typeof FontFace === "function") {
+  new FontFace("PipDot", "url(/static/pip.woff2)").load()
+    .then((face) => { document.fonts.add(face); drawPip(); })
+    .catch(() => {});
 }
 
 if (pipSupported()) {

@@ -140,6 +140,7 @@ async def login(client, google) -> str:
     [
         ("GET", "/static/app.js"),
         ("GET", "/static/app.css"),
+        ("GET", "/static/pip.woff2"),
         ("GET", "/api/state"),
         ("GET", "/api/timeline"),
         ("GET", "/api/events"),
@@ -322,6 +323,19 @@ async def test_nothing_served_carries_credentials_or_environment(ui, google, mon
     for text in bodies:
         for value in (KEY, "google-secret", "sk-env-fixture-value", OWNER, "CARDPUTER_"):
             assert value not in text
+
+
+async def test_pip_font_needs_a_session_and_is_only_the_subset(ui, google):
+    # Without a session the font is not served (see test_without_a_session_nothing_is_served).
+    await login(ui, google)
+    page = await ui.get("/")
+    assert "font-src 'self'" in page.headers["content-security-policy"]
+    font = await ui.get("/static/pip.woff2")
+    assert font.status_code == 200
+    assert font.headers["content-type"] == "font/woff2"
+    # A WOFF2 subset of a few KB, not the 2 MB DotGothic16 file.
+    assert font.content[:4] == b"wOF2" and len(font.content) < 16 * 1024
+    assert ui.broker.requests == []
 
 
 async def test_pip_is_drawn_locally_and_adds_no_request(ui, google):
