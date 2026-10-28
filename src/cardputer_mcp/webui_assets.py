@@ -378,10 +378,11 @@ function setFast(on) {
   else if (!on && pipFast) { clearInterval(pipFast); pipFast = null; }
 }
 
-// The frame is laid out in 192x108 units and drawn at twice that for sharpness.
+// A short, wide frame keeps the window small: laid out in 192x80 units, drawn at 288x120 pixels
+// (fewer than the 320x180 it replaces).
 const PIP_W = 192;
-const PIP_H = 108;
-const PIP_SCALE = 2;
+const PIP_H = 80;
+const PIP_SCALE = 1.5;
 const KINDS = { firmware_build: "BUILD", firmware_fetch_source: "FETCH", firmware_flash: "FLASH",
   firmware_restore: "RESTORE", firmware_backup: "BACKUP", hello: "HELLO", capture_home: "CAPTURE",
   app_session: "APP", diagnostics: "DIAG", passive_observe: "OBSERVE", firmware_observe: "FW OBS",
@@ -394,8 +395,13 @@ function shortKind(card) {
 
 // The state as a mark, not a word: a turning arc (running), a blinking dot (queued),
 // a check (succeeded), a cross (failed, cancelled) or an exclamation mark (needs review).
-function drawIcon(g, state, cx, cy, now) {
+function drawIcon(g, state, x, y, now) {
   const step = Math.floor(now / 1000);
+  g.save();
+  g.translate(x, y);
+  g.scale(0.8, 0.8);
+  const cx = 0;
+  const cy = 0;
   g.lineWidth = 4;
   g.lineCap = "round";
   g.lineJoin = "round";
@@ -443,6 +449,7 @@ function drawIcon(g, state, cx, cy, now) {
     g.stroke();
     g.globalAlpha = 1;
   }
+  g.restore();
 }
 
 function drawPip() {
@@ -489,22 +496,22 @@ function drawPip() {
     g.fillText(String(value), x, y);
   };
   if (!card) {
-    text("ジョブなし", 12, 42, 18, ink, true);
+    text("ジョブなし", 12, 44, 18, ink, true);
   } else {
-    drawIcon(g, card.state, 28, 30, now);
-    text(shortKind(card), 54, 38, 22, ink, true);
+    drawIcon(g, card.state, 20, 18, now);
+    text(shortKind(card), 40, 26, 18, ink, true);
     // Elapsed time is the page's own clock: a frozen figure means the page is suspended.
-    text(pipElapsed(card) || "--:--", 12, 84, 36, ink, true);
+    text(pipElapsed(card) || "--:--", 10, 62, 32, ink, true);
   }
   // Seconds since the last server message: this one shows whether the stream is alive.
   const age = dataAge();
   const seconds = Math.floor(age / 1000);
   if (age > STALE_MS) {
     g.fillStyle = rgb(TONES.failed);
-    g.fillRect(0, 90, PIP_W, 18);
-    text("受信停止 " + seconds + "s", 8, 103, 11, "#ffffff", true);
+    g.fillRect(0, 64, PIP_W, 16);
+    text("受信停止 " + seconds + "s", 8, 76, 11, "#ffffff", true);
   } else {
-    text(seconds + "s", PIP_W - 8, 103, 11, sub, false, "right");
+    text(seconds + "s", PIP_W - 8, 74, 11, sub, false, "right");
   }
   setFast(pulsing || tint.some((v, i) => Math.abs(v - goal[i]) > 1.5));
 }
