@@ -40,6 +40,7 @@ class FakeBroker:
         self.control = False
         self.reject = False
         self.leak: str | None = None  # a value the broker must never echo
+        self.idle_ping = False  # the broker's idle SSE comment follows the snapshot
 
     def handler(self, request: httpx2.Request) -> httpx2.Response:
         self.requests.append(request)
@@ -74,6 +75,8 @@ class FakeBroker:
             return httpx2.Response(200, json={"ok": True, "entries": [], "echo": body})
         if path == "/operator/events":
             data = "id: e:1\ndata: " + json.dumps(SNAPSHOT) + "\n\n"
+            if self.idle_ping:
+                data += ": ping\n\n"
             return httpx2.Response(
                 200, content=data.encode(), headers={"content-type": "text/event-stream"}
             )
@@ -218,6 +221,15 @@ async def test_events_are_passed_through(ui, google):
     assert '"kind": "snapshot"' in response.text
 
 
+async def test_idle_comment_becomes_a_data_heartbeat(ui, google):
+    await login(ui, google)
+    ui.broker.idle_ping = True
+    response = await ui.get("/api/events")
+    # EventSource never shows comments; the page needs a data event to see a live stream.
+    assert ": ping" not in response.text
+    assert response.text.endswith('data: {"ok":true,"kind":"heartbeat"}\n\n')
+
+
 async def test_job_logs_need_csrf_and_same_origin(ui, google):
     csrf = await login(ui, google)
     body = {"job_id": "job-1", "levels": ["error"], "context": 0, "limit": 10}
@@ -320,5 +332,9 @@ async def test_pip_is_drawn_locally_and_adds_no_request(ui, google):
     for needle in ("captureStream", "requestPictureInPicture", "webkitSetPresentationMode"):
         assert needle in script.text
     # Drawn from data the page already holds: no new route and no new fetch target.
-    assert script.text.count("fetch(") == 1
+    assert script.text.count("fetch(") == 2
+    assert 'fetch("/api/job-logs"' in script.text and 'fetch("/api/state"' in script.text
     assert "innerHTML" not in script.text
+    # Silence replaces the stream; the figure drawn tells a dead stream from a live one.
+    for needle in ("STALE_MS", "visibilitychange", "pageshow", "dataAge", "受信停止"):
+        assert needle in script.text

@@ -116,6 +116,12 @@ let hasMore = false;
 let selected = null;
 let logCursor = null;
 let source = null;
+let retryTimer = null;
+let ended = false;
+let lastData = Date.now();
+let lastConnect = Date.now();
+const STALE_MS = 40000;
+const RETRY_MS = 5000;
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -192,8 +198,11 @@ function apply(message) {
   if (!message || message.ok !== true) {
     setLive("停止: " + ((message && message.error) || "unknown"), "off");
     if (source) source.close();
+    retryTimer = setTimeout(recover, RETRY_MS);
     return;
   }
+  lastData = Date.now();
+  if (message.kind === "heartbeat") return;
   if (message.kind === "snapshot" || message.kind === "reset") {
     state = message.state;
     cards = message.timeline.cards || [];
@@ -212,20 +221,57 @@ function apply(message) {
   drawPip();
 }
 
+// The stream is replaced, not trusted: iOS drops sockets of a page that was in the
+// background without telling EventSource, so silence is treated as a dead stream.
 function connect() {
-  source = new EventSource("/api/events");
-  source.onopen = () => setLive("ライブ", "on");
-  source.onmessage = (event) => {
+  clearTimeout(retryTimer);
+  if (source) source.close();
+  lastConnect = Date.now();
+  const current = new EventSource("/api/events");
+  source = current;
+  current.onopen = () => setLive("ライブ", "on");
+  current.onmessage = (event) => {
     try { apply(JSON.parse(event.data)); } catch (error) { setLive("受信エラー", "off"); }
   };
-  source.onerror = () => {
-    if (source.readyState === EventSource.CLOSED) {
-      setLive("切断（再読み込みしてください）", "off");
+  current.onerror = () => {
+    if (current !== source) return;
+    if (current.readyState === EventSource.CLOSED) {
+      setLive("再接続待ち…", "");
+      retryTimer = setTimeout(recover, RETRY_MS);
     } else {
       setLive("再接続中…", "");
     }
   };
 }
+
+// After a refusal, tell an ended session (log in again) from a passing failure (retry).
+async function recover() {
+  try {
+    const response = await fetch("/api/state", { credentials: "same-origin" });
+    if (response.status === 401) {
+      setLive("ログイン切れ（再読み込みしてください）", "off");
+      ended = true;
+      return;
+    }
+  } catch (error) {
+    // Offline: connect() below fails again and the next retry is scheduled.
+  }
+  connect();
+}
+
+function dataAge() {
+  return Date.now() - lastData;
+}
+
+setInterval(() => {
+  if (!ended && Date.now() - Math.max(lastData, lastConnect) > STALE_MS) connect();
+}, 5000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && !ended) connect();
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted && !ended) connect();
+});
 
 function openLogs(card) {
   selected = card.job_id;
@@ -318,16 +364,20 @@ function drawPip() {
   if (!card) {
     text("ジョブなし", 16, 60, 22, fg, true);
   } else {
-    text(card.test || card.job_id, 16, 36, 22, fg, true);
-    text(card.state || "unknown", 16, 72, 26, tone[card.state] || muted, true);
-    text(pipElapsed(card), 200, 72, 26, fg, false);
-    if (card.stage) text(card.stage, 16, 104, 16, muted, false);
+    text(card.test || card.job_id, 16, 30, 20, fg, true);
+    text(card.state || "unknown", 16, 62, 24, tone[card.state] || muted, true);
+    // Elapsed time is the page's own clock: a frozen figure means the page is suspended.
+    text(pipElapsed(card) || "--:--", 16, 126, 56, fg, true);
     const detail = card.failure_reason ? "理由: " + card.failure_reason
-      : card.result ? "結果: " + card.result : "";
-    if (detail) text(detail, 16, 130, 16, muted, false);
+      : card.result ? "結果: " + card.result : card.stage || "";
+    if (detail) text(detail, 16, 150, 14, muted, false);
   }
-  const live = document.getElementById("live").textContent;
-  text(live + " " + new Date().toLocaleTimeString(), 16, 166, 14, muted, false);
+  // Seconds since the last server message: this one shows whether the stream is alive.
+  const age = dataAge();
+  const stale = age > STALE_MS;
+  const seconds = Math.floor(age / 1000);
+  text(stale ? "受信停止 " + seconds + "秒" : "受信 " + seconds + "秒前", 16, 172, 14,
+    stale ? tone.failed : muted, stale);
 }
 
 function stopPip() {
