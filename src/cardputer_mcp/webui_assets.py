@@ -378,8 +378,8 @@ function setFast(on) {
   else if (!on && pipFast) { clearInterval(pipFast); pipFast = null; }
 }
 
-// A thin strip (15:2) keeps the window small: one row laid out in 240x32 units, drawn at
-// 360x48 pixels (fewer than the 320x180 it replaces).
+// A thin strip (15:2) keeps the window small: laid out in 240x32 units, drawn at 360x48
+// pixels (fewer than the 320x180 it replaces). Top row: mark, kind, time; below it a ticker.
 const PIP_W = 240;
 const PIP_H = 32;
 const PIP_SCALE = 1.5;
@@ -388,6 +388,18 @@ const KINDS = { firmware_build: "BUILD", firmware_fetch_source: "FETCH", firmwar
   app_session: "APP", diagnostics: "DIAG", passive_observe: "OBSERVE", firmware_observe: "FW OBS",
   restart_and_observe: "RESTART", derby_smoke: "DERBY", derby_fixed_workload: "DERBY",
   firmware_workflow: "WORKFLOW" };
+
+const TICKER_SPEED = 12;
+const TICKER_HOLD_MS = 2000;
+let tickerNote = "";
+let tickerAt = 0;
+
+// Only values the page already shows: job id, stage and the result or reason code.
+function tickerText(card) {
+  const outcome = card.failure_reason ? "理由: " + card.failure_reason
+    : card.result ? "結果: " + card.result : "";
+  return [card.job_id, card.stage, outcome].filter(Boolean).join("  ·  ");
+}
 
 function shortKind(card) {
   return KINDS[card.test] || String(card.test || card.job_id || "?").toUpperCase().slice(0, 8);
@@ -452,6 +464,35 @@ function drawIcon(g, state, x, y, now, size) {
   g.restore();
 }
 
+// A slow marquee in the strip's lower row; text that fits stays still, and so does all of
+// it under reduced motion. Returns whether it is moving (the caller then redraws quickly).
+function drawTicker(g, note, color, now, calm) {
+  if (note !== tickerNote) {
+    tickerNote = note;
+    tickerAt = now;
+  }
+  g.save();
+  g.beginPath();
+  g.rect(6, 21, PIP_W - 12, 11);
+  g.clip();
+  g.font = "9px system-ui, sans-serif";
+  g.fillStyle = color;
+  g.textAlign = "left";
+  const width = g.measureText(note).width;
+  let moving = false;
+  if (width <= PIP_W - 12 || calm) {
+    g.fillText(note, 6, 29);
+  } else {
+    const span = width + 48;
+    const offset = (Math.max(0, now - tickerAt - TICKER_HOLD_MS) / 1000) * TICKER_SPEED % span;
+    g.fillText(note, 6 - offset, 29);
+    g.fillText(note, 6 - offset + span, 29);
+    moving = true;
+  }
+  g.restore();
+  return moving;
+}
+
 function drawPip() {
   if (!pipCanvas) return;
   const g = pipCanvas.getContext("2d");
@@ -489,6 +530,7 @@ function drawPip() {
   // White on a state colour; the ordinary text colour when no job is shown.
   const ink = tone ? "#ffffff" : dark ? "#ececea" : "#1d1d1b";
   const sub = tone ? "rgba(255,255,255,.8)" : dark ? "rgba(236,236,234,.8)" : "rgba(29,29,27,.75)";
+  let scrolling = false;
   const text = (value, x, y, size, color, bold, align) => {
     g.font = (bold ? "bold " : "") + size + "px system-ui, sans-serif";
     g.fillStyle = color;
@@ -496,24 +538,25 @@ function drawPip() {
     g.fillText(String(value), x, y);
   };
   if (!card) {
-    text("ジョブなし", 10, 22, 16, ink, true);
+    text("ジョブなし", 10, 20, 14, ink, true);
   } else {
-    drawIcon(g, card.state, 18, 16, now, 0.65);
-    text(shortKind(card), 36, 22, 16, ink, true);
+    drawIcon(g, card.state, 14, 10, now, 0.5);
+    text(shortKind(card), 28, 15, 13, ink, true);
     // Elapsed time is the page's own clock: a frozen figure means the page is suspended.
-    text(pipElapsed(card) || "--:--", 184, 24, 22, ink, true, "right");
+    text(pipElapsed(card) || "--:--", 190, 18, 18, ink, true, "right");
+    scrolling = drawTicker(g, tickerText(card), sub, now, calm);
   }
   // Seconds since the last server message: this one shows whether the stream is alive.
   const age = dataAge();
   const seconds = Math.floor(age / 1000);
   if (age > STALE_MS) {
     g.fillStyle = rgb(TONES.failed);
-    g.fillRect(0, PIP_H - 5, PIP_W, 5);
-    text("停止 " + seconds + "s", PIP_W - 6, 20, 11, "#ffffff", true, "right");
+    g.fillRect(0, 0, PIP_W, 2);
+    text("停止 " + seconds + "s", PIP_W - 6, 14, 10, "#ffffff", true, "right");
   } else {
-    text(seconds + "s", PIP_W - 6, 20, 11, sub, false, "right");
+    text(seconds + "s", PIP_W - 6, 14, 10, sub, false, "right");
   }
-  setFast(pulsing || tint.some((v, i) => Math.abs(v - goal[i]) > 1.5));
+  setFast(scrolling || pulsing || tint.some((v, i) => Math.abs(v - goal[i]) > 1.5));
 }
 
 // The video is made and played before the tap: Safari only enters PiP from the tap itself,
