@@ -41,6 +41,7 @@ from .config import WebUISettings
 from .gateway_oauth import GOOGLE_CALLBACK_PATH, GoogleLoginError, GoogleOIDC, _s256
 from .models import BuildLogRequest
 from .webui_assets import APP_CSS, APP_JS, page
+from .webui_font import PIP_FONT_WOFF2
 
 logger = logging.getLogger("cardputer_mcp.webui")
 
@@ -61,6 +62,7 @@ ROUTES = frozenset(
         GOOGLE_CALLBACK_PATH,
         "/static/app.js",
         "/static/app.css",
+        "/static/pip.woff2",
         "/api/state",
         "/api/timeline",
         "/api/events",
@@ -70,7 +72,7 @@ ROUTES = frozenset(
 SECURITY_HEADERS = {
     "content-security-policy": (
         "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
-        "img-src 'self'; base-uri 'none'; form-action 'self'; "
+        "img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; "
         "frame-ancestors 'none'"
     ),
     "x-content-type-options": "nosniff",
@@ -383,6 +385,9 @@ class WebUI:
     async def style(self, request: Request) -> Response:
         return Response(APP_CSS, media_type="text/css; charset=utf-8")
 
+    async def font(self, request: Request) -> Response:
+        return Response(PIP_FONT_WOFF2, media_type="font/woff2")
+
     async def state(self, request: Request) -> Response:
         status, payload = await self.broker.get("/operator/state")
         return self._reply(payload, status)
@@ -450,6 +455,7 @@ class WebUI:
             Route("/logout", self.logout, methods=["POST"]),
             Route("/static/app.js", self.script, methods=["GET"]),
             Route("/static/app.css", self.style, methods=["GET"]),
+            Route("/static/pip.woff2", self.font, methods=["GET"]),
             Route("/api/state", self.state, methods=["GET"]),
             Route("/api/timeline", self.timeline, methods=["GET"]),
             Route("/api/events", self.events, methods=["GET"]),

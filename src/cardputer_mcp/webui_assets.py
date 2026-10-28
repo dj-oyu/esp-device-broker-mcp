@@ -40,7 +40,7 @@ def page(
         f'<meta name="csrf-token" content="{escape(csrf, quote=True)}"></head>'
         "<body>"
         '<header><h1>Cardputer</h1><span id="live" class="live">接続中…</span>'
-        '<button type="button" id="pip" hidden>ミニ表示</button>'
+        '<button type="button" id="pip" hidden>PiP</button>'
         '<form method="post" action="/logout">'
         f'<input type="hidden" name="csrf" value="{escape(csrf, quote=True)}">'
         '<button type="submit">ログアウト</button></form></header>'
@@ -70,14 +70,15 @@ APP_CSS = """
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px;
   border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); }
-header h1 { font-size: 17px; margin: 0; flex: 1; }
+header h1 { font-size: 17px; margin: 0; flex: 1 1 auto; }
 header form { margin: 0; }
 main { padding: 12px 16px 48px; max-width: 880px; margin: 0 auto; }
 h2 { font-size: 15px; margin: 20px 0 8px; }
 button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line);
-  background: var(--card); color: var(--fg); }
+  background: var(--card); color: var(--fg); white-space: nowrap; flex-shrink: 0; }
+button.failed { white-space: normal; text-align: left; }
 .live { font-size: 13px; color: var(--muted); }
 .live.on { color: var(--ok); }
 .live.off { color: var(--bad); }
@@ -218,6 +219,7 @@ function apply(message) {
   }
   renderState();
   renderJobs();
+  noteChanges();
   drawPip();
 }
 
@@ -345,77 +347,282 @@ function pipElapsed(card) {
   return Math.floor(total / 60) + ":" + two(total % 60);
 }
 
+// State colours as RGB. The window tints toward the shown job's colour and pulses once
+// when it ends, so the result reads at a glance without sound.
+const TONES = { succeeded: [31, 122, 58], failed: [180, 35, 24], cancelled: [180, 35, 24],
+  running: [29, 78, 216], queued: [29, 78, 216], needs_review: [161, 92, 0] };
+const ENDED = new Set(["succeeded", "failed", "cancelled", "needs_review"]);
+const calmMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+let seenStates = null;
+let flash = null;
+let tint = null;
+let tintAt = 0;
+let pipFast = null;
+
+const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+const rgb = (c) => "rgb(" + c.map((v) => Math.round(v)).join(",") + ")";
+
+// Compares job states with the last ones seen; the first snapshot only records them.
+function noteChanges() {
+  const shown = pipJob();
+  if (seenStates !== null && shown && ENDED.has(shown.state) &&
+      seenStates.get(shown.job_id) !== shown.state) {
+    flash = { at: Date.now() };
+  }
+  seenStates = new Map(cards.map((card) => [card.job_id, card.state]));
+}
+
+// Redraw every 100 ms only while a colour is moving or pulsing; otherwise once a second.
+function setFast(on) {
+  if (on && !pipFast) pipFast = setInterval(drawPip, 100);
+  else if (!on && pipFast) { clearInterval(pipFast); pipFast = null; }
+}
+
+// iOS opens PiP only for frames no wider than 2:1 (tried on an iPhone: 16:9 and 2:1 open,
+// anything wider, down to 15:2, is refused with NotAllowedError). The frame is 2:1, laid out
+// in 192x96 units and drawn at 288x144 pixels (fewer than the 320x180 it replaces); the
+// window is made small by pinching it, so the content is kept large.
+const PIP_W = 192;
+const PIP_H = 96;
+const PIP_SCALE = 1.5;
+const KINDS = { firmware_build: "BUILD", firmware_fetch_source: "FETCH", firmware_flash: "FLASH",
+  firmware_restore: "RESTORE", firmware_backup: "BACKUP", hello: "HELLO", capture_home: "CAPTURE",
+  app_session: "APP", diagnostics: "DIAG", passive_observe: "OBSERVE", firmware_observe: "FW OBS",
+  restart_and_observe: "RESTART", derby_smoke: "DERBY", derby_fixed_workload: "DERBY",
+  firmware_workflow: "WORKFLOW" };
+
+// DotGothic16 (a pixel font, SIL OFL; subset served at /static/pip.woff2) for the small text:
+// at 16 device pixels its dots land on whole pixels. Until it loads the system font is used.
+const DOT_SIZE = 16 / PIP_SCALE;
+const DOT_FONT = DOT_SIZE + 'px PipDot, system-ui, sans-serif';
+const TICKER_SPEED = 12;
+const TICKER_HOLD_MS = 2000;
+let tickerNote = "";
+let tickerAt = 0;
+
+// Only values the page already shows: job id, stage and the result or reason code.
+function tickerText(card) {
+  const outcome = card.failure_reason ? "理由: " + card.failure_reason
+    : card.result ? "結果: " + card.result : "";
+  return [card.job_id, card.stage, outcome].filter(Boolean).join("  ·  ");
+}
+
+function shortKind(card) {
+  return KINDS[card.test] || String(card.test || card.job_id || "?").toUpperCase().slice(0, 8);
+}
+
+// The state as a mark, not a word: a turning arc (running), a blinking dot (queued),
+// a check (succeeded), a cross (failed, cancelled) or an exclamation mark (needs review).
+function drawIcon(g, state, x, y, now, size) {
+  const step = Math.floor(now / 1000);
+  g.save();
+  g.translate(x, y);
+  g.scale(size, size);
+  const cx = 0;
+  const cy = 0;
+  g.lineWidth = 4;
+  g.lineCap = "round";
+  g.lineJoin = "round";
+  g.strokeStyle = "#ffffff";
+  g.fillStyle = "#ffffff";
+  g.beginPath();
+  if (state === "running") {
+    g.globalAlpha = 0.35;
+    g.arc(cx, cy, 15, 0, 2 * Math.PI);
+    g.stroke();
+    g.globalAlpha = 1;
+    g.beginPath();
+    const from = (step % 8) * (Math.PI / 4);
+    g.arc(cx, cy, 15, from, from + Math.PI * 0.6);
+    g.stroke();
+  } else if (state === "queued") {
+    g.arc(cx, cy, 15, 0, 2 * Math.PI);
+    g.stroke();
+    if (step % 2 === 0) {
+      g.beginPath();
+      g.arc(cx, cy, 6, 0, 2 * Math.PI);
+      g.fill();
+    }
+  } else if (state === "succeeded") {
+    g.moveTo(cx - 11, cy);
+    g.lineTo(cx - 3, cy + 8);
+    g.lineTo(cx + 11, cy - 9);
+    g.stroke();
+  } else if (state === "failed" || state === "cancelled") {
+    g.moveTo(cx - 9, cy - 9);
+    g.lineTo(cx + 9, cy + 9);
+    g.moveTo(cx + 9, cy - 9);
+    g.lineTo(cx - 9, cy + 9);
+    g.stroke();
+  } else if (state === "needs_review") {
+    g.moveTo(cx, cy - 12);
+    g.lineTo(cx, cy + 3);
+    g.stroke();
+    g.beginPath();
+    g.arc(cx, cy + 11, 2.5, 0, 2 * Math.PI);
+    g.fill();
+  } else {
+    g.globalAlpha = 0.5;
+    g.arc(cx, cy, 15, 0, 2 * Math.PI);
+    g.stroke();
+    g.globalAlpha = 1;
+  }
+  g.restore();
+}
+
+// A slow marquee in the strip's lower row; text that fits stays still, and so does all of
+// it under reduced motion. Returns whether it is moving (the caller then redraws quickly).
+function drawTicker(g, note, color, now, calm) {
+  if (note !== tickerNote) {
+    tickerNote = note;
+    tickerAt = now;
+  }
+  g.save();
+  g.beginPath();
+  g.rect(6, 77, PIP_W - 12, 19);
+  g.clip();
+  g.font = DOT_FONT;
+  g.fillStyle = color;
+  g.textAlign = "left";
+  const width = g.measureText(note).width;
+  let moving = false;
+  const baseline = 136 / PIP_SCALE;
+  // Whole device pixels only, so the dots of the pixel font are not smeared while moving.
+  const snap = (x) => Math.round(x * PIP_SCALE) / PIP_SCALE;
+  if (width <= PIP_W - 12 || calm) {
+    g.fillText(note, 6, baseline);
+  } else {
+    const span = width + 48;
+    const offset = (Math.max(0, now - tickerAt - TICKER_HOLD_MS) / 1000) * TICKER_SPEED % span;
+    g.fillText(note, snap(6 - offset), baseline);
+    g.fillText(note, snap(6 - offset + span), baseline);
+    moving = true;
+  }
+  g.restore();
+  return moving;
+}
+
 function drawPip() {
   if (!pipCanvas) return;
   const g = pipCanvas.getContext("2d");
+  g.setTransform(PIP_SCALE, 0, 0, PIP_SCALE, 0, 0);
   const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const fg = dark ? "#ececea" : "#1d1d1b";
-  const muted = dark ? "#a3a39d" : "#6b6b66";
-  const tone = { succeeded: "#1f7a3a", failed: "#b42318", cancelled: "#b42318",
-    running: "#1d4ed8", queued: "#1d4ed8", needs_review: "#a15c00" };
-  g.fillStyle = dark ? "#151514" : "#f7f7f5";
-  g.fillRect(0, 0, pipCanvas.width, pipCanvas.height);
+  const base = dark ? [21, 21, 20] : [247, 247, 245];
   const card = pipJob();
-  const text = (value, x, y, size, color, bold) => {
+  const now = Date.now();
+  const calm = calmMotion.matches;
+  const tone = card ? TONES[card.state] : null;
+  const goal = tone ? mix(base, tone, 0.9) : base;
+  if (tint === null || calm) {
+    tint = goal;
+  } else {
+    const k = 1 - Math.exp(-(now - tintAt) / 250);
+    tint = tint.map((v, i) => v + (goal[i] - v) * k);
+  }
+  tintAt = now;
+  g.fillStyle = rgb(tint);
+  g.fillRect(0, 0, PIP_W, PIP_H);
+  // Three slow pulses (1.5 Hz) when a job ends; none under reduced motion.
+  let pulsing = false;
+  if (flash && !calm) {
+    const t = (now - flash.at) / 1000;
+    if (t < 2) {
+      pulsing = true;
+      g.fillStyle = "rgba(255,255,255," + 0.5 * Math.max(0, Math.sin(2 * Math.PI * 1.5 * t)) + ")";
+      g.fillRect(0, 0, PIP_W, PIP_H);
+    } else {
+      flash = null;
+    }
+  } else {
+    flash = null;
+  }
+  // White on a state colour; the ordinary text colour when no job is shown.
+  const ink = tone ? "#ffffff" : dark ? "#ececea" : "#1d1d1b";
+  const sub = tone ? "rgba(255,255,255,.8)" : dark ? "rgba(236,236,234,.8)" : "rgba(29,29,27,.75)";
+  let scrolling = false;
+  const dot = (value, x, y, color) => {
+    g.font = DOT_FONT;
+    g.fillStyle = color;
+    g.textAlign = "right";
+    g.fillText(String(value), x, y);
+  };
+  const text = (value, x, y, size, color, bold, align) => {
     g.font = (bold ? "bold " : "") + size + "px system-ui, sans-serif";
     g.fillStyle = color;
-    g.fillText(String(value).slice(0, 34), x, y);
+    g.textAlign = align || "left";
+    g.fillText(String(value), x, y);
   };
   if (!card) {
-    text("ジョブなし", 16, 60, 22, fg, true);
+    text("ジョブなし", 12, 52, 22, ink, true);
   } else {
-    text(card.test || card.job_id, 16, 30, 20, fg, true);
-    text(card.state || "unknown", 16, 62, 24, tone[card.state] || muted, true);
+    drawIcon(g, card.state, 26, 24, now, 0.85);
+    text(shortKind(card), 50, 32, 22, ink, true);
     // Elapsed time is the page's own clock: a frozen figure means the page is suspended.
-    text(pipElapsed(card) || "--:--", 16, 126, 56, fg, true);
-    const detail = card.failure_reason ? "理由: " + card.failure_reason
-      : card.result ? "結果: " + card.result : card.stage || "";
-    if (detail) text(detail, 16, 150, 14, muted, false);
+    text(pipElapsed(card) || "--:--", 12, 70, 36, ink, true);
+    scrolling = drawTicker(g, tickerText(card), sub, now, calm);
   }
   // Seconds since the last server message: this one shows whether the stream is alive.
   const age = dataAge();
-  const stale = age > STALE_MS;
   const seconds = Math.floor(age / 1000);
-  text(stale ? "受信停止 " + seconds + "秒" : "受信 " + seconds + "秒前", 16, 172, 14,
-    stale ? tone.failed : muted, stale);
+  if (age > STALE_MS) {
+    g.fillStyle = rgb(TONES.failed);
+    g.fillRect(0, 0, PIP_W, 2);
+    dot("停止 " + seconds + "s", PIP_W - 6, 70, "#ffffff");
+  } else {
+    dot(seconds + "s", PIP_W - 6, 70, sub);
+  }
+  setFast(scrolling || pulsing || tint.some((v, i) => Math.abs(v - goal[i]) > 1.5));
 }
 
-function stopPip() {
-  if (pipTimer) clearInterval(pipTimer);
-  pipTimer = null;
-  pipCanvas = null;
-  pipVideo.pause();
-  pipVideo.srcObject = null;
-}
-
-async function startPip() {
-  if (pipCanvas) return;
+// The video is made and played before the tap: Safari only enters PiP from the tap itself,
+// not after an awaited play(), and a stream with no data yet cannot enter at all.
+function preparePip() {
   pipCanvas = document.createElement("canvas");
-  pipCanvas.width = 320;
-  pipCanvas.height = 180;
+  pipCanvas.width = PIP_W * PIP_SCALE;
+  pipCanvas.height = PIP_H * PIP_SCALE;
   drawPip();
-  pipVideo.srcObject = pipCanvas.captureStream(5);
+  pipVideo.srcObject = pipCanvas.captureStream(15);
   pipTimer = setInterval(drawPip, 1000);
+  pipVideo.play().catch(() => {});
+}
+
+function pipFailed(step, error) {
+  pipButton.textContent = "PiPを開始できません（" + step + ": " +
+    ((error && error.name) || "unknown") + "）";
+  pipButton.classList.add("failed");
+  setTimeout(() => {
+    pipButton.textContent = "PiP";
+    pipButton.classList.remove("failed");
+  }, 8000);
+}
+
+function startPip() {
   try {
-    await pipVideo.play();
     if (typeof pipVideo.requestPictureInPicture === "function") {
-      await pipVideo.requestPictureInPicture();
+      pipVideo.requestPictureInPicture().catch((error) => pipFailed("pip", error));
     } else {
       pipVideo.webkitSetPresentationMode("picture-in-picture");
+      setTimeout(() => {
+        if (pipVideo.webkitPresentationMode !== "picture-in-picture") {
+          pipFailed("pip", { name: "not_started readyState=" + pipVideo.readyState });
+        }
+      }, 1500);
     }
   } catch (error) {
-    stopPip();
-    setLive("ミニ表示を開始できません", "off");
+    pipFailed("pip", error);
   }
+}
+
+if (typeof FontFace === "function") {
+  new FontFace("PipDot", "url(/static/pip.woff2)").load()
+    .then((face) => { document.fonts.add(face); drawPip(); })
+    .catch(() => {});
 }
 
 if (pipSupported()) {
   pipButton.hidden = false;
   pipButton.addEventListener("click", startPip);
-  pipVideo.addEventListener("leavepictureinpicture", stopPip);
-  pipVideo.addEventListener("webkitpresentationmodechanged", () => {
-    if (pipVideo.webkitPresentationMode !== "picture-in-picture") stopPip();
-  });
+  preparePip();
 }
 
 document.getElementById("close-logs").addEventListener("click", () => {
