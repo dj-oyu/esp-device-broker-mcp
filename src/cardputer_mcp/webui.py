@@ -432,6 +432,10 @@ class WebUI:
                         if self._leaks(event):
                             logger.error("webui_response_withheld")
                             return
+                        if event.startswith(b":"):
+                            # A comment is invisible to EventSource; send a data event the
+                            # page can see, so it can tell a quiet stream from a dead one.
+                            event = b'data: {"ok":true,"kind":"heartbeat"}'
                         yield event + b"\n\n"
             finally:
                 await close()
