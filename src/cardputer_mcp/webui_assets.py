@@ -70,14 +70,15 @@ APP_CSS = """
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px;
   border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); }
-header h1 { font-size: 17px; margin: 0; flex: 1; }
+header h1 { font-size: 17px; margin: 0; flex: 1 1 auto; }
 header form { margin: 0; }
 main { padding: 12px 16px 48px; max-width: 880px; margin: 0 auto; }
 h2 { font-size: 15px; margin: 20px 0 8px; }
 button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line);
-  background: var(--card); color: var(--fg); }
+  background: var(--card); color: var(--fg); white-space: nowrap; flex-shrink: 0; }
+button.failed { white-space: normal; text-align: left; }
 .live { font-size: 13px; color: var(--muted); }
 .live.on { color: var(--ok); }
 .live.off { color: var(--bad); }
@@ -395,7 +396,11 @@ function preparePip() {
 function pipFailed(step, error) {
   pipButton.textContent = "ミニ表示を開始できません（" + step + ": " +
     ((error && error.name) || "unknown") + "）";
-  setTimeout(() => { pipButton.textContent = "ミニ表示"; }, 8000);
+  pipButton.classList.add("failed");
+  setTimeout(() => {
+    pipButton.textContent = "ミニ表示";
+    pipButton.classList.remove("failed");
+  }, 8000);
 }
 
 function startPip() {
