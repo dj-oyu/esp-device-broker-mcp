@@ -378,17 +378,84 @@ function setFast(on) {
   else if (!on && pipFast) { clearInterval(pipFast); pipFast = null; }
 }
 
+// The frame is laid out in 192x108 units and drawn at twice that for sharpness.
+const PIP_W = 192;
+const PIP_H = 108;
+const PIP_SCALE = 2;
+const KINDS = { firmware_build: "BUILD", firmware_fetch_source: "FETCH", firmware_flash: "FLASH",
+  firmware_restore: "RESTORE", firmware_backup: "BACKUP", hello: "HELLO", capture_home: "CAPTURE",
+  app_session: "APP", diagnostics: "DIAG", passive_observe: "OBSERVE", firmware_observe: "FW OBS",
+  restart_and_observe: "RESTART", derby_smoke: "DERBY", derby_fixed_workload: "DERBY",
+  firmware_workflow: "WORKFLOW" };
+
+function shortKind(card) {
+  return KINDS[card.test] || String(card.test || card.job_id || "?").toUpperCase().slice(0, 8);
+}
+
+// The state as a mark, not a word: a turning arc (running), a blinking dot (queued),
+// a check (succeeded), a cross (failed, cancelled) or an exclamation mark (needs review).
+function drawIcon(g, state, cx, cy, now) {
+  const step = Math.floor(now / 1000);
+  g.lineWidth = 4;
+  g.lineCap = "round";
+  g.lineJoin = "round";
+  g.strokeStyle = "#ffffff";
+  g.fillStyle = "#ffffff";
+  g.beginPath();
+  if (state === "running") {
+    g.globalAlpha = 0.35;
+    g.arc(cx, cy, 15, 0, 2 * Math.PI);
+    g.stroke();
+    g.globalAlpha = 1;
+    g.beginPath();
+    const from = (step % 8) * (Math.PI / 4);
+    g.arc(cx, cy, 15, from, from + Math.PI * 0.6);
+    g.stroke();
+  } else if (state === "queued") {
+    g.arc(cx, cy, 15, 0, 2 * Math.PI);
+    g.stroke();
+    if (step % 2 === 0) {
+      g.beginPath();
+      g.arc(cx, cy, 6, 0, 2 * Math.PI);
+      g.fill();
+    }
+  } else if (state === "succeeded") {
+    g.moveTo(cx - 11, cy);
+    g.lineTo(cx - 3, cy + 8);
+    g.lineTo(cx + 11, cy - 9);
+    g.stroke();
+  } else if (state === "failed" || state === "cancelled") {
+    g.moveTo(cx - 9, cy - 9);
+    g.lineTo(cx + 9, cy + 9);
+    g.moveTo(cx + 9, cy - 9);
+    g.lineTo(cx - 9, cy + 9);
+    g.stroke();
+  } else if (state === "needs_review") {
+    g.moveTo(cx, cy - 12);
+    g.lineTo(cx, cy + 3);
+    g.stroke();
+    g.beginPath();
+    g.arc(cx, cy + 11, 2.5, 0, 2 * Math.PI);
+    g.fill();
+  } else {
+    g.globalAlpha = 0.5;
+    g.arc(cx, cy, 15, 0, 2 * Math.PI);
+    g.stroke();
+    g.globalAlpha = 1;
+  }
+}
+
 function drawPip() {
   if (!pipCanvas) return;
   const g = pipCanvas.getContext("2d");
+  g.setTransform(PIP_SCALE, 0, 0, PIP_SCALE, 0, 0);
   const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const fg = dark ? "#ececea" : "#1d1d1b";
-  const sub = dark ? "rgba(236,236,234,.8)" : "rgba(29,29,27,.75)";
   const base = dark ? [21, 21, 20] : [247, 247, 245];
   const card = pipJob();
   const now = Date.now();
   const calm = calmMotion.matches;
-  const goal = card && TONES[card.state] ? mix(base, TONES[card.state], 0.55) : base;
+  const tone = card ? TONES[card.state] : null;
+  const goal = tone ? mix(base, tone, 0.9) : base;
   if (tint === null || calm) {
     tint = goal;
   } else {
@@ -397,7 +464,7 @@ function drawPip() {
   }
   tintAt = now;
   g.fillStyle = rgb(tint);
-  g.fillRect(0, 0, pipCanvas.width, pipCanvas.height);
+  g.fillRect(0, 0, PIP_W, PIP_H);
   // Three slow pulses (1.5 Hz) when a job ends; none under reduced motion.
   let pulsing = false;
   if (flash && !calm) {
@@ -405,38 +472,39 @@ function drawPip() {
     if (t < 2) {
       pulsing = true;
       g.fillStyle = "rgba(255,255,255," + 0.5 * Math.max(0, Math.sin(2 * Math.PI * 1.5 * t)) + ")";
-      g.fillRect(0, 0, pipCanvas.width, pipCanvas.height);
+      g.fillRect(0, 0, PIP_W, PIP_H);
     } else {
       flash = null;
     }
   } else {
     flash = null;
   }
-  const text = (value, x, y, size, color, bold) => {
+  // White on a state colour; the ordinary text colour when no job is shown.
+  const ink = tone ? "#ffffff" : dark ? "#ececea" : "#1d1d1b";
+  const sub = tone ? "rgba(255,255,255,.8)" : dark ? "rgba(236,236,234,.8)" : "rgba(29,29,27,.75)";
+  const text = (value, x, y, size, color, bold, align) => {
     g.font = (bold ? "bold " : "") + size + "px system-ui, sans-serif";
     g.fillStyle = color;
-    g.fillText(String(value).slice(0, 34), x, y);
+    g.textAlign = align || "left";
+    g.fillText(String(value), x, y);
   };
   if (!card) {
-    text("ジョブなし", 16, 60, 22, fg, true);
+    text("ジョブなし", 12, 42, 18, ink, true);
   } else {
-    text(card.test || card.job_id, 16, 30, 20, fg, true);
-    text(card.state || "unknown", 16, 62, 24, fg, true);
+    drawIcon(g, card.state, 28, 30, now);
+    text(shortKind(card), 54, 38, 22, ink, true);
     // Elapsed time is the page's own clock: a frozen figure means the page is suspended.
-    text(pipElapsed(card) || "--:--", 16, 126, 56, fg, true);
-    const detail = card.failure_reason ? "理由: " + card.failure_reason
-      : card.result ? "結果: " + card.result : card.stage || "";
-    if (detail) text(detail, 16, 150, 14, sub, false);
+    text(pipElapsed(card) || "--:--", 12, 84, 36, ink, true);
   }
   // Seconds since the last server message: this one shows whether the stream is alive.
   const age = dataAge();
   const seconds = Math.floor(age / 1000);
   if (age > STALE_MS) {
     g.fillStyle = rgb(TONES.failed);
-    g.fillRect(0, 154, pipCanvas.width, 26);
-    text("受信停止 " + seconds + "秒", 16, 172, 14, "#ffffff", true);
+    g.fillRect(0, 90, PIP_W, 18);
+    text("受信停止 " + seconds + "s", 8, 103, 11, "#ffffff", true);
   } else {
-    text("受信 " + seconds + "秒前", 16, 172, 14, sub, false);
+    text(seconds + "s", PIP_W - 8, 103, 11, sub, false, "right");
   }
   setFast(pulsing || tint.some((v, i) => Math.abs(v - goal[i]) > 1.5));
 }
@@ -445,8 +513,8 @@ function drawPip() {
 // not after an awaited play(), and a stream with no data yet cannot enter at all.
 function preparePip() {
   pipCanvas = document.createElement("canvas");
-  pipCanvas.width = 320;
-  pipCanvas.height = 180;
+  pipCanvas.width = PIP_W * PIP_SCALE;
+  pipCanvas.height = PIP_H * PIP_SCALE;
   drawPip();
   pipVideo.srcObject = pipCanvas.captureStream(15);
   pipTimer = setInterval(drawPip, 1000);

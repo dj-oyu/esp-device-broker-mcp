@@ -339,5 +339,5 @@ async def test_pip_is_drawn_locally_and_adds_no_request(ui, google):
     for needle in ("STALE_MS", "visibilitychange", "pageshow", "dataAge", "受信停止"):
         assert needle in script.text
     # A job ending is shown by colour and pulses, and reduced motion turns the pulses off.
-    for needle in ("noteChanges", "TONES", "prefers-reduced-motion"):
+    for needle in ("noteChanges", "TONES", "prefers-reduced-motion", "shortKind", "drawIcon"):
         assert needle in script.text
