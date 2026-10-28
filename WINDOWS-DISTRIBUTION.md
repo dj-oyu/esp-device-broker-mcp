@@ -14,7 +14,9 @@ locked build inputs. The bounded build-runtime receipt comes from the actual
 PyInstaller interpreter, binds the EXE/source/lock/build-tool inputs, and records
 its Python and uv versions. Verification also compares Python's major/minor ABI
 to the embedded PyInstaller cookie; it never substitutes the verifier's runtime.
-These artifacts are unsigned. No tag or GitHub Release is created by this workflow.
+These artifacts are unsigned. This workflow creates no tag or Release itself;
+pushing a `v*` tag runs the `Release` workflow, which calls it and publishes the
+ZIP together with the Linux tarball.
 
 ```powershell
 .\cardputer.exe --help

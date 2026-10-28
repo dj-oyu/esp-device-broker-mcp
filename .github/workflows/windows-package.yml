@@ -1,8 +1,7 @@
 name: Windows executable and ZIP
 
 on:
-  push:
-    tags: ['v*']
+  workflow_call:
   pull_request:
     paths:
       - '.github/workflows/windows-package.yml'
