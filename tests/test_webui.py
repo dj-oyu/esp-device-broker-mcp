@@ -336,7 +336,7 @@ async def test_pip_is_drawn_locally_and_adds_no_request(ui, google):
     assert 'fetch("/api/job-logs"' in script.text and 'fetch("/api/state"' in script.text
     assert "innerHTML" not in script.text
     # Silence replaces the stream; the figure drawn tells a dead stream from a live one.
-    for needle in ("STALE_MS", "visibilitychange", "pageshow", "dataAge", "受信停止"):
+    for needle in ("STALE_MS", "visibilitychange", "pageshow", "dataAge", "停止 "):
         assert needle in script.text
     # A job ending is shown by colour and pulses, and reduced motion turns the pulses off.
     for needle in ("noteChanges", "TONES", "prefers-reduced-motion", "shortKind", "drawIcon"):

@@ -378,10 +378,10 @@ function setFast(on) {
   else if (!on && pipFast) { clearInterval(pipFast); pipFast = null; }
 }
 
-// A short, wide frame keeps the window small: laid out in 192x80 units, drawn at 288x120 pixels
-// (fewer than the 320x180 it replaces).
-const PIP_W = 192;
-const PIP_H = 80;
+// A thin strip (15:2) keeps the window small: one row laid out in 240x32 units, drawn at
+// 360x48 pixels (fewer than the 320x180 it replaces).
+const PIP_W = 240;
+const PIP_H = 32;
 const PIP_SCALE = 1.5;
 const KINDS = { firmware_build: "BUILD", firmware_fetch_source: "FETCH", firmware_flash: "FLASH",
   firmware_restore: "RESTORE", firmware_backup: "BACKUP", hello: "HELLO", capture_home: "CAPTURE",
@@ -395,11 +395,11 @@ function shortKind(card) {
 
 // The state as a mark, not a word: a turning arc (running), a blinking dot (queued),
 // a check (succeeded), a cross (failed, cancelled) or an exclamation mark (needs review).
-function drawIcon(g, state, x, y, now) {
+function drawIcon(g, state, x, y, now, size) {
   const step = Math.floor(now / 1000);
   g.save();
   g.translate(x, y);
-  g.scale(0.8, 0.8);
+  g.scale(size, size);
   const cx = 0;
   const cy = 0;
   g.lineWidth = 4;
@@ -496,22 +496,22 @@ function drawPip() {
     g.fillText(String(value), x, y);
   };
   if (!card) {
-    text("ジョブなし", 12, 44, 18, ink, true);
+    text("ジョブなし", 10, 22, 16, ink, true);
   } else {
-    drawIcon(g, card.state, 20, 18, now);
-    text(shortKind(card), 40, 26, 18, ink, true);
+    drawIcon(g, card.state, 18, 16, now, 0.65);
+    text(shortKind(card), 36, 22, 16, ink, true);
     // Elapsed time is the page's own clock: a frozen figure means the page is suspended.
-    text(pipElapsed(card) || "--:--", 10, 62, 32, ink, true);
+    text(pipElapsed(card) || "--:--", 184, 24, 22, ink, true, "right");
   }
   // Seconds since the last server message: this one shows whether the stream is alive.
   const age = dataAge();
   const seconds = Math.floor(age / 1000);
   if (age > STALE_MS) {
     g.fillStyle = rgb(TONES.failed);
-    g.fillRect(0, 64, PIP_W, 16);
-    text("受信停止 " + seconds + "s", 8, 76, 11, "#ffffff", true);
+    g.fillRect(0, PIP_H - 5, PIP_W, 5);
+    text("停止 " + seconds + "s", PIP_W - 6, 20, 11, "#ffffff", true, "right");
   } else {
-    text(seconds + "s", PIP_W - 8, 74, 11, sub, false, "right");
+    text(seconds + "s", PIP_W - 6, 20, 11, sub, false, "right");
   }
   setFast(pulsing || tint.some((v, i) => Math.abs(v - goal[i]) > 1.5));
 }
