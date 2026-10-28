@@ -219,6 +219,7 @@ function apply(message) {
   }
   renderState();
   renderJobs();
+  noteChanges();
   drawPip();
 }
 
@@ -346,17 +347,71 @@ function pipElapsed(card) {
   return Math.floor(total / 60) + ":" + two(total % 60);
 }
 
+// State colours as RGB. The window tints toward the shown job's colour and pulses once
+// when it ends, so the result reads at a glance without sound.
+const TONES = { succeeded: [31, 122, 58], failed: [180, 35, 24], cancelled: [180, 35, 24],
+  running: [29, 78, 216], queued: [29, 78, 216], needs_review: [161, 92, 0] };
+const ENDED = new Set(["succeeded", "failed", "cancelled", "needs_review"]);
+const calmMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+let seenStates = null;
+let flash = null;
+let tint = null;
+let tintAt = 0;
+let pipFast = null;
+
+const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+const rgb = (c) => "rgb(" + c.map((v) => Math.round(v)).join(",") + ")";
+
+// Compares job states with the last ones seen; the first snapshot only records them.
+function noteChanges() {
+  const shown = pipJob();
+  if (seenStates !== null && shown && ENDED.has(shown.state) &&
+      seenStates.get(shown.job_id) !== shown.state) {
+    flash = { at: Date.now() };
+  }
+  seenStates = new Map(cards.map((card) => [card.job_id, card.state]));
+}
+
+// Redraw every 100 ms only while a colour is moving or pulsing; otherwise once a second.
+function setFast(on) {
+  if (on && !pipFast) pipFast = setInterval(drawPip, 100);
+  else if (!on && pipFast) { clearInterval(pipFast); pipFast = null; }
+}
+
 function drawPip() {
   if (!pipCanvas) return;
   const g = pipCanvas.getContext("2d");
   const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
   const fg = dark ? "#ececea" : "#1d1d1b";
-  const muted = dark ? "#a3a39d" : "#6b6b66";
-  const tone = { succeeded: "#1f7a3a", failed: "#b42318", cancelled: "#b42318",
-    running: "#1d4ed8", queued: "#1d4ed8", needs_review: "#a15c00" };
-  g.fillStyle = dark ? "#151514" : "#f7f7f5";
-  g.fillRect(0, 0, pipCanvas.width, pipCanvas.height);
+  const sub = dark ? "rgba(236,236,234,.8)" : "rgba(29,29,27,.75)";
+  const base = dark ? [21, 21, 20] : [247, 247, 245];
   const card = pipJob();
+  const now = Date.now();
+  const calm = calmMotion.matches;
+  const goal = card && TONES[card.state] ? mix(base, TONES[card.state], 0.55) : base;
+  if (tint === null || calm) {
+    tint = goal;
+  } else {
+    const k = 1 - Math.exp(-(now - tintAt) / 250);
+    tint = tint.map((v, i) => v + (goal[i] - v) * k);
+  }
+  tintAt = now;
+  g.fillStyle = rgb(tint);
+  g.fillRect(0, 0, pipCanvas.width, pipCanvas.height);
+  // Three slow pulses (1.5 Hz) when a job ends; none under reduced motion.
+  let pulsing = false;
+  if (flash && !calm) {
+    const t = (now - flash.at) / 1000;
+    if (t < 2) {
+      pulsing = true;
+      g.fillStyle = "rgba(255,255,255," + 0.5 * Math.max(0, Math.sin(2 * Math.PI * 1.5 * t)) + ")";
+      g.fillRect(0, 0, pipCanvas.width, pipCanvas.height);
+    } else {
+      flash = null;
+    }
+  } else {
+    flash = null;
+  }
   const text = (value, x, y, size, color, bold) => {
     g.font = (bold ? "bold " : "") + size + "px system-ui, sans-serif";
     g.fillStyle = color;
@@ -366,19 +421,24 @@ function drawPip() {
     text("ジョブなし", 16, 60, 22, fg, true);
   } else {
     text(card.test || card.job_id, 16, 30, 20, fg, true);
-    text(card.state || "unknown", 16, 62, 24, tone[card.state] || muted, true);
+    text(card.state || "unknown", 16, 62, 24, fg, true);
     // Elapsed time is the page's own clock: a frozen figure means the page is suspended.
     text(pipElapsed(card) || "--:--", 16, 126, 56, fg, true);
     const detail = card.failure_reason ? "理由: " + card.failure_reason
       : card.result ? "結果: " + card.result : card.stage || "";
-    if (detail) text(detail, 16, 150, 14, muted, false);
+    if (detail) text(detail, 16, 150, 14, sub, false);
   }
   // Seconds since the last server message: this one shows whether the stream is alive.
   const age = dataAge();
-  const stale = age > STALE_MS;
   const seconds = Math.floor(age / 1000);
-  text(stale ? "受信停止 " + seconds + "秒" : "受信 " + seconds + "秒前", 16, 172, 14,
-    stale ? tone.failed : muted, stale);
+  if (age > STALE_MS) {
+    g.fillStyle = rgb(TONES.failed);
+    g.fillRect(0, 154, pipCanvas.width, 26);
+    text("受信停止 " + seconds + "秒", 16, 172, 14, "#ffffff", true);
+  } else {
+    text("受信 " + seconds + "秒前", 16, 172, 14, sub, false);
+  }
+  setFast(pulsing || tint.some((v, i) => Math.abs(v - goal[i]) > 1.5));
 }
 
 // The video is made and played before the tap: Safari only enters PiP from the tap itself,
@@ -388,7 +448,7 @@ function preparePip() {
   pipCanvas.width = 320;
   pipCanvas.height = 180;
   drawPip();
-  pipVideo.srcObject = pipCanvas.captureStream(5);
+  pipVideo.srcObject = pipCanvas.captureStream(15);
   pipTimer = setInterval(drawPip, 1000);
   pipVideo.play().catch(() => {});
 }
