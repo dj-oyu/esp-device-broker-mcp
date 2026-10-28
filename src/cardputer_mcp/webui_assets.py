@@ -381,7 +381,12 @@ function setFast(on) {
 // A thin strip (15:2) keeps the window small: laid out in 240x32 units, drawn at 360x48
 // pixels (fewer than the 320x180 it replaces). Top row: mark, kind, time; below it a ticker.
 const PIP_W = 240;
-const PIP_H = 32;
+// iOS may refuse a very thin frame (NotAllowedError). To find the thinnest one it accepts,
+// open the page with #pipH=<32..135> (the rows stay at the top; the rest is background).
+const PIP_H = (() => {
+  const asked = Number(new URLSearchParams(location.hash.slice(1)).get("pipH"));
+  return Number.isFinite(asked) && asked >= 32 && asked <= 135 ? Math.round(asked) : 32;
+})();
 const PIP_SCALE = 1.5;
 const KINDS = { firmware_build: "BUILD", firmware_fetch_source: "FETCH", firmware_flash: "FLASH",
   firmware_restore: "RESTORE", firmware_backup: "BACKUP", hello: "HELLO", capture_home: "CAPTURE",
