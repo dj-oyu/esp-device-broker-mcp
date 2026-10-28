@@ -40,7 +40,7 @@ def page(
         f'<meta name="csrf-token" content="{escape(csrf, quote=True)}"></head>'
         "<body>"
         '<header><h1>Cardputer</h1><span id="live" class="live">接続中…</span>'
-        '<button type="button" id="pip" hidden>ミニ表示</button>'
+        '<button type="button" id="pip" hidden>PiP</button>'
         '<form method="post" action="/logout">'
         f'<input type="hidden" name="csrf" value="{escape(csrf, quote=True)}">'
         '<button type="submit">ログアウト</button></form></header>'
@@ -394,11 +394,11 @@ function preparePip() {
 }
 
 function pipFailed(step, error) {
-  pipButton.textContent = "ミニ表示を開始できません（" + step + ": " +
+  pipButton.textContent = "PiPを開始できません（" + step + ": " +
     ((error && error.name) || "unknown") + "）";
   pipButton.classList.add("failed");
   setTimeout(() => {
-    pipButton.textContent = "ミニ表示";
+    pipButton.textContent = "PiP";
     pipButton.classList.remove("failed");
   }, 8000);
 }
