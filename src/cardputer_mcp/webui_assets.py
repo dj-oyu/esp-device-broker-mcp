@@ -378,15 +378,12 @@ function setFast(on) {
   else if (!on && pipFast) { clearInterval(pipFast); pipFast = null; }
 }
 
-// A thin strip (15:2) keeps the window small: laid out in 240x32 units, drawn at 360x48
-// pixels (fewer than the 320x180 it replaces). Top row: mark, kind, time; below it a ticker.
-const PIP_W = 240;
-// iOS may refuse a very thin frame (NotAllowedError). To find the thinnest one it accepts,
-// open the page with #pipH=<32..135> (the rows stay at the top; the rest is background).
-const PIP_H = (() => {
-  const asked = Number(new URLSearchParams(location.hash.slice(1)).get("pipH"));
-  return Number.isFinite(asked) && asked >= 32 && asked <= 135 ? Math.round(asked) : 32;
-})();
+// iOS opens PiP only for frames no wider than 2:1 (tried on an iPhone: 16:9 and 2:1 open,
+// anything wider, down to 15:2, is refused with NotAllowedError). The frame is 2:1, laid out
+// in 192x96 units and drawn at 288x144 pixels (fewer than the 320x180 it replaces); the
+// window is made small by pinching it, so the content is kept large.
+const PIP_W = 192;
+const PIP_H = 96;
 const PIP_SCALE = 1.5;
 const KINDS = { firmware_build: "BUILD", firmware_fetch_source: "FETCH", firmware_flash: "FLASH",
   firmware_restore: "RESTORE", firmware_backup: "BACKUP", hello: "HELLO", capture_home: "CAPTURE",
@@ -482,14 +479,14 @@ function drawTicker(g, note, color, now, calm) {
   }
   g.save();
   g.beginPath();
-  g.rect(6, 19, PIP_W - 12, 13);
+  g.rect(6, 77, PIP_W - 12, 19);
   g.clip();
   g.font = DOT_FONT;
   g.fillStyle = color;
   g.textAlign = "left";
   const width = g.measureText(note).width;
   let moving = false;
-  const baseline = 43 / PIP_SCALE;
+  const baseline = 136 / PIP_SCALE;
   // Whole device pixels only, so the dots of the pixel font are not smeared while moving.
   const snap = (x) => Math.round(x * PIP_SCALE) / PIP_SCALE;
   if (width <= PIP_W - 12 || calm) {
@@ -556,12 +553,12 @@ function drawPip() {
     g.fillText(String(value), x, y);
   };
   if (!card) {
-    text("ジョブなし", 10, 20, 14, ink, true);
+    text("ジョブなし", 12, 52, 22, ink, true);
   } else {
-    drawIcon(g, card.state, 14, 10, now, 0.5);
-    text(shortKind(card), 28, 15, 13, ink, true);
+    drawIcon(g, card.state, 26, 24, now, 0.85);
+    text(shortKind(card), 50, 32, 22, ink, true);
     // Elapsed time is the page's own clock: a frozen figure means the page is suspended.
-    text(pipElapsed(card) || "--:--", 180, 18, 18, ink, true, "right");
+    text(pipElapsed(card) || "--:--", 12, 70, 36, ink, true);
     scrolling = drawTicker(g, tickerText(card), sub, now, calm);
   }
   // Seconds since the last server message: this one shows whether the stream is alive.
@@ -570,9 +567,9 @@ function drawPip() {
   if (age > STALE_MS) {
     g.fillStyle = rgb(TONES.failed);
     g.fillRect(0, 0, PIP_W, 2);
-    dot("停止 " + seconds + "s", PIP_W - 6, 14, "#ffffff");
+    dot("停止 " + seconds + "s", PIP_W - 6, 70, "#ffffff");
   } else {
-    dot(seconds + "s", PIP_W - 6, 14, sub);
+    dot(seconds + "s", PIP_W - 6, 70, sub);
   }
   setFast(scrolling || pulsing || tint.some((v, i) => Math.abs(v - goal[i]) > 1.5));
 }
