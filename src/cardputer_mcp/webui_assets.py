@@ -39,21 +39,30 @@ def page(
         f'<!doctype html><html lang="ja"><head>{head}'
         f'<meta name="csrf-token" content="{escape(csrf, quote=True)}"></head>'
         "<body>"
+        '<div class="app">'
         '<header><h1>Cardputer</h1><span id="live" class="live">接続中…</span>'
         '<button type="button" id="pip" hidden>PiP</button>'
         '<form method="post" action="/logout">'
         f'<input type="hidden" name="csrf" value="{escape(csrf, quote=True)}">'
         '<button type="submit">ログアウト</button></form></header>'
-        '<main><section id="state" class="state"></section>'
-        '<section><h2>ジョブ</h2><ol id="jobs" class="jobs"></ol>'
+        # The heading layer: the shown panel's heading on the left, its neighbours cut off
+        # and faded at the edges. The script moves them with the panels' scroll position.
+        '<div class="heads" id="heads">'
+        '<button type="button" class="head" id="h0">ジョブ</button>'
+        '<button type="button" class="head" id="h1" disabled>詳細'
+        '<small id="h1sub">· カードを選択</small></button></div>'
+        '<div class="panels" id="panels">'
+        '<section class="panel" id="p0"><div id="state" class="state"></div>'
+        '<ol id="jobs" class="jobs"></ol>'
         '<p id="more" class="muted" hidden>古いジョブは省略されています。</p></section>'
-        '<section id="logs" class="logs" hidden><h2 id="logs-title"></h2>'
+        '<section class="panel" id="p1">'
+        '<p id="detail-empty" class="empty">ジョブのカードを選ぶと、ここに詳細とログが出ます。</p>'
+        '<div id="detail" hidden><div id="detail-summary" class="summary"></div>'
         '<div class="controls"><label>'
-        '<input type="checkbox" id="all-levels"> すべてのレベル</label>'
-        '<button type="button" id="close-logs">閉じる</button></div>'
+        '<input type="checkbox" id="all-levels"> すべてのレベル</label></div>'
         '<pre id="log-lines"></pre>'
-        '<button type="button" id="older" hidden>続きを読む</button></section>'
-        "</main>"
+        '<button type="button" id="older" hidden>続きを読む</button></div></section>'
+        "</div></div>"
         '<video id="pip-video" class="pipvideo" muted playsinline></video>'
         '<script src="/static/app.js"></script>'
         "</body></html>"
@@ -62,27 +71,46 @@ def page(
 
 APP_CSS = """
 :root { --bg: #f7f7f5; --fg: #1d1d1b; --muted: #6b6b66; --card: #ffffff; --line: #deded8;
-  --ok: #1f7a3a; --bad: #b42318; --warn: #a15c00; --run: #1d4ed8; }
+  --ok: #1f7a3a; --bad: #b42318; --warn: #a15c00; --run: #1d4ed8; --tint: #efefeb; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #151514; --fg: #ececea; --muted: #a3a39d; --card: #1f1f1d; --line: #34342f;
-    --ok: #5fcf80; --bad: #ff7b72; --warn: #e3a64b; --run: #7aa2ff; }
+    --ok: #5fcf80; --bad: #ff7b72; --warn: #e3a64b; --run: #7aa2ff; --tint: #232321; }
 }
 * { box-sizing: border-box; }
+html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.app { height: 100vh; height: 100dvh; max-width: 880px; margin: 0 auto;
+  display: flex; flex-direction: column; }
 header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px;
-  border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); }
+  border-bottom: 1px solid var(--line); flex: none; }
 header h1 { font-size: 17px; margin: 0; flex: 1 1 auto; }
 header form { margin: 0; }
 main { padding: 12px 16px 48px; max-width: 880px; margin: 0 auto; }
-h2 { font-size: 15px; margin: 20px 0 8px; }
 button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--card); color: var(--fg); white-space: nowrap; flex-shrink: 0; }
 button.failed { white-space: normal; text-align: left; }
 .live { font-size: 13px; color: var(--muted); }
 .live.on { color: var(--ok); }
 .live.off { color: var(--bad); }
-.state { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.heads { position: relative; height: 40px; flex: none; overflow: hidden; margin-top: 8px;
+  --lf: 0px; --rf: 96px;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--lf),
+    #000 calc(100% - var(--rf)), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--lf),
+    #000 calc(100% - var(--rf)), transparent 100%); }
+.head { position: absolute; left: 0; top: 0; line-height: 40px; font-size: 15px; font-weight: 700;
+  white-space: nowrap; background: none; border: 0; padding: 0; border-radius: 0;
+  color: var(--fg); will-change: transform; }
+.head small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+.head[disabled] { color: var(--muted); }
+.panels { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain; }
+.panels::-webkit-scrollbar { display: none; }
+.panel { flex: none; width: 100%; scroll-snap-align: start; scroll-snap-stop: always;
+  overflow-y: auto; padding: 0 16px 32px; overscroll-behavior: contain; }
+.state { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px;
+  margin-bottom: 12px; }
 .state div { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
   padding: 8px 10px; }
 .state dt { font-size: 12px; color: var(--muted); }
@@ -91,17 +119,23 @@ button.failed { white-space: normal; text-align: left; }
 .jobs li { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
   padding: 10px 12px; cursor: pointer; }
 .jobs li.selected { outline: 2px solid var(--run); }
-.jobs .top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
-.jobs .name { font-weight: 600; }
-.jobs .meta { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.name { font-weight: 600; }
+.meta { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .badge { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; }
 .s-succeeded { color: var(--ok); } .s-failed, .s-cancelled { color: var(--bad); }
 .s-running, .s-queued { color: var(--run); } .s-needs_review { color: var(--warn); }
 .muted { color: var(--muted); font-size: 13px; }
-.logs pre { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-  padding: 10px; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere;
-  font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; max-height: 60vh; }
-.logs .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+/* The detail panel has no frame: spacing separates its parts, and only the log has a tint. */
+.summary { display: grid; gap: 2px; margin-bottom: 12px; }
+.summary .name { font-size: 17px; }
+.empty { color: var(--muted); padding: 24px 0; margin: 0; }
+#detail pre { margin: 0; padding: 10px; background: var(--tint); border-radius: 8px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+#detail pre:empty { display: none; }
+#detail .controls { display: flex; gap: 12px; align-items: center; margin: 8px 0; font-size: 14px; }
+#older { margin-top: 8px; }
 .l-error { color: var(--bad); } .l-warning { color: var(--warn); }
 .notice { padding: 48px 16px; text-align: center; }
 .pipvideo { position: fixed; right: 0; bottom: 0; width: 2px; height: 2px; opacity: 0;
@@ -115,6 +149,7 @@ let state = null;
 let cards = [];
 let hasMore = false;
 let selected = null;
+let selectedCard = null;
 let logCursor = null;
 let source = null;
 let retryTimer = null;
@@ -169,30 +204,40 @@ function renderState() {
   }
 }
 
+// The title row and the detail line of a job, shared by the list and the detail panel.
+function cardParts(card) {
+  const top = el("div", "top");
+  top.append(
+    el("span", "name", card.test || card.job_id),
+    el("span", "badge s-" + (card.state || "unknown"), card.state || "unknown")
+  );
+  if (card.stage) top.append(el("span", "muted", card.stage));
+  const meta = el("div", "meta");
+  const parts = [card.job_id];
+  if (card.result) parts.push("結果: " + card.result);
+  if (card.failure_reason) parts.push("理由: " + card.failure_reason);
+  if (card.created_utc) parts.push("開始: " + since(card.created_utc));
+  if (card.finished_utc) parts.push("終了: " + since(card.finished_utc));
+  meta.textContent = parts.join(" ・ ");
+  return [top, meta];
+}
+
 function renderJobs() {
   const list = document.getElementById("jobs");
   list.replaceChildren();
   for (const card of cards) {
     const item = el("li");
-    if (card.job_id === selected) item.classList.add("selected");
-    const top = el("div", "top");
-    top.append(
-      el("span", "name", card.test || card.job_id),
-      el("span", "badge s-" + (card.state || "unknown"), card.state || "unknown")
-    );
-    if (card.stage) top.append(el("span", "muted", card.stage));
-    const meta = el("div", "meta");
-    const parts = [card.job_id];
-    if (card.result) parts.push("結果: " + card.result);
-    if (card.failure_reason) parts.push("理由: " + card.failure_reason);
-    if (card.created_utc) parts.push("開始: " + since(card.created_utc));
-    if (card.finished_utc) parts.push("終了: " + since(card.finished_utc));
-    meta.textContent = parts.join(" ・ ");
-    item.append(top, meta);
-    item.addEventListener("click", () => openLogs(card));
+    // Selection is an outline only: it takes no space, so nothing inside shifts.
+    if (card.job_id === selected) {
+      item.classList.add("selected");
+      selectedCard = card;
+    }
+    item.append(...cardParts(card));
+    item.addEventListener("click", () => toggleSelection(card));
     list.append(item);
   }
   document.getElementById("more").hidden = !hasMore;
+  renderDetail();
 }
 
 function apply(message) {
@@ -275,23 +320,46 @@ window.addEventListener("pageshow", (event) => {
   if (event.persisted && !ended) connect();
 });
 
-function openLogs(card) {
-  selected = card.job_id;
+// Tapping a card selects it; tapping the selected card again clears the selection.
+function toggleSelection(card) {
   logCursor = null;
-  document.getElementById("logs").hidden = false;
-  document.getElementById("logs-title").textContent =
-    "ログ: " + (card.test || "") + " " + card.job_id;
   document.getElementById("log-lines").replaceChildren();
+  document.getElementById("older").hidden = true;
+  if (selected === card.job_id) {
+    selected = null;
+    selectedCard = null;
+  } else {
+    selected = card.job_id;
+    selectedCard = card;
+    loadLogs(false);
+  }
   renderJobs();
-  loadLogs(false);
+}
+
+// The detail panel and its heading follow the selection. The log text itself is not
+// touched here: it is replaced only by loadLogs.
+function renderDetail() {
+  const summary = document.getElementById("detail-summary");
+  document.getElementById("detail").hidden = !selected;
+  document.getElementById("detail-empty").hidden = !!selected;
+  summary.replaceChildren();
+  const head = document.getElementById("h1");
+  head.disabled = !selected;
+  document.getElementById("h1sub").textContent = selected
+    ? "· " + ((selectedCard && selectedCard.test) || selected)
+    : "· カードを選択";
+  if (selected && selectedCard) summary.append(...cardParts(selectedCard));
+  measureHeads();
+  layoutHeads();
 }
 
 async function loadLogs(older) {
-  if (!selected) return;
+  const job = selected;
+  if (!job) return;
   const levels = document.getElementById("all-levels").checked
     ? ["error", "warning", "info", "debug", "unknown"]
     : ["error", "warning"];
-  const body = { job_id: selected, levels: levels, context: 2, limit: 100 };
+  const body = { job_id: job, levels: levels, context: 2, limit: 100 };
   if (older && logCursor) body.cursor = logCursor;
   const response = await fetch("/api/job-logs", {
     method: "POST",
@@ -299,25 +367,74 @@ async function loadLogs(older) {
     body: JSON.stringify(body),
     credentials: "same-origin",
   });
-  const lines = document.getElementById("log-lines");
-  if (!older) lines.replaceChildren();
   let result = null;
   try { result = await response.json(); } catch (error) { result = null; }
+  if (job !== selected) return;  // another card was chosen while this was loading
+  const lines = document.getElementById("log-lines");
+  const nodes = [];
+  let failed = false;
   if (!response.ok || !result || result.ok !== true) {
     const reason = (result && result.error) || response.status;
-    lines.append(el("span", "l-error", "読めません: " + reason + "\n"));
+    nodes.push(el("span", "l-error", "読めません: " + reason + "\n"));
+    failed = true;
+  } else {
+    if (result.status === "expired") {
+      nodes.push(el("span", "muted", "（ログの保持期限が切れています）\n"));
+    }
+    for (const entry of result.entries || []) {
+      nodes.push(el("span", "l-" + (entry.level || "unknown"), (entry.text || "") + "\n"));
+    }
+  }
+  // Swap the text in one step and keep the scroll position, so a live update does not
+  // send the reader back to the top.
+  const panel = document.getElementById("p1");
+  const top = panel.scrollTop;
+  if (older) lines.append(...nodes); else lines.replaceChildren(...nodes);
+  panel.scrollTop = top;
+  if (failed) {
     document.getElementById("older").hidden = true;
     return;
-  }
-  if (result.status === "expired") {
-    lines.append(el("span", "muted", "（ログの保持期限が切れています）\n"));
-  }
-  for (const entry of result.entries || []) {
-    lines.append(el("span", "l-" + (entry.level || "unknown"), (entry.text || "") + "\n"));
   }
   logCursor = result.next_cursor || null;
   document.getElementById("older").hidden = !result.has_more;
 }
+
+// The heading layer: the shown panel's heading sits on the left, its neighbours at the
+// edges, fading, and all of them move with the panels' scroll position (as if printed on
+// a drum). Only position and opacity change; the text is never distorted.
+const panelsBox = document.getElementById("panels");
+const headsBox = document.getElementById("heads");
+const headButtons = [document.getElementById("h0"), document.getElementById("h1")];
+let headWidths = [0, 0];
+
+function measureHeads() {
+  headWidths = headButtons.map((button) => button.offsetWidth);
+}
+
+function layoutHeads() {
+  const width = panelsBox.clientWidth;
+  const t = width ? panelsBox.scrollLeft / width : 0;
+  const active = 16 + 20 * t;
+  const rightPeek = width - 92;
+  headButtons.forEach((button, i) => {
+    const d = i - t;
+    const x = d >= 0 ? active + d * (rightPeek - active)
+      : active - d * ((24 - headWidths[i]) - active);
+    button.style.transform = "translateX(" + x.toFixed(1) + "px)";
+    button.style.opacity = String(Math.max(0.5, 1 - Math.min(1, Math.abs(d)) * 0.5));
+  });
+  headsBox.style.setProperty("--lf", (30 * t).toFixed(1) + "px");
+  headsBox.style.setProperty("--rf", (96 * (1 - t)).toFixed(1) + "px");
+}
+
+function goPanel(index) {
+  panelsBox.scrollTo({ left: index * panelsBox.clientWidth, behavior: "smooth" });
+}
+
+panelsBox.addEventListener("scroll", layoutHeads, { passive: true });
+window.addEventListener("resize", () => { measureHeads(); layoutHeads(); });
+headButtons[0].addEventListener("click", () => goPanel(0));
+headButtons[1].addEventListener("click", () => goPanel(1));
 
 // Picture-in-picture: the latest job drawn on a canvas and shown as a <video> (iOS only
 // allows video). Nothing is sent: it draws what the page already received over SSE.
@@ -619,18 +736,29 @@ if (typeof FontFace === "function") {
     .catch(() => {});
 }
 
+// Locking the phone freezes the page: the canvas is no longer redrawn, so the PiP video holds
+// its last frame while the OS still reports it as playing. On return, redraw at once and
+// restart the video if it was paused.
+function resumePip() {
+  if (document.hidden || !pipCanvas) return;
+  drawPip();
+  if (pipVideo.paused) pipVideo.play().catch(() => {});
+}
+
 if (pipSupported()) {
   pipButton.hidden = false;
   pipButton.addEventListener("click", startPip);
   preparePip();
+  document.addEventListener("visibilitychange", resumePip);
+  window.addEventListener("pageshow", resumePip);
 }
 
-document.getElementById("close-logs").addEventListener("click", () => {
-  selected = null;
-  document.getElementById("logs").hidden = true;
-  renderJobs();
-});
 document.getElementById("all-levels").addEventListener("change", () => loadLogs(false));
 document.getElementById("older").addEventListener("click", () => loadLogs(true));
+measureHeads();
+layoutHeads();
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(() => { measureHeads(); layoutHeads(); });
+}
 connect();
 """
