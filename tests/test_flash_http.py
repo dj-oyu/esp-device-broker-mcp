@@ -186,7 +186,9 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
                 retained = await call(
                     remote, "status", {"view": "logs", "stream": "build", "job_id": job}
                 )
-                assert retained["expired"] and retained["flash_summary"] == summary
+                # RAM is gone; the durable log answers and the summary is unchanged.
+                assert retained["source"] == "durable_job_log"
+                assert retained["flash_summary"] == summary
                 replay = await call(
                     remote, "flash", {"session": session, "plan_hash": prepared["plan_hash"]}
                 )
