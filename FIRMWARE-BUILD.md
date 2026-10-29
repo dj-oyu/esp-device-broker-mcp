@@ -92,8 +92,8 @@ five minutes since the last appended line. Oversized process lines are omitted a
 potential credential fragments.
 Cursor gaps, restart epoch mismatch and expiry are explicit. Raw output is never
 written; no caller-specified path can be opened. Each redacted line is also
-appended to the job's durable log, `<state_dir>/job-logs/<job_id>.jsonl` (same
-format and bounds as described in DEVICE-LOGS.md, with `stream` `build`,
+appended to the job's durable log in `<state_dir>/job-logs/job-logs.sqlite3` (same
+schema and bounds as described in DEVICE-LOGS.md, with `stream` `build`,
 `source` or `flash`). When the RAM output has expired or the broker restarted,
 `status(view=logs, stream=build)` serves the owner's durable entries with the
 same level/context/limit filtering, `"source": "durable_job_log"`, `expired=false`

@@ -50,6 +50,7 @@ from typing import Any
 
 from filelock import FileLock, Timeout
 
+from .job_logs import DATABASE_NAME, archivable_jobs, archive_jobs
 from .models import FLASH_TESTS, TestName
 from .store import Store
 
@@ -362,12 +363,13 @@ def archive_history(
         try:
             chosen = select(store, keep_latest)
             files = _job_files(state_dir, chosen["live_jobs"])
+            logged = archivable_jobs(state_dir / "job-logs", chosen["live_jobs"])
             counts = {
                 "jobs": chosen["archived_job_rows"],
                 "plans": len(chosen["plans"]),
                 "device_requests": len(chosen["requests"]),
                 "work_sessions": len(chosen["sessions"]),
-                "job_logs": sum(folder == "job-logs" for _, folder in files),
+                "job_logs": sum(folder == "job-logs" for _, folder in files) + len(logged),
                 "captures": sum(folder == "captures" for _, folder in files),
             }
             result: dict[str, Any] = {
@@ -419,6 +421,12 @@ def archive_history(
                 except OSError:
                     continue
                 moved[folder] += 1
+            if logged:
+                log_folder = destination / "job-logs"
+                log_folder.mkdir(mode=0o700, exist_ok=True)
+                moved["job-logs"] += archive_jobs(
+                    state_dir / "job-logs", log_folder / DATABASE_NAME, logged
+                )
             result["archive"] = {
                 **counts,
                 "job_logs": moved["job-logs"],

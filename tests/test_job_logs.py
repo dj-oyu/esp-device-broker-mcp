@@ -1,7 +1,7 @@
 """Durable per-job log store and the passive serial tee; synthetic bytes only."""
 
-import json
 import os
+import sqlite3
 
 import pytest
 
@@ -18,8 +18,25 @@ OWNER, OTHER = "key:owner", "key:other"
 SECRET = "SYNTHETIC_PASSWORD_VALUE"
 
 
-def lines(path):
-    return [json.loads(line) for line in path.read_text("utf-8").splitlines()]
+def database(root):
+    return root / job_logs.DATABASE_NAME
+
+
+def rows(root, sql, args=()):
+    connection = sqlite3.connect(database(root))
+    try:
+        return connection.execute(sql, args).fetchall()
+    finally:
+        connection.close()
+
+
+def dump(root):
+    """Everything the database holds as text, to check that nothing sensitive was stored."""
+    connection = sqlite3.connect(database(root))
+    try:
+        return "\n".join(connection.iterdump())
+    finally:
+        connection.close()
 
 
 def test_header_entries_and_write_time_redaction(tmp_path):
@@ -29,16 +46,18 @@ def test_header_entries_and_write_time_redaction(tmp_path):
     log.append("device", "built in C:/private/project")
     log.append("build", f"password={SECRET}")
     log.close()
-    header, *entries = lines(tmp_path / "job-logs" / "job-1.jsonl")
-    assert header["schema_version"] == 1
-    assert {header["job_id"], header["principal_id"], header["kind"]} == {
-        "job-1",
-        OWNER,
-        "firmware_observe",
-    }
-    assert [entry["seq"] for entry in entries] == [1, 2]
-    assert set(entries[0]) == {"seq", "t", "stream", "level", "text"}
-    raw = (tmp_path / "job-logs" / "job-1.jsonl").read_text("utf-8")
+    root = tmp_path / "job-logs"
+    assert rows(root, "SELECT job_id, principal_id, kind FROM log_jobs") == [
+        ("job-1", OWNER, "firmware_observe")
+    ]
+    assert rows(root, "PRAGMA user_version") == [(1,)]
+    assert rows(root, "SELECT seq, stream FROM log_lines ORDER BY seq") == [
+        (1, "device"),
+        (2, "build"),
+    ]
+    entry = store.read("job-1", OWNER, "device")["entries"][0]
+    assert set(entry) == {"seq", "t", "stream", "level", "text"}
+    raw = dump(root)
     assert SECRET not in raw and "C:/private/project" not in raw
 
 
@@ -50,13 +69,13 @@ def test_refuses_non_identifier_job_ids(tmp_path, job_id):
     assert store.read(job_id, OWNER, "device") is None
 
 
-def test_refuses_symlinked_log_file(tmp_path):
+def test_refuses_symlinked_log_database(tmp_path):
     root = tmp_path / "job-logs"
     root.mkdir()
-    target = tmp_path / "elsewhere.jsonl"
+    target = tmp_path / "elsewhere.sqlite3"
     target.write_text("")
     try:
-        os.symlink(target, root / "job-1.jsonl")
+        os.symlink(target, database(root))
     except (OSError, NotImplementedError):
         pytest.skip("symlink creation not permitted")
     with pytest.raises(JobLogError):
@@ -71,7 +90,7 @@ def test_per_job_cap_writes_one_marker_then_drops(tmp_path, monkeypatch):
     for index in range(50):
         log.append("device", f"line {index}")
     log.close()
-    texts = [entry["text"] for entry in lines(tmp_path / "job-1.jsonl")[1:]]
+    texts = [entry["text"] for entry in store.read("job-1", OWNER, "device")["entries"]]
     assert texts[-1] == TRUNCATION_MARKER and texts.count(TRUNCATION_MARKER) == 1
     assert log.truncated and store.device_report("job-1", OWNER)["size_limit_reached"]
 
@@ -81,13 +100,18 @@ def test_prune_oldest_first_never_touches_kept_jobs(tmp_path, monkeypatch):
     store = JobLogStore(root)
     for index in range(4):
         store.begin(f"job-{index}", OWNER, "observe").close()
-        os.utime(root / f"job-{index}.jsonl", ns=(index * 10**9, index * 10**9))
+    connection = sqlite3.connect(database(root))
+    for index in range(4):
+        connection.execute("UPDATE log_jobs SET updated=? WHERE job_id=?", (index, f"job-{index}"))
+    connection.commit()
+    connection.close()
     (root / "unrelated.txt").write_text("keep")
     monkeypatch.setattr(job_logs, "MAX_JOB_FILES", 2)
     store.begin("job-new", OWNER, "observe", keep={"job-0"}).close()
-    remaining = sorted(path.name for path in root.iterdir())
+    remaining = sorted(row[0] for row in rows(root, "SELECT job_id FROM log_jobs"))
     # job-0 is still queued/running, so the newest others fill the cap.
-    assert remaining == ["job-0.jsonl", "job-3.jsonl", "job-new.jsonl", "unrelated.txt"]
+    assert remaining == ["job-0", "job-3", "job-new"]
+    assert (root / "unrelated.txt").read_text() == "keep"
 
 
 def test_entries_written_before_an_exception_survive(tmp_path):
@@ -142,7 +166,7 @@ def test_device_tap_redacts_like_the_collector(tmp_path, wire, expected):
     report = store.device_report("job-1", OWNER)
     if wire == b"pass":
         assert report["logs"] == ["pass"]
-    assert SECRET not in (tmp_path / "job-1.jsonl").read_text("utf-8")
+    assert SECRET not in dump(tmp_path)
 
 
 class _Port:

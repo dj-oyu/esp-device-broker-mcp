@@ -10,7 +10,7 @@ from filelock import FileLock
 
 from cardputer_mcp import cli
 from cardputer_mcp.history_archive import HistoryArchiveError, archive_history
-from cardputer_mcp.job_logs import JobLogStore
+from cardputer_mcp.job_logs import DATABASE_NAME, JobLogStore
 from cardputer_mcp.store import ARCHIVE_TABLES, Store
 
 PRINCIPAL = "ephemeral:local_cli"
@@ -119,10 +119,19 @@ def history(state):
         log = logs.begin(job_id, PRINCIPAL, "device")
         log.append("device", f"line for {job_id}")
         log.close()
+    logs.close()
     for job_id in ("old-1", "flash"):
         (state / "captures" / job_id).mkdir(parents=True)
         (state / "captures" / job_id / "capture.png").write_bytes(b"png")
     store.close()
+
+
+def logged_jobs(folder):
+    db = sqlite3.connect(folder / DATABASE_NAME)
+    try:
+        return {row[0] for row in db.execute("SELECT job_id FROM log_jobs")}
+    finally:
+        db.close()
 
 
 def ids(state, table="jobs", column="id"):
@@ -191,11 +200,13 @@ def test_archive_keeps_every_reference_and_moves_old_finished_rows(tmp_path):
     finally:
         db.close()
     # Durable files move with their job; kept jobs still read theirs.
-    assert (archive / "job-logs" / "old-0.jsonl").is_file()
-    assert not (state / "job-logs" / "old-0.jsonl").exists()
+    assert logged_jobs(archive / "job-logs") == {"old-0"}
+    assert logged_jobs(state / "job-logs") == {"open-review"}
     assert (archive / "captures" / "old-1" / "capture.png").is_file()
     assert (state / "captures" / "flash" / "capture.png").is_file()
-    kept_log = JobLogStore(state / "job-logs").read("open-review", PRINCIPAL, "device")
+    reader = JobLogStore(state / "job-logs")
+    kept_log = reader.read("open-review", PRINCIPAL, "device")
+    reader.close()
     assert kept_log is not None and "line for open-review" in json.dumps(kept_log)
     store = Store(state / "history.sqlite3")
     try:
@@ -207,9 +218,11 @@ def test_archive_keeps_every_reference_and_moves_old_finished_rows(tmp_path):
     again = archive_history(state, keep_latest=0)
     assert again["archive"]["jobs"] == 0 and again["archive_directory"] is None
     # A later job that reuses an archived ID starts a fresh log, not the old one.
-    log = JobLogStore(state / "job-logs").begin("old-0", "someone-else", "device")
+    reuse = JobLogStore(state / "job-logs")
+    log = reuse.begin("old-0", "someone-else", "device")
     log.close()
-    assert "line for old-0" not in (state / "job-logs" / "old-0.jsonl").read_text()
+    assert reuse.read("old-0", "someone-else", "device")["entries"] == []
+    reuse.close()
     # A log no live job owns (e.g. left by an interrupted run) moves on the next run.
     swept = archive_history(state, keep_latest=0)
     assert swept["archive"] == {
@@ -220,7 +233,7 @@ def test_archive_keeps_every_reference_and_moves_old_finished_rows(tmp_path):
         "job_logs": 1,
         "captures": 0,
     }
-    assert (state / swept["archive_directory"] / "job-logs" / "old-0.jsonl").is_file()
+    assert logged_jobs(state / swept["archive_directory"] / "job-logs") == {"old-0"}
 
 
 def rows(state):
@@ -261,7 +274,7 @@ def test_dry_run_reports_counts_and_changes_nothing(tmp_path):
         for table, _, _ in ARCHIVE_TABLES
     }
     assert after == before
-    assert (state / "job-logs" / "old-0.jsonl").is_file()
+    assert logged_jobs(state / "job-logs") == {"old-0", "open-review"}
 
 
 def test_keep_latest_keeps_the_newest_registrations(tmp_path):

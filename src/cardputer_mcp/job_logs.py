@@ -1,24 +1,30 @@
-"""Durable, redacted, append-only per-job logs under ``<state_dir>/job-logs/``.
+"""Durable, redacted, append-only per-job logs in ``<state_dir>/job-logs/job-logs.sqlite3``.
 
 Saving is unconditional: every entry handed over is written as it arrives, on
-every job outcome. Text is redacted before it touches disk. Writers never raise
-into the job; a store failure only marks the log unavailable.
+every job outcome. Text is redacted before it touches the database. Writers never
+raise into the job; a store failure only marks the log unavailable.
 
-On-disk format (schema_version 1), one ``<job_id>.jsonl`` file per job:
-first line ``{"schema_version":1,"job_id","principal_id","kind","created"}``,
-then entries ``{"seq","t","stream","level","text"}``.
+Schema (``PRAGMA user_version = 1``, WAL):
 
-Structured records ``{"seq","t","record","data"}`` (``flash_outcome``,
-``app_event``) are an additive part of schema_version 1: they carry no
-``stream`` key, so stream readers (including older brokers) skip them.
+* ``log_jobs``: one row per job (owner, kind, created, bytes, truncated, closed).
+* ``log_lines``: one row per entry, clustered by ``(job_id, seq)`` so a job replays
+  as one range scan in the order it arrived, with no sort. ``seq`` counts every
+  entry of the job. A text line sets ``stream``/``level``/``text``; a structured
+  record (``flash_outcome``, ``app_event``) sets ``record``/``data`` and no stream.
+  ``t`` (UTC milliseconds) is for display only; ``seq`` alone gives the order.
+
+Rows are buffered and written in one transaction per batch (every 64 rows, 200 ms,
+a read, or the end of the job). A crash can lose the last unwritten batch; the job's
+end is committed with a full sync. Logs from before the switch stay readable from
+their ``<job_id>.jsonl`` files (``job_logs_legacy``), which nothing writes any more.
 """
 
 import hashlib
 import json
-import os
 import re
-import stat
+import sqlite3
 import threading
+import time
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,8 +40,10 @@ from .device_observation import (
     _REDACTED,
     REDACTION_LIMITATIONS,
 )
+from .job_logs_legacy import LegacyJsonl, _linked
 
 SCHEMA_VERSION = 1
+DATABASE_NAME = "job-logs.sqlite3"
 STREAMS = frozenset({"source", "build", "flash", "device", "app"})
 RECORDS = frozenset({"flash_outcome", "app_event"})
 MAX_RECORD_BYTES = 16 * 1024
@@ -48,29 +56,55 @@ MAX_TOTAL_BYTES = 512 * 1024 * 1024
 MAX_READ_LINES = 1000
 MAX_READ_BYTES = 256 * 1024
 MAX_DEVICE_LINE_BYTES = 4096
+# Bytes counted per entry on top of its text, standing in for the row overhead.
+ENTRY_OVERHEAD = 48
+FLUSH_ROWS = 64
+FLUSH_SECONDS = 0.2
 TRUNCATION_MARKER = "[job log size limit reached; further output dropped]"
 _PROGRESS = re.compile(
     r"\[\d+/\d+\]|(?:-- |Executing action|Build complete|info: ROM read \d+/\d+ bytes)"
 )
 _IDENT = re.compile(r"[a-zA-Z0-9_-]{1,64}")
-_SUFFIX = ".jsonl"
-_REPARSE = 0x400
+
+_SCHEMA = """
+CREATE TABLE log_jobs(
+  job_id TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created TEXT NOT NULL,
+  updated INTEGER NOT NULL,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  truncated INTEGER NOT NULL DEFAULT 0,
+  closed INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
+CREATE TABLE log_lines(
+  job_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  t INTEGER NOT NULL,
+  stream TEXT,
+  level TEXT,
+  text TEXT,
+  record TEXT,
+  data TEXT,
+  PRIMARY KEY (job_id, seq)
+) WITHOUT ROWID;
+"""
 
 
 class JobLogError(Exception):
     pass
 
 
-def _linked(path: Path) -> bool:
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return False
-    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & _REPARSE)
-
-
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _millis() -> int:
+    return int(time.time() * 1000)
+
+
+def _iso(millis: int) -> str:
+    return datetime.fromtimestamp(millis / 1000, UTC).isoformat()
 
 
 def _redact_value(value: Any, redactions: tuple[str, ...]) -> Any:
@@ -89,15 +123,21 @@ def _redact_value(value: Any, redactions: tuple[str, ...]) -> Any:
     return redact_log_text(str(value), redactions)
 
 
-class JobLog:
-    """One job's open append-only file. ``append`` never raises."""
+Row = tuple[int, int, str | None, str | None, str | None, str | None, str | None]
 
-    def __init__(self, path: Path, handle: Any, size: int, seq: int) -> None:
+
+class JobLog:
+    """One job's open log. ``append`` and ``record`` never raise."""
+
+    def __init__(self, store: "JobLogStore", job_id: str, size: int, seq: int) -> None:
         self._lock = threading.Lock()
-        self._path = path
-        self._handle: Any = handle
+        self._store = store
+        self._job_id = job_id
         self._size = size
         self._seq = seq
+        self._rows: list[Row] = []
+        self._flushed_at = time.monotonic()
+        self._open = True
         self.truncated = False
         self.unavailable = False
         self.redactions: tuple[str, ...] = ()
@@ -108,16 +148,17 @@ class JobLog:
                 raise JobLogError("job_log_stream_invalid")
             safe = redact_log_text(text, self.redactions)
             with self._lock:
-                if self._handle is None or self.truncated:
+                if not self._open or self.truncated:
                     return
-                self._seq += 1
-                line = self._encode(stream, level, safe)
-                if self._size + len(line) > MAX_JOB_BYTES:
+                size = len(safe.encode("utf-8", "replace")) + ENTRY_OVERHEAD
+                if self._size + size > MAX_JOB_BYTES:
                     self.truncated = True
-                    line = self._encode(stream, "warning", TRUNCATION_MARKER)
-                self._handle.write(line)
-                self._handle.flush()
-                self._size += len(line)
+                    stream, level, safe = stream, "warning", TRUNCATION_MARKER
+                    size = len(safe) + ENTRY_OVERHEAD
+                self._seq += 1
+                self._size += size
+                self._rows.append((self._seq, _millis(), stream, level, safe, None, None))
+                self._flush_if_due()
         except Exception:
             self.unavailable = True
 
@@ -127,62 +168,168 @@ class JobLog:
             if kind not in RECORDS or type(data) is not dict:
                 raise JobLogError("job_log_record_invalid")
             safe = _redact_value(data, self.redactions)
+            encoded = json.dumps(safe, ensure_ascii=True, separators=(",", ":"))
             with self._lock:
-                if self._handle is None or (self.truncated and not reserve):
+                if not self._open or (self.truncated and not reserve):
                     return
                 limit = MAX_JOB_BYTES + (RECORD_RESERVE_BYTES if reserve else 0)
-                entry = {"seq": self._seq + 1, "t": _now(), "record": kind, "data": safe}
-                line = (json.dumps(entry, ensure_ascii=True, separators=(",", ":")) + "\n").encode()
-                if len(line) > MAX_RECORD_BYTES or self._size + len(line) > limit:
+                size = len(encoded) + ENTRY_OVERHEAD
+                if size > MAX_RECORD_BYTES or self._size + size > limit:
                     return
                 self._seq += 1
-                self._handle.write(line)
-                self._handle.flush()
-                self._size += len(line)
+                self._size += size
+                self._rows.append((self._seq, _millis(), None, None, None, kind, encoded))
+                self._flush_if_due()
         except Exception:
             self.unavailable = True
 
-    def _encode(self, stream: str, level: str, text: str) -> bytes:
-        entry = {"seq": self._seq, "t": _now(), "stream": stream, "level": level, "text": text}
-        return (json.dumps(entry, ensure_ascii=True, separators=(",", ":")) + "\n").encode()
+    def _flush_if_due(self) -> None:
+        if len(self._rows) >= FLUSH_ROWS or time.monotonic() - self._flushed_at >= FLUSH_SECONDS:
+            self._flush(final=False)
+
+    def _flush(self, *, final: bool) -> None:
+        """Write the buffered rows in one transaction; caller holds ``_lock``."""
+        rows, self._rows = self._rows, []
+        self._flushed_at = time.monotonic()
+        if not rows and not final:
+            return
+        if not self._store.write(self._job_id, rows, self._size, self.truncated, final):
+            self.unavailable = True
+
+    def flush(self) -> None:
+        """Write what is buffered now; called by readers so they see current output."""
+        with self._lock:
+            if self._open:
+                self._flush(final=False)
 
     def close(self) -> None:
         with self._lock:
-            handle, self._handle = self._handle, None
-        if handle is None:
-            return
-        try:
-            handle.flush()
-            os.fsync(handle.fileno())
-        except Exception:
-            self.unavailable = True
-        finally:
-            try:
-                handle.close()
-            except Exception:
-                self.unavailable = True
+            if not self._open:
+                return
+            self._open = False
+            self._flush(final=True)
+        self._store.forget(self._job_id, self)
 
 
 class JobLogStore:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._db: sqlite3.Connection | None = None
+        self._open: dict[str, JobLog] = {}
+        self._legacy = LegacyJsonl(root)
 
     @staticmethod
     def _job(job_id: str) -> None:
         if type(job_id) is not str or _IDENT.fullmatch(job_id) is None:
             raise JobLogError("job_log_identifier_invalid")
 
-    def _path(self, job_id: str) -> Path:
-        self._job(job_id)
-        # The broker-owned job-logs directory and each file must not be links.
+    # -- database ---------------------------------------------------------------------
+
+    def _connection(self) -> sqlite3.Connection:
+        """The one connection, opened on first use. Caller holds ``_lock``."""
+        if self._db is not None:
+            return self._db
+        # The broker-owned job-logs directory and database must not be links.
         # Ancestors are the operator's chosen state location and stay unchecked.
         if _linked(self.root):
             raise JobLogError("job_log_linked_path_not_supported")
-        path = self.root / (job_id + _SUFFIX)
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = self.root / DATABASE_NAME
         if _linked(path):
             raise JobLogError("job_log_linked_path_not_supported")
-        return path
+        try:
+            connection = self._open_database(path)
+        except sqlite3.DatabaseError:
+            # The logs are not authoritative: set a damaged file aside and start over.
+            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            for suffix in ("", "-wal", "-shm"):
+                source = path.with_name(path.name + suffix)
+                if source.exists():
+                    source.replace(path.with_name(f"{path.name}.corrupt-{stamp}{suffix}"))
+            connection = self._open_database(path)
+        self._db = connection
+        return connection
+
+    @staticmethod
+    def _open_database(path: Path) -> sqlite3.Connection:
+        connection = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        try:
+            connection.execute("PRAGMA busy_timeout=5000")
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version == 0:
+                # Only a new file can still choose auto_vacuum; it must precede the tables.
+                connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute("PRAGMA secure_delete=ON")
+            if version == 0:
+                connection.executescript(
+                    f"BEGIN; {_SCHEMA} PRAGMA user_version={SCHEMA_VERSION}; COMMIT;"
+                )
+            elif version != SCHEMA_VERSION:
+                raise JobLogError("job_log_schema_unsupported")
+            elif connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise sqlite3.DatabaseError("job_log_database_damaged")
+            return connection
+        except BaseException:
+            connection.close()
+            raise
+
+    def close(self) -> None:
+        with self._lock:
+            logs = list(self._open.values())
+        for log in logs:  # outside the lock: a log takes its own lock first, then the store's
+            log.close()
+        with self._lock:
+            if self._db is not None:
+                self._db.close()
+                self._db = None
+
+    def write(self, job_id: str, rows: list[Row], size: int, truncated: bool, final: bool) -> bool:
+        """One transaction for a batch; False when the store could not take it."""
+        try:
+            with self._lock:
+                db = self._connection()
+                if final:
+                    db.execute("PRAGMA synchronous=FULL")
+                try:
+                    db.execute("BEGIN IMMEDIATE")
+                    db.executemany(
+                        "INSERT INTO log_lines(job_id,seq,t,stream,level,text,record,data) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        [(job_id, *row) for row in rows],
+                    )
+                    db.execute(
+                        "UPDATE log_jobs SET bytes=?, truncated=?, updated=?, closed=? "
+                        "WHERE job_id=?",
+                        (size, int(truncated), _millis(), int(final), job_id),
+                    )
+                    db.execute("COMMIT")
+                except BaseException:
+                    if db.in_transaction:
+                        db.execute("ROLLBACK")
+                    raise
+                finally:
+                    if final:
+                        db.execute("PRAGMA synchronous=NORMAL")
+            return True
+        except Exception:
+            return False
+
+    def forget(self, job_id: str, log: JobLog) -> None:
+        with self._lock:
+            if self._open.get(job_id) is log:
+                del self._open[job_id]
+
+    def _flush_open(self) -> None:
+        """Write every open log's buffer. Never called with the store lock held."""
+        with self._lock:
+            logs = list(self._open.values())
+        for log in logs:
+            log.flush()
+
+    # -- writing ----------------------------------------------------------------------
 
     def begin(
         self,
@@ -196,47 +343,36 @@ class JobLogStore:
         """Open (or reopen for append) a job's log. Prunes old logs first."""
         if not principal_id or type(principal_id) is not str:
             raise JobLogError("job_log_principal_required")
+        self._job(job_id)
+        previous = self._open.get(job_id)
+        if previous is not None:
+            previous.close()
         with self._lock:
-            self._job(job_id)
-            self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-            path = self._path(job_id)
+            db = self._connection()
             self.prune({job_id, *keep}, tiers)
-            flags = (
-                os.O_CREAT
-                | os.O_WRONLY
-                | os.O_APPEND
-                | getattr(os, "O_BINARY", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
-            )
-            existing = path.exists()
-            if existing:
-                header, entries, _ = self._load(path)
-                if header.get("principal_id") != principal_id:
+            row = db.execute(
+                "SELECT principal_id, bytes, truncated FROM log_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            seq = size = 0
+            truncated = False
+            if row is not None:
+                if row[0] != principal_id:
                     raise JobLogError("job_log_owner_mismatch")
-                seq = max((entry.get("seq", 0) for entry in entries), default=0)
-            descriptor = os.open(path, flags, 0o600)
-            handle = os.fdopen(descriptor, "ab")
-            try:
-                if not existing:
-                    header_line = json.dumps(
-                        {
-                            "schema_version": SCHEMA_VERSION,
-                            "job_id": job_id,
-                            "principal_id": principal_id,
-                            "kind": str(kind),
-                            "created": _now(),
-                        },
-                        ensure_ascii=True,
-                        separators=(",", ":"),
-                    )
-                    handle.write((header_line + "\n").encode())
-                    handle.flush()
-                    seq = 0
-                size = os.fstat(handle.fileno()).st_size
-            except Exception:
-                handle.close()
-                raise
-            return JobLog(path, handle, size, seq)
+                size, truncated = row[1], bool(row[2])
+                seq = db.execute(
+                    "SELECT COALESCE(MAX(seq),0) FROM log_lines WHERE job_id=?", (job_id,)
+                ).fetchone()[0]
+                db.execute("UPDATE log_jobs SET closed=0 WHERE job_id=?", (job_id,))
+            else:
+                db.execute(
+                    "INSERT INTO log_jobs(job_id,principal_id,kind,created,updated) "
+                    "VALUES(?,?,?,?,?)",
+                    (job_id, principal_id, str(kind), _now(), _millis()),
+                )
+            log = JobLog(self, job_id, size, seq)
+            log.truncated = truncated
+            self._open[job_id] = log
+            return log
 
     def prune(self, keep: set[str], tiers: Mapping[str, int] | None = None) -> None:
         """Drop job logs beyond the count/byte caps; never those in ``keep``.
@@ -246,116 +382,128 @@ class JobLogStore:
         go before needs_review / flash / LKG-producing ones.
         """
         try:
-            names = os.listdir(self.root)
-        except FileNotFoundError:
+            with self._lock:
+                db = self._connection()
+                ranks = tiers or {}
+                rows = db.execute("SELECT job_id, bytes, updated FROM log_jobs").fetchall()
+                # Most valuable first (highest tier, then newest); once the caps are
+                # exceeded, everything further down that is not kept goes.
+                rows.sort(key=lambda row: (int(ranks.get(row[0], 0)), row[2]), reverse=True)
+                # One slot is reserved for the job being started.
+                count, total = 1, 0
+                doomed: list[str] = []
+                for job_id, size, _ in rows:
+                    count += 1
+                    total += size
+                    if job_id in keep:
+                        continue
+                    if count > MAX_JOB_FILES or total > MAX_TOTAL_BYTES:
+                        doomed.append(job_id)
+                        count -= 1
+                        total -= size
+                for job_id in doomed:
+                    db.execute("BEGIN IMMEDIATE")
+                    db.execute("DELETE FROM log_lines WHERE job_id=?", (job_id,))
+                    db.execute("DELETE FROM log_jobs WHERE job_id=?", (job_id,))
+                    db.execute("COMMIT")
+                if doomed:
+                    db.execute("PRAGMA incremental_vacuum(512)")
+        except Exception:
             return
-        files: list[tuple[int, int, Path]] = []
-        for name in names:
-            if not name.endswith(_SUFFIX) or _IDENT.fullmatch(name[: -len(_SUFFIX)]) is None:
-                continue
-            path = self.root / name
-            try:
-                info = path.lstat()
-            except OSError:
-                continue
-            if not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE:
-                continue
-            files.append((info.st_mtime_ns, info.st_size, path))
-        ranks = tiers or {}
 
-        def job(path: Path) -> str:
-            return path.name[: -len(_SUFFIX)]
+    # -- reading ----------------------------------------------------------------------
 
-        # Walk from the most valuable (highest tier, then newest) down; once the
-        # caps are exceeded, everything further down that is not kept goes.
-        files.sort(key=lambda item: (int(ranks.get(job(item[2]), 0)), item[0]), reverse=True)
-        # One slot is reserved for the job being started.
-        count, total = 1, 0
-        for _, size, path in files:
-            count += 1
-            total += size
-            if job(path) in keep:
-                continue
-            if count > MAX_JOB_FILES or total > MAX_TOTAL_BYTES:
-                try:
-                    path.unlink()
-                except OSError:
-                    continue
-                count -= 1
-                total -= size
-
-    def _load(self, path: Path) -> tuple[dict[str, Any], list[dict[str, Any]], bool]:
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
-        with os.fdopen(descriptor, "rb") as handle:
-            data = handle.read(MAX_JOB_BYTES + 65536)
-        lines = data.split(b"\n")
-        header = json.loads(lines[0])
-        if type(header) is not dict or header.get("schema_version") != SCHEMA_VERSION:
-            raise JobLogError("job_log_invalid")
-        entries: list[dict[str, Any]] = []
-        partial = False
-        for raw in lines[1:]:
-            if not raw:
-                continue
-            try:
-                entry = json.loads(raw)
-            except ValueError:
-                # A crash can leave one unfinished final line; skip it.
-                partial = True
-                continue
-            if type(entry) is dict:
-                entries.append(entry)
-        return header, entries, partial
+    def _header(self, job_id: str) -> dict[str, Any] | None:
+        row = (
+            self._connection()
+            .execute(
+                "SELECT principal_id, kind, created, truncated FROM log_jobs WHERE job_id=?",
+                (job_id,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            return None
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "job_id": job_id,
+            "principal_id": row[0],
+            "kind": row[1],
+            "created": row[2],
+            "truncated": bool(row[3]),
+        }
 
     def read(self, job_id: str, principal_id: str, stream: str) -> dict[str, Any] | None:
         """Return the owner's entries of one stream, or None when nothing is readable."""
         try:
-            path = self._path(job_id)
-            if not path.exists():
-                return None
-            header, entries, partial = self._load(path)
+            self._job(job_id)
+            self._flush_open()
+            with self._lock:
+                header = self._header(job_id)
+                if header is None:
+                    return self._legacy.read(job_id, principal_id, stream)
+                if header["principal_id"] != principal_id:
+                    return None
+                rows = (
+                    self._connection()
+                    .execute(
+                        "SELECT seq, t, level, text FROM log_lines "
+                        "WHERE job_id=? AND stream=? ORDER BY seq",
+                        (job_id, stream),
+                    )
+                    .fetchall()
+                )
         except Exception:
             return None
-        if header.get("job_id") != job_id or header.get("principal_id") != principal_id:
-            return None
-        selected = [entry for entry in entries if entry.get("stream") == stream]
-        truncated = any(entry.get("text") == TRUNCATION_MARKER for entry in entries)
         return {
             "header": header,
-            "entries": selected,
-            "truncated": truncated,
-            "partial_line_skipped": partial,
+            "entries": [
+                {"seq": seq, "t": _iso(t), "stream": stream, "level": level, "text": text}
+                for seq, t, level, text in rows
+            ],
+            "truncated": header["truncated"],
+            "partial_line_skipped": False,
         }
 
     def records(self, job_id: str, principal_id: str, kind: str) -> list[dict[str, Any]] | None:
         """The owner's structured records of one kind, oldest first; None if unreadable."""
         try:
-            path = self._path(job_id)
-            if not path.exists():
-                return None
-            header, entries, _ = self._load(path)
+            self._job(job_id)
+            self._flush_open()
+            with self._lock:
+                header = self._header(job_id)
+                if header is None:
+                    return self._legacy.records(job_id, principal_id, kind)
+                if header["principal_id"] != principal_id:
+                    return None
+                rows = (
+                    self._connection()
+                    .execute(
+                        "SELECT seq, t, data FROM log_lines "
+                        "WHERE job_id=? AND record=? ORDER BY seq",
+                        (job_id, kind),
+                    )
+                    .fetchall()
+                )
+            records = [
+                {"seq": seq, "t": _iso(t), "data": json.loads(data)} for seq, t, data in rows
+            ]
         except Exception:
             return None
-        if header.get("job_id") != job_id or header.get("principal_id") != principal_id:
-            return None
-        return [
-            {"seq": entry.get("seq"), "t": entry.get("t"), "data": entry["data"]}
-            for entry in entries
-            if entry.get("record") == kind and type(entry.get("data")) is dict
-        ]
+        return [record for record in records if type(record["data"]) is dict]
 
     def owner(self, job_id: str) -> str | None:
-        """The principal recorded in a job log's header, or None when unreadable."""
+        """The principal recorded for a job's log, or None when unreadable."""
         try:
-            path = self._path(job_id)
-            if not path.exists():
-                return None
-            header, _, _ = self._load(path)
+            self._job(job_id)
+            with self._lock:
+                header = self._header(job_id)
+                if header is None:
+                    return self._legacy.owner(job_id)
+                principal = header["principal_id"]
+                return principal if isinstance(principal, str) else None
         except Exception:
             return None
-        principal = header.get("principal_id")
-        return principal if header.get("job_id") == job_id and isinstance(principal, str) else None
 
     @staticmethod
     def epoch(job_id: str) -> str:
@@ -519,6 +667,55 @@ class JobLogStore:
             "partial_line_skipped": loaded["partial_line_skipped"],
             "redaction_limitations": REDACTION_LIMITATIONS,
         }
+
+
+def archivable_jobs(root: Path, live: set[str]) -> list[str]:
+    """Job ids in the log database that no live job owns (offline, broker stopped)."""
+    path = root / DATABASE_NAME
+    if _linked(root) or _linked(path) or not path.is_file():
+        return []
+    connection = sqlite3.connect(path)
+    try:
+        return sorted(
+            row[0]
+            for row in connection.execute("SELECT job_id FROM log_jobs")
+            if row[0] not in live and _IDENT.fullmatch(row[0]) is not None
+        )
+    except sqlite3.DatabaseError:
+        return []
+    finally:
+        connection.close()
+
+
+def archive_jobs(root: Path, destination: Path, job_ids: list[str]) -> int:
+    """Move these jobs' log rows into a database at ``destination``; returns how many moved."""
+    if not job_ids:
+        return 0
+    target = JobLogStore._open_database(destination)
+    source = sqlite3.connect(root / DATABASE_NAME, isolation_level=None)
+    moved = 0
+    try:
+        source.execute("PRAGMA busy_timeout=5000")
+        for job_id in job_ids:
+            job = source.execute("SELECT * FROM log_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if job is None:
+                continue
+            lines = source.execute("SELECT * FROM log_lines WHERE job_id=?", (job_id,)).fetchall()
+            target.execute("BEGIN IMMEDIATE")
+            target.execute("INSERT OR REPLACE INTO log_jobs VALUES(?,?,?,?,?,?,?,?)", job)
+            target.executemany("INSERT OR REPLACE INTO log_lines VALUES(?,?,?,?,?,?,?,?)", lines)
+            target.execute("COMMIT")
+            source.execute("BEGIN IMMEDIATE")
+            source.execute("DELETE FROM log_lines WHERE job_id=?", (job_id,))
+            source.execute("DELETE FROM log_jobs WHERE job_id=?", (job_id,))
+            source.execute("COMMIT")
+            moved += 1
+        if moved:
+            source.execute("PRAGMA incremental_vacuum(512)")
+    finally:
+        source.close()
+        target.close()
+    return moved
 
 
 class DeviceLogTap:

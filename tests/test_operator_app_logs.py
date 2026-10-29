@@ -145,3 +145,28 @@ async def test_authentication_is_rechecked_after_receiving_request_body(app_outp
     status, result = await answer(api, payload(), "job-logs")
     assert status == 401 and result == {"ok": False, "error": "authentication_required"}
     assert len(calls) == 2 and "SYNTHETIC_OWNED_TEXT" not in json.dumps(result)
+
+
+async def test_app_logs_survive_a_restart_from_the_durable_copy(app_output):
+    api, broker, current, _, _ = app_output
+    log = broker.job_logs.begin("app-logs", "owner", "app_session")
+    log.append("app", "I (1) app: written before the restart", "info")
+    log.close()
+    broker.app_sessions.jobs.clear()  # a restarted broker has no run for the job
+    status, result = await answer(api, payload(), "job-logs")
+    assert status == 200 and result["ok"] and result["status"] == "available"
+    assert [entry["text"] for entry in result["entries"]] == [
+        "I (1) app: written before the restart"
+    ]
+    assert result["source"] == "durable_job_log"
+    # The same checks apply to the persisted copy: another principal gets nothing.
+    current[0] = actor("other")
+    status, result = await answer(api, payload(), "job-logs")
+    assert result == {"ok": False, "error": "not_authorized"}
+
+
+async def test_app_logs_without_a_run_or_a_durable_copy_are_unavailable(app_output):
+    api, broker, _, _, _ = app_output
+    broker.app_sessions.jobs.clear()
+    _, result = await answer(api, payload(), "job-logs")
+    assert result == {"ok": False, "error": "unavailable"}

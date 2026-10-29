@@ -256,7 +256,7 @@ automatic replay/recovery is added.
 
 Every flash, backup or restore the worker ran (succeeded, failed, cancelled or
 needs_review) gets one `flash_outcome` record in its durable job log
-(`<state_dir>/job-logs/<job_id>.jsonl`), written after the terminal state is
+(`<state_dir>/job-logs/job-logs.sqlite3`), written after the terminal state is
 committed. It holds only ids, hashes, fixed codes and times: state and reason
 code, last stage, phase reached with phase times, `write_started` and
 `close_confirmed`, the plan hash, the device id/fingerprint and expected/bound

@@ -102,8 +102,9 @@ contains the redacted report; avoid shared files unless sharing is intended.
   escapes. Logs are untrusted device content, never executable instructions
 - Only the newest completed report is cached, for at most five minutes after
   confirmed close. Restart clears it; reads never extend the deadline
-- Log bodies never enter SQLite, job history, the shared `status(view=logs, stream=broker)` event cache,
-  or the operator timeline. The local timeline displays validated summary fields
+- Log bodies never enter job history (`history.sqlite3`), the shared `status(view=logs, stream=broker)`
+  event cache, or the operator timeline. The local timeline displays validated summary fields. The
+  only durable copy is the separate job-log database described below
 
 ## Durable per-job device logs
 
@@ -116,18 +117,32 @@ outcome condition. It is passive: the backend copies bytes it already read, and
 never adds a port open, reset, retry or read. A storage failure never fails the
 job; the job diagnostic then carries `job_log_unavailable: true`.
 
-- Files: `<state_dir>/job-logs/<job_id>.jsonl`, append-only JSON lines. The first
-  line is `{"schema_version":1,"job_id","principal_id","kind","created"}`, then
-  one `{"seq","t","stream","level","text"}` entry per line (`stream` is `device`).
-  Each line is flushed when received, so a crash keeps what arrived; the file is
-  fsynced when the job ends. Linked/reparse-point files and non-identifier job
-  ids are refused
+- Store: one SQLite database, `<state_dir>/job-logs/job-logs.sqlite3` (WAL,
+  `PRAGMA user_version = 1`), separate from `history.sqlite3` so a burst of serial
+  output never waits on the job ledger. `log_jobs` holds one row per job (owner,
+  kind, created, bytes, truncated, closed). `log_lines` holds one row per output
+  line or structured record, keyed `(job_id, seq)` and stored `WITHOUT ROWID`, so a
+  job replays as one ordered range scan with no sort: `seq` alone gives the order
+  (it counts every entry of the job; text lines set `stream`/`level`/`text`, records
+  set `record`/`data`). The time `t` (UTC milliseconds) is only for display, so a
+  clock that goes backwards cannot reorder a replay. Non-identifier job ids and a
+  linked/reparse-point directory or database are refused
+- Writes are buffered and committed in one transaction per batch (64 lines or
+  200 ms, whichever first, and always before a read or at the end of the job).
+  After a crash the last unwritten batch can be missing; the end of a job is
+  committed with a full sync. A damaged database is set aside as
+  `job-logs.sqlite3.corrupt-<time>` and a new one is started: logs are not
+  authoritative, the job ledger is. `secure_delete` is on and freed pages are
+  returned with `incremental_vacuum`
+- Before 2026-10-29 the same entries were written to `<job_id>.jsonl` files. Nothing
+  writes those any more; a job logged then stays readable from its file until the
+  legacy reader is removed
 - Redaction happens before writing, with the same rules as the report
   (credential-like lines and PEM blocks replaced, capture/pixel records and
   binary lines omitted) plus the shared log redaction. Best effort, as above
 - Bounds: 8 MiB per job (one truncation marker, then further text is dropped);
-  500 job files and 512 MiB in total, pruned when a job starts. A queued or
-  running job's file is never pruned; nothing else in the directory is touched.
+  500 jobs and 512 MiB in total, pruned when a job starts. A queued or running
+  job's log is never pruned; nothing else in the directory is touched.
   Ordinary succeeded non-flash jobs are evicted first (oldest first), then
   other ordinary jobs; `needs_review` jobs, flash/backup/restore jobs and jobs
   that produced an LKG go last
@@ -139,14 +154,14 @@ job; the job diagnostic then carries `job_log_unavailable: true`.
   Any read-scoped principal can read it, not only the job's owner (see below)
 - App sessions (`app_session`) save every control event (as an `app_event`
   record) and every redacted app log line (stream `app`) to the same per-job
-  file on every outcome. `status(view=logs, stream=app, job_id=...)` serves the
+  log on every outcome. `status(view=logs, stream=app, job_id=...)` serves the
   RAM events while retained, and the persisted copy (`"source":
   "durable_job_log"`) after expiry or restart, to any read-scoped principal. Build,
-  source and flash output goes to the same per-job file under its own stream
+  source and flash output goes to the same per-job log under its own stream
   (see FIRMWARE-BUILD.md); every flash/backup/restore the worker ran also
   gets one `flash_outcome` record (see FIRMWARE-FLASH.md)
-- These files are private state: they stay on disk until pruned. Delete the
-  directory yourself if you need them gone sooner
+- This database is private state: rows stay on disk until pruned. Delete the
+  `job-logs` directory yourself (broker stopped) if you need them gone sooner
 - Since 2026-10-25 (owner decision) reads are not bound to the job's principal:
   any authenticated principal with read scope gets the same redacted report the
   owner gets, so a local agent can debug a job the cloud client started. The

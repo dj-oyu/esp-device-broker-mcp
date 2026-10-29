@@ -1,16 +1,27 @@
 """Build/source/flash output survives RAM expiry and restart in the durable job log."""
 
 import json
+import sqlite3
 
 import pytest
 import test_build_artifact_persistence as fixtures
 
+from cardputer_mcp import job_logs
 from cardputer_mcp.build_logs import BuildLogs
 from cardputer_mcp.job_logs import JobLogStore, attach
 from cardputer_mcp.models import BuildLogRequest, LogCursor
 
 PRIVATE = "C:/synthetic/private/project"
 SECRET = "SYNTHETIC_TOKEN_VALUE"
+
+
+def dump(root):
+    """Everything the job-log database holds as text, to check nothing sensitive was stored."""
+    connection = sqlite3.connect(root / job_logs.DATABASE_NAME)
+    try:
+        return "\n".join(connection.iterdump())
+    finally:
+        connection.close()
 
 
 def teed(store, stream, principal="alice", job_id="job-1"):
@@ -37,7 +48,7 @@ def test_stream_readable_after_ram_loss_with_cursor_semantics(tmp_path, stream, 
     else:
         logs.entries.clear()
     assert logs.entries == type(logs.entries)()
-    raw = (tmp_path / "job-1.jsonl").read_text("utf-8")
+    raw = dump(tmp_path)
     assert PRIVATE not in raw and SECRET not in raw
 
     first = store.build_read("job-1", "alice", stream, BuildLogRequest(job_id="job-1", limit=2))
