@@ -142,13 +142,9 @@ async def _execute_backend(broker: Broker, run: AdmittedJob) -> Result:
 def _commit_app_session(
     broker: Broker, run: AdmittedJob, result: Result, completed: Any
 ) -> tuple[Event, bool]:
-    terminal = (
-        "cancelled"
-        if completed == "app_session_cancelled"
-        else "failed"
-        if completed == "app_session_timeout"
-        else "succeeded"
-    )
+    # Only a confirmed stop and close reach here, so running for the whole duration
+    # (app_session_duration_elapsed) is a normal end; every abnormal end raised instead.
+    terminal = "cancelled" if completed == "app_session_cancelled" else "succeeded"
     run.store.ledger.transition(run.job_id, terminal, completed)
     return {
         "succeeded": Event.PASSED,

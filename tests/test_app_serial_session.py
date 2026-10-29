@@ -226,7 +226,9 @@ def test_serial_cancel_authority_and_timeout_allow_only_bounded_cleanup(reason):
                 await asyncio.wait_for(task, 2)
             assert failure.value.code == "app_authority_lost"
         else:
-            assert await asyncio.wait_for(task, 2) == "app_session_" + reason
+            assert await asyncio.wait_for(task, 2) == (
+                "app_session_duration_elapsed" if reason == "timeout" else "app_session_" + reason
+            )
         operations = [r.op for r in port.requests]
         assert Op.TAP not in operations
         assert operations[-2:] == [Op.STOP, Op.CLOSE]

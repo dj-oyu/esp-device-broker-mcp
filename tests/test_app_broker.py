@@ -59,13 +59,15 @@ def test_app_plan_is_immutable_and_resident_worker_deduplicates_execution(tmp_pa
                 broker.cancel(CancelRequest(session=token, job_id="app-one"))
             await asyncio.wait_for(broker.queue.join(), 3)
             assert broker.backend.calls == 1
-            expected_state = "cancelled" if cancelled else "failed"
-            expected_result = "app_session_cancelled" if cancelled else "app_session_timeout"
+            expected_state = "cancelled" if cancelled else "succeeded"
+            expected_result = (
+                "app_session_cancelled" if cancelled else "app_session_duration_elapsed"
+            )
             assert broker.job("app-one")["state"] == expected_state
             assert broker.job("app-one")["result"] == expected_result
             events = [entry["event"] for entry in broker.read_logs(LogRequest())["entries"]]
-            assert ("job_cancelled" if cancelled else "job_failed") in events
-            assert "job_passed" not in events
+            assert ("job_cancelled" if cancelled else "job_passed") in events
+            assert "job_failed" not in events
             report = broker.read_app_events(AppEventsRequest(job_id="app-one"), "owner")
             assert any(event["kind"] == "started" for event in report["entries"])
             with pytest.raises(BrokerError, match="app_events_not_available"):
