@@ -48,6 +48,12 @@ if ($KeyRegistry) { $arguments.KeyRegistry = $KeyRegistry }
 # 2 and 3. Helper consoles. The command holds paths only; no token or key is passed, and
 # every CARDPUTER_* / OPENAI_* variable is removed before the helper starts.
 function Quote-PowerShellLiteral([string]$Value) { return "'" + $Value.Replace("'", "''") + "'" }
+function Quote-FileArgument([string]$Value) {
+    if ($Value.Contains('"') -or $Value.EndsWith('\')) { throw 'Invalid file argument.' }
+    return '"' + $Value + '"'
+}
+# Helpers open as tabs of the current Windows Terminal window (the most recently used one), next to
+# the broker tab, instead of one window each. Without wt.exe a separate console opens.
 function Start-HelperConsole([string]$Subcommand, [string]$Title) {
     $helperCommand = '$ErrorActionPreference = ''Stop''; ' +
         'Get-ChildItem Env: | Where-Object { $_.Name -like ''CARDPUTER_*'' -or $_.Name -like ''OPENAI_*'' } | ' +
@@ -58,8 +64,17 @@ function Start-HelperConsole([string]$Subcommand, [string]$Title) {
         'Write-Host (''Exited (code {0}). Review messages above.'' -f $LASTEXITCODE)'
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($helperCommand))
     $shellName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
-    [void](Start-Process -FilePath (Join-Path $PSHOME $shellName) -WorkingDirectory $profileDirectory -ArgumentList (
-        '-NoLogo -NoProfile -NoExit -EncodedCommand ' + $encoded))
+    $shellPath = Join-Path $PSHOME $shellName
+    $shellArguments = '-NoLogo -NoProfile -NoExit -EncodedCommand ' + $encoded
+    $terminal = Get-Command -Name wt.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($terminal) {
+        [void](Start-Process -FilePath $terminal.Source -ArgumentList (
+            '-w 0 new-tab --title ' + (Quote-FileArgument $Title) + ' --suppressApplicationTitle ' +
+            '--startingDirectory ' + (Quote-FileArgument $profileDirectory) + ' ' +
+            (Quote-FileArgument $shellPath) + ' ' + $shellArguments))
+    } else {
+        [void](Start-Process -FilePath $shellPath -WorkingDirectory $profileDirectory -ArgumentList $shellArguments)
+    }
 }
 Start-HelperConsole 'gateway' 'Cardputer gateway'
 Write-Host 'Gateway console opened. With funnel = true, wait for gateway_funnel_open there; a connected Claude connector keeps working across gateway restarts.'
