@@ -427,6 +427,7 @@ class Broker:
         self.captures.clear()
         self.device_observations.clear()
         self.logs.append(Event.STOPPED)
+        self.job_logs.close()
         self.store.close()
         self.store = None
         self.app_sessions.jobs.clear()

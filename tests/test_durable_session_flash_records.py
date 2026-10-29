@@ -5,7 +5,7 @@ Synthetic devices only (mock app link, fake flash driver); never hardware eviden
 
 import asyncio
 import json
-import os
+import sqlite3
 
 import pytest
 import test_flash_policy
@@ -29,6 +29,15 @@ from cardputer_mcp.models import TestName as Workflow
 env = test_flash_policy.env
 SECRET = "SYNTHETIC_TOKEN_VALUE"
 PRIVATE = "C:/synthetic/private/path"
+
+
+def dump(root):
+    """Everything the job-log database holds as text, to check nothing sensitive was stored."""
+    connection = sqlite3.connect(root / job_logs.DATABASE_NAME)
+    try:
+        return "\n".join(connection.iterdump())
+    finally:
+        connection.close()
 
 
 def _broker(tmp_path, principal_valid=lambda *args: True):
@@ -123,7 +132,7 @@ def test_app_events_tee_redacts_logs_and_events(tmp_path):
     events.log(f"I (1) app: token={SECRET} at {PRIVATE}")
     events.emit("ack", command_id=2, result="ok", note=f"bearer {SECRET} {PRIVATE}")
     events.durable.close()
-    raw = (tmp_path / "app-two.jsonl").read_text("utf-8")
+    raw = dump(tmp_path)
     assert SECRET not in raw and PRIVATE not in raw
     report = store.app_events_read("app-two", "owner", AppEventsRequest(job_id="app-two"))
     assert report is not None
@@ -151,7 +160,7 @@ def test_records_are_redacted_skipped_by_stream_readers_and_reserved(tmp_path, m
     log.record("not_a_record", {"x": 1})
     assert log.unavailable
     log.close()
-    raw = (tmp_path / "job-r.jsonl").read_text("utf-8")
+    raw = dump(tmp_path)
     assert SECRET not in raw and PRIVATE not in raw
     outcomes = store.records("job-r", "alice", "flash_outcome")
     assert [item["data"]["reason_code"] for item in outcomes] == ["x", "final"]
@@ -167,12 +176,19 @@ def test_prune_evicts_ordinary_succeeded_logs_before_protected_ones(tmp_path, mo
     order = ["review-old", "flash-old", "ok-old", "failed-mid", "ok-new"]
     for index, job_id in enumerate(order):
         store.begin(job_id, "alice", "kind").close()
-        stamp = 1_000_000_000 + index
-        os.utime(tmp_path / f"{job_id}.jsonl", (stamp, stamp))
+        connection = sqlite3.connect(tmp_path / job_logs.DATABASE_NAME)
+        connection.execute("UPDATE log_jobs SET updated=? WHERE job_id=?", (index, job_id))
+        connection.commit()
+        connection.close()
     monkeypatch.setattr(job_logs, "MAX_JOB_FILES", 4)
     tiers = {"review-old": 2, "flash-old": 2, "failed-mid": 1}
     store.begin("next", "alice", "kind", tiers=tiers).close()
-    remaining = sorted(path.stem for path in tmp_path.glob("*.jsonl"))
+    remaining = sorted(
+        row[0]
+        for row in sqlite3.connect(tmp_path / job_logs.DATABASE_NAME).execute(
+            "SELECT job_id FROM log_jobs"
+        )
+    )
     # Two evictions: the oldest succeeded ordinary logs go first, protected ones stay.
     assert remaining == ["failed-mid", "flash-old", "next", "review-old"]
 
@@ -198,11 +214,11 @@ def test_pre_record_v1_job_log_still_reads(tmp_path):
     assert store.app_events_read("old-job", "alice", AppEventsRequest(job_id="old-job")) is None
     report = store.build_read("old-job", "alice", "flash", BuildLogRequest(job_id="old-job"))
     assert [entry["text"] for entry in report["entries"]] == ["-- flash_write"]
-    # Reopening appends records after the old entries, continuing the sequence.
+    # Nothing writes the old file: reopening the id starts a new log in the database.
     log = store.begin("old-job", "alice", "firmware_flash")
     log.record("flash_outcome", {"state": "failed"}, reserve=True)
     log.close()
-    assert store.records("old-job", "alice", "flash_outcome")[0]["seq"] == 2
+    assert store.records("old-job", "alice", "flash_outcome")[0]["seq"] == 1
 
 
 async def _flash(env, job, **references):
@@ -280,3 +296,4 @@ async def test_flash_outcome_is_on_disk_for_a_fresh_reader(env):
     outcomes = store.records("durable-flash", "alice", "flash_outcome")
     assert outcomes and outcomes[-1]["data"]["state"] == "succeeded"
     assert store.records("durable-flash", "bob", "flash_outcome") is None
+    store.close()

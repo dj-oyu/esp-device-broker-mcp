@@ -160,8 +160,9 @@ def assert_no_public_or_durable_logs(broker, *credentials):
 
 
 def _console_text(path):
-    """Redacted device text is durable only in the owner's per-job log."""
-    return () if path.parent.name == "job-logs" and path.suffix == ".jsonl" else (LOG_LINE,)
+    """Redacted device text is durable only in the job-log database."""
+    durable = path.parent.name == "job-logs" and path.name.startswith("job-logs.sqlite3")
+    return () if durable else (LOG_LINE,)
 
 
 def read_live_fixture_file(broker, path):

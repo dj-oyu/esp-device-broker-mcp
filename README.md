@@ -388,7 +388,8 @@ plus an `archive_info` table), verified by re-reading that file, and only then d
 from the live store in one transaction; rows keyed by a moved job (execution
 requests and audit, flash summaries, fixed-trial evidence, build references,
 continuations, HOME recovery rows, timeline order) move with it. The moved jobs'
-durable job logs (`job-logs/<job_id>.jsonl`) and captures (`captures/<job_id>/`)
+durable job logs (their rows in `job-logs/job-logs.sqlite3`, and any old
+`job-logs/<job_id>.jsonl`) and captures (`captures/<job_id>/`)
 move into the same directory; kept jobs keep theirs, and their status and log reads
 are unchanged. A job log or capture that no live job owns (for example left by an
 interrupted run) moves on the next run. An interruption after the copy leaves rows
@@ -485,8 +486,9 @@ one broker and the adapter must also acquire OS-level serial exclusivity.
   approvals, private local configuration and `.env` files are ignored by Git
 - The shared event cache contains structured synthetic events or exact allowlisted serial
   markers, not raw firmware logs. Unknown serial text, capabilities and raw driver
-  exceptions are not saved in SQLite/event logs. Separately requested device log
-  reports are bounded, redacted, principal-bound and retained only in RAM; see
+  exceptions are not saved in the job history or event logs. Device log reports are
+  bounded and redacted; the report is held in RAM, and the text is also kept in the
+  separate job-log database (`job-logs/job-logs.sqlite3`); see
   [DEVICE-LOGS.md](DEVICE-LOGS.md)
 - Config `state_dir` is relative to the directory from which you launch the server.
   Use a user-owned local directory on Windows; POSIX new directories use 0700 and
