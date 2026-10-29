@@ -1,0 +1,8 @@
+# Separate build tooling; application dependencies and hashes stay in uv.lock.
+# Install with --no-deps so the complete, pinned tool set cannot drift.
+altgraph==0.17.4
+packaging==26.3
+pyinstaller==6.16.0
+pyinstaller-hooks-contrib==2025.9
+setuptools==80.9.0
+uv-build==0.12.19

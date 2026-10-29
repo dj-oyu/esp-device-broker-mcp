@@ -338,6 +338,23 @@ async def test_pip_font_needs_a_session_and_is_only_the_subset(ui, google):
     assert ui.broker.requests == []
 
 
+async def test_jobs_and_detail_are_swipeable_panels(ui, google):
+    await login(ui, google)
+    page = await ui.get("/")
+    for needle in ('id="heads"', 'id="panels"', 'id="p0"', 'id="p1"', 'id="log-lines"'):
+        assert needle in page.text
+    # The bottom log section and its close button are gone: the detail is its own panel.
+    assert 'id="close-logs"' not in page.text and 'id="logs"' not in page.text
+    css = await ui.get("/static/app.css")
+    assert "scroll-snap-type" in css.text
+    # Selection is an outline only, so a selected card does not move its contents.
+    selected = css.text.split(".jobs li.selected", 1)[1].split("}", 1)[0]
+    assert "outline" in selected and "border" not in selected and "transform" not in selected
+    script = await ui.get("/static/app.js")
+    for needle in ("toggleSelection", "layoutHeads", "scrollLeft", "renderDetail"):
+        assert needle in script.text
+
+
 async def test_pip_is_drawn_locally_and_adds_no_request(ui, google):
     await login(ui, google)
     page = await ui.get("/")
@@ -350,7 +367,7 @@ async def test_pip_is_drawn_locally_and_adds_no_request(ui, google):
     assert 'fetch("/api/job-logs"' in script.text and 'fetch("/api/state"' in script.text
     assert "innerHTML" not in script.text
     # Silence replaces the stream; the figure drawn tells a dead stream from a live one.
-    for needle in ("STALE_MS", "visibilitychange", "pageshow", "dataAge", "停止 "):
+    for needle in ("STALE_MS", "visibilitychange", "pageshow", "dataAge", "停止 ", "resumePip"):
         assert needle in script.text
     # A job ending is shown by colour and pulses, and reduced motion turns the pulses off.
     for needle in (

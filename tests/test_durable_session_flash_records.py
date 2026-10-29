@@ -86,7 +86,7 @@ def test_app_session_events_survive_restart_owner_only(tmp_path, cancel):
             kinds = [event["kind"] for event in report["entries"]]
             assert report["source"] == "durable_job_log" and report["expired"] is False
             assert "started" in kinds and kinds[-1] == "finished"
-            assert report["state"] == ("cancelled" if cancel else "failed")
+            assert report["state"] == ("cancelled" if cancel else "succeeded")
             assert kinds == ram_kinds
             with pytest.raises(BrokerError, match="^app_events_not_available$"):
                 restarted.read_app_events(AppEventsRequest(job_id="app-one"), "other")

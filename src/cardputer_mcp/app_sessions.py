@@ -590,7 +590,9 @@ class AppSessions:
                     outcome = "app_authority_lost"
                     break
                 if time.monotonic() >= deadline:
-                    outcome = "app_session_timeout"
+                    # The requested duration ran out with no refusal, stale reply or lost
+                    # authority; stop and close below must still be confirmed.
+                    outcome = "app_session_duration_elapsed"
                     break
                 try:
                     request = run.pending.get_nowait()

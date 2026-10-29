@@ -143,7 +143,9 @@ def test_cancel_timeout_and_authority_loss_stop_input_and_confirm_cleanup():
                 await asyncio.wait_for(task, 2)
             assert failure.value.code == "app_authority_lost"
         else:
-            assert await asyncio.wait_for(task, 2) == "app_session_" + reason
+            assert await asyncio.wait_for(task, 2) == (
+                "app_session_duration_elapsed" if reason == "timeout" else "app_session_" + reason
+            )
         assert not run.running and run.state == "stopped"
         assert backend.active == 0
         assert any(e["kind"] == "finished" and e["teardown_confirmed"] for e in run.events.control)

@@ -61,6 +61,21 @@ function Quote-FileArgument([string]$Value) {
     if ($Value.Contains('"') -or $Value.EndsWith('\')) { throw 'Invalid file argument.' }
     return '"' + $Value + '"'
 }
+# The server console opens as a tab of the current Windows Terminal window (the most recently used
+# one), so a stack start does not scatter windows. The tab inherits this process's environment, as a
+# separate console would. Without wt.exe a separate console opens.
+function Open-ShellConsole([string]$Title, [string]$EncodedCommand) {
+    $shellArguments = '-NoLogo -NoProfile -NoExit -EncodedCommand ' + $EncodedCommand
+    $terminal = Get-Command -Name wt.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($terminal) {
+        [void](Start-Process -FilePath $terminal.Source -ArgumentList (
+            '-w 0 new-tab --title ' + (Quote-FileArgument $Title) + ' --suppressApplicationTitle ' +
+            '--startingDirectory ' + (Quote-FileArgument $profileDirectory) + ' ' +
+            (Quote-FileArgument $shellPath) + ' ' + $shellArguments))
+    } else {
+        [void](Start-Process -FilePath $shellPath -WorkingDirectory $profileDirectory -ArgumentList $shellArguments)
+    }
+}
 function New-RunToken {
     [byte[]]$bytes = New-Object byte[] 32
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -129,8 +144,7 @@ try {
         ' --require-auth' + $(if (!$NoSerial) { ' --enable-serial' } else { '' }) + '; ' +
         '$brokerExit = $LASTEXITCODE; Write-Host (''Broker exited (code {0}). Review messages above.'' -f $brokerExit)'
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($serverCommand))
-    [void](Start-Process -FilePath $shellPath -WorkingDirectory $profileDirectory -PassThru -ArgumentList (
-        '-NoLogo -NoProfile -NoExit -EncodedCommand ' + $encoded))
+    Open-ShellConsole 'Cardputer broker' $encoded
     $serverOpened = $true
     $deadline = [DateTime]::UtcNow.AddSeconds($ReadyTimeoutSeconds)
     $status = $null

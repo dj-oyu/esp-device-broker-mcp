@@ -20,6 +20,7 @@ PAYLOAD = (
     "examples/mock-safe.toml",
 )
 MEMBERS = (*PAYLOAD, "build-runtime.json", "manifest.json", "SHA256SUMS.txt")
+REQUIREMENTS = "packaging/requirements-windows-build.txt"
 RUNTIME_KEYS = {
     "schema_version",
     "python_version",
@@ -31,7 +32,7 @@ RUNTIME_KEYS = {
 }
 
 
-def record_build_runtime(exe: Path, root: Path = ROOT) -> Path:
+def record_build_runtime(exe: Path, root: Path = ROOT, requirements: str = REQUIREMENTS) -> Path:
     """Called by the actual PyInstaller interpreter after producing the EXE."""
     if subprocess.check_output(
         ["git", "status", "--porcelain", "--untracked-files=no"], cwd=root, text=True
@@ -45,9 +46,7 @@ def record_build_runtime(exe: Path, root: Path = ROOT) -> Path:
         "uv_version": uv_version,
         "source_commit": commit,
         "uv_lock_sha256": digest((root / "uv.lock").read_bytes()),
-        "build_requirements_sha256": digest(
-            (root / "packaging/requirements-windows-build.txt").read_bytes()
-        ),
+        "build_requirements_sha256": digest((root / requirements).read_bytes()),
         "exe_sha256": digest(exe.read_bytes()),
     }
     target = Path(str(exe) + ".build.json")
@@ -55,7 +54,18 @@ def record_build_runtime(exe: Path, root: Path = ROOT) -> Path:
     return target
 
 
-def verify_build_runtime(data: bytes, executable: bytes, commit: str, root: Path) -> dict:
+def windows_library(name: bytes, major: int, minor: int) -> bool:
+    return name == f"python{major}{minor}.dll".encode()
+
+
+def verify_build_runtime(
+    data: bytes,
+    executable: bytes,
+    commit: str,
+    root: Path,
+    requirements: str = REQUIREMENTS,
+    library_matches=windows_library,
+) -> dict:
     """Verify producer metadata and the EXE's ABI, never the verifier's runtime."""
     if len(data) > 4096:
         raise ValueError("build_runtime_invalid")
@@ -71,8 +81,7 @@ def verify_build_runtime(data: bytes, executable: bytes, commit: str, root: Path
         or runtime["source_commit"] != commit
         or runtime["exe_sha256"] != digest(executable)
         or runtime["uv_lock_sha256"] != digest((root / "uv.lock").read_bytes())
-        or runtime["build_requirements_sha256"]
-        != digest((root / "packaging/requirements-windows-build.txt").read_bytes())
+        or runtime["build_requirements_sha256"] != digest((root / requirements).read_bytes())
     ):
         raise ValueError("build_runtime_binding_mismatch")
     # PyInstaller 6's CArchive cookie records the embedded Python ABI/library.
@@ -87,7 +96,7 @@ def verify_build_runtime(data: bytes, executable: bytes, commit: str, root: Path
     major, minor, _ = map(int, runtime["python_version"].split("."))
     if (
         abi != major * 100 + minor
-        or library.rstrip(b"\0") != f"python{major}{minor}.dll".encode()
+        or not library_matches(library.rstrip(b"\0"), major, minor)
         or package < length
         or package > at + length
         or toc + toc_length > package - length
@@ -100,11 +109,16 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def tag_spelling(version: str) -> str:
+    """PEP 440 `1.0.0rc1` is tagged `v1.0.0-rc.1`; final versions are unchanged."""
+    return re.sub(r"rc([0-9]+)$", r"-rc.\1", version)
+
+
 def release_version(ref: str, root: Path = ROOT) -> str:
     version = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))["project"]["version"]
-    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?", version) is None:
         raise ValueError("release_version_must_be_three_numeric_components")
-    if ref.startswith("refs/tags/") and ref != f"refs/tags/v{version}":
+    if ref.startswith("refs/tags/") and ref != f"refs/tags/v{tag_spelling(version)}":
         raise ValueError("tag_does_not_match_project_version")
     # These wire/display versions are currently explicit application constants.
     for path, pattern in (
