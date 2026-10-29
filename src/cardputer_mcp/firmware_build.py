@@ -347,6 +347,8 @@ class FirmwareBuild:
         # Durable per-job log hooks, set by the broker; None keeps RAM-only behaviour.
         self.open_job_log: Callable[[str, str, str], Any] | None = None
         self.job_logs: Any = None
+        # Opened on the broker loop: the store's SQLite connection is loop-bound.
+        self._preopened_logs: dict[str, Any] = {}
         self.manifests: dict[str, tuple[str, dict[str, Any]]] = {}
         self._lock = threading.RLock()
         self._receipt_read_lock = threading.Lock()
@@ -553,6 +555,13 @@ class FirmwareBuild:
     ) -> str:
         self._check_cancelled()
         loop = asyncio.get_running_loop()
+        job_id = plan.get("job_id", "")
+        # The durable log opener reads the broker store, which only the loop may use;
+        # the build itself runs in a worker thread.
+        if self.open_job_log is not None and job_id and "build_principal" in plan:
+            self._preopened_logs[job_id] = self.open_job_log(
+                job_id, plan["build_principal"], plan.get("test", "firmware_build")
+            )
 
         async def authorized() -> bool:
             return self.authority is not None and self.authority() is True
@@ -578,6 +587,7 @@ class FirmwareBuild:
             )
         finally:
             self._authority_monitor = None
+            self._preopened_logs.pop(job_id, None)
 
     def _execute(self, plan: dict[str, Any], stage: Any, defer_publish: bool = False) -> str:
         if self._build_lock is not None:
@@ -666,7 +676,7 @@ class FirmwareBuild:
         )
         attach(
             logs,
-            self.open_job_log,
+            lambda *_: self._preopened_logs.pop(plan["job_id"], None),
             plan["job_id"],
             principal,
             plan.get("test", "firmware_build"),

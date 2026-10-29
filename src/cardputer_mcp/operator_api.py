@@ -191,11 +191,8 @@ class OperatorAPI:
         bounded = request.model_copy(update={"limit": min(request.limit, 16)})
         test = plan.get("test")
         if test == TestName.APP_SESSION.value:
-            self._app_log_access(plan, principal)
             try:
-                app_logs: BuildLogs | None = self._app_job_logs(
-                    request.job_id, job, plan, principal
-                )
+                app_logs: BuildLogs | None = self._app_job_logs(request.job_id, job, plan)
             except BrokerError as error:
                 # No current-epoch run (restart, eviction): the durable copy answers.
                 if str(error) != "unavailable":
@@ -203,12 +200,12 @@ class OperatorAPI:
                 app_logs = None
             if app_logs is not None:
                 try:
-                    app = app_logs.read(principal.principal_id, bounded)
+                    app = app_logs.read(app_logs.principal, bounded)
                 except ValueError:
                     raise BrokerError("unavailable") from None
                 if not app["expired"]:
                     return {"status": "available", **app}
-            return self._durable_app_logs(request.job_id, principal, bounded)
+            return self._durable_app_logs(request.job_id, bounded)
         owner, service, stream = job_reads.log_stream(self.broker, plan, request.job_id)
         result: dict[str, Any] | None = None
         # RAM only: do not invoke receipt/manifest readers or hash retained artifacts.
@@ -231,28 +228,14 @@ class OperatorAPI:
             raise BrokerError("unavailable")
         return {"status": "expired" if result["expired"] else "available", **result}
 
-    @staticmethod
-    def _app_log_access(plan: dict[str, Any], principal: OperatorPrincipal) -> None:
-        """App output stays with the local principal that asked for it."""
-        if principal.origin != Origin.LOCAL or not {"read", "control"} <= principal.scopes:
-            raise BrokerError("not_authorized")
-        delivery = plan.get("log_delivery")
-        if (
-            type(delivery) is not dict
-            or delivery.get("principal_id") != principal.principal_id
-            or delivery.get("origin") != principal.origin.value
-        ):
-            raise BrokerError("not_authorized")
-
-    def _durable_app_logs(
-        self, job_id: str, principal: OperatorPrincipal, request: BuildLogRequest
-    ) -> dict[str, Any]:
-        """The persisted app log of the principal's own job, after the RAM copy is gone."""
-        if self.broker.job_logs.owner(job_id) != principal.principal_id:
+    def _durable_app_logs(self, job_id: str, request: BuildLogRequest) -> dict[str, Any]:
+        """The persisted app log of any job, after the RAM copy is gone."""
+        owner = self.broker.job_logs.owner(job_id)
+        if not isinstance(owner, str):
             raise BrokerError("unavailable")
         try:
             durable = self.broker.job_logs.build_read(
-                job_id, principal.principal_id, "app", request, allow_empty=True
+                job_id, owner, "app", request, allow_empty=True
             )
         except ValueError:
             raise BrokerError("unavailable") from None
@@ -261,22 +244,14 @@ class OperatorAPI:
         return {"status": "expired" if durable["expired"] else "available", **durable}
 
     def _app_job_logs(
-        self,
-        job_id: str,
-        job: dict[str, Any] | None,
-        plan: dict[str, Any],
-        principal: OperatorPrincipal,
+        self, job_id: str, job: dict[str, Any] | None, plan: dict[str, Any]
     ) -> BuildLogs:
-        """Adapt only this principal's current-epoch app RAM log cache."""
-        self._app_log_access(plan, principal)
+        """Adapt the current-epoch app RAM log cache of a job the broker itself ran."""
         run = self.broker.app_sessions.jobs.get(job_id)
         if run is None or job is None:
             raise BrokerError("unavailable")
-        if (
-            run.principal != principal.principal_id
-            or run.events.principal != principal.principal_id
-            or run.events.logs.principal != principal.principal_id
-        ):
+        owner = run.principal
+        if run.events.principal != owner or run.events.logs.principal != owner:
             raise BrokerError("not_authorized")
         # Validate bounded durable JSON/digest/schema only, never current device
         # preflight or artifact/receipt readers. A read grants no execution authority.
@@ -301,7 +276,7 @@ class OperatorAPI:
             .db.execute(
                 "SELECT 1 FROM execution_requests "
                 "WHERE job_id=? AND plan_hash=? AND principal_id=?",
-                (job_id, job["plan_hash"], principal.principal_id),
+                (job_id, job["plan_hash"], owner),
             )
             .fetchone()
         )

@@ -212,8 +212,11 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
         cache = broker.firmware_flash.logs["boot-failed"]
         cache.deadline = 0
         expired = await call(owner, "status", {"view": "logs", "stream": "build", **request})
-        assert expired["expired"] and expired["gap"] and expired["entries"] == []
+        # The RAM copy is gone; the durable copy answers with the same redacted lines.
+        assert not expired["expired"] and expired["source"] == "durable_job_log"
+        assert [entry["text"] for entry in expired["entries"]] == texts
         assert not cache.entries and cache.bytes == 0
         del broker.firmware_flash.logs["boot-failed"]
         lost = await call(owner, "status", {"view": "logs", "stream": "build", **request})
-        assert lost["expired"] and lost["gap"] and lost["entries"] == []
+        assert not lost["expired"] and lost["source"] == "durable_job_log"
+        assert [entry["text"] for entry in lost["entries"]] == texts
