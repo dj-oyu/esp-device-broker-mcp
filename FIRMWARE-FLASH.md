@@ -229,11 +229,13 @@ distinguishes cache contention from `source_snapshot_changed`. These broker even
 are bounded in memory and do not become a durable per-job log: promotion can fail
 before an executable job exists. Unknown failures still refuse admission.
 
-No automatic retry or lock wait is introduced. Deferred promotion currently runs
-synchronously on the maintenance loop, so blocking on the cache would also block
-other requests and cancellation. A later bounded-wait change must yield through
-the device queue and repeat the existing ownership, cancellation and provenance
-checks before enqueue; a mismatch or explicit cancellation must remain terminal.
+Deferred promotion never blocks on the cache. If it finds only a momentary
+`source_fetch_busy`, it releases the device slot, keeps the deferred job pending and
+asks again on a later maintenance tick (every 5 seconds, for at most 120 seconds from
+the first conflict), repeating the full ownership, cancellation and provenance checks
+each time. After the window the job is cancelled with `flash_binding_invalid`. A
+genuine mismatch, an explicit cancellation and a broker restart stay terminal and are
+never retried; nothing is written to the device before a promotion succeeds.
 
 Preflight distinguishes registered_flash_device_required (no matching registered
 device) from registered_flash_operation_not_enabled (operation disabled). A build
