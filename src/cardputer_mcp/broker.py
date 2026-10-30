@@ -77,6 +77,10 @@ from .store import Store
 
 # Longest a pre-requested job may wait for the device once its parent has finished.
 DEVICE_WAIT_SECONDS = 1800.0
+# A deferred job whose promotion hit a momentary source-cache conflict is retried on
+# later ticks for this long; the wait never blocks the maintenance loop.
+DEFERRED_BUSY_WINDOW_SECONDS = 120.0
+DEFERRED_BUSY_RETRY_SECONDS = 5.0
 
 
 SERIAL_PORT_OPEN_MEANING = (
@@ -95,6 +99,10 @@ _TERMINAL_LOG_STATES = frozenset({"succeeded", "failed", "needs_review", "cancel
 
 class BrokerError(ValueError):
     """Public, fixed-string errors. Do not include exceptions or request content."""
+
+
+class TransientRefusal(BrokerError):
+    """A refusal caused by a momentary conflict; the public code is unchanged."""
 
 
 class RecoveryPointRefusal(BrokerError):
@@ -236,6 +244,7 @@ class Broker:
         self.hold: Hold | None = None
         self.tickets = Tickets(self._store, lambda: self.epoch)
         self.deferred = Deferred(self._store, lambda: self.epoch)
+        self._deferred_busy: dict[str, tuple[float, float]] = {}  # job -> (first, not_before)
         self._queue_sequence = 0
         self.maintenance: asyncio.Task[None] | None = None
         self.active_job: str | None = None
@@ -923,6 +932,9 @@ class Broker:
             return
         if len(self.waiters) >= self.settings.max_waiters:
             return  # keep waiting for room in the device queue
+        busy = self._deferred_busy.get(job_id)
+        if busy is not None and self.clock() < busy[1]:
+            return  # backing off after a momentary source-cache conflict
         if self._store().record_count("device_requests") >= 10000:
             self.deferred.finish(job_id, "cancelled", "history_full_archive_offline")
             return
@@ -1012,6 +1024,19 @@ class Broker:
             )
             self.execute(ExecuteRequest(session=lease.capability, plan_hash=prepared["plan_hash"]))
         except Exception as failure:
+            now = self.clock()
+            first = self._deferred_busy.get(job_id, (now, now))[0]
+            if isinstance(failure, TransientRefusal) and now - first < DEFERRED_BUSY_WINDOW_SECONDS:
+                # Not a binding mismatch: give the slot back and ask again later. An
+                # explicit cancel finishes the row, so it is never retried.
+                self._deferred_busy[job_id] = (first, now + DEFERRED_BUSY_RETRY_SECONDS)
+                self.deferred.set_wait(job_id, None)
+                try:
+                    self._end_ownership("released", "promotion_deferred")
+                except BrokerError:
+                    pass
+                return
+            self._deferred_busy.pop(job_id, None)
             code = (
                 str(failure)
                 if isinstance(failure, BrokerError)
@@ -1025,6 +1050,7 @@ class Broker:
             except BrokerError:
                 pass
             return
+        self._deferred_busy.pop(job_id, None)
         self.deferred.finish(job_id, "promoted", None, prepared["plan_hash"])
 
     def _release_finished_job_lease(self) -> None:

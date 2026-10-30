@@ -44,7 +44,7 @@ def refusal_stages(broker):
     ]
 
 
-@pytest.mark.parametrize("scenario", ["cache_busy", "changed_source", "explicit_cancel"])
+@pytest.mark.parametrize("scenario", ["changed_source", "explicit_cancel"])
 async def test_deferred_flash_failure_is_classified_without_enqueue_or_replay(env, scenario):
     broker = env.broker
     snapshots = broker.firmware_source.snapshots
@@ -73,9 +73,8 @@ async def test_deferred_flash_failure_is_classified_without_enqueue_or_replay(en
         source_file.write_bytes(b"changed synthetic source")
     elif scenario == "explicit_cancel":
         assert broker.cancel_deferred("deferred-flash", "alice")["state"] == "cancelled"
-    guard = competing_cache_owner(snapshots) if scenario == "cache_busy" else nullcontext()
     try:
-        with guard:
+        with nullcontext():
             broker.maintenance_tick()
             cancelled = broker.deferred_job("deferred-flash", "alice")
             assert cancelled["state"] == "cancelled"
@@ -84,10 +83,9 @@ async def test_deferred_flash_failure_is_classified_without_enqueue_or_replay(en
                 assert refusal_stages(broker) == []
             else:
                 assert cancelled["result"] == "flash_binding_invalid"
-                code = (
-                    "source_fetch_busy" if scenario == "cache_busy" else "source_snapshot_changed"
-                )
-                assert refusal_stages(broker) == ["flash_binding:source_authority:" + code]
+                assert refusal_stages(broker) == [
+                    "flash_binding:source_authority:source_snapshot_changed"
+                ]
     finally:
         source_file.write_bytes(original)
     # Releasing contention/restoring bytes never replays a refused/cancelled request.
@@ -97,6 +95,64 @@ async def test_deferred_flash_failure_is_classified_without_enqueue_or_replay(en
     assert broker.deferred_job("deferred-flash", "alice") == cancelled
     assert env.store.job("deferred-flash") is None and broker.queue.empty()
     assert broker.session is None and env.driver.writes == writes
+
+
+def defer_flash(env):
+    broker = env.broker
+    broker.release(LeaseRequest(session=env.session))
+    ticket = broker.tickets.issue("build-one", "alice")
+    prepared = broker.prepare_deferred(
+        PrepareRequest(
+            job_id="deferred-flash",
+            test=Action.FLASH,
+            after=ticket,
+            device_id="fixture",
+            build_job_id="build-one",
+        ),
+        "alice",
+        Origin.LOCAL.value,
+    )
+    broker.execute_deferred(
+        ExecuteRequest(plan_hash=prepared["plan_hash"]), "alice", Origin.LOCAL.value
+    )
+
+
+async def test_deferred_flash_waits_out_a_momentary_cache_conflict(env):
+    broker = env.broker
+    snapshots = broker.firmware_source.snapshots
+    writes = env.driver.writes
+    base, offset = broker.clock(), [0.0]
+    broker.clock = lambda: base + offset[0]
+    defer_flash(env)
+    with competing_cache_owner(snapshots):
+        broker.maintenance_tick()
+        waiting = broker.deferred_job("deferred-flash", "alice")
+        assert waiting["state"] == "waiting_parent"  # still pending, not cancelled
+        assert env.store.job("deferred-flash") is None and env.driver.writes == writes
+        assert broker.session is None
+    assert refusal_stages(broker) == ["flash_binding:source_authority:source_fetch_busy"]
+    offset[0] += 6  # past the retry back-off, and the cache is free again
+    broker.maintenance_tick()
+    await asyncio.sleep(0)
+    assert env.store.job("deferred-flash") is not None  # promoted into a real flash job
+
+
+async def test_deferred_flash_stops_waiting_after_the_busy_window(env):
+    broker = env.broker
+    snapshots = broker.firmware_source.snapshots
+    writes = env.driver.writes
+    base, offset = broker.clock(), [0.0]
+    broker.clock = lambda: base + offset[0]
+    defer_flash(env)
+    with competing_cache_owner(snapshots):
+        for _ in range(40):
+            broker.maintenance_tick()
+            if broker.deferred_job("deferred-flash", "alice")["state"] != "waiting_parent":
+                break
+            offset[0] += 6
+        final = broker.deferred_job("deferred-flash", "alice")
+        assert final["state"] == "cancelled" and final["result"] == "flash_binding_invalid"
+    assert env.store.job("deferred-flash") is None and env.driver.writes == writes
 
 
 @pytest.mark.parametrize(

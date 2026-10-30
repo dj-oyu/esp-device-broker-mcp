@@ -45,7 +45,7 @@ def _project_hash(broker: "Broker", plan: dict[str, Any]) -> str:
 
 def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
     """Validate registered disk inputs and snapshot their durable identities."""
-    from .broker import BrokerError, digest_plan
+    from .broker import BrokerError, TransientRefusal, digest_plan
 
     phase = "plan_digest"
     try:
@@ -153,6 +153,8 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             )
         except Exception:
             pass  # Diagnostic delivery must never change the refusal or enqueue work.
+        if isinstance(failure, ValueError) and failure.args == ("source_fetch_busy",):
+            raise TransientRefusal("flash_binding_invalid") from None
         raise BrokerError("flash_binding_invalid") from None
 
 
