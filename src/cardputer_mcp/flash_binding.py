@@ -4,12 +4,27 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .diagnostic_registry import same_diagnostic_selection
+from .logs import Event
 from .models import TestName
 from .offload_io import pure_io
+from .public_reasons import BROKER_REASON_CODES, PUBLIC_REASON_CODES
 from .registration_digest import project_digest
+from .source_snapshot import SOURCE_ERROR_CODES
 
 if TYPE_CHECKING:
     from .broker import Broker
+
+
+def _failure_code(failure: Exception) -> str:
+    """Record only existing fixed vocabularies, never native exception text."""
+    if type(failure) is ValueError and not failure.args:
+        return "binding_mismatch"
+    code = failure.args[0] if isinstance(failure, ValueError) and len(failure.args) == 1 else None
+    if isinstance(code, str) and code in (
+        BROKER_REASON_CODES | PUBLIC_REASON_CODES | SOURCE_ERROR_CODES
+    ):
+        return code
+    return "unexpected_error"
 
 
 @dataclass(frozen=True)
@@ -32,6 +47,7 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
     """Validate registered disk inputs and snapshot their durable identities."""
     from .broker import BrokerError, digest_plan
 
+    phase = "plan_digest"
     try:
         binding = FlashBinding(digest_plan(plan))
         if plan["test"] != TestName.FLASH.value:
@@ -39,9 +55,12 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
         broker.firmware_flash.settings = broker.settings
         broker.firmware_build.settings = broker.settings
         broker.firmware_source.settings = broker.settings
+        phase = "flash_plan"
         details = broker.firmware_flash.prepare_plan(plan)
+        phase = "plan_details"
         if any(plan.get(key) != value for key, value in details.items()):
             raise ValueError
+        phase = "build_record"
         registration = broker.settings.flash_devices[plan["device_id"]]
         project_id, principal = registration.project_id, plan["flash_principal"]
         store = broker._store()
@@ -60,6 +79,7 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
         # From here on the build's recorded principal (equal to the flash principal,
         # or its rotated predecessor) owns the build artifacts and source receipt.
         principal = build["build_principal"]
+        phase = "build_manifest"
         _, manifest = pure_io(
             "build_manifest",
             broker.firmware_build.resolve_flash_manifest,
@@ -67,16 +87,21 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             principal,
             project_id,
         )
+        phase = "diagnostic_selection"
         if not same_diagnostic_selection(manifest, build):
             raise ValueError
         receipt = build.get("source_receipt")
         provenance = manifest.get("source_provenance")
         if receipt is None:
+            phase = "worktree_provenance"
             if provenance is not None or build.get("source_provenance") is not None:
                 raise ValueError
+            phase = "project_registration"
             return FlashBinding(binding.plan_hash, _project_hash(broker, plan), job["plan_hash"])
+        phase = "source_authority"
         broker.firmware_source.authorize_receipt(project_id, receipt, principal)
         # Same memoized call as authorize_receipt: the snapshot is hashed once per pass.
+        phase = "source_resolve"
         _, metadata = pure_io(
             "source_resolve",
             broker.firmware_source.snapshots.resolve,
@@ -84,6 +109,7 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             receipt,
             principal,
         )
+        phase = "source_provenance"
         if (
             not isinstance(provenance, dict)
             or build.get("source_provenance") != provenance
@@ -101,9 +127,11 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             )
         ):
             raise ValueError
+        phase = "fetch_record"
         fetch = store.job(metadata["fetch_job_id"])
         if fetch is None:
             raise ValueError
+        phase = "project_registration"
         binding = FlashBinding(
             binding.plan_hash,
             _project_hash(broker, plan),
@@ -112,10 +140,19 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             fetch["plan_hash"],
             receipt,
         )
+        phase = "live_binding"
         if not live_binding(broker, binding, plan):
             raise ValueError
         return binding
-    except Exception:
+    except Exception as failure:
+        # The public refusal stays unchanged. This bounded broker event also
+        # covers deferred promotion, where no executable job/log exists yet.
+        try:
+            broker.logs.append(
+                Event.TRANSITION_REFUSED, stage=f"flash_binding:{phase}:{_failure_code(failure)}"
+            )
+        except Exception:
+            pass  # Diagnostic delivery must never change the refusal or enqueue work.
         raise BrokerError("flash_binding_invalid") from None
 
 

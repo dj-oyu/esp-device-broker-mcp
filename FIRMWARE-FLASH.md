@@ -218,6 +218,23 @@ Unknown validation failures retain a generic fixed diagnostic. This is diagnosti
 metadata, not permission to retry or execute. Valid input still follows normal SDK
 parsing and backend authorization.
 
+When flash binding verification refuses admission or deferred promotion, the public
+error remains `flash_binding_invalid`. The bounded broker event log
+(`status(view=logs, stream=broker)`) records `job_transition_refused` with a generated
+stage `flash_binding:<phase>:<code>`. Phases identify the failed check; codes come
+only from fixed broker/source vocabularies, `binding_mismatch` (a comparison failed)
+or `unexpected_error`. Native exception text, paths, tokens and plan contents are
+never included. For example, `flash_binding:source_authority:source_fetch_busy`
+distinguishes cache contention from `source_snapshot_changed`. These broker events
+are bounded in memory and do not become a durable per-job log: promotion can fail
+before an executable job exists. Unknown failures still refuse admission.
+
+No automatic retry or lock wait is introduced. Deferred promotion currently runs
+synchronously on the maintenance loop, so blocking on the cache would also block
+other requests and cancellation. A later bounded-wait change must yield through
+the device queue and repeat the existing ownership, cancellation and provenance
+checks before enqueue; a mismatch or explicit cancellation must remain terminal.
+
 Preflight distinguishes registered_flash_device_required (no matching registered
 device) from registered_flash_operation_not_enabled (operation disabled). A build
 whose source receipt lacks a matching successful owned fetch returns the fixed
