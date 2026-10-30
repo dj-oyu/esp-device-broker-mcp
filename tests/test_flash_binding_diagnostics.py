@@ -84,7 +84,9 @@ async def test_deferred_flash_failure_is_classified_without_enqueue_or_replay(en
                 assert refusal_stages(broker) == []
             else:
                 assert cancelled["result"] == "flash_binding_invalid"
-                code = "source_fetch_busy" if scenario == "cache_busy" else "source_snapshot_changed"
+                code = (
+                    "source_fetch_busy" if scenario == "cache_busy" else "source_snapshot_changed"
+                )
                 assert refusal_stages(broker) == ["flash_binding:source_authority:" + code]
     finally:
         source_file.write_bytes(original)
