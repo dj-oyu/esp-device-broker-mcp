@@ -56,7 +56,7 @@ jobs:
           archives=(cardputer-v*-windows-x64.zip cardputer-v*-linux-x64.tar.gz)
           [ "${#archives[@]}" -eq 2 ] || { echo "Expected one ZIP and one tarball, got: ${archives[*]}"; exit 1; }
           for archive in "${archives[@]}"; do
-            sha256sum -c "$archive.sha256"
+            tr -d '' < "$archive.sha256" | sha256sum -c -
           done
       - name: Create the Release
         run: |
