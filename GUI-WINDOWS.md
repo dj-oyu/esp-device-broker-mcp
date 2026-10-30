@@ -14,7 +14,7 @@
 
 表示は次の6項目です。
 
-- gui_version: 今開いているGUIのコード版（この版は0.13.1）
+- gui_version: 今開いているGUIのコード版（この版は0.14.0rc1）
 - server_version: 実際に応答したMCPサーバーの版
 - tools_count: 実際のtools/listの件数（この版は6）
 - read_capture: statusのviewにcaptureがあるか（画像読取）
