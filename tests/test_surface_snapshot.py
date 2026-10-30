@@ -162,5 +162,5 @@ async def test_in_process_catalog_and_instructions_match(
     assert json.dumps(actual, indent=2, sort_keys=True) + "\n" == SNAPSHOT.read_text(
         encoding="utf-8"
     )
-    assert (server.name, server.version) == ("Cardputer Device Broker", "0.13.1")
+    assert (server.name, server.version) == ("Cardputer Device Broker", "0.14.0rc1")
     assert server.instructions == INSTRUCTIONS

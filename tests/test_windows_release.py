@@ -17,6 +17,7 @@ from release_windows import (  # noqa: E402
     digest,
     record_build_runtime,
     release_version,
+    tag_spelling,
     verify_archive,
 )
 
@@ -37,7 +38,7 @@ class WindowsReleaseTests(unittest.TestCase):
         )
         self.exe.write_bytes(pe)
         self.version = release_version("refs/heads/test")
-        self.ref = f"refs/tags/v{self.version}"
+        self.ref = f"refs/tags/v{tag_spelling(self.version)}"
         self.commit = "a" * 40
         self.runtime_path = Path(str(self.exe) + ".build.json")
         self.runtime = {
