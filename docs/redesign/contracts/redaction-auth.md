@@ -203,7 +203,7 @@ Direct calls (wrapper = "direct" unless noted):
 Scope/origin checks **outside** `principal()`:
 - `LoopbackOnly.__call__` `server.py:276-307`: any authenticated principal (no scope) when `auth_required`.
 - `TunnelIngress.__call__` `server.py:415-433`: must be `REMOTE` and have `read`.
-- `OperatorAPI.__call__` `operator_api.py:253-259, 326-332, 342-352`: must be `LOCAL` + `control`; re-auth after body read and after live wait. `_retained_job_logs` `:135` read; `_app_job_logs` `:177` LOCAL + read + control.
+- `OperatorAPI.__call__` `operator_api.py:253-259, 326-332, 342-352`: must be `LOCAL` + `control`; re-auth after body read and after live wait. `_retained_job_logs` `:135` read; `_app_job_logs` LOCAL + read; run/events/log owners must agree, no requester match.
 - `broker._authorized_work` `broker.py:~1370-1388` (work.scopes ⊇ required, principal match); `_valid_scopes` `broker.py:1456`.
 - `stdio_adapter._verify_identity` `stdio_adapter.py:157-168`: identity view must be ok/authenticated/`remote_mcp`/has `read` — **depends on the `status view=identity` response shape.**
 - `create_app` `server.py:1302-1303`: tunnel ingress requires authenticated broker.

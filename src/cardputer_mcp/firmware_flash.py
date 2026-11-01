@@ -302,6 +302,8 @@ class FirmwareFlash:
         # Durable per-job log hooks, set by the broker; None keeps RAM-only behaviour.
         self.open_job_log: Callable[[str, str, str], Any] | None = None
         self.job_logs: Any = None
+        # Opened on the broker loop: the store's SQLite connection is loop-bound.
+        self._preopened_logs: dict[str, Any] = {}
         self.results: dict[str, dict[str, Any]] = {}
         self.promotions: dict[str, dict[str, str]] = {}
         # Stage names with UTC times per job, for the durable flash_outcome record.
@@ -652,6 +654,22 @@ class FirmwareFlash:
 
     async def execute(self, plan: dict[str, Any], stage: Any, live: Any) -> str:
         loop = asyncio.get_running_loop()
+        job_id = plan["job_id"]
+        # The durable log opener reads the broker store, which only the loop may use;
+        # the flash driver runs in a worker thread.
+        self._preopened_logs[job_id] = (
+            self.open_job_log(job_id, plan["flash_principal"], plan.get("test", "firmware_flash"))
+            if self.open_job_log is not None
+            else None
+        )
+        try:
+            return await self._run(plan, stage, live, loop)
+        finally:
+            self._preopened_logs.pop(job_id, None)
+
+    async def _run(
+        self, plan: dict[str, Any], stage: Any, live: Any, loop: asyncio.AbstractEventLoop
+    ) -> str:
         # SQLite/registry access remains on the broker loop, never the IO worker.
         # Pure file reads/hashing run in worker threads (offload_io); the packet's
         # last pass, with every durable check, is synchronous on the loop.
@@ -845,7 +863,7 @@ class FirmwareFlash:
         )
         attach(
             log,
-            self.open_job_log,
+            lambda *_: self._preopened_logs.pop(plan["job_id"], None),
             plan["job_id"],
             plan["flash_principal"],
             plan.get("test", "firmware_flash"),
