@@ -97,6 +97,16 @@ _NON_DEVICE_LOG_TESTS = frozenset(test.value for test in MODULE_LOG_TESTS)
 _TERMINAL_LOG_STATES = frozenset({"succeeded", "failed", "needs_review", "cancelled"})
 
 
+_CATALOG_INVALIDATING_TESTS = frozenset(
+    {
+        TestName.FLASH.value,
+        TestName.RESTORE.value,
+        TestName.BACKUP.value,
+        TestName.RESTART.value,
+    }
+)
+
+
 class BrokerError(ValueError):
     """Public, fixed-string errors. Do not include exceptions or request content."""
 
@@ -3258,6 +3268,10 @@ class Broker:
     def _close_admitted(self, run: AdmittedJob) -> None:
         """Cleanup after every admitted job, on any outcome (also on cancellation)."""
         self._record_flash_outcome(run.job_id, run.plan)
+        if run.plan.get("test") in _CATALOG_INVALIDATING_TESTS:
+            # Whatever the outcome, the running firmware or boot may have changed;
+            # a catalog observed before it must not bind the next app session.
+            self.app_sessions.invalidate_catalog()
         self._close_job_logs(run.job_id, run.job_log, run.device_tap)
         run.job_log = run.device_tap = None
         # A running registered-project job owns its own source/build activity

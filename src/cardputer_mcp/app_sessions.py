@@ -337,6 +337,14 @@ class AppSessions:
         # ELF digest of the current verified flash receipt, if the broker has one.
         self.installed_elf: Callable[[], str | None] | None = None
 
+    def invalidate_catalog(self) -> None:
+        """Forget the observed catalog after the device's firmware may have changed.
+
+        Plans prepared earlier keep their binding and still fail closed with
+        `catalog_changed`; only a later prepare starts from an unobserved catalog.
+        """
+        self.catalog_cache = None
+
     def list_apps(self) -> dict[str, Any]:
         if self.catalog_cache is None:
             return dict(

@@ -295,3 +295,26 @@ def test_changed_catalog_fails_old_plan_without_launch_then_allows_new_explicit_
             assert second.run != first.run
 
     asyncio.run(scenario())
+
+
+def test_invalidated_catalog_starts_next_plan_unobserved_and_old_plan_still_fails_closed():
+    async def scenario():
+        manager, backend = AppSessions(), MockBackend()
+        first, task = await started(manager, backend, job="initial")
+        first.command(request(first, operation="stop"))
+        await asyncio.wait_for(task, 2)
+        options = AppSessionOptions(app_id="local.hello")
+        old_plan = {"job_id": "old-plan", **manager.prepare(backend, options)}
+        assert old_plan["catalog_binding"]["source"] == "cached"
+        manager.invalidate_catalog()
+        assert manager.list_apps()["source"] == "unobserved"
+        fresh = manager.prepare(backend, options)
+        assert fresh["catalog_binding"] == {"source": "unobserved", "expected": None}
+        # A plan bound before the invalidation keeps its binding.
+        assert old_plan["catalog_binding"]["expected"] is not None
+        second, second_task = await started(manager, backend, job="after-invalidation")
+        second.command(request(second, operation="stop"))
+        await asyncio.wait_for(second_task, 2)
+        assert manager.catalog_cache is not None
+
+    asyncio.run(scenario())
