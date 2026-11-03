@@ -362,3 +362,28 @@ async def test_backup_persistence_failure_needs_review_without_write(env, existi
         env.broker.firmware_flash._backup(
             env.broker.settings.flash_devices["fixture"], "backup-two", "alice"
         )
+
+
+async def test_failed_flash_job_reports_recovery_evidence_from_broker_state(env):
+    """The agent can retry without guessing: attempted hashes, unchanged LKG, next step."""
+    from cardputer_mcp import job_reads
+
+    metadata, _ = FirmwareSnapshots(_lkg_root(env), windows_private_acl_confirmed=True).load(
+        env.selected
+    )
+    app = metadata["bundle"]["segments"][-1]
+    env.driver.data[app["offset"] + 3] ^= 1
+    before = _durable(env)
+    await _flash(env, "evidence", build_job_id="build-one", lkg_receipt=env.selected)
+    job = env.broker.job("evidence")
+    plan = env.store.plan(job["plan_hash"])
+    evidence = job_reads.flash_recovery_evidence(env.broker, job, plan)
+    assert evidence is not None
+    assert evidence["next_step"] == "device_differs_from_named_lkg"
+    assert evidence["named_baseline"]["lkg_receipt"] == env.selected
+    assert evidence["current_lkg"] == env.selected == before["current"]["receipt"]
+    assert evidence["lkg_unchanged"] is True
+    assert evidence["attempted"]["manifest_sha256"] == plan["manifest_sha256"]
+    # Following the hint (no baseline named) is an ordinary explicit flash.
+    await _flash(env, "evidence-retry", build_job_id="build-one")
+    assert env.broker.job("evidence-retry")["state"] == "succeeded"
