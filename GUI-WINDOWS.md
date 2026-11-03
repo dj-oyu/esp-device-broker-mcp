@@ -164,11 +164,13 @@ expiry checks; one automatic read per selected image identity never recaptures o
 retries a failed read. Cancel remains a confirmed exact job/plan/epoch operation;
 unsupported job types do not gain cancellation authority.
 
-App-session logs use the same authenticated principal's bounded RAM log cache only.
-A local operator does not acquire another principal's private output, including
-remote-client app logs. Existing LOCAL/control/read checks, immutable plan/runtime
-ownership and current-epoch execution records must agree. Control events are not
-exposed through this log viewer. No MCP tool/schema or config migration is needed.
+App-session logs are readable by any LOCAL principal with read scope (the GUI and
+the read-only Web UI key), including sessions started through a remote client, as
+for build, flash and device output. Non-local principals are refused. Output is shown
+redacted, from the bounded RAM cache or the persisted copy keyed by the owner in the
+immutable plan; immutable plan/runtime ownership and current-epoch execution records
+must still agree. Control events are not exposed through this log viewer. No MCP
+tool/schema or config migration is needed.
 
 Connection keeps current broker updates/owner/active job separate from historical
 review. An empty waiting queue uses a compact empty state. MCP info and HTTP
