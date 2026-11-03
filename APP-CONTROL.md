@@ -12,6 +12,11 @@ and version before OPEN/START. Subsequent plans bind a canonical catalog hash,
 boot, firmware hash/version and observation time, then recheck them at handshake.
 A mismatch fails that job without START; the newly observed cache supports a new
 explicit plan. Device-reported identity is not cryptographic attestation.
+After a flash, restore, backup or restart job closes (any outcome) the broker drops
+the cached catalog, because the firmware or boot may have changed. The next plan then
+binds `source=unobserved` instead of the stale catalog, so the first app session after
+a flash no longer fails with `catalog_changed`. Plans prepared before that job keep
+their binding and still fail closed. The guard itself is unchanged.
 
 `execute(op=app_input)` targets one owned running job with expected boot/run/control-session,
 command ID and sequence. Supported operations are `action.tap`, `status`,
