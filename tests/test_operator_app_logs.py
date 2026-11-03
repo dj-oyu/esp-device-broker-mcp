@@ -1,4 +1,4 @@
-"""Same-principal operator reads of app RAM logs never broaden private access."""
+"""Local operators and read-only local viewers read redacted app logs; others never do."""
 
 import json
 from types import SimpleNamespace
@@ -65,30 +65,34 @@ async def test_same_principal_reads_only_redacted_logs_without_preflight(app_out
     assert broker.backend.calls == 0 and not broker.backend.hardware_connected
 
 
-@pytest.mark.parametrize("name", ["other", "ephemeral:remote_mcp"])
-async def test_foreign_principal_cannot_read_local_app_logs(app_output, name):
+@pytest.mark.parametrize("scopes", [{"read", "control"}, {"read"}])
+async def test_other_local_operator_or_viewer_reads_redacted_app_logs(app_output, scopes):
+    """The GUI and the read-only Web UI key are not the principal that ran the app."""
+    api, broker, current, run, _ = app_output
+    run.events.log("info: token=SYNTHETIC_PRIVATE_LOG observed output")
+    current[0] = actor("web-viewer", frozenset(scopes))
+    status, result = await answer(api, payload(), "job-logs")
+    assert status == 200 and result["ok"] and result["status"] == "available"
+    rendered = json.dumps(result)
+    assert "[REDACTED]" in rendered and "SYNTHETIC_PRIVATE_LOG" not in rendered
+    assert broker.backend.calls == 0
+
+
+async def test_non_local_principal_cannot_read_app_logs(app_output):
     api, broker, current, run, _ = app_output
     run.events.log("info: SYNTHETIC_OWNED_TEXT")
-    current[0] = actor(name)
-    status, result = await answer(api, payload(), "job-logs")
-    assert status == 200 and result == {"ok": False, "error": "not_authorized"}
-    assert "SYNTHETIC_OWNED_TEXT" not in json.dumps(result) and broker.backend.calls == 0
-    # A read-only local key passes the operator read gate, but app-session logs still
-    # need control and the delivery principal.
-    current[0] = SimpleNamespace(
-        principal_id="owner", origin=Origin.LOCAL, scopes=frozenset({"read"})
-    )
-    status, result = await answer(api, payload(), "job-logs")
-    assert status == 200 and result == {"ok": False, "error": "not_authorized"}
-    assert "SYNTHETIC_OWNED_TEXT" not in json.dumps(result)
     current[0] = SimpleNamespace(
         principal_id="owner", origin=Origin.REMOTE, scopes=frozenset({"read", "control"})
     )
     status, result = await answer(api, payload(), "job-logs")
     assert status == 403 and result == {"ok": False, "error": "local_operator_required"}
+    assert "SYNTHETIC_OWNED_TEXT" not in json.dumps(result) and broker.backend.calls == 0
+    current[0] = SimpleNamespace(principal_id="x", origin=Origin.LOCAL, scopes=frozenset())
+    _, result = await answer(api, payload(), "job-logs")
+    assert result["ok"] is False and "SYNTHETIC_OWNED_TEXT" not in json.dumps(result)
 
 
-@pytest.mark.parametrize("component", ["run", "events", "logs", "delivery", "origin"])
+@pytest.mark.parametrize("component", ["run", "events", "logs", "delivery"])
 async def test_all_runtime_and_immutable_recipient_bindings_must_match(app_output, component):
     api, broker, _, run, prepared = app_output
     if component == "run":
@@ -99,7 +103,7 @@ async def test_all_runtime_and_immutable_recipient_bindings_must_match(app_outpu
         run.events.logs.principal = "other"
     else:
         plan = broker._store().plan(prepared["plan_hash"])
-        plan["log_delivery"]["principal_id" if component == "delivery" else "origin"] = "other"
+        plan["log_delivery"]["principal_id"] = "other"
         broker._store().db.execute(
             "UPDATE plans SET payload=? WHERE hash=?", (json.dumps(plan), prepared["plan_hash"])
         )
@@ -159,10 +163,10 @@ async def test_app_logs_survive_a_restart_from_the_durable_copy(app_output):
         "I (1) app: written before the restart"
     ]
     assert result["source"] == "durable_job_log"
-    # The same checks apply to the persisted copy: another principal gets nothing.
-    current[0] = actor("other")
+    # Another local operator reads the persisted copy too (it is keyed by the owner).
+    current[0] = actor("other", frozenset({"read"}))
     status, result = await answer(api, payload(), "job-logs")
-    assert result == {"ok": False, "error": "not_authorized"}
+    assert status == 200 and result["ok"] and result["source"] == "durable_job_log"
 
 
 async def test_app_logs_without_a_run_or_a_durable_copy_are_unavailable(app_output):
