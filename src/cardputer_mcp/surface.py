@@ -673,7 +673,11 @@ def register_surface(
                 ]
             if plan is not None and plan.get("execution_context") == "registered_project":
                 require(ctx, "read", honor_auth_required=False)
-            return shared_job(job)
+            shared = shared_job(job)
+            evidence = job_reads.flash_recovery_evidence(resident, job, plan)
+            if evidence is not None:
+                shared["recovery"] = evidence
+            return shared
 
         def checked() -> dict[str, Any]:
             require(ctx, "read", honor_auth_required=True)

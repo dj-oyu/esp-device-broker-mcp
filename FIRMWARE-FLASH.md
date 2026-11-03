@@ -104,6 +104,21 @@ The rule is in `src/cardputer_mcp/device_failure_outcome.py`.
 "Write started" is recorded by the lifecycle immediately before it calls
 `driver.write`; `driver.write` and `Store.finish_firmware` are unchanged.
 
+### Recovery evidence in the job status
+
+For a `firmware_flash` or `firmware_restore` job that ended `needs_review` with
+`flash_native_failed_needs_review` or `flash_boot_unverified_needs_review`, or
+`failed` with `lkg_current_firmware_changed_needs_review`, the job status carries a
+`recovery` object built from broker-held facts: the attempted `manifest_sha256`,
+`firmware_sha256` and `elf_sha256`; the `lkg_receipt`/`backup_job_id` the request
+named; the `current_lkg` receipt (`lkg_unchanged` is always true for a failed
+flash); and a fixed `next_step` with an `explanation`. After a read that stops
+once the write ran, the device usually already holds the attempted firmware, so
+naming the same LKG again is refused by the pre-write fence; the hint says to omit
+`lkg_receipt` and `backup_job_id` to flash again without a recovery point. The
+broker does not retry, restore or select anything on its own. The hashes are the
+ones `status(view=recovery)` already shows to any read-scoped caller.
+
 ## Verified last-known-good recovery
 
 A successful flash automatically retains the exact BIN bytes plus manifest,

@@ -228,6 +228,75 @@ def _firmware(plan: Mapping[str, Any] | None) -> dict[str, Any]:
     }
 
 
+# Fixed vocabulary: the only failure codes that get recovery evidence, each with a
+# next step that tells an agent how to continue without guessing.
+_FLASH_RECOVERY_STEPS: dict[str, tuple[str, str]] = {
+    "flash_native_failed_needs_review": (
+        "device_may_hold_attempted_firmware",
+        "The write was attempted and verification did not finish, so the device may "
+        "already hold the attempted firmware. current_lkg is unchanged. To retry, "
+        "omit lkg_receipt and backup_job_id (flash without a recovery point); "
+        "naming the same lkg_receipt is refused with "
+        "lkg_current_firmware_changed_needs_review while the device differs from it",
+    ),
+    "flash_boot_unverified_needs_review": (
+        "device_may_hold_attempted_firmware",
+        "The write finished but the expected boot was not observed, so the device may "
+        "hold the attempted firmware. current_lkg is unchanged. Observe the device "
+        "before deciding; to flash again omit lkg_receipt and backup_job_id",
+    ),
+    "lkg_current_firmware_changed_needs_review": (
+        "device_differs_from_named_lkg",
+        "The device does not match the named lkg_receipt, usually because an earlier "
+        "flash already changed it. Nothing was written and current_lkg is unchanged. "
+        "Flash again with lkg_receipt and backup_job_id omitted, or restore the LKG as "
+        "a separate explicit operation",
+    ),
+}
+
+
+def flash_recovery_evidence(
+    broker: Any, job: Mapping[str, Any], plan: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """What an agent needs to continue after a failed flash, from broker-held facts.
+
+    Only identifiers the read-scoped recovery view already shows (receipts, build
+    hashes) plus a fixed next step. A failed flash never changes the LKG. Nothing
+    here retries, restores or selects anything.
+    """
+    if (
+        not isinstance(plan, Mapping)
+        or plan.get("test") not in (TestName.FLASH.value, TestName.RESTORE.value)
+        or job.get("state") not in ("failed", "needs_review")
+    ):
+        return None
+    step = _FLASH_RECOVERY_STEPS.get(str(job.get("result")))
+    if step is None:
+        return None
+    device_id = plan.get("device_id")
+    try:
+        current = (
+            broker._store().firmware_current(device_id) if isinstance(device_id, str) else None
+        )
+    except Exception:
+        current = None
+    return {
+        "attempted": {
+            "manifest_sha256": _digest(plan.get("manifest_sha256")),
+            "firmware_sha256": _digest(plan.get("expected_app_bin_sha256")),
+            "elf_sha256": _digest(plan.get("expected_elf_sha256")),
+        },
+        "named_baseline": {
+            "lkg_receipt": _digest(plan.get("lkg_receipt")),
+            "backup_job_id": _identifier(plan.get("backup_job_id")),
+        },
+        "current_lkg": _digest(current["receipt"]) if current else None,
+        "lkg_unchanged": True,
+        "next_step": step[0],
+        "explanation": step[1],
+    }
+
+
 def recovery(broker: Any, caller: str | None) -> dict[str, Any]:
     """Per device: the current LKG, recent LKG history and retained full backups."""
     store = broker._store()
