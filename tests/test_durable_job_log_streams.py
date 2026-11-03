@@ -110,3 +110,34 @@ def test_firmware_build_read_logs_falls_back_to_durable(receipt, tmp_path, reten
         # Another principal gets the RAM-absent answer, never the durable text.
         denied = receipt.builder.read_logs(BuildLogRequest(job_id="build-0"), "bob")
         assert denied["expired"] is True and "synthetic" not in json.dumps(denied)
+
+
+def test_build_opens_durable_log_on_the_event_loop_thread(receipt, tmp_path):
+    """The store's sqlite connection is bound to the loop thread; a worker-thread open fails."""
+    import asyncio
+    import threading
+
+    store = JobLogStore(tmp_path / "job-logs")
+    loop_thread = threading.get_ident()
+    opened = []
+
+    def opener(job_id, principal, kind):
+        opened.append(threading.get_ident())
+        return store.begin(job_id, principal, kind)
+
+    builder = receipt.builder
+    builder.open_job_log = opener
+    seen = {}
+
+    def fake_execute(plan, stage, defer_publish=False):
+        # What _execute_steps would pick up inside the worker thread.
+        seen["log"] = builder._preopened_logs.get(plan["job_id"])
+        return "ok"
+
+    builder._execute = fake_execute
+    plan = {"job_id": "build-thread", "build_principal": "alice", "test": "firmware_build"}
+    assert asyncio.run(builder.execute(plan, lambda name: None)) == "ok"
+    assert opened == [loop_thread]
+    assert seen["log"] is not None
+    assert "build-thread" not in builder._preopened_logs
+    seen["log"].close()

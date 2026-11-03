@@ -2374,6 +2374,21 @@ class Broker:
                 self.backend.device_log = None
             if tap is not None:
                 tap.finish()
+        except Exception:
+            # Logging is never allowed to change the job outcome.
+            pass
+        self._close_durable_logs(job_id, job_log)
+
+    def close_module_job_logs(self, job_id: str) -> None:
+        """Close a registered-project build/source job's durable logs.
+
+        Unlike ``_close_job_logs`` this leaves ``backend.device_log`` alone: such a
+        job runs beside a device job and does not own the device tap.
+        """
+        self._close_durable_logs(job_id, None)
+
+    def _close_durable_logs(self, job_id: str, job_log: JobLog | None) -> None:
+        try:
             durable_logs = [job_log] + [
                 getattr(module.logs.get(job_id), "durable", None)
                 for module in (self.firmware_build, self.firmware_source, self.firmware_flash)

@@ -748,6 +748,7 @@ class ProfileJobs:
                     watch.cancel()
                     await asyncio.gather(watch, return_exceptions=True)
                     broker.firmware_build.authority = None
+                    broker.close_module_job_logs(job_id)
                     self.stops.pop(job_id, None)
                     self.active = None
             except Exception:
