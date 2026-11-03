@@ -347,6 +347,9 @@ class FirmwareBuild:
         # Durable per-job log hooks, set by the broker; None keeps RAM-only behaviour.
         self.open_job_log: Callable[[str, str, str], Any] | None = None
         self.job_logs: Any = None
+        # Durable logs opened on the event-loop thread (the store's sqlite
+        # connection is bound to it) for the worker thread that runs the build.
+        self._preopened_logs: dict[str, Any] = {}
         self.manifests: dict[str, tuple[str, dict[str, Any]]] = {}
         self._lock = threading.RLock()
         self._receipt_read_lock = threading.Lock()
@@ -569,6 +572,14 @@ class FirmwareBuild:
                 raise ValueError("profile_or_principal_no_longer_valid")
 
         self._authority_monitor = monitor if defer_publish else None
+        job_id = str(plan.get("job_id", ""))
+        if self.open_job_log is not None and job_id:
+            try:
+                self._preopened_logs[job_id] = self.open_job_log(
+                    job_id, plan["build_principal"], plan.get("test", "firmware_build")
+                )
+            except Exception:
+                self._preopened_logs.pop(job_id, None)
         try:
             return await asyncio.to_thread(
                 self._execute,
@@ -578,6 +589,7 @@ class FirmwareBuild:
             )
         finally:
             self._authority_monitor = None
+            self._preopened_logs.pop(job_id, None)
 
     def _execute(self, plan: dict[str, Any], stage: Any, defer_publish: bool = False) -> str:
         if self._build_lock is not None:
@@ -664,9 +676,10 @@ class FirmwareBuild:
             for key, value in os.environ.items()
             if re.search(r"(?i)token|secret|password|key|bearer", key) and len(value) >= 8
         )
+        preopened = self._preopened_logs.pop(plan["job_id"], None)
         attach(
             logs,
-            self.open_job_log,
+            (lambda *_: preopened) if preopened is not None else self.open_job_log,
             plan["job_id"],
             principal,
             plan.get("test", "firmware_build"),
