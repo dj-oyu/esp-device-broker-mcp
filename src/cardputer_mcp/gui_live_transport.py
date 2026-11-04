@@ -353,7 +353,7 @@ class LiveRunner:
                 "context": 0,
                 "limit": 100,
             }
-        ).model_dump(mode="json")
+        ).model_dump(mode="json", exclude={"from_line", "to_line"})
         with self._lock:
             self._log_serial += 1
             serial = self._log_serial
