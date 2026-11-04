@@ -190,8 +190,15 @@ Reclamation removes only the `source` payload, retaining the exact original
 `receipt.json`, full file manifest, hashes and durable job evidence. Receipt-only
 entries consume bytes but no resident payload slot. Evidence is independently
 bounded at 4096 receipts / 128 MiB, still within the same total 2 GiB budget;
-admission reserves the existing maximum 32 MiB receipt headroom. Evidence capacity
-exhaustion fails with `source_cache_evidence_full`, never unlimited archival.
+admission reserves the existing maximum 32 MiB receipt headroom. When an explicit
+fetch finds the evidence budget full, it first rotates it: the oldest receipt-only
+entries (payload already reclaimed) that no unfinished job, executable plan or
+current LKG protects are removed, oldest fetch first, until one new receipt fits.
+The selection is made in full before anything is removed, and only with complete
+reference evidence. Durable job records, recovery objects and build artifacts are
+untouched. A later build against a rotated receipt reports `source_snapshot_unavailable`
+and needs an explicit fetch. If the unprotected entries cannot make room, the fetch
+fails with `source_cache_evidence_full` and removes nothing; archival is never unlimited.
 An explicit fetch of a retired commit restores its original receipt only after
 all downloaded source bytes/provenance match that immutable receipt. Build prepare
 reports `source_snapshot_evicted_fetch_required`; it never implicitly downloads,
