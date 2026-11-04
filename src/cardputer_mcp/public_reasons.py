@@ -35,6 +35,7 @@ PUBLIC_REASON_CODES: frozenset[str] = frozenset(
         "request_does_not_need_review",
         # Cursors and log reads.
         "cursor_ahead",
+        "invalid_line_range",
         "build_log_not_available",
         # Source cache and shared resources.
         "source_fetch_busy",

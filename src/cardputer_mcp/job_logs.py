@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .build_logs import redact_log_text
+from .build_logs import redact_log_text, select_page
 from .device_observation import (
     _ANSI,
     _BINARY,
@@ -537,6 +537,8 @@ class JobLogStore:
                 expired=False,
                 gap=cursor is not None and cursor.epoch != epoch,
                 oldest_sequence=1,
+                last_sequence=0,
+                remaining=0,
                 next_cursor=dict(epoch=epoch, sequence=0),
                 has_more=False,
                 source="durable_job_log",
@@ -556,30 +558,19 @@ class JobLogStore:
         cursor = request.cursor
         reset = cursor is not None and cursor.epoch != epoch
         after = 0 if cursor is None or reset else cursor.sequence
-        if after > last:
+        ranged = getattr(request, "from_line", None) is not None
+        if after > last and not ranged:
             raise ValueError("cursor_ahead")
-        selected: set[int] = set()
-        for index, item in enumerate(items):
-            if item["level"] in request.levels or item["progress"]:
-                selected.update(
-                    range(
-                        max(0, index - request.context),
-                        min(len(items), index + request.context + 1),
-                    )
-                )
-        result = [
-            item
-            for index, item in enumerate(items)
-            if index in selected and item["sequence"] > after
-        ][: request.limit]
-        sequence = result[-1]["sequence"] if len(result) == request.limit else last
+        result, sequence, remaining = select_page(items, request, after, last)
         return dict(
             entries=result,
             expired=False,
             gap=reset,
             oldest_sequence=items[0]["sequence"],
+            last_sequence=last,
+            remaining=remaining,
             next_cursor=dict(epoch=epoch, sequence=sequence),
-            has_more=sequence < last,
+            has_more=remaining > 0 if ranged else sequence < last,
             source="durable_job_log",
             size_limit_reached=loaded["truncated"],
         )

@@ -198,9 +198,17 @@
 | `stream` | 必須 | 任意 |
 |---|---|---|
 | `broker` | なし | `cursor`(`epoch`、`sequence`)、`limit`(1〜100、既定 40) |
-| `build` | `job_id` | `cursor`、`levels`、`context`(0〜10)、`limit`、`include_source_cache` |
+| `build` | `job_id` | `cursor`、`levels`、`context`(0〜10)、`limit`、`include_source_cache`、`from_line`、`to_line` |
 | `device` | `job_id` | なし |
 | `app` | `job_id` | `cursor`(`epoch`、`control`、`log`)、`limit` |
+
+`build` の結果には、`last_sequence`(最後の行番号)と `remaining`(このページより後ろに
+残る行数。絞り込み中は、条件に合う行だけを数える)が入る。`from_line`(と任意の `to_line`)
+を付けると、その範囲の行を絞り込みなしでそのまま返す(行番号は各項目の `sequence`)。
+1 回の返却は `limit` 行まで。続きは `next_cursor.sequence + 1` を次の `from_line` に渡す。
+`from_line` は `cursor`、`levels`、`context` と同時に指定できない(`argument_conflict`)。
+`to_line` は `from_line` が必要で、`from_line` 以上でなければならない。RAM から消えた
+行を含む範囲は `gap=true` になる。
 
 戻り値: `{"ok": true, "view": "<view>", ...}`。`view` ごとの本体は、旧ツールの戻り値と
 同じ項目を保つ(クライアントの移行を単純にするため)。`capture` は、旧 `read_capture` と

@@ -320,3 +320,13 @@ class BuildLogRequest(StrictModel):
     levels: list[BuildLogLevel] = Field(default_factory=_default_build_log_levels, max_length=5)
     context: int = Field(default=2, ge=0, le=10)
     limit: int = Field(default=40, ge=1, le=100)
+    # Raw read of lines from_line..to_line (the line number is the entry
+    # sequence); to_line alone is meaningless, and a range is never filtered.
+    from_line: int | None = Field(default=None, ge=1, le=2**31 - 1)
+    to_line: int | None = Field(default=None, ge=1, le=2**31 - 1)
+
+    @model_validator(mode="after")
+    def _line_range(self) -> "BuildLogRequest":
+        if self.to_line is not None and (self.from_line is None or self.to_line < self.from_line):
+            raise ValueError("invalid_line_range")
+        return self
