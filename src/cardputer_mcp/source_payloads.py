@@ -6,6 +6,7 @@ import re
 import shutil
 import stat
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, cast
 
@@ -235,24 +236,14 @@ def _evidence_full(usage: dict[str, Any]) -> bool:
     )
 
 
-def _rotate_evidence(
+def _plan_rotation(
     snapshots: SourceSnapshots,
     plan: dict[str, Any],
     evidence: dict[str, Any],
     rotatable: list[tuple[str, str, int]],
     usage: dict[str, Any],
-    live: Callable[[], bool],
-    stage: Callable[[str], None],
-) -> None:
-    """Retire the oldest receipt-only entries to make room for one new receipt.
-
-    Only entries whose payload is already gone and that no unfinished job,
-    executable plan or current LKG protects are eligible. The choice is made
-    in full before anything is removed; if the unprotected entries cannot make
-    room, nothing is removed and the fetch fails with the evidence-full code.
-    Durable job evidence and recovery objects are not touched, and a later
-    build against a retired receipt reports that the source must be fetched.
-    """
+) -> dict[str, bytes]:
+    """Select the entire rotation without deleting anything during preflight."""
     if not evidence["complete"]:
         raise SourceError("source_cache_references_incomplete")
     count, size = usage["evidence_snapshots"], usage["evidence_bytes"]
@@ -267,12 +258,75 @@ def _rotate_evidence(
         raise SourceError("source_cache_evidence_full")
     _, registration = snapshots.registration(plan["project_id"])
     root = snapshots.cache_root(registration)
+    saved = {}
+    saved_bytes = 0
     for receipt in chosen:
-        stage("source_rotate_receipt_evidence")
-        _fresh(snapshots, receipt, live)
         path = root / receipt
         if not snapshots._evidence_only(path):
             raise SourceError("source_cache_unknown_entry")
+        raw = (path / "receipt.json").read_bytes()
+        if digest(raw) != receipt:
+            raise SourceError("source_receipt_changed")
+        saved_bytes += len(raw)
+        if saved_bytes > EVIDENCE_BYTES:
+            raise SourceError("source_cache_evidence_full")
+        saved[receipt] = raw
+    return saved
+
+
+def _restore_evidence(
+    snapshots: SourceSnapshots, plan: dict[str, Any], receipt: str, raw: bytes
+) -> None:
+    """Restore exact bytes after a caught failure, without overwriting new data.
+
+    This is not crash recovery. Disk failures can also prevent restoration; those
+    leave the cache uncertain and blocked rather than reporting clean rollback.
+    """
+    try:
+        _, registration = snapshots.registration(plan["project_id"])
+        path = snapshots.cache_root(registration) / receipt
+        _not_link(path)
+        path.mkdir(mode=0o700, exist_ok=True)
+        if {item.name for item in path.iterdir()} - {"receipt.json"}:
+            raise SourceError("source_cache_unknown_entry")
+        target = path / "receipt.json"
+        _not_link(target)
+        if target.exists():
+            if not snapshots._evidence_only(path) or target.read_bytes() != raw:
+                raise SourceError("source_receipt_changed")
+            return
+        with target.open("xb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        snapshots.uncertain = True
+        raise SourceError("source_cleanup_unconfirmed") from None
+
+
+def rotate_evidence(
+    snapshots: SourceSnapshots,
+    plan: dict[str, Any],
+    chosen: dict[str, bytes],
+    live: Callable[[], bool],
+    stage: Callable[[str], None],
+    rollback: ExitStack,
+) -> None:
+    """Commit after preflight; retain bounded rollback bytes until fetch succeeds.
+
+    The selected bytes are bounded by the existing evidence budget. The cache
+    write guard covers deletion and rollback. Durable job/recovery evidence is
+    never touched, and every deletion still rechecks current protection/liveness.
+    """
+    _, registration = snapshots.registration(plan["project_id"])
+    root = snapshots.cache_root(registration)
+    for receipt, raw in chosen.items():
+        stage("source_rotate_receipt_evidence")
+        _fresh(snapshots, receipt, live)
+        path = root / receipt
+        if not snapshots._evidence_only(path) or (path / "receipt.json").read_bytes() != raw:
+            raise SourceError("source_cache_unknown_entry")
+        rollback.callback(_restore_evidence, snapshots, plan, receipt, raw)
         try:
             shutil.rmtree(path)
         except Exception:
@@ -285,7 +339,7 @@ def admit_source(
     plan: dict[str, Any],
     live: Callable[[], bool],
     stage: Callable[[str], None],
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, dict[str, bytes]]:
     assert snapshots.retention is not None
     evidence = snapshots.retention()
     _, registration = snapshots.registration(plan["project_id"])
@@ -316,7 +370,7 @@ def admit_source(
                 if live() is not True:
                     raise SourceError("source_fetch_interrupted")
                 stage("source_reuse_verified")
-                return {**proofs[0]["summary"], "reused": True}
+                return {**proofs[0]["summary"], "reused": True}, {}
         finished = min((item["finished"] for item in proofs), default="")
         if receipt not in evidence["protected"]:
             if snapshots._evidence_only(path):
@@ -324,18 +378,21 @@ def admit_source(
             else:
                 candidates.append((finished, receipt, value))
     usage = snapshots.usage(plan["project_id"])
+    rotation = {}
     if snapshots.restore_source is None and _evidence_full(usage):
-        _rotate_evidence(snapshots, plan, evidence, rotatable, usage, live, stage)
-        usage = snapshots.usage(plan["project_id"])
+        rotation = _plan_rotation(snapshots, plan, evidence, rotatable, usage)
+
+    rotation_bytes = sum(map(len, rotation.values()))
 
     def full() -> bool:
         return (
             usage["snapshots"] >= LIMITS["cache_snapshots"]
-            or usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 > LIMITS["cache_bytes"]
+            or usage["bytes"] - rotation_bytes + LIMITS["expanded_bytes"] + 32 * 1048576
+            > LIMITS["cache_bytes"]
         )
 
     if not full():
-        return None
+        return None, rotation
     if not evidence["complete"]:
         raise SourceError("source_cache_references_incomplete")
     # Check disk reserve before any removal: a failed preflight must not evict.
@@ -348,7 +405,7 @@ def admit_source(
     usage = snapshots.usage(plan["project_id"])
     # Establish enough eligible capacity before removing any source payload.
     chosen = []
-    remaining_count, remaining_bytes = usage["snapshots"], usage["bytes"]
+    remaining_count, remaining_bytes = usage["snapshots"], usage["bytes"] - rotation_bytes
     for _, receipt, value in sorted(candidates, key=lambda item: (item[0], item[1])):
         if (
             remaining_count < LIMITS["cache_snapshots"]
@@ -370,4 +427,4 @@ def admit_source(
     usage = snapshots.usage(plan["project_id"])
     if full():
         raise SourceError("source_cache_protected")
-    return None
+    return None, rotation
