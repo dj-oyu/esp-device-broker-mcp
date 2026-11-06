@@ -130,7 +130,7 @@ async def test_deferred_flash_waits_out_a_momentary_cache_conflict(env):
         assert waiting["state"] == "waiting_parent"  # still pending, not cancelled
         assert env.store.job("deferred-flash") is None and env.driver.writes == writes
         assert broker.session is None
-    assert refusal_stages(broker) == ["flash_binding:source_authority:source_fetch_busy"]
+    assert refusal_stages(broker) == ["flash_binding:source_reservation:source_fetch_busy"]
     offset[0] += 6  # past the retry back-off, and the cache is free again
     broker.maintenance_tick()
     await asyncio.sleep(0)

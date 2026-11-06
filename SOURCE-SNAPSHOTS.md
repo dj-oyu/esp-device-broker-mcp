@@ -181,10 +181,26 @@ New source-build plans have a visible
 changes cannot expire or revive it. `source_plan_expires_at` is display-only.
 Expired unexecuted plans cannot execute and must be prepared again. Preparing unchanged inputs during a live lease does not renew it. Once a
 job is queued its protection lasts through completion, regardless of lease expiry.
-Legacy unexecuted plans remain protected for their current broker epoch. Old
+Device-bound unexecuted plans cease reserving payloads when their exact lease ID
+has a completed `released` or `expired` device-request transition. Every grant
+gets a fresh lease ID, and execution requires the plan's original ID; renewal
+cannot revive an ended lease. This also applies to legacy device-bound plans.
+An absent lease, a passed deadline, a missing job, or a request in review is not
+proof of permanent non-executability. Missing or ambiguous lifecycle evidence
+keeps protection; queued/running/review jobs stay protected even after their lease
+ends. No plan retirement API or cross-principal execution authority is added.
+Other legacy unexecuted plans remain protected for their current broker epoch. Old
 broker epochs cannot execute. Completed build history alone is provenance, not
 a permanent source reservation. Recovery objects and build artifacts are never
 removed by this mechanism.
+
+Publishing a flash plan for a source-backed build takes the source cache's
+non-waiting guard through the durable plan commit. A concurrent fetch/reclamation
+returns `source_fetch_busy` to preparation; it never waits on the resident loop.
+If preparation commits first, retention sees the executable plan. If reclamation
+owns the guard first, preparation cannot publish a reference after the final
+retention read and before payload removal. Retained-artifact preparation remains
+available after reclamation; execution still requires fresh source verification.
 
 Reclamation removes only the `source` payload, retaining the exact original
 `receipt.json`, full file manifest, hashes and durable job evidence. Receipt-only
