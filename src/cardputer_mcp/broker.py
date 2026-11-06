@@ -1035,6 +1035,21 @@ class Broker:
             )
             self.execute(ExecuteRequest(session=lease.capability, plan_hash=prepared["plan_hash"]))
         except Exception as failure:
+            if (
+                plan["test"] == TestName.FLASH.value
+                and isinstance(failure, SourceError)
+                and failure.code == "source_fetch_busy"
+            ):
+                # Publication now encounters cache contention before execution's
+                # binding check. Preserve the same bounded deferred retry policy.
+                try:
+                    self.logs.append(
+                        Event.TRANSITION_REFUSED,
+                        stage="flash_binding:source_reservation:source_fetch_busy",
+                    )
+                except Exception:
+                    pass
+                failure = TransientRefusal("flash_binding_invalid")
             now = self.clock()
             first = self._deferred_busy.get(job_id, (now, now))[0]
             if isinstance(failure, TransientRefusal) and now - first < DEFERRED_BUSY_WINDOW_SECONDS:
