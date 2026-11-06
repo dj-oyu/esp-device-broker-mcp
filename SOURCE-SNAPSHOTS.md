@@ -194,6 +194,14 @@ broker epochs cannot execute. Completed build history alone is provenance, not
 a permanent source reservation. Recovery objects and build artifacts are never
 removed by this mechanism.
 
+Publishing a flash plan for a source-backed build takes the source cache's
+non-waiting guard through the durable plan commit. A concurrent fetch/reclamation
+returns `source_fetch_busy` to preparation; it never waits on the resident loop.
+If preparation commits first, retention sees the executable plan. If reclamation
+owns the guard first, preparation cannot publish a reference after the final
+retention read and before payload removal. Retained-artifact preparation remains
+available after reclamation; execution still requires fresh source verification.
+
 Reclamation removes only the `source` payload, retaining the exact original
 `receipt.json`, full file manifest, hashes and durable job evidence. Receipt-only
 entries consume bytes but no resident payload slot. Evidence is independently
