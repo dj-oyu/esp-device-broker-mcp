@@ -87,3 +87,25 @@ Firmware status/cancel must remain responsive while UI diagnostic work blocks:
 the firmware owns its atomic snapshot/cancel path and a bounded emitter suitable
 for its 2KiB input-task stack. Broker host tests do not establish that firmware
 concurrency, stack safety, installed capability or physical performance.
+
+## Offline cross-implementation check
+
+`tests/test_native_diagnostic_firmware_integration.py` accepts an already supplied
+public firmware source directory through `FIRMWARE_NATIVE_SOURCE_DIR`; it never
+fetches source itself. Seven Git blob hashes pin the controller, D1 codec and
+inline lifecycle/session/command headers associated with firmware commit
+`cddaec23ce52f739b2b03e5c77efdb2b2632b06c`. A host-only shim links those actual C
+components with synthetic lifecycle callbacks, compares every canonical response
+byte, and drives the production broker serial runner through both implementations.
+Run with a POSIX `cc` compiler and the supplied exact source:
+
+```sh
+FIRMWARE_NATIVE_SOURCE_DIR=/path/to/verified/firmware uv run pytest -q tests/test_native_diagnostic_firmware_integration.py
+```
+
+Without supplied source/compiler these optional integration tests skip explicitly.
+The adapter starts the D1 decoder at each supplied frame; it does not test main's
+shared B/C/D ingress or ordinary key dispatch. Callback reentry exercises STATUS
+and CANCEL during work, not actual input/UI task scheduling or stack high-water.
+The firmware's own control/wire host suites provide separate optimized and
+ASan/UBSan evidence. Source-byte pins do not attest a deployed firmware image.
