@@ -135,6 +135,16 @@ async def _execute_backend(broker: Broker, run: AdmittedJob) -> Result:
     return await broker.backend.execute(run.plan, partial(broker._on_stage, run))
 
 
+async def _execute_native(broker: Broker, run: AdmittedJob) -> Result:
+    from .serial_backend import SerialBackend
+
+    if not isinstance(broker.backend, SerialBackend):
+        raise ValueError("backend_not_available")
+    return await broker.backend.execute_native(
+        run.plan, partial(broker._on_stage, run), partial(broker._running_authorized, run)
+    )
+
+
 # --- commits (synchronous; run by Broker.finish after a valid result) -------------------
 
 
@@ -223,6 +233,86 @@ def _commit_succeeded(
 
 # --- the registry -----------------------------------------------------------------------
 
+
+@sync_section
+def _commit_native(
+    broker: Broker, run: AdmittedJob, result: Result, completed: Any
+) -> tuple[Event, bool]:
+    from .native_diagnostic import request_identity
+    from .serial_backend import SerialBackend
+
+    if (
+        not isinstance(result, BackendResult)
+        or not isinstance(broker.backend, SerialBackend)
+        or broker.backend.active
+        or broker.backend.hardware_connected
+        or broker.backend.ownership_uncertain
+        or broker.backend.last_closed_plan != run.plan
+        or not broker._running_authorized(run)
+    ):
+        raise ValueError("native_diagnostic_final_commit_not_authorized")
+    snapshot = result.native_diagnostic
+    if snapshot is None:
+        if (
+            completed != "native_diagnostic_cancelled_before_request"
+            or not broker.backend.native_cancel.is_set()
+        ):
+            raise ValueError("native_diagnostic_protocol_invalid")
+        if not run.store.ledger.transition(
+            run.job_id,
+            "cancelled",
+            completed,
+            {
+                "native_diagnostic": {
+                    "state": "NOT_REQUESTED",
+                    "work_not_started": True,
+                    "work_finished": False,
+                    "output_drained": False,
+                    "home_restored": False,
+                    "borrows_released": False,
+                    "owner_released": False,
+                    "serial_close_confirmed": True,
+                }
+            },
+            expect={"running"},
+        ):
+            raise ValueError("native_diagnostic_final_commit_not_authorized")
+        return Event.CANCELLED, False
+    expected = (
+        ("succeeded", "native_diagnostic_completed", Event.PASSED)
+        if snapshot.completed
+        else ("cancelled", "native_diagnostic_cancelled", Event.CANCELLED)
+        if snapshot.cancelled
+        else ("failed", "native_diagnostic_refused", Event.FAILED)
+        if snapshot.state == "REFUSED" and snapshot.flags == 0x20
+        else None
+    )
+    if (
+        expected is None
+        or snapshot.request_id != request_identity(run.plan)
+        or completed != expected[1]
+    ):
+        raise ValueError("native_diagnostic_protocol_invalid")
+    diagnostic = {
+        "native_diagnostic": {
+            "state": snapshot.state,
+            "flags": snapshot.flags,
+            "work_finished": bool(snapshot.flags & 1),
+            "output_drained": bool(snapshot.flags & 2),
+            "home_restored": bool(snapshot.flags & 4),
+            "borrows_released": bool(snapshot.flags & 8),
+            "owner_released": bool(snapshot.flags & 16),
+            "work_not_started": bool(snapshot.flags & 32),
+            "serial_close_confirmed": True,
+        }
+    }
+    if not run.store.ledger.transition(
+        run.job_id, expected[0], completed, diagnostic, expect={"running"}
+    ):
+        raise ValueError("native_diagnostic_final_commit_not_authorized")
+    return expected[2], False
+
+
 _FLASH = JobKind(_execute_flash, _commit_flash)
 _BACKEND = JobKind(_execute_backend, _commit_succeeded)
 
@@ -235,6 +325,7 @@ JOB_KINDS: Mapping[str, JobKind] = MappingProxyType(
         TestName.DERBY.value: JobKind(_execute_smoke, _commit_succeeded),
         TestName.DERBY_FIXED.value: JobKind(_execute_smoke, _commit_fixed_trial),
         TestName.DIAGNOSTICS.value: _BACKEND,
+        TestName.NATIVE_DIAGNOSTIC.value: JobKind(_execute_native, _commit_native),
         TestName.WORKFLOW.value: _BACKEND,
         TestName.OBSERVE.value: _BACKEND,
         TestName.FIRMWARE.value: _BACKEND,

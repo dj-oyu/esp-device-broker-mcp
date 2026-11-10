@@ -573,6 +573,9 @@ class SerialBackend:
         self._unclosed_port: SerialPort | None = None
         self.last_closed_plan: dict[str, Any] | None = None
         self.smoke_stop = threading.Event()
+        self.native_cancel = threading.Event()
+        self._native_control_lock = threading.Lock()
+        self.native_request_admitted = False
         # Set by the broker for one device job; never opens or reads anything itself.
         self.device_log: DeviceLogTap | None = None
 
@@ -608,10 +611,18 @@ class SerialBackend:
             TestName.CAPTURE,
             TestName.DERBY,
             TestName.DERBY_FIXED,
+            TestName.NATIVE_DIAGNOSTIC,
         ):
             raise ValueError("test_not_available_for_backend")
         if (
-            test in (TestName.HELLO, TestName.CAPTURE, TestName.DERBY, TestName.DERBY_FIXED)
+            test
+            in (
+                TestName.HELLO,
+                TestName.CAPTURE,
+                TestName.DERBY,
+                TestName.DERBY_FIXED,
+                TestName.NATIVE_DIAGNOSTIC,
+            )
             and self.config.expected_firmware_sha256 is None
             and receipt_elf is None
         ):
@@ -702,6 +713,17 @@ class SerialBackend:
                 "Device-reported firmware metadata is unverified and does not attest the image",
             ]
         protocol: str = self.config.protocol
+        if test == TestName.NATIVE_DIAGNOSTIC:
+            effects = [
+                "Opens and closes USB serial; drivers may glitch control lines or reset device",
+                "One fixed native diagnostic request bound to this job and observed boot nonce",
+                "Requires native diagnostic firmware and UI admission; no arbitrary keys or reset",
+                "Polls status for at most 90 seconds; one typed cancel request when requested",
+                "Success requires work end, output drain, checked HOME and borrow/owner release",
+                "Timeout, boot change or unconfirmed work/close retains review "
+                "and ownership uncertainty",
+                "No flash, upload, automatic reopen, retry or fallback navigation",
+            ]
         verification = (
             "successful_flash_receipt"
             if receipt_elf is not None
@@ -710,6 +732,8 @@ class SerialBackend:
         observe_seconds = self.config.observe_seconds if test == TestName.OBSERVE else None
         if test == TestName.DERBY:
             protocol = "pocketjs-derby-smoke-v1"
+        elif test == TestName.NATIVE_DIAGNOSTIC:
+            protocol = "pocketjs-native-diagnostic-v1"
         elif test == TestName.DERBY_FIXED:
             protocol = "pocketjs-derby-fixed-v2"
         elif test == TestName.CAPTURE:
@@ -755,6 +779,28 @@ class SerialBackend:
         self.smoke_stop.set()
         return bool(self.active)
 
+    def request_native_cancel(self) -> bool:
+        # Never held over a loop authority callback or blocking IO.
+        with self._native_control_lock:
+            self.native_cancel.set()
+        return bool(self.active)
+
+    def _admit_native_request(self) -> bool:
+        with self._native_control_lock:
+            if self.native_cancel.is_set():
+                return False
+            self.native_request_admitted = True
+            return True
+
+    async def execute_native(
+        self, plan: dict[str, Any], stage: Callable[[str], None], live: Callable[[], bool]
+    ) -> str | BackendResult:
+        with self._native_control_lock:
+            self.native_cancel.clear()
+            self.native_request_admitted = False
+        self.smoke_stop.clear()
+        return await self._execute(plan, stage, live=live)
+
     async def execute_smoke(
         self, plan: dict[str, Any], stage: Callable[[str], None], live: Callable[[], bool]
     ) -> str | BackendResult:
@@ -799,7 +845,11 @@ class SerialBackend:
                     await asyncio.shield(worker)
                 except asyncio.CancelledError:
                     interrupted = True
-                    if plan["test"] in (TestName.DERBY.value, TestName.DERBY_FIXED.value):
+                    if plan["test"] in (
+                        TestName.DERBY.value,
+                        TestName.DERBY_FIXED.value,
+                        TestName.NATIVE_DIAGNOSTIC.value,
+                    ):
                         self.smoke_stop.set()
                 except Exception:
                     # Retrieve/rethrow the worker's exception after its queued
@@ -816,7 +866,11 @@ class SerialBackend:
                     await asyncio.shield(drained)
                 except asyncio.CancelledError:
                     interrupted = True
-                    if plan["test"] in (TestName.DERBY.value, TestName.DERBY_FIXED.value):
+                    if plan["test"] in (
+                        TestName.DERBY.value,
+                        TestName.DERBY_FIXED.value,
+                        TestName.NATIVE_DIAGNOSTIC.value,
+                    ):
                         self.smoke_stop.set()
             result = worker.result()
             if interrupted:
@@ -855,12 +909,32 @@ class SerialBackend:
         if test == TestName.RESTART:
             return self._execute_restart_sync(current, emit)
         port = self.factory()
-        if test in (TestName.DERBY, TestName.DERBY_FIXED):
+        if test in (TestName.DERBY, TestName.DERBY_FIXED, TestName.NATIVE_DIAGNOSTIC):
             from .smoke_port import SmokePort
 
-            port = SmokePort(port, live, self.smoke_stop)
+            if test == TestName.NATIVE_DIAGNOSTIC:
+                from .native_diagnostic import RequestNotAdmitted
+
+                admit_request = self._admit_native_request
+
+                class NativePort(SmokePort):
+                    def write(self, data: bytes) -> int | None:
+                        self.check()
+                        # Serialize admission after the loop authority check.
+                        # Cancellation shares this tiny lock; no lock spans the
+                        # loop callback or a potentially blocking serial write.
+                        if data.startswith(b"\x1dD1 REQUEST ") and not admit_request():
+                            raise RequestNotAdmitted
+                        return self.inner.write(data)
+
+                port = NativePort(port, live, self.smoke_stop)
+            else:
+                port = SmokePort(port, live, self.smoke_stop)
         reader: Reader | None = None
         operation_failure: SerialFailure | None = None
+        from .native_diagnostic import Progress
+
+        native_progress = Progress()
         try:
             port.dtr = False
             port.rts = False
@@ -878,6 +952,29 @@ class SerialBackend:
                 raise SerialFailure("device_identity_changed", step="validate_identity") from None
             if fingerprint(identity) != current["device_fingerprint"]:
                 raise SerialFailure("device_identity_changed", step="validate_identity")
+            if test == TestName.NATIVE_DIAGNOSTIC:
+                from .native_diagnostic import run
+
+                emit(test.value)
+                snapshot = run(
+                    port,
+                    plan,
+                    self.clock,
+                    self.native_cancel,
+                    emit,
+                    self.device_log.feed if self.device_log is not None else None,
+                    native_progress,
+                )
+                code = (
+                    "native_diagnostic_cancelled_before_request"
+                    if snapshot is None
+                    else "native_diagnostic_completed"
+                    if snapshot.completed
+                    else "native_diagnostic_cancelled"
+                    if snapshot.cancelled
+                    else "native_diagnostic_refused"
+                )
+                return BackendResult(code, native_diagnostic=snapshot)
             if test == TestName.FIRMWARE:
                 emit(test.value)
                 observation = observe_firmware(port, self.clock, self.device_log)
@@ -952,6 +1049,11 @@ class SerialBackend:
                 uncertain.fixed_trial = reader.fixed_collector.snapshot(self.clock())
             raise uncertain from None
         finally:
+            if native_progress.requested and not native_progress.terminal:
+                # Confirmed OS close cannot prove firmware work or owner release.
+                # Existing explicit operator recheck requires confirmation work stopped.
+                self.ownership_uncertain = True
+                self._unclosed_port = port
             derby_summary = (
                 reader.derby_observation().model_dump(mode="json", exclude_none=True)
                 if reader is not None and reader.derby_observation is not None

@@ -357,6 +357,12 @@ class FirmwareVerticalTests(unittest.TestCase):
         source_mode=False,
         cache_mode=None,
         mutate_during_build=False,
+        native_mode=None,
+        native_config_failure=False,
+        defer_native=False,
+        late_native_mutation=False,
+        final_native_authority=None,
+        native_candidate_mutation=False,
     ):
         try:
             import filelock
@@ -420,8 +426,11 @@ class FirmwareVerticalTests(unittest.TestCase):
                 from cardputer_mcp.source_snapshot import SourceSnapshots, file_receipt, tree_hash
 
                 registered = settings.build_projects["cardputer"]
+                registered_values = vars(registered).copy()
+                if "node_tool" in registered_values:
+                    registered_values["node_tool"] = vars(registered_values["node_tool"])
                 settings.build_projects["cardputer"] = BuildProject(
-                    **vars(registered),
+                    **registered_values,
                     source_repository=SourceRepository(
                         github_repository=fixture.REPOSITORY,
                         cache_root=root / "source-cache",
@@ -444,13 +453,20 @@ class FirmwareVerticalTests(unittest.TestCase):
                 source_receipt = snapshots.fetch(fetch_plan, lambda: True, lambda _: None)[
                     "source_receipt"
                 ]
-            plan = builder.prepare("cardputer", "alice", source_receipt) | {"job_id": "job"}
+            plan = builder.prepare(
+                "cardputer",
+                "alice",
+                source_receipt,
+                **({"native_diagnostic_mode": native_mode} if native_mode is not None else {}),
+            ) | {"job_id": "job"}
             calls = []
             environments = []
             statistics_reads = 0
 
             class FakeProcess:
                 stop_requested = threading.Event()
+                active = False
+                uncertain = False
 
                 def run(self, args, env, cwd, emit, timeout=1800):
                     nonlocal statistics_reads
@@ -518,6 +534,8 @@ class FirmwareVerticalTests(unittest.TestCase):
                             '{"extra_esptool_args":{"chip":"esp32s3"},'
                             '"flash_files":{"0x10000":"firmware.bin"}}'
                         )
+                        if native_config_failure:
+                            (directory / "sdkconfig").write_text("CONFIG_OTHER=y\n")
                         if mutate_during_build:
                             (project / "sdkconfig").write_text("generated configuration")
                         emit("warning: synthetic token=hidden", "stderr")
@@ -527,12 +545,25 @@ class FirmwareVerticalTests(unittest.TestCase):
             builder.process = FakeProcess()
             original_prepare = builder.prepare
             original_hash = module.hash_file
+            original_dumps = module.json.dumps
             prepare_calls = 0
 
-            def prepare_hook(*args):
+            def dumps_hook(value, *args, **kwargs):
+                result = original_dumps(value, *args, **kwargs)
+                if (
+                    native_candidate_mutation
+                    and isinstance(value, dict)
+                    and "native_diagnostic_config" in value
+                ):
+                    command = next(args for args in calls if args[-1] == "build")
+                    directory = Path(command[command.index("-B") + 1])
+                    (directory / "sdkconfig").write_text("CONFIG_OTHER=y\n")
+                return result
+
+            def prepare_hook(*args, **kwargs):
                 nonlocal prepare_calls
                 prepare_calls += 1
-                value = original_prepare(*args)
+                value = original_prepare(*args, **kwargs)
                 if cancel_at == "fingerprint" and prepare_calls == 3:
                     builder.request_stop("job")
                 return value
@@ -569,6 +600,7 @@ class FirmwareVerticalTests(unittest.TestCase):
                 patch.object(module.shutil, "which", side_effect=which),
                 patch.object(builder, "prepare", side_effect=prepare_hook),
                 patch.object(module, "hash_file", side_effect=hash_hook),
+                patch.object(module.json, "dumps", side_effect=dumps_hook),
             ):
                 if cache_mode in ("broken", "compile_failed"):
                     code = (
@@ -651,7 +683,47 @@ class FirmwareVerticalTests(unittest.TestCase):
                     self.assertNotIn("job", builder.manifests)
                     self.assertEqual([], list(root.rglob("broker-manifest.json")))
                     return
-                result = builder._execute(plan, lambda _: None)
+                if native_config_failure or native_candidate_mutation:
+                    with self.assertRaisesRegex(ValueError, "native_diagnostic_config_invalid"):
+                        builder._execute(plan, lambda _: None)
+                    self.assertFalse(builder.manifests)
+                    self.assertEqual([], list(root.rglob("broker-manifest*.json")))
+                    return
+                result = builder._execute(plan, lambda _: None, defer_publish=defer_native)
+                if defer_native:
+                    self.assertFalse(builder.manifests)
+                    pending_root = builder._pending["job"][1]
+                    if final_native_authority is not None:
+                        if final_native_authority == "cancelled":
+                            builder.request_stop("job")
+                            error = "build_interrupted_needs_review"
+
+                            def live():
+                                return True
+                        else:
+                            answers = iter(final_native_authority)
+
+                            def live():
+                                return next(answers)
+
+                            error = "build_final_commit_not_authorized"
+                        with self.assertRaisesRegex(ValueError, error):
+                            builder.commit_deferred(plan, live)
+                        self.assertFalse(builder.manifests)
+                        self.assertFalse((pending_root / "broker-manifest.json").exists())
+                        builder.discard_deferred("job")
+                        self.assertFalse(builder.output_uncertain)
+                        return
+                    if late_native_mutation:
+                        (pending_root / "sdkconfig").write_text("CONFIG_OTHER=y\n")
+                        with self.assertRaisesRegex(ValueError, "native_diagnostic_config_invalid"):
+                            builder.commit_deferred(plan, lambda: True)
+                        self.assertFalse(builder.manifests)
+                        self.assertFalse((pending_root / "broker-manifest.json").exists())
+                        builder.discard_deferred("job")
+                        self.assertFalse(builder.output_uncertain)
+                        return
+                    builder.commit_deferred(plan, lambda: True)
             command = next(args for args in calls if args[-1] == "build")
             self.assertIn("--no-hints", command)
             self.assertEqual(result, "firmware_build_succeeded_no_flash")
@@ -687,6 +759,15 @@ class FirmwareVerticalTests(unittest.TestCase):
                 self.assertIn("CMAKE_CXX_FLAGS=" + build_env["CXXFLAGS"], build_call)
             else:
                 self.assertFalse(any(arg.startswith("CMAKE_C_FLAGS=") for arg in build_call))
+            if native_mode is not None:
+                from cardputer_mcp.native_diagnostic_build import verify
+
+                self.assertEqual(report["manifest"]["native_diagnostic_mode"], native_mode)
+                build_directory = Path(build_call[build_call.index("-B") + 1])
+                self.assertEqual(
+                    report["manifest"]["native_diagnostic_config"],
+                    verify(build_directory, native_mode),
+                )
             if source_mode:
                 self.assertEqual(
                     report["manifest"]["source_provenance"]["source_receipt"], source_receipt

@@ -372,6 +372,7 @@
             "observe_firmware",
             "hello",
             "diagnostics",
+            "native_diagnostic",
             "workflow"
           ],
           "title": "Kind",
@@ -523,6 +524,18 @@
               "default": null,
               "description": "flash|restore",
               "title": "Lkg Receipt"
+            },
+            "native_diagnostic_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DiagnosticMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "build; owned source receipt required"
             },
             "project_id": {
               "anyOf": [

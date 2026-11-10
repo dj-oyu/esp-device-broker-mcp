@@ -42,6 +42,10 @@ from .diagnostic_registry import (
 from .job_logs import attach
 from .manifest_export import export_response
 from .models import DiagnosticMode
+from .native_diagnostic_build import kwargs as native_kwargs
+from .native_diagnostic_build import mode as native_mode
+from .native_diagnostic_build import seed as seed_native_config
+from .native_diagnostic_build import verify as verify_native_config
 
 ALLOWED_ENV = frozenset(
     {
@@ -117,6 +121,7 @@ class FixedDiagnosticFailure(BuildPreflightFailure):
             "node_requires_explicit_local_registration",
             "build_inputs_changed",
             "idf_build_failed_needs_review",
+            "native_diagnostic_config_invalid",
             "build_target_mismatch",
             "build_artifacts_missing",
             "artifact_count_limit",
@@ -415,6 +420,7 @@ class FirmwareBuild:
         source_receipt: str | None = None,
         derby_detail_mode: DiagnosticMode | str | None = None,
         derby_dma_mode: DiagnosticMode | str | None = None,
+        native_diagnostic_mode: DiagnosticMode | str | None = None,
     ) -> dict[str, Any]:
         project, provenance = self._project(project_id, principal, source_receipt)
         if derby_detail_mode is not None:
@@ -429,6 +435,10 @@ class FirmwareBuild:
         )
         if derby_dma_mode is not None:
             selection["derby_dma_mode"] = derby_dma_mode
+        if native_diagnostic_mode is not None:
+            if source_receipt is None or provenance is None:
+                raise ValueError("native_diagnostic_requires_source_build")
+            selection["native_diagnostic_mode"] = native_mode(str(native_diagnostic_mode))
         if hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
             self.settings.state_dir.resolve()
         ):
@@ -467,6 +477,11 @@ class FirmwareBuild:
                     ),
                     "project_id": project_id,
                     **selection,
+                    **(
+                        {"native_diagnostic_source": provenance}
+                        if native_diagnostic_mode is not None
+                        else {}
+                    ),
                     **({"source_receipt": source_receipt} if source_receipt is not None else {}),
                     "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
                     "profile": hash_file(project.trusted_profile),
@@ -629,6 +644,7 @@ class FirmwareBuild:
                 in {
                     "build_inputs_changed",
                     "idf_build_failed_needs_review",
+                    "native_diagnostic_config_invalid",
                     "build_target_mismatch",
                     "build_artifacts_missing",
                     "artifact_count_limit",
@@ -661,6 +677,7 @@ class FirmwareBuild:
                 plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
                 **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
+                **native_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -893,7 +910,10 @@ class FirmwareBuild:
             plan["project_id"],
             principal,
             environment_fingerprint,
-            {key: plan.get(key) for key in ("derby_detail_mode", "derby_dma_mode")},
+            {
+                **{key: plan.get(key) for key in ("derby_detail_mode", "derby_dma_mode")},
+                **native_kwargs(plan),
+            },
         )
         logs.append("-- Compiler cache: " + cache_receipt["reason"])
         cache_before = (
@@ -915,12 +935,15 @@ class FirmwareBuild:
                 plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
                 **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
+                **native_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
             logs.append("error: build inputs changed before launch; prepare a new plan")
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
+        if "native_diagnostic_mode" in plan:
+            seed_native_config(build_dir, plan["native_diagnostic_mode"])
         build_args = [
             str(python),
             str(idf_py),
@@ -975,6 +998,7 @@ class FirmwareBuild:
                 plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
                 **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
+                **native_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -1019,8 +1043,21 @@ class FirmwareBuild:
                     build_dir, plan["derby_detail_mode"], provenance or {}, artifacts
                 )
             )
+        native_config = (
+            verify_native_config(build_dir, plan["native_diagnostic_mode"])
+            if "native_diagnostic_mode" in plan
+            else None
+        )
         manifest = dict(
             schema_version=1,
+            **(
+                {
+                    "native_diagnostic_mode": plan["native_diagnostic_mode"],
+                    "native_diagnostic_config": native_config,
+                }
+                if native_config is not None
+                else {}
+            ),
             **(
                 {
                     "derby_detail_mode": plan["derby_detail_mode"],
@@ -1068,6 +1105,12 @@ class FirmwareBuild:
         try:
             with self._lock:
                 self._check_cancelled()
+                if "native_diagnostic_mode" in plan:
+                    if (
+                        verify_native_config(build_dir, plan["native_diagnostic_mode"])
+                        != native_config
+                    ):
+                        raise FixedDiagnosticFailure("native_diagnostic_config_invalid")
                 candidate.replace(build_dir / "broker-manifest.json")
                 self.artifacts.publish(plan["job_id"], principal, build_dir, manifest)
                 self.manifests[plan["job_id"]] = (principal, manifest)
@@ -1093,6 +1136,7 @@ class FirmwareBuild:
                 plan.get("source_receipt"),
                 plan.get("derby_detail_mode"),
                 **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
+                **native_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -1100,6 +1144,11 @@ class FirmwareBuild:
         if not live():
             raise ValueError("build_final_commit_not_authorized")
         self._check_cancelled()
+        if "native_diagnostic_mode" in plan:
+            if verify_native_config(root, plan["native_diagnostic_mode"]) != manifest.get(
+                "native_diagnostic_config"
+            ):
+                raise FixedDiagnosticFailure("native_diagnostic_config_invalid")
         (root / "broker-manifest.pending.json").replace(root / "broker-manifest.json")
         self._release_output_lock()
         self.artifacts.publish(plan["job_id"], principal, root, manifest)
@@ -1230,6 +1279,10 @@ class FirmwareBuild:
         receipts.extend(
             [(manifest.get("flash_layout"), 65536), (manifest.get("flash_security"), 1048576)]
         )
+        if "native_diagnostic_mode" in manifest:
+            config = verify_native_config(root, manifest["native_diagnostic_mode"])
+            if config != manifest.get("native_diagnostic_config"):
+                raise BuildLocationError("build_output_identity_mismatch")
         for receipt, limit in receipts:
             if not isinstance(receipt, dict) or not isinstance(receipt.get("name"), str):
                 raise BuildLocationError("build_output_identity_mismatch")

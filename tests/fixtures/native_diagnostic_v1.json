@@ -1,0 +1,134 @@
+{
+  "contract": "pocketjs-native-diagnostic-v1",
+  "requests": [
+    {
+      "name": "bootstrap",
+      "operation": "STATUS",
+      "id": "00000000000000000000000000000000",
+      "boot": "0000000000000000",
+      "hex": "1d44312053544154555320303030303030303030303030303030303030303030303030303030303030303020303030303030303030303030303030300a"
+    },
+    {
+      "name": "request",
+      "operation": "REQUEST",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "hex": "1d4431205245515545535420616161616161616161616161616161616161616161616161616161616161616120626262626262626262626262626262620a"
+    },
+    {
+      "name": "status",
+      "operation": "STATUS",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "hex": "1d44312053544154555320616161616161616161616161616161616161616161616161616161616161616120626262626262626262626262626262620a"
+    },
+    {
+      "name": "cancel",
+      "operation": "CANCEL",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "hex": "1d44312043414e43454c20616161616161616161616161616161616161616161616161616161616161616120626262626262626262626262626262620a"
+    }
+  ],
+  "responses": [
+    {
+      "name": "bootstrap",
+      "id": "00000000000000000000000000000000",
+      "state": "REFUSED",
+      "flags": "00",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 1,
+      "hex": "1d4e44312030303030303030303030303030303030303030303030303030303030303030302052454655534544203030206262626262626262626262626262626220310a"
+    },
+    {
+      "name": "disabled",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "REFUSED",
+      "flags": "20",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 0,
+      "hex": "1d4e44312061616161616161616161616161616161616161616161616161616161616161612052454655534544203230206262626262626262626262626262626220300a"
+    },
+    {
+      "name": "pending",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "PENDING",
+      "flags": "00",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 1,
+      "hex": "1d4e44312061616161616161616161616161616161616161616161616161616161616161612050454e44494e47203030206262626262626262626262626262626220310a"
+    },
+    {
+      "name": "running",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "RUNNING",
+      "flags": "00",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 1,
+      "hex": "1d4e44312061616161616161616161616161616161616161616161616161616161616161612052554e4e494e47203030206262626262626262626262626262626220310a"
+    },
+    {
+      "name": "cancel_requested",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "CANCEL_REQUESTED",
+      "flags": "00",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 1,
+      "hex": "1d4e44312061616161616161616161616161616161616161616161616161616161616161612043414e43454c5f524551554553544544203030206262626262626262626262626262626220310a"
+    },
+    {
+      "name": "completed",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "COMPLETED",
+      "flags": "1f",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 1,
+      "hex": "1d4e443120616161616161616161616161616161616161616161616161616161616161616120434f4d504c45544544203166206262626262626262626262626262626220310a"
+    },
+    {
+      "name": "cancelled_after_work",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "CANCELLED",
+      "flags": "1f",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 1,
+      "hex": "1d4e44312061616161616161616161616161616161616161616161616161616161616161612043414e43454c4c4544203166206262626262626262626262626262626220310a"
+    },
+    {
+      "name": "cancelled_before_work",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "CANCELLED",
+      "flags": "3e",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 1,
+      "hex": "1d4e44312061616161616161616161616161616161616161616161616161616161616161612043414e43454c4c4544203365206262626262626262626262626262626220310a"
+    },
+    {
+      "name": "refused",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "REFUSED",
+      "flags": "20",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 1,
+      "hex": "1d4e44312061616161616161616161616161616161616161616161616161616161616161612052454655534544203230206262626262626262626262626262626220310a"
+    },
+    {
+      "name": "unknown",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "REFUSED",
+      "flags": "00",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 1,
+      "hex": "1d4e44312061616161616161616161616161616161616161616161616161616161616161612052454655534544203030206262626262626262626262626262626220310a"
+    },
+    {
+      "name": "quarantined",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "QUARANTINED",
+      "flags": "07",
+      "boot": "bbbbbbbbbbbbbbbb",
+      "enabled": 1,
+      "hex": "1d4e44312061616161616161616161616161616161616161616161616161616161616161612051554152414e54494e4544203037206262626262626262626262626262626220310a"
+    }
+  ]
+}

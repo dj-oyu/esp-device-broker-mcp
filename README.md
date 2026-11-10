@@ -81,6 +81,11 @@ OS user, not in a sandbox. See [source snapshots](SOURCE-SNAPSHOTS.md) and
 [external builds](FIRMWARE-BUILD.md). Device flash/restore/backup remain separately
 requested and never follow automatically from successful build.
 
+Owned source builds can explicitly select `native_diagnostic_mode=ON|OFF`.
+The serial-only `native_diagnostic` device kind uses fixed request/status/cancel
+frames and requires separate terminal, HOME and close evidence. See
+[native diagnostics](NATIVE-DIAGNOSTICS.md) for the protocol and safety boundaries.
+
 ## Windows queue GUI
 
 The GUI displays job plans, effects, lifecycle, results and retained-image previews
@@ -423,7 +428,7 @@ The endpoint is `http://127.0.0.1:8765/mcp`. Tools with arguments accept a neste
 | Tool | Distinguishing argument | Effect |
 | --- | --- | --- |
 | `status` | `view`: `identity`, `targets`, `source`, `device`, `session`, `job`, `logs` (with `stream`: `broker`, `build`, `device`, `app`), `capture`, `apps` | Read-only: backend/device/broker status, shared cached events, your completed device log report from RAM, durable job results, any read-scoped caller's view of a succeeded job's PNG (five-minute RAM copy, then the saved copy in state until pruned beyond 200 images / 64 MiB) |
-| `submit` | `kind`: `fetch`, `build`, `backup`, `flash`, `restore`, `app_session`, `derby_fixed`, `derby`, `capture`, `restart`, `observe`, `observe_firmware`, `hello`, `diagnostics`, `workflow`; `job_id`, and `session` for device kinds | Persist an immutable allowlisted plan; performs no device operation |
+| `submit` | `kind`: `fetch`, `build`, `backup`, `flash`, `restore`, `app_session`, `derby_fixed`, `derby`, `capture`, `restart`, `observe`, `observe_firmware`, `hello`, `diagnostics`, `native_diagnostic`, `workflow`; `job_id`, and `session` for device kinds | Persist an immutable allowlisted plan; performs no device operation |
 | `execute` | `op`: `run` (`plan_hash`, optional `session`), `app_input`, `home_recovery` (`job_id`, `source_job_id`) | Queue the exact plan (any plan except flash/restore); device operations require an owned live lease. `home_recovery` requests one bounded DERBY exit after recorded capture failure/close |
 | `flash` | `plan_hash`, optional `session` | Queue the exact flash or restore plan; refuses any other plan |
 | `cancel` | `target`: `job` (`job_id`, optional `session`, `plan_hash`), `request` | Cancel your job (a bounded recovery keeps ownership until confirmed close) or a waiting device request |
@@ -433,7 +438,8 @@ See [bounded HOME recovery](HOME-RECOVERY.md) for exact eligibility, authenticat
 effects, freshness checks and single-use failure behavior. It does not clear other
 review barriers or grant capture/flash authority.
 
-Mock kinds: `diagnostics`, `workflow`, `capture`. Serial kinds:
+Mock kinds: `diagnostics`, `workflow`, `capture`. Serial kinds include
+`native_diagnostic` (requires native diagnostic firmware), and:
 `observe`, `observe_firmware`, `restart`, `hello`, `capture`,
 with authentication and explicit execution. Capture requires an authenticated principal-bound lease even in
 mock mode. No generic shell, raw serial, arbitrary file path, command upload,

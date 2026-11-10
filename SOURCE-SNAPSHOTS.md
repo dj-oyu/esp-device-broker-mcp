@@ -65,6 +65,17 @@ Every snapshot file is rehashed during build preparation, again before invoking
 build and after it completes. Extra/missing/changed files fail; source changes
 require a new fetch/plan. A receipt cannot be borrowed from another principal.
 
+Source-receipt builds may explicitly select `native_diagnostic_mode=ON` or `OFF`.
+This fixed selector controls only `CONFIG_KSN_DEVICE_PROBE`; it accepts no arbitrary
+Kconfig, CMake or shell arguments. An owned receipt is required at preparation,
+so this selection cannot be deferred behind a fetch job. Omitting the selector
+keeps the existing build behavior. Each explicit mode binds the source identity,
+plan fingerprint, isolated build output and compiler-cache namespace. The broker
+seeds the isolated output's `sdkconfig`, verifies the actual generated value,
+and records its SHA-256 receipt in the build manifest. Final publication and
+durable artifact resolution verify that evidence again. This build option alone
+does not add a serial diagnostic request or establish hardware performance.
+
 ## Source format, limits and target compatibility
 
 Public HTTPS only, fixed api.github.com/codeload.github.com URLs constructed by

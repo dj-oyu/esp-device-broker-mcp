@@ -10,6 +10,7 @@ from .derby_fixed import FixedTrial
 from .derby_observation import DerbyObservation
 from .device_observation import DeviceObservation
 from .models import TestName
+from .native_diagnostic_protocol import Snapshot as NativeSnapshot
 from .serial_diagnostics import sanitize_receive_summary
 
 
@@ -59,6 +60,12 @@ class DeviceOperationFailure(Exception):
             "serial_restart_control_failed",
             "serial_reconnect_timeout",
             "derby_fixed_trial_invalid",
+            "native_diagnostic_protocol_invalid",
+            "native_diagnostic_timeout",
+            "native_diagnostic_not_enabled",
+            "native_diagnostic_boot_changed",
+            "native_diagnostic_quarantined",
+            "native_diagnostic_state_unknown",
         }
     )
     STEPS = frozenset(
@@ -128,6 +135,7 @@ class BackendResult:
     observation: DeviceObservation | None = field(default=None, repr=False)
     derby_observation: DerbyObservation | None = field(default=None, repr=False)
     fixed_trial: FixedTrial | None = field(default=None, repr=False)
+    native_diagnostic: NativeSnapshot | None = field(default=None, repr=False)
 
 
 class Backend(Protocol):

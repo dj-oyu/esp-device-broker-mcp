@@ -16,6 +16,8 @@ PUBLIC_REASON_CODES: frozenset[str] = frozenset(
         "device_session_required",
         "diagnostic_dma_requires_explicit_source_axes",
         "diagnostic_mode_requires_source_build",
+        "native_diagnostic_requires_source_build",
+        "native_diagnostic_config_invalid",
         "flash_job_id_only_for_fixed_collector",
         "flash_references_only_for_flash_operations",
         "project_id_not_allowed_for_flash_operations",

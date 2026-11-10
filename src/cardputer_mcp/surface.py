@@ -116,6 +116,7 @@ class Kind(StrEnum):
     OBSERVE_FIRMWARE = "observe_firmware"
     HELLO = "hello"
     DIAGNOSTICS = "diagnostics"
+    NATIVE_DIAGNOSTIC = "native_diagnostic"
     WORKFLOW = "workflow"
 
 
@@ -154,6 +155,7 @@ KIND_TEST = {
     Kind.OBSERVE_FIRMWARE: TestName.FIRMWARE,
     Kind.HELLO: TestName.HELLO,
     Kind.DIAGNOSTICS: TestName.DIAGNOSTICS,
+    Kind.NATIVE_DIAGNOSTIC: TestName.NATIVE_DIAGNOSTIC,
     Kind.WORKFLOW: TestName.WORKFLOW,
 }
 
@@ -201,6 +203,9 @@ class SubmitRequest(StrictModel):
     lkg_receipt: Digest | None = Field(default=None, description="flash|restore")
     derby_detail_mode: DiagnosticMode | None = Field(default=None, description="build")
     derby_dma_mode: DiagnosticMode | None = Field(default=None, description="build")
+    native_diagnostic_mode: DiagnosticMode | None = Field(
+        default=None, description="build; owned source receipt required"
+    )
     flash_job_id: Identifier | None = Field(default=None, description="derby_fixed")
     after: str | None = Field(
         default=None,
@@ -433,6 +438,7 @@ _DEVICE_KINDS = {
     Kind.OBSERVE_FIRMWARE,
     Kind.HELLO,
     Kind.DIAGNOSTICS,
+    Kind.NATIVE_DIAGNOSTIC,
     Kind.WORKFLOW,
 }
 _RECOVERY = {"backup_job_id", "lkg_receipt"}
@@ -440,7 +446,13 @@ SUBMIT_RULES: dict[Kind, tuple[set[str], set[str]]] = {
     Kind.FETCH: ({"job_id", "project_id", "source_commit"}, set()),
     Kind.BUILD: (
         {"job_id", "project_id"},
-        {"source_receipt", "derby_detail_mode", "derby_dma_mode", "after"},
+        {
+            "source_receipt",
+            "derby_detail_mode",
+            "derby_dma_mode",
+            "native_diagnostic_mode",
+            "after",
+        },
     ),
     Kind.BACKUP: ({"job_id", "session", "device_id"}, set()),
     Kind.FLASH: ({"job_id", "session", "device_id", "build_job_id"}, set(_RECOVERY)),
@@ -903,6 +915,7 @@ def register_surface(
                 TestName.CAPTURE,
                 TestName.DERBY,
                 TestName.DERBY_FIXED,
+                TestName.NATIVE_DIAGNOSTIC,
                 TestName.FIRMWARE,
                 TestName.RESTART,
                 *FLASH_TESTS,

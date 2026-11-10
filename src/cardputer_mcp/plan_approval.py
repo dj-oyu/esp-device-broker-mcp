@@ -8,6 +8,7 @@ from typing import Any
 
 from .broker import Broker, BrokerError, Session, digest_plan
 from .models import FLASH_TESTS, TestName
+from .native_diagnostic_build import kwargs as native_kwargs
 
 _MAX_PLAN_BYTES = 16 * 1024
 _BASE_KEYS = {
@@ -147,6 +148,13 @@ class PlanApprovals:
                 "argv_template",
                 "profile_execution_policy",
             }
+            if "native_diagnostic_mode" in plan:
+                expected_keys |= {"native_diagnostic_mode"}
+                if (
+                    plan["native_diagnostic_mode"] not in ("ON", "OFF")
+                    or "source_receipt" not in plan
+                ):
+                    raise ValueError
             if "derby_detail_mode" in plan:
                 expected_keys |= {"derby_detail_mode"}
                 if plan["derby_detail_mode"] not in ("ON", "OFF") or "source_receipt" not in plan:
@@ -380,6 +388,7 @@ class PlanApprovals:
                     "capture_home",
                     "derby_smoke",
                     "derby_fixed_workload",
+                    "native_diagnostic",
                     "firmware_observe",
                     "restart_and_observe",
                 )
@@ -401,6 +410,8 @@ class PlanApprovals:
                 != (
                     "pocketjs-derby-smoke-v1"
                     if test == "derby_smoke"
+                    else "pocketjs-native-diagnostic-v1"
+                    if test == "native_diagnostic"
                     else "pocketjs-derby-fixed-v2"
                     if test == "derby_fixed_workload"
                     else "pocketjs-legacy-capture-v1"
@@ -542,6 +553,7 @@ class PlanApprovals:
                         lease.principal_id or "",
                         plan.get("source_receipt"),
                         plan.get("derby_detail_mode"),
+                        **native_kwargs(plan),
                         **(
                             {"derby_dma_mode": plan["derby_dma_mode"]}
                             if "derby_dma_mode" in plan

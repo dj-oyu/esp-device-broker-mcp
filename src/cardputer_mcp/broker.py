@@ -70,6 +70,7 @@ from .models import (
     ResumeWorkSessionRequest,
     TestName,
 )
+from .native_diagnostic_build import kwargs as native_kwargs
 from .offload_io import IOMemo, complete, offload
 from .operator_notifications import OperatorNotifications
 from .resource_recheck import uncertainty
@@ -1953,6 +1954,7 @@ class Broker:
                     TestName.CAPTURE,
                     TestName.DERBY,
                     TestName.DERBY_FIXED,
+                    TestName.NATIVE_DIAGNOSTIC,
                     TestName.FIRMWARE,
                     TestName.RESTART,
                     TestName.BUILD,
@@ -1997,6 +1999,7 @@ class Broker:
                     session.principal_id or "",
                     request.source_receipt,
                     request.derby_detail_mode,
+                    **native_kwargs(request.model_dump(mode="json")),
                     **(
                         {"derby_dma_mode": request.derby_dma_mode}
                         if request.derby_dma_mode is not None
@@ -2282,6 +2285,13 @@ class Broker:
                 raise BrokerError("backend_not_available")
             accepted = self.backend.request_smoke_stop()
             return {**job, "stop_requested": accepted, "requires_review": accepted}
+        if stop is DeviceStop.NATIVE:
+            from .serial_backend import SerialBackend
+
+            if not isinstance(self.backend, SerialBackend):
+                raise BrokerError("backend_not_available")
+            accepted = self.backend.request_native_cancel()
+            return {**job, "stop_requested": accepted, "requires_review": False}
         if stop in (DeviceStop.BUILD, DeviceStop.FLASH):
             controller = self.firmware_build if stop is DeviceStop.BUILD else self.firmware_flash
             accepted = controller.request_stop(request.job_id)
@@ -3291,6 +3301,8 @@ class Broker:
                     job_id,
                     "fixed_trial_persist_failed"
                     if plan["test"] == TestName.DERBY_FIXED.value
+                    else "native_diagnostic_final_commit_failed"
+                    if plan["test"] == TestName.NATIVE_DIAGNOSTIC.value
                     else "firmware_final_commit_failed",
                 )
             self.logs.append(Event.REVIEW)

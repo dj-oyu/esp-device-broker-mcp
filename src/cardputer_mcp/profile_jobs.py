@@ -17,6 +17,7 @@ from .continuation import TicketError
 from .firmware_build import BuildPreflightFailure, hash_file
 from .logs import Event
 from .models import CancelRequest, ExecuteRequest, Origin, PrepareRequest, TestName
+from .native_diagnostic_build import kwargs as native_kwargs
 from .registration_digest import project_digest, project_digests
 from .source_preflight import SourceReadWorker, settings_identity, source_inputs
 from .source_retention import PLAN_LEASE_SECONDS
@@ -211,6 +212,7 @@ class ProfileJobs:
                 principal,
                 request.source_receipt,
                 request.derby_detail_mode,
+                **native_kwargs(request.model_dump(mode="json")),
                 **(
                     {"derby_dma_mode": request.derby_dma_mode}
                     if request.derby_dma_mode is not None

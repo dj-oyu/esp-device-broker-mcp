@@ -42,6 +42,7 @@ class DurableBuildArtifactTests(unittest.TestCase):
         finish=True,
         publish=True,
         owner="alice",
+        native_mode=None,
     ):
         fingerprint = hashlib.sha256(job.encode()).hexdigest()
         environment = "e" * 64
@@ -52,6 +53,8 @@ class DurableBuildArtifactTests(unittest.TestCase):
             project_id="fixture",
             fingerprint=fingerprint,
         )
+        if native_mode is not None:
+            plan.update(native_diagnostic_mode=native_mode, source_receipt="a" * 64)
         plan_hash = digest(plan)
         self.store.put_plan(plan_hash, plan)
         self.store.add_job(job, plan_hash)
@@ -82,6 +85,15 @@ class DurableBuildArtifactTests(unittest.TestCase):
             flash_authorized=False,
             build_location=build_location(fingerprint, environment, self.project.build_root),
         )
+        if native_mode is not None:
+            from cardputer_mcp.native_diagnostic_build import seed, verify
+
+            seed(root, native_mode)
+            manifest.update(
+                native_diagnostic_mode=native_mode,
+                native_diagnostic_config=verify(root, native_mode),
+                source_provenance={"repository": "owner/firmware", "commit": "b" * 40},
+            )
         (root / "broker-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         if publish:
             self.builder.artifacts.publish(job, owner, root, manifest)
@@ -97,6 +109,46 @@ class DurableBuildArtifactTests(unittest.TestCase):
         self.store = Store(self.history)
         self.store.recover()
         self.builder = FirmwareBuild(self.settings, self.history)
+
+    def test_native_config_is_revalidated_after_restart_with_owned_artifacts(self):
+        for selected in ("ON", "OFF"):
+            with self.subTest(selected=selected):
+                job = "native-" + selected
+                root, manifest = self.publish(job, native_mode=selected)
+                self.restart()
+                self.assertEqual((root, manifest), self.context(job))
+                with self.assertRaises(ValueError):
+                    self.context(job, owner="bob")
+                config = root / "sdkconfig"
+                original = config.read_bytes()
+                config.write_bytes(original + b"CONFIG_CHANGED=y\n")
+                with self.assertRaisesRegex(ValueError, "build_output_identity_mismatch"):
+                    self.context(job)
+                config.write_bytes(original)
+                self.assertEqual((root, manifest), self.context(job))
+                path = root / "broker-manifest.json"
+                path.write_text(
+                    json.dumps(
+                        dict(manifest, native_diagnostic_mode="OFF" if selected == "ON" else "ON")
+                    )
+                )
+                with self.assertRaises(ValueError):
+                    self.context(job)
+
+    def test_native_manifest_selector_must_match_owned_plan_before_publication(self):
+        root, manifest = self.publish("native", finish=False, publish=False, native_mode="ON")
+        for changed in ("OFF", None):
+            changed_manifest = dict(manifest, native_diagnostic_mode=changed)
+            with self.assertRaisesRegex(ValueError, "invalid_internal_artifact_receipt"):
+                self.builder.artifacts.publish("native", "alice", root, changed_manifest)
+        ordinary = dict(manifest)
+        ordinary.pop("native_diagnostic_mode")
+        with self.assertRaisesRegex(ValueError, "invalid_internal_artifact_receipt"):
+            self.builder.artifacts.publish("native", "alice", root, ordinary)
+        self.builder.artifacts.publish("native", "alice", root, manifest)
+        self.store.set_job("native", "succeeded", "firmware_build_succeeded_no_flash")
+        self.restart()
+        self.assertEqual((root, manifest), self.context("native"))
 
     def test_flash_owned_context_uses_durable_reference_after_restart(self):
         try:

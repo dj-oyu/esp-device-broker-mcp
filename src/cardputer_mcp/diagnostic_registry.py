@@ -114,7 +114,7 @@ def validate_diagnostic_selection(
 
 def same_diagnostic_selection(left: dict[str, Any], right: dict[str, Any]) -> bool:
     """Require matching axis presence and value, keeping explicit null invalid."""
-    for key in ("derby_detail_mode", "derby_dma_mode"):
+    for key in ("derby_detail_mode", "derby_dma_mode", "native_diagnostic_mode"):
         if key not in left and key not in right:
             continue
         value = left.get(key)
@@ -131,6 +131,11 @@ def validate_diagnostic_record(
         key in record and record[key] is None for key in ("derby_detail_mode", "derby_dma_mode")
     ):
         raise ValueError("diagnostic_axes_required")
+    if "native_diagnostic_mode" in record:
+        from .native_diagnostic_build import mode
+
+        mode(record["native_diagnostic_mode"])
+        validate_source_identity(provenance)
     return validate_diagnostic_selection(
         provenance, record.get("derby_detail_mode"), record.get("derby_dma_mode")
     )

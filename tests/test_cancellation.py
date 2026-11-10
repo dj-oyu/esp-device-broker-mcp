@@ -15,6 +15,7 @@ RUNNING = [
     (Action.SOURCE.value, DeviceStop.SOURCE),
     (Action.DERBY.value, DeviceStop.SMOKE),
     (Action.DERBY_FIXED.value, DeviceStop.SMOKE),
+    (Action.NATIVE_DIAGNOSTIC.value, DeviceStop.NATIVE),
     (Action.BUILD.value, DeviceStop.BUILD),
     *[(test.value, DeviceStop.FLASH) for test in sorted(FLASH_TESTS)],
 ]

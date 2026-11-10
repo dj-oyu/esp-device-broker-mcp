@@ -21,6 +21,7 @@ class Origin(StrEnum):
 
 class TestName(StrEnum):
     DIAGNOSTICS = "diagnostics"
+    NATIVE_DIAGNOSTIC = "native_diagnostic"
     WORKFLOW = "firmware_workflow"
     OBSERVE = "passive_observe"
     FIRMWARE = "firmware_observe"
@@ -157,6 +158,9 @@ class PrepareRequest(StrictModel):
     derby_dma_mode: DiagnosticMode | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    native_diagnostic_mode: DiagnosticMode | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     flash_job_id: Identifier | None = None
     after: str | None = Field(
         default=None,
@@ -194,6 +198,12 @@ class PrepareRequest(StrictModel):
             self.test != TestName.BUILD or self.source_receipt is None
         ):
             raise ValueError("diagnostic_mode_requires_source_build")
+        if "native_diagnostic_mode" in self.model_fields_set and (
+            self.native_diagnostic_mode is None
+            or self.test != TestName.BUILD
+            or self.source_receipt is None
+        ):
+            raise ValueError("native_diagnostic_requires_source_build")
         if self.flash_job_id is not None and self.test != TestName.DERBY_FIXED:
             raise ValueError("flash_job_id_only_for_fixed_collector")
         if (

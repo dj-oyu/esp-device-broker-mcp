@@ -45,6 +45,7 @@ class DeviceStop(Enum):
     APP_EVENT = "app_event"  # running app_session: set its cancelled event
     SOURCE = "source"  # running source: firmware_source.request_stop
     SMOKE = "smoke"  # running DERBY / DERBY fixed: backend.request_smoke_stop
+    NATIVE = "native"  # request firmware cancel; wait for terminal proof and close
     BUILD = "build"  # running build: firmware_build.request_stop
     FLASH = "flash"  # running flash/restore/backup: firmware_flash.request_stop
     QUEUED = "queued"  # queued: cancelled client_cancelled_queued
@@ -66,6 +67,8 @@ def device_stop(state: str, test: str) -> DeviceStop:
             return DeviceStop.SOURCE
         if test in _SMOKE_TESTS:
             return DeviceStop.SMOKE
+        if test == TestName.NATIVE_DIAGNOSTIC.value:
+            return DeviceStop.NATIVE
         if test == TestName.BUILD.value:
             return DeviceStop.BUILD
         if test in _FLASH_TESTS:
