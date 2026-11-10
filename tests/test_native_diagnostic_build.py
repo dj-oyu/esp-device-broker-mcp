@@ -232,7 +232,11 @@ def test_seed_io_failures_are_fixed_without_paths(tmp_path, monkeypatch, operati
         seed(tmp_path, "ON")
 
 
-@pytest.mark.parametrize("data", [b"\xff", b"", b"a" * (1024 * 1024 + 1)])
+@pytest.mark.parametrize(
+    "data",
+    [b"\xff", b"", b"a" * (1024 * 1024 + 1)],
+    ids=["invalid_utf8", "empty", "oversized"],
+)
 def test_invalid_config_data_is_bounded_and_fixed(tmp_path, data):
     (tmp_path / "sdkconfig").write_bytes(data)
     with pytest.raises(ValueError, match="^" + ERROR + "$"):
