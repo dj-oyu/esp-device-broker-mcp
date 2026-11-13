@@ -85,6 +85,45 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             self.broker.firmware_flash._backup(self.registration, "backup-one", "bob")
 
+    async def test_flash_worker_preserves_durable_progress_on_loop_owned_store(self):
+        import threading
+
+        from cardputer_mcp.models import BuildLogRequest
+
+        loop_thread = threading.get_ident()
+        opener = self.broker.firmware_flash.open_job_log
+        called = []
+
+        def checked_open(*args):
+            called.append(threading.get_ident())
+            return opener(*args)
+
+        self.broker.firmware_flash.open_job_log = checked_open
+        prepared = self.broker.prepare(
+            PrepareRequest(
+                session=self.token,
+                job_id="durable-backup",
+                test=TestName.BACKUP,
+                device_id="fixture",
+            )
+        )
+        self.broker.execute(ExecuteRequest(session=self.token, plan_hash=prepared["plan_hash"]))
+        await self.broker.queue.join()
+        self.assertEqual(self.broker.job("durable-backup")["state"], "succeeded")
+        self.assertTrue(called)
+        self.assertEqual(set(called), {loop_thread})
+        ram = self.broker.firmware_flash.logs["durable-backup"]
+        self.assertIsNotNone(ram.durable)
+        request = BuildLogRequest(job_id="durable-backup")
+        expected = [row["text"] for row in ram.read("alice", request)["entries"]]
+        self.assertTrue(expected)
+        del self.broker.firmware_flash.logs["durable-backup"]
+        durable = self.broker.job_logs.build_read("durable-backup", "alice", "flash", request)
+        self.assertIsNotNone(durable)
+        self.assertEqual([row["text"] for row in durable["entries"]], expected)
+        self.assertTrue(self.driver.closed)
+        self.assertEqual(self.driver.writes, 0)
+
     async def test_registration_default_disables_flash_and_restore(self):
         self.assertFalse(self.registration.allow_flash)
         self.assertFalse(self.registration.allow_restore)

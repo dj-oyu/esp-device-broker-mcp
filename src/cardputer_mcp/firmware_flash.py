@@ -675,26 +675,47 @@ class FirmwareFlash:
         def worker_live() -> bool:
             return asyncio.run_coroutine_threadsafe(check_on_loop(), loop).result(timeout=5)
 
-        worker = asyncio.create_task(
-            asyncio.to_thread(
-                self._execute,
-                plan,
-                lambda name: loop.call_soon_threadsafe(stage, name),
-                worker_live,
-                packet,
-            )
-        )
-        interrupted = False
-        while not worker.done():
+        # Opening a durable log reads the loop-owned broker SQLite connection.
+        # Only the thread-safe log handle crosses into the flash worker.
+        durable = None
+        if self.open_job_log is not None:
             try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                interrupted = True
-                self.request_stop(plan["job_id"])
-        result = worker.result()
-        if interrupted:
-            raise FlashFailure("flash_cancelled_needs_review")
-        return result
+                durable = self.open_job_log(
+                    plan["job_id"], plan["flash_principal"], plan.get("test", "firmware_flash")
+                )
+            except Exception:
+                pass  # Logging must not change device execution or its outcome.
+        try:
+            worker = asyncio.create_task(
+                asyncio.to_thread(
+                    self._execute,
+                    plan,
+                    lambda name: loop.call_soon_threadsafe(stage, name),
+                    worker_live,
+                    packet,
+                    durable,
+                )
+            )
+            interrupted = False
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    interrupted = True
+                    self.request_stop(plan["job_id"])
+            result = worker.result()
+            if interrupted:
+                raise FlashFailure("flash_cancelled_needs_review")
+            return result
+        finally:
+            attached = getattr(self.logs.get(plan["job_id"]), "durable", None)
+            if durable is not None and durable is not attached:
+                # Admission/factory failures can exit before the worker attaches it.
+                # An attached log remains open for the broker's terminal outcome.
+                try:
+                    durable.close()
+                except Exception:
+                    pass
 
     def _packet(self, plan: dict[str, Any]) -> tuple[Any, ...]:
         """Verified inputs for one flash; side-effect free, so offload may re-run it."""
@@ -809,7 +830,9 @@ class FirmwareFlash:
             )
         return registration, backup, bundle, images, recovery, metadata, snapshot_files, baseline
 
-    def _execute(self, plan: dict[str, Any], stage: Any, live: Any, packet: Any) -> str:
+    def _execute(
+        self, plan: dict[str, Any], stage: Any, live: Any, packet: Any, durable: Any = None
+    ) -> str:
         validate_flash_plan(plan)
         if plan["job_id"] in self._cancelled_jobs or live() is not True:
             raise FlashFailure("flash_cancelled_or_authority_changed_needs_review")
@@ -845,7 +868,7 @@ class FirmwareFlash:
         )
         attach(
             log,
-            self.open_job_log,
+            lambda *_: durable,
             plan["job_id"],
             plan["flash_principal"],
             plan.get("test", "firmware_flash"),
