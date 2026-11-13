@@ -50,6 +50,26 @@ def retention_evidence(
         ).fetchone()
         is None
     )
+    # Positive evidence of an ended device lease, never absence of a current
+    # lease or a clock deadline. Broker._end_ownership records these transitions
+    # synchronously; every later grant gets a fresh ID and execute requires the
+    # plan's exact session_id. An owning lease can still be renewed, including
+    # while an admitted job holds it past its deadline.
+    leases = store.db.execute(
+        "SELECT lease_id,state,finished FROM device_requests WHERE lease_id IS NOT NULL LIMIT ?",
+        (REFERENCE_LIMIT + 1,),
+    ).fetchall()
+    complete = complete and len(leases) <= REFERENCE_LIMIT
+    ended_leases: set[str] = set()
+    seen_leases: set[str] = set()
+    for lease in leases[:REFERENCE_LIMIT]:
+        lease_id = lease["lease_id"]
+        if not isinstance(lease_id, str) or not lease_id or lease_id in seen_leases:
+            complete = False
+            continue
+        seen_leases.add(lease_id)
+        if lease["state"] in {"released", "expired"} and lease["finished"] is not None:
+            ended_leases.add(lease_id)
     sources: dict[str, Any] = {}
     jobs: dict[str, Any] = {}
     plans: dict[str, Any] = {}
@@ -81,7 +101,9 @@ def retention_evidence(
                 jobs[job_id] = {"state": row["state"], "plan": plan}
                 plans[job_id] = plan
             if (row["id"] is not None and row["state"] not in TERMINAL) or (
-                row["id"] is None and plan.get("broker_epoch") == epoch
+                row["id"] is None
+                and plan.get("broker_epoch") == epoch
+                and plan.get("session_id") not in ended_leases
             ):
                 executable.append(plan)
             if plan.get("project_id") != project:

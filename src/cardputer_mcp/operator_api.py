@@ -191,8 +191,9 @@ class OperatorAPI:
         bounded = request.model_copy(update={"limit": min(request.limit, 16)})
         test = plan.get("test")
         if test == TestName.APP_SESSION.value:
+            owner = self._app_log_access(plan, principal)
             try:
-                app_logs: BuildLogs | None = self._app_job_logs(request.job_id, job, plan)
+                app_logs: BuildLogs | None = self._app_job_logs(request.job_id, job, plan, owner)
             except BrokerError as error:
                 # No current-epoch run (restart, eviction): the durable copy answers.
                 if str(error) != "unavailable":
@@ -200,12 +201,12 @@ class OperatorAPI:
                 app_logs = None
             if app_logs is not None:
                 try:
-                    app = app_logs.read(app_logs.principal, bounded)
+                    app = app_logs.read(owner, bounded)
                 except ValueError:
                     raise BrokerError("unavailable") from None
                 if not app["expired"]:
                     return {"status": "available", **app}
-            return self._durable_app_logs(request.job_id, bounded)
+            return self._durable_app_logs(request.job_id, owner, bounded)
         owner, service, stream = job_reads.log_stream(self.broker, plan, request.job_id)
         result: dict[str, Any] | None = None
         # RAM only: do not invoke receipt/manifest readers or hash retained artifacts.
@@ -228,10 +229,27 @@ class OperatorAPI:
             raise BrokerError("unavailable")
         return {"status": "expired" if result["expired"] else "available", **result}
 
-    def _durable_app_logs(self, job_id: str, request: BuildLogRequest) -> dict[str, Any]:
-        """The persisted app log of any job, after the RAM copy is gone."""
-        owner = self.broker.job_logs.owner(job_id)
-        if not isinstance(owner, str):
+    @staticmethod
+    def _app_log_access(plan: dict[str, Any], principal: OperatorPrincipal) -> str:
+        """Any local operator with read scope may read any app session's redacted output.
+
+        That covers the GUI and the read-only Web UI viewer, as for build, flash and
+        device output. Returns the principal that owns the output, taken from the
+        immutable plan; the stored copies are keyed by it.
+        """
+        if not operator_may_read(principal):
+            raise BrokerError("not_authorized")
+        delivery = plan.get("log_delivery")
+        owner = delivery.get("principal_id") if type(delivery) is dict else None
+        if type(owner) is not str or not owner:
+            raise BrokerError("not_authorized")
+        return owner
+
+    def _durable_app_logs(
+        self, job_id: str, owner: str, request: BuildLogRequest
+    ) -> dict[str, Any]:
+        """The persisted app log of the job's owner, after the RAM copy is gone."""
+        if self.broker.job_logs.owner(job_id) != owner:
             raise BrokerError("unavailable")
         try:
             durable = self.broker.job_logs.build_read(
@@ -244,14 +262,21 @@ class OperatorAPI:
         return {"status": "expired" if durable["expired"] else "available", **durable}
 
     def _app_job_logs(
-        self, job_id: str, job: dict[str, Any] | None, plan: dict[str, Any]
+        self,
+        job_id: str,
+        job: dict[str, Any] | None,
+        plan: dict[str, Any],
+        owner: str,
     ) -> BuildLogs:
-        """Adapt the current-epoch app RAM log cache of a job the broker itself ran."""
+        """Adapt only the owner's current-epoch app RAM log cache."""
         run = self.broker.app_sessions.jobs.get(job_id)
         if run is None or job is None:
             raise BrokerError("unavailable")
-        owner = run.principal
-        if run.events.principal != owner or run.events.logs.principal != owner:
+        if (
+            run.principal != owner
+            or run.events.principal != owner
+            or run.events.logs.principal != owner
+        ):
             raise BrokerError("not_authorized")
         # Validate bounded durable JSON/digest/schema only, never current device
         # preflight or artifact/receipt readers. A read grants no execution authority.

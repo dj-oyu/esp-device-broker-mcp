@@ -294,7 +294,7 @@ class Deferred:
         )
         db.commit()
 
-    def set_wait(self, job_id: str, wait_id: str) -> None:
+    def set_wait(self, job_id: str, wait_id: str | None) -> None:
         db = self._store().db
         db.execute("UPDATE deferred_jobs SET wait_id=? WHERE job_id=?", (wait_id, job_id))
         db.commit()

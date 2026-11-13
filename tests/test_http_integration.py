@@ -111,6 +111,8 @@ async def test_real_mcp_http_disconnect_retry_handover(authenticated_service):
                     "levels",
                     "context",
                     "include_source_cache",
+                    "from_line",
+                    "to_line",
                 },
                 {"view"},
             ),

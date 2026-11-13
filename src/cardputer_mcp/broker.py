@@ -11,6 +11,7 @@ import secrets
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
@@ -72,11 +73,15 @@ from .models import (
 from .offload_io import IOMemo, complete, offload
 from .operator_notifications import OperatorNotifications
 from .resource_recheck import uncertainty
-from .source_snapshot import SourceError
+from .source_snapshot import SourceError, SourceSnapshots
 from .store import Store
 
 # Longest a pre-requested job may wait for the device once its parent has finished.
 DEVICE_WAIT_SECONDS = 1800.0
+# A deferred job whose promotion hit a momentary source-cache conflict is retried on
+# later ticks for this long; the wait never blocks the maintenance loop.
+DEFERRED_BUSY_WINDOW_SECONDS = 120.0
+DEFERRED_BUSY_RETRY_SECONDS = 5.0
 
 
 SERIAL_PORT_OPEN_MEANING = (
@@ -93,8 +98,22 @@ _NON_DEVICE_LOG_TESTS = frozenset(test.value for test in MODULE_LOG_TESTS)
 _TERMINAL_LOG_STATES = frozenset({"succeeded", "failed", "needs_review", "cancelled"})
 
 
+_CATALOG_INVALIDATING_TESTS = frozenset(
+    {
+        TestName.FLASH.value,
+        TestName.RESTORE.value,
+        TestName.BACKUP.value,
+        TestName.RESTART.value,
+    }
+)
+
+
 class BrokerError(ValueError):
     """Public, fixed-string errors. Do not include exceptions or request content."""
+
+
+class TransientRefusal(BrokerError):
+    """A refusal caused by a momentary conflict; the public code is unchanged."""
 
 
 class RecoveryPointRefusal(BrokerError):
@@ -236,6 +255,7 @@ class Broker:
         self.hold: Hold | None = None
         self.tickets = Tickets(self._store, lambda: self.epoch)
         self.deferred = Deferred(self._store, lambda: self.epoch)
+        self._deferred_busy: dict[str, tuple[float, float]] = {}  # job -> (first, not_before)
         self._queue_sequence = 0
         self.maintenance: asyncio.Task[None] | None = None
         self.active_job: str | None = None
@@ -923,6 +943,9 @@ class Broker:
             return
         if len(self.waiters) >= self.settings.max_waiters:
             return  # keep waiting for room in the device queue
+        busy = self._deferred_busy.get(job_id)
+        if busy is not None and self.clock() < busy[1]:
+            return  # backing off after a momentary source-cache conflict
         if self._store().record_count("device_requests") >= 10000:
             self.deferred.finish(job_id, "cancelled", "history_full_archive_offline")
             return
@@ -1012,6 +1035,34 @@ class Broker:
             )
             self.execute(ExecuteRequest(session=lease.capability, plan_hash=prepared["plan_hash"]))
         except Exception as failure:
+            if (
+                plan["test"] == TestName.FLASH.value
+                and isinstance(failure, SourceError)
+                and failure.code == "source_fetch_busy"
+            ):
+                # Publication now encounters cache contention before execution's
+                # binding check. Preserve the same bounded deferred retry policy.
+                try:
+                    self.logs.append(
+                        Event.TRANSITION_REFUSED,
+                        stage="flash_binding:source_reservation:source_fetch_busy",
+                    )
+                except Exception:
+                    pass
+                failure = TransientRefusal("flash_binding_invalid")
+            now = self.clock()
+            first = self._deferred_busy.get(job_id, (now, now))[0]
+            if isinstance(failure, TransientRefusal) and now - first < DEFERRED_BUSY_WINDOW_SECONDS:
+                # Not a binding mismatch: give the slot back and ask again later. An
+                # explicit cancel finishes the row, so it is never retried.
+                self._deferred_busy[job_id] = (first, now + DEFERRED_BUSY_RETRY_SECONDS)
+                self.deferred.set_wait(job_id, None)
+                try:
+                    self._end_ownership("released", "promotion_deferred")
+                except BrokerError:
+                    pass
+                return
+            self._deferred_busy.pop(job_id, None)
             code = (
                 str(failure)
                 if isinstance(failure, BrokerError)
@@ -1025,6 +1076,7 @@ class Broker:
             except BrokerError:
                 pass
             return
+        self._deferred_busy.pop(job_id, None)
         self.deferred.finish(job_id, "promoted", None, prepared["plan_hash"])
 
     def _release_finished_job_lease(self) -> None:
@@ -1982,19 +2034,39 @@ class Broker:
         }
         if request.test in (TestName.FIRMWARE, TestName.RESTART, TestName.APP_SESSION):
             payload["log_delivery"] = self._log_delivery(session)
-        digest = digest_plan(payload)
-        existing = store.job(request.job_id)
-        if existing and existing["plan_hash"] != digest:
-            raise BrokerError("job_id_conflict")
-        if store.plan(digest) is None and store.record_count("plans") >= 10000:
-            raise BrokerError("history_full_archive_offline")
-        store.put_plan(digest, payload)
+        with self._source_plan_guard(payload):
+            digest = digest_plan(payload)
+            existing = store.job(request.job_id)
+            if existing and existing["plan_hash"] != digest:
+                raise BrokerError("job_id_conflict")
+            if store.plan(digest) is None and store.record_count("plans") >= 10000:
+                raise BrokerError("history_full_archive_offline")
+            store.put_plan(digest, payload)
         return {
             "plan_hash": digest,
             "plan": payload,
             **({"storage": storage} if storage is not None else {}),
             "approval_required": False,
         }
+
+    def _source_plan_guard(self, plan: dict[str, Any]) -> AbstractContextManager[None]:
+        """Serialize indirect source reservations with reclamation through plan commit.
+
+        Flash preflight checks owned artifacts before this call. Unlike a build
+        preflight, it need not resolve source, so explicitly take the cache guard.
+        Acquisition never waits: a fetch worker may be awaiting this resident loop.
+        Once published, the immutable plan protects its source in retention reads.
+        """
+        if plan["test"] != TestName.FLASH.value:
+            return nullcontext()
+        store = self._store()
+        job = store.job(plan["build_job_id"])
+        build = store.plan(job["plan_hash"]) if job else None
+        if build is None:
+            raise BrokerError("successful_owned_build_required")
+        if build.get("source_receipt") is None:
+            return nullcontext()
+        return SourceSnapshots(self.settings).cache_guard(build["project_id"])
 
     @staticmethod
     def _log_delivery(session: Session) -> dict[str, Any]:
@@ -2348,6 +2420,21 @@ class Broker:
                 self.backend.device_log = None
             if tap is not None:
                 tap.finish()
+        except Exception:
+            # Logging is never allowed to change the job outcome.
+            pass
+        self._close_durable_logs(job_id, job_log)
+
+    def close_module_job_logs(self, job_id: str) -> None:
+        """Close a registered-project build/source job's durable logs.
+
+        Unlike ``_close_job_logs`` this leaves ``backend.device_log`` alone: such a
+        job runs beside a device job and does not own the device tap.
+        """
+        self._close_durable_logs(job_id, None)
+
+    def _close_durable_logs(self, job_id: str, job_log: JobLog | None) -> None:
+        try:
             durable_logs = [job_log] + [
                 getattr(module.logs.get(job_id), "durable", None)
                 for module in (self.firmware_build, self.firmware_source, self.firmware_flash)
@@ -3217,6 +3304,10 @@ class Broker:
     def _close_admitted(self, run: AdmittedJob) -> None:
         """Cleanup after every admitted job, on any outcome (also on cancellation)."""
         self._record_flash_outcome(run.job_id, run.plan)
+        if run.plan.get("test") in _CATALOG_INVALIDATING_TESTS:
+            # Whatever the outcome, the running firmware or boot may have changed;
+            # a catalog observed before it must not bind the next app session.
+            self.app_sessions.invalidate_catalog()
         self._close_job_logs(run.job_id, run.job_log, run.device_tap)
         run.job_log = run.device_tap = None
         # A running registered-project job owns its own source/build activity

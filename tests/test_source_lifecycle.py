@@ -1,5 +1,6 @@
 """Isolated real-filesystem/SQLite cache lifecycle, without SDK, USB or downloads."""
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -109,6 +110,86 @@ class CacheFixture:
 class SourceLifecycleTests(CacheFixture, unittest.TestCase):
     def setUp(self):
         self.setup_cache()
+
+    def rotating(self, evidence_snapshots=3):
+        """One resident payload slot and a small receipt budget."""
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1))
+        for module in ("source_snapshot", "source_payloads"):
+            stack.enter_context(
+                patch(f"cardputer_mcp.{module}.EVIDENCE_SNAPSHOTS", evidence_snapshots)
+            )
+
+    def receipt_dirs(self):
+        return {item.name for item in (self.root / "cache").iterdir() if len(item.name) == 64}
+
+    def test_full_receipt_evidence_retires_the_oldest_receipt_only_entry(self):
+        self.rotating()
+        first = self.fill(3)
+        self.assertEqual(self.snapshots.usage("fixture")["evidence_snapshots"], 3)
+        self.fetch(4)
+        remaining = self.receipt_dirs()
+        self.assertNotIn(first[0]["source_receipt"], remaining)
+        self.assertIn(first[1]["source_receipt"], remaining)
+        self.assertEqual(self.snapshots.usage("fixture")["evidence_snapshots"], 3)
+        self.fetch(5)
+        self.assertNotIn(first[1]["source_receipt"], self.receipt_dirs())
+        with self.assertRaisesRegex(SourceError, "source_snapshot_unavailable"):
+            self.snapshots.resolve("fixture", first[0]["source_receipt"], "owner")
+
+    def test_rotation_skips_protected_receipts_and_keeps_job_evidence(self):
+        self.rotating()
+        first = self.fill(3)
+        self.add(
+            {
+                "job_id": "build-0",
+                "test": "firmware_build",
+                "broker_epoch": "epoch",
+                "project_id": "fixture",
+                "build_principal": "owner",
+                "source_receipt": first[0]["source_receipt"],
+            },
+            "running",
+        )
+        self.fetch(4)
+        remaining = self.receipt_dirs()
+        self.assertIn(first[0]["source_receipt"], remaining)
+        self.assertNotIn(first[1]["source_receipt"], remaining)
+        self.assertEqual(self.store.job("source-2")["state"], "succeeded")
+
+    def test_nothing_is_rotated_when_every_receipt_only_entry_is_protected(self):
+        self.rotating()
+        first = self.fill(3)
+        for index in range(2):
+            self.add(
+                {
+                    "job_id": f"build-{index}",
+                    "test": "firmware_build",
+                    "broker_epoch": "epoch",
+                    "project_id": "fixture",
+                    "build_principal": "owner",
+                    "source_receipt": first[index]["source_receipt"],
+                },
+                "running",
+            )
+        before = self.receipt_dirs()
+        with self.assertRaisesRegex(SourceError, "source_cache_evidence_full"):
+            self.fetch(4)
+        self.assertEqual(self.receipt_dirs(), before)
+
+    def test_incomplete_reference_evidence_never_rotates(self):
+        self.rotating()
+        self.fill(3)
+        before = self.receipt_dirs()
+        with (
+            patch.object(
+                self.snapshots, "retention", lambda: self.evidence() | {"complete": False}
+            ),
+            self.assertRaisesRegex(SourceError, "source_cache_references_incomplete"),
+        ):
+            self.fetch(4)
+        self.assertEqual(self.receipt_dirs(), before)
 
     def test_explicit_refetch_restores_original_receipt_and_authority(self):
         original = self.fill()

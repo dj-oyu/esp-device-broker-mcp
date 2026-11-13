@@ -34,7 +34,7 @@ async def env(tmp_path, request):
     # the prerequisite backup avoids repeating broker dispatch/stage commits;
     # the full 8 MiB broker bootstrap remains covered explicitly below.
     bootstrap = getattr(request, "param", None)
-    assert bootstrap in (None, "broker-bootstrap"), "unknown bootstrap fixture mode"
+    assert bootstrap in (None, "broker-bootstrap", "prepare-only"), "unknown bootstrap fixture mode"
     broker_bootstrap = bootstrap == "broker-bootstrap"
     flash_size = "8MB" if broker_bootstrap else "4MB"
     flash_bytes = (8 if broker_bootstrap else 4) * 1024 * 1024
@@ -159,6 +159,18 @@ async def env(tmp_path, request):
 
         def execute(prepared):
             return broker.execute(ExecuteRequest(session=session, plan_hash=prepared["plan_hash"]))
+
+        if bootstrap == "prepare-only":
+            yield SimpleNamespace(
+                broker=broker,
+                store=store,
+                receipt=receipt,
+                prepare=prepare,
+                source=source,
+                session=session,
+                driver=driver,
+            )
+            return
 
         # The scenario under test starts with an owned backup and a flashed LKG.
         # Run the prerequisite ROM backup/persistence directly in matrix cases;

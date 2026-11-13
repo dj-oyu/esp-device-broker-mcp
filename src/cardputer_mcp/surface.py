@@ -174,6 +174,18 @@ class StatusRequest(StrictModel):
     levels: list[BuildLogLevel] | None = Field(default=None, max_length=5, description="logs build")
     context: int | None = Field(default=None, ge=0, le=10, description="logs build")
     include_source_cache: bool | None = Field(default=None, description="logs build")
+    from_line: int | None = Field(
+        default=None,
+        ge=1,
+        le=2**31 - 1,
+        description="logs build: first line of a raw range; excludes cursor/levels/context",
+    )
+    to_line: int | None = Field(
+        default=None,
+        ge=1,
+        le=2**31 - 1,
+        description="logs build: last line of the range; needs from_line",
+    )
 
 
 class SubmitRequest(StrictModel):
@@ -364,7 +376,16 @@ STATUS_RULES: dict[View, tuple[set[str], set[str]]] = {
     View.JOB: ({"job_id"}, set()),
     View.LOGS: (
         {"stream"},
-        {"cursor", "limit", "levels", "context", "include_source_cache", "job_id"},
+        {
+            "cursor",
+            "limit",
+            "levels",
+            "context",
+            "include_source_cache",
+            "job_id",
+            "from_line",
+            "to_line",
+        },
     ),
     View.CAPTURE: ({"job_id"}, set()),
     View.APPS: (set(), set()),
@@ -385,7 +406,15 @@ STREAM_RULES: dict[Stream, tuple[set[str], set[str]]] = {
     Stream.BROKER: (set(), {"cursor", "limit"}),
     Stream.BUILD: (
         {"job_id"},
-        {"cursor", "limit", "levels", "context", "include_source_cache"},
+        {
+            "cursor",
+            "limit",
+            "levels",
+            "context",
+            "include_source_cache",
+            "from_line",
+            "to_line",
+        },
     ),
     Stream.DEVICE: ({"job_id"}, set()),
     Stream.APP: ({"job_id"}, {"cursor", "limit"}),
@@ -673,7 +702,11 @@ def register_surface(
                 ]
             if plan is not None and plan.get("execution_context") == "registered_project":
                 require(ctx, "read", honor_auth_required=False)
-            return shared_job(job)
+            shared = shared_job(job)
+            evidence = job_reads.flash_recovery_evidence(resident, job, plan)
+            if evidence is not None:
+                shared["recovery"] = evidence
+            return shared
 
         def checked() -> dict[str, Any]:
             require(ctx, "read", honor_auth_required=True)
@@ -946,6 +979,8 @@ def register_surface(
         view=job adds `chain` for your own chained jobs, like git log from that job:
         chain_position, chain_jobs_known, chain_open (the tip still accepts a child).
         view=jobs lists recent jobs, newest first (cursor from next_cursor).
+        view=logs stream=build returns last_sequence and remaining (lines beyond the page);
+        from_line[/to_line] reads that raw line range, up to limit lines per call.
         view=recovery lists per device the LKG receipts and full backups.
         view=capture returns the PNG of a succeeded capture: RAM for five minutes,
         then a saved copy kept across restarts (oldest pruned past 200 / 64 MiB).
@@ -1080,7 +1115,13 @@ def register_surface(
         assert request.job_id is not None
         job_id = _req(request.job_id)
         if stream is Stream.BUILD:
-            for name in ("levels", "context", "include_source_cache"):
+            if request.to_line is not None and request.from_line is None:
+                return _refuse("argument_required", "from_line")
+            if request.from_line is not None:
+                for name in ("cursor", "levels", "context"):
+                    if getattr(request, name) is not None:
+                        return _refuse("argument_conflict", name)
+            for name in ("levels", "context", "include_source_cache", "from_line", "to_line"):
                 if getattr(request, name) is not None:
                     extra[name] = getattr(request, name)
             log_cursor, error = _cursor(LogCursor, cursor)

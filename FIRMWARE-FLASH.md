@@ -104,6 +104,21 @@ The rule is in `src/cardputer_mcp/device_failure_outcome.py`.
 "Write started" is recorded by the lifecycle immediately before it calls
 `driver.write`; `driver.write` and `Store.finish_firmware` are unchanged.
 
+### Recovery evidence in the job status
+
+For a `firmware_flash` or `firmware_restore` job that ended `needs_review` with
+`flash_native_failed_needs_review` or `flash_boot_unverified_needs_review`, or
+`failed` with `lkg_current_firmware_changed_needs_review`, the job status carries a
+`recovery` object built from broker-held facts: the attempted `manifest_sha256`,
+`firmware_sha256` and `elf_sha256`; the `lkg_receipt`/`backup_job_id` the request
+named; the `current_lkg` receipt (`lkg_unchanged` is always true for a failed
+flash); and a fixed `next_step` with an `explanation`. After a read that stops
+once the write ran, the device usually already holds the attempted firmware, so
+naming the same LKG again is refused by the pre-write fence; the hint says to omit
+`lkg_receipt` and `backup_job_id` to flash again without a recovery point. The
+broker does not retry, restore or select anything on its own. The hashes are the
+ones `status(view=recovery)` already shows to any read-scoped caller.
+
 ## Verified last-known-good recovery
 
 A successful flash automatically retains the exact BIN bytes plus manifest,
@@ -217,6 +232,25 @@ unknown extra-key names, patterns, raw exception messages and credentials are no
 Unknown validation failures retain a generic fixed diagnostic. This is diagnostic
 metadata, not permission to retry or execute. Valid input still follows normal SDK
 parsing and backend authorization.
+
+When flash binding verification refuses admission or deferred promotion, the public
+error remains `flash_binding_invalid`. The bounded broker event log
+(`status(view=logs, stream=broker)`) records `job_transition_refused` with a generated
+stage `flash_binding:<phase>:<code>`. Phases identify the failed check; codes come
+only from fixed broker/source vocabularies, `binding_mismatch` (a comparison failed)
+or `unexpected_error`. Native exception text, paths, tokens and plan contents are
+never included. For example, `flash_binding:source_authority:source_fetch_busy`
+distinguishes cache contention from `source_snapshot_changed`. These broker events
+are bounded in memory and do not become a durable per-job log: promotion can fail
+before an executable job exists. Unknown failures still refuse admission.
+
+Deferred promotion never blocks on the cache. If it finds only a momentary
+`source_fetch_busy`, it releases the device slot, keeps the deferred job pending and
+asks again on a later maintenance tick (every 5 seconds, for at most 120 seconds from
+the first conflict), repeating the full ownership, cancellation and provenance checks
+each time. After the window the job is cancelled with `flash_binding_invalid`. A
+genuine mismatch, an explicit cancellation and a broker restart stay terminal and are
+never retried; nothing is written to the device before a promotion succeeds.
 
 Preflight distinguishes registered_flash_device_required (no matching registered
 device) from registered_flash_operation_not_enabled (operation disabled). A build

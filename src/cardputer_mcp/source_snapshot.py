@@ -205,7 +205,7 @@ class SourceError(ValueError):
                 "Reference evidence is incomplete; no payload reclaimed"
             ),
             "source_cache_evidence_full": (
-                "Finite receipt evidence capacity exhausted; receipts preserved"
+                "Receipt evidence is full and no unprotected receipt-only entry can be retired"
             ),
             "source_snapshot_evicted_fetch_required": "Receipt retained; explicitly fetch the same "
             "registered commit to restore verified source bytes before preparing a build",
