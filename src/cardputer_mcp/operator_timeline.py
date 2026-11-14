@@ -67,6 +67,7 @@ STAGES = frozenset(
         "source_publish",
         "source_reuse_verified",
         "source_reclaim_unreferenced_payload",
+        "source_reclaim_corrupt_payload",
         "source_rotate_receipt_evidence",
         "idf_profile",
         "idf_diagnostics",
