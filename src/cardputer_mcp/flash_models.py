@@ -1,10 +1,11 @@
 """Local-only flash registration. MCP never supplies these paths or enables writes."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .legacy_keys import drop_removed_gates
 from .models import Digest, Identifier
 from .ports import DeviceSelector
 
@@ -23,11 +24,25 @@ class FlashPython(BaseModel):
         return value
 
 
-class UnattendedFlash(BaseModel):
-    """Exact local permission; enabling a flash operation alone grants no consent."""
+REMOVED_UNATTENDED_GATES = {
+    "enabled": "the table's presence is what enables it now; delete the whole "
+    "unattended_flash table to disable it",
+}
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    enabled: bool = Field(default=False, strict=True)
+
+class UnattendedFlash(BaseModel):
+    """Exact local permission; its presence is what enables it (and it grants no authority).
+
+    Older files carried ``enabled``: ``true`` is read and ignored, ``false`` is refused.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def removed_enabled_flag(cls, data: Any) -> Any:
+        return drop_removed_gates(data, REMOVED_UNATTENDED_GATES)
+
     principal_id: str = Field(pattern=r"^[A-Za-z0-9_.:@-]{1,128}$")
     device_id: Identifier
     project_id: Identifier
@@ -44,8 +59,23 @@ class UnattendedFlash(BaseModel):
         return value
 
 
+REMOVED_FLASH_GATES = {
+    "allow_flash": "flash is available for every registered flash device",
+    "allow_backup": "backup is available for every registered flash device",
+    "allow_restore": "restore is available for every registered flash device",
+    "private_backup_acl_confirmed": "the broker no longer asks for this declaration; keep "
+    "the backup_directory private to this user",
+}
+
+
 class FlashDevice(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    """A registered flash device: flash, backup and restore are available for it.
+
+    The former per-device ``allow_*`` switches and ``private_backup_acl_confirmed`` are
+    read for old files (``true`` ignored, ``false`` refused); see legacy_keys.py.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
     selector: DeviceSelector
     flash_bytes: Literal[2097152, 4194304, 8388608, 16777216]
     project_id: Identifier
@@ -54,12 +84,13 @@ class FlashDevice(BaseModel):
     esptool_sha256: Digest
     esptool_version: Literal["5.1.0"] = "5.1.0"
     backup_directory: Path
-    private_backup_acl_confirmed: bool = Field(default=False, strict=True)
     original_elf_sha256: Digest | None = None
-    allow_backup: bool = Field(default=False, strict=True)
-    allow_flash: bool = Field(default=False, strict=True)
     unattended_flash: UnattendedFlash | None = None
-    allow_restore: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def removed_gates(cls, data: Any) -> Any:
+        return drop_removed_gates(data, REMOVED_FLASH_GATES)
 
     @field_validator("esptool_directory", "backup_directory")
     @classmethod

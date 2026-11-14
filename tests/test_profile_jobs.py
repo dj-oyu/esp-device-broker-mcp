@@ -336,7 +336,6 @@ async def test_source_pending_cleanup_refusal_is_durable_uncertainty(
             "source_repository": SourceRepository(
                 github_repository="synthetic/firmware",
                 cache_root=cache,
-                private_acl_confirmed=True,
             )
         }
     )
@@ -414,7 +413,6 @@ async def test_source_stop_confirms_pending_cleanup_without_usb_lease(
             "source_repository": SourceRepository(
                 github_repository="synthetic/firmware",
                 cache_root=cache,
-                private_acl_confirmed=True,
             )
         }
     )

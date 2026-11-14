@@ -87,7 +87,7 @@ def test_manager_refuses_stale_unknown_or_nonboolean_runtime_before_child(
     c.settings.broker_config.write_text(
         f'backend = "mock"\nport = 18765\n[tunnel]\ningress_enabled = {str(enabled).lower()}\n'
     )
-    settings = c.settings.model_copy(update={"ingress_enabled": enabled})
+    settings = c.settings.model_copy(update={"mode": "ingress" if enabled else "off"})
     assert c.manager.configure(settings, URL)["configured"] is True
     c.identity["tunnel_ingress_enabled"] = not enabled if runtime == "opposite" else runtime
     if runtime is None:

@@ -44,7 +44,6 @@ async def authenticated_mock(
     settings = Settings(
         state_dir=tmp_path / "state",
         port=port,
-        allow_mock_execution=True,
         mock_stage_seconds=0.001,
     )
     resident = Broker(settings, lock_path=tmp_path / "device.lockfile")

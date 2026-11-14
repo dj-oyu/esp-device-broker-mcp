@@ -439,9 +439,7 @@ async def test_flash_without_recovery_point_commits_the_build_as_lkg(env, state,
     else:
         # The real case: an earlier write did not commit, so the device content no
         # longer matches the LKG. With the LKG named, the fence would refuse.
-        metadata, _ = FirmwareSnapshots(_lkg_root(env), windows_private_acl_confirmed=True).load(
-            env.selected
-        )
+        metadata, _ = FirmwareSnapshots(_lkg_root(env)).load(env.selected)
         app = metadata["bundle"]["segments"][-1]
         env.driver.data[app["offset"] + 3] ^= 1
     _no_lookup(monkeypatch)
@@ -474,9 +472,7 @@ async def test_flash_without_recovery_point_commits_the_build_as_lkg(env, state,
     assert current["kind"] == "artifact_bundle"
     assert current["baseline"] == "no-baseline"
     assert current["principal"] == "alice"
-    metadata, _ = FirmwareSnapshots(_lkg_root(env), windows_private_acl_confirmed=True).load(
-        current["receipt"]
-    )
+    metadata, _ = FirmwareSnapshots(_lkg_root(env)).load(current["receipt"])
     assert metadata["expected_device_sha256"] == env.driver.security.device_sha256
     summary = env.store.firmware_summary("no-baseline", "alice")
     assert {key: summary[key] for key in SUMMARY_FIELDS} == SUMMARY_FIELDS
@@ -532,9 +528,7 @@ async def test_flash_without_recovery_point_failure_keeps_prior_target(env, case
 
 @pytest.mark.parametrize("named", ["lkg_receipt", "backup_job_id"])
 async def test_an_explicitly_named_recovery_point_keeps_the_prewrite_fence(env, named):
-    metadata, _ = FirmwareSnapshots(_lkg_root(env), windows_private_acl_confirmed=True).load(
-        env.selected
-    )
+    metadata, _ = FirmwareSnapshots(_lkg_root(env)).load(env.selected)
     app = metadata["bundle"]["segments"][-1]
     env.driver.data[app["offset"] + 3] ^= 1
     before = characterization._durable(env)

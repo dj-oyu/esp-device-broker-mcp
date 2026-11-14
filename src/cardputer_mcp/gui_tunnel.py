@@ -934,7 +934,7 @@ class TunnelPanel:
         self.path_var.set(str(model.path) if model.path else "Broker TOML: not configured")
         ingress = "enabled" if model.metadata.get("ingress_enabled") is True else "disabled"
         self.ingress_var.set(
-            f"Tunnel ingress: {ingress} (read-only). Change [tunnel] ingress_enabled manually, "
+            f"Tunnel ingress: {ingress} (read-only). Change [tunnel] mode manually, "
             "then restart the idle broker and reload this TOML."
         )
         enabled = "normal" if model.can_edit() else "disabled"

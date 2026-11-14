@@ -23,10 +23,7 @@ async def _service(tmp_path, authenticated):
         port = listener.getsockname()[1]
     state = (tmp_path / "state").as_posix()
     config = tmp_path / "mock.toml"
-    config.write_text(
-        f'port = {port}\nstate_dir = "{state}"\n'
-        "allow_mock_execution = true\nmock_stage_seconds = 0.05\n"
-    )
+    config.write_text(f'port = {port}\nstate_dir = "{state}"\nmock_stage_seconds = 0.05\n')
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",

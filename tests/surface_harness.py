@@ -42,7 +42,6 @@ async def serve(tmp_path: Path, *, require_auth: bool) -> AsyncIterator[Surface]
     settings = Settings(
         state_dir=tmp_path / "state",
         port=port,
-        allow_mock_execution=True,
         mock_stage_seconds=0.001,
     )
     resident = Broker(settings, lock_path=tmp_path / "device.lockfile")

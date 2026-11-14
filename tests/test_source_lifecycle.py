@@ -35,7 +35,6 @@ class CacheFixture:
         registration = SimpleNamespace(
             cache_root=self.root / "cache",
             github_repository="fixture/project",
-            private_acl_confirmed=True,
             submodule_repositories=[],
             model_dump_json=lambda **_: '{"repository":"fixture/project"}',
         )

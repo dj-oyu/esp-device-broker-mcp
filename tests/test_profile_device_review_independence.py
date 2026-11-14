@@ -31,7 +31,6 @@ async def test_unrelated_device_review_does_not_gate_explicit_profile_job(
             "source_repository": SourceRepository(
                 github_repository="synthetic/firmware",
                 cache_root=tmp_path / "source-cache",
-                private_acl_confirmed=True,
             )
         }
     )

@@ -37,16 +37,14 @@ def registrations(tmp_path):
         esptool_directory=tmp_path / "SYNTHETIC_PRIVATE_TOOLS",
         esptool_sha256="d" * 64,
         backup_directory=tmp_path / "SYNTHETIC_PRIVATE_BACKUP",
-        allow_backup=False,
-        allow_flash=False,
-        allow_restore=False,
     )
     return project, device
 
 
-BLOCKED = {
-    "operations": {"backup": False, "flash": False, "restore": False},
-    "flash_baseline": "flash_not_enabled",
+# Every registered device offers all three operations; none needs a recovery point.
+AVAILABLE = {
+    "operations": {"backup": True, "flash": True, "restore": True},
+    "flash_baseline": "not_required",
     "lkg_recorded": False,
 }
 
@@ -99,8 +97,8 @@ async def test_registered_targets_exact_ids_only_and_current_settings(
             "ok": True,
             "build_projects": [{"project_id": "alpha-project"}, {"project_id": "z-project"}],
             "flash_devices": [
-                {"device_id": "alpha-device", **BLOCKED},
-                {"device_id": "z-device", **BLOCKED},
+                {"device_id": "alpha-device", **AVAILABLE},
+                {"device_id": "z-device", **AVAILABLE},
             ],
         }
         rendered = json.dumps(result)
@@ -113,7 +111,7 @@ async def test_registered_targets_exact_ids_only_and_current_settings(
         assert await call(client, "status", {"view": "targets"}) == {
             "ok": True,
             "build_projects": [],
-            "flash_devices": [{"device_id": "new-device", **BLOCKED}],
+            "flash_devices": [{"device_id": "new-device", **AVAILABLE}],
         }
         resident.settings = resident.settings.model_copy(update={"flash_devices": {}})
         assert await call(client, "status", {"view": "targets"}) == {
@@ -193,26 +191,10 @@ async def test_registered_targets_metadata_empty_input_and_read_only(authenticat
     assert_no_work(resident)
 
 
-@pytest.mark.parametrize(
-    ("allow", "has_lkg", "baseline"),
-    [
-        # A flash never needs an LKG or a backup first (decision 2026-10-25).
-        (dict(allow_backup=True, allow_flash=True), True, "not_required"),
-        (dict(allow_backup=True, allow_flash=True), False, "not_required"),
-        (dict(allow_flash=True), False, "not_required"),
-        (dict(allow_flash=True), True, "not_required"),
-        (dict(allow_backup=True), False, "flash_not_enabled"),
-        ({}, True, "flash_not_enabled"),
-    ],
-)
-def test_flash_readiness_never_requires_a_recovery_point(tmp_path, allow, has_lkg, baseline):
+@pytest.mark.parametrize("has_lkg", [True, False])
+def test_flash_readiness_never_requires_a_recovery_point(tmp_path, has_lkg):
     _, device = registrations(tmp_path)
-    readiness = flash_readiness(device.model_copy(update=allow), has_lkg)
-    assert readiness["flash_baseline"] == baseline
+    readiness = flash_readiness(device, has_lkg)
+    assert readiness["flash_baseline"] == "not_required"
     assert readiness["lkg_recorded"] is has_lkg
-    assert readiness["operations"] == {
-        "backup": allow.get("allow_backup", False),
-        "flash": allow.get("allow_flash", False),
-        "restore": False,
-    }
-    assert "backup" not in readiness["flash_baseline"]
+    assert readiness["operations"] == {"backup": True, "flash": True, "restore": True}

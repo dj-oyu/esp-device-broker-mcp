@@ -356,8 +356,7 @@ RECOVERY_POINT_NEXT_STEPS: dict[str, str] = {
         "firmware_backup on this device and pass that job's id"
     ),
     "backup_not_enabled_in_local_registration": (
-        "Backup is not enabled for this device in the local registration; an "
-        "operator must set allow_backup before a backup of it can be taken. A flash "
+        "No longer produced: backup is available for every registered device. A flash "
         "may omit both lkg_receipt and backup_job_id to flash without a recovery point"
     ),
 }

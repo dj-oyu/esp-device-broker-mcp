@@ -83,7 +83,7 @@ async def test_cancel_only_queued_and_capacity(tmp_path):
     backend = MockBackend(0.001)
     backend.gate = asyncio.Event()
     b = Broker(
-        Settings(state_dir=tmp_path, max_queue=1, allow_mock_execution=True),
+        Settings(state_dir=tmp_path, max_queue=1),
         backend=backend,
         lock_path=tmp_path / "device.lockfile",
         principal_valid=lambda *args: True,

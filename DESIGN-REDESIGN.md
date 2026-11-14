@@ -337,7 +337,7 @@ Tunnel のプロセスの監督(CLI の `Popen` と GUI の Job Object)と起動
   `FLASH_EFFECTS` は変えないので、保存済みの計画はそのまま有効。`"none"` は新しい firmware_flash の計画
   (`manifest_export_sha256` を持つもの)だけに許す。
 - `lkg_receipt` か `backup_job_id` を明示したフラッシュ、リストア、バックアップは変えない(フェンスも残す)。
-- `status(view=targets)` の `flash_baseline` は、`allow_flash` が true なら `"not_required"`。
+- `status(view=targets)` の `flash_baseline` は、`allow_flash` が true なら `"not_required"`。(後の変更で `allow_flash`/`allow_backup`/`allow_restore` は廃止され、登録済みの実機では常に `"not_required"`)
   `lkg_recorded` を足した。§5.2 の「行き止まりを示す」は、行き止まりがなくなったので不要になった。
 
 ### 5.4 段階 3c: 旧 `@op` 層を畳んだ(2026-10-25)

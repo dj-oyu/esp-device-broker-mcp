@@ -149,7 +149,7 @@ broker が使っている TOML に、次の 2 か所を設定します。
 
 ```toml
 [tunnel]
-ingress_enabled = true
+mode = "ingress"
 # tunnel_id / client_exe / client_archive / health_port は既存の値をそのまま残す
 
 [gateway]
@@ -159,21 +159,21 @@ google_client_id = "<id>.apps.googleusercontent.com"
 allowed_google_sub = "<手順 2 で調べた sub>"
 broker_env_file = 'C:\Users\YOUR_NAME\AppData\Local\DeviceBroker\gateway-broker.env'
 google_client_secret_file = 'C:\Users\YOUR_NAME\AppData\Local\DeviceBroker\gateway-google.env'
-funnel = false
+mode = "off"   # "public" で Funnel を開く
 # tailscale_exe = 'C:\Program Files\Tailscale\tailscale.exe'   # 既定値と違う場所のときだけ
 ```
 
 - `[tunnel]` が既にある場合は、表を二重に作らずに既存の表を編集します。
-- `ingress_enabled = true` は broker を再起動して初めて反映されます。
+- `mode = "ingress"`（旧 `ingress_enabled = true`）は broker を再起動して初めて反映されます。
   OpenAI Tunnel を使っている場合は、その接続先も `/tunnel/mcp` に変わります。
   切り替え手順は [TUNNEL-WINDOWS.md](TUNNEL-WINDOWS.md) を見てください。
 - `port` は broker の `port` とも、Tunnel の `health_port` とも違う値にします（同じだと `gateway_port_conflict`）。
 - 2 つのファイルのパスは絶対パスで書きます。パスに `\` があるので、TOML では単引用符 `'…'` を使います。
-- `funnel` は `true` / `false` の真偽値だけを受け付けます。
+- `mode` は `"off"` / `"public"` だけを受け付けます（旧キー `funnel = true` は `"public"`、`false` は `"off"` として読みます。`mode` と食い違うと起動を拒否します）。
 
 ## 5. まず Funnel なしで起動して確かめる
 
-broker を起動した状態で、`funnel = false` のまま gateway を起動します。
+broker を起動した状態で、`mode = "off"` のまま gateway を起動します。
 
 ```powershell
 .\cardputer.exe gateway --config '.\broker.local.toml'
@@ -193,10 +193,10 @@ Ctrl+C で停止します。
 
 ## 6. Funnel を有効にして Claude から接続する
 
-> `funnel = true` にすると、gateway が動いている間、この PC の 443 番がインターネットに公開されます。
+> `mode = "public"` にすると、gateway が動いている間、この PC の 443 番がインターネットに公開されます。
 > OAuth を通らない要求は `/mcp` で 401 になります。それでも、OAuth のエンドポイントには誰でも到達できます。
 
-1. TOML の `funnel = true` にして、gateway を起動し直します。
+1. TOML の `mode = "public"` にして、gateway を起動し直します。
 2. `gateway_funnel_open https://<machine>.<tailnet>.ts.net` が出るまで待ちます（最長 15 秒）。
 3. claude.ai で **Settings → Connectors → Add custom connector** を開きます。
    - **Name**: 任意（例: `Cardputer`）
@@ -263,7 +263,7 @@ gateway の標準エラーには、次のような固定のイベント名だけ
 | --- | --- |
 | `gateway_config_invalid` | TOML を読めない、または値が不正です。`public_url` の形式（https・小文字・末尾 `/` なし）とパス（絶対パス）を確認してください |
 | `gateway_config_missing` | `[gateway]` 節がありません |
-| `gateway_requires_tunnel_ingress` | `[tunnel] ingress_enabled = true` になっていません |
+| `gateway_requires_tunnel_ingress` | `[tunnel] mode = "ingress"` になっていません |
 | `gateway_port_conflict` | gateway の `port` が broker の `port` か `health_port` と同じです |
 | `gateway_broker_env_invalid` | `broker_env_file` を読めません（置き場所、書式、プレースホルダーのままのキー） |
 | `gateway_broker_port_mismatch` | env ファイルの URL の port が broker の `port` と違います |

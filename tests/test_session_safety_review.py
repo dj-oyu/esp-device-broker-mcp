@@ -159,7 +159,7 @@ def prepare_job(broker: Broker, lease: dict[str, Any], job_id: str) -> ExecuteRe
 async def session_broker(tmp_path: Path):
     clock = FakeClock()
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         clock=clock,
         lock_path=tmp_path / "device.lockfile",
         principal_valid=lambda principal_id, origin, scopes: True,
@@ -347,7 +347,7 @@ async def test_invalidation_pins_complete_async_workflow_and_cancels_pending(
     backend = GatedBackend()
     valid = {"first", "second"}
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         clock=clock,
         backend=backend,
         lock_path=tmp_path / "device.lockfile",
@@ -394,7 +394,7 @@ async def test_uncertain_backend_close_never_hands_device_to_waiter(tmp_path: Pa
     clock = FakeClock()
     backend = UncertainCloseBackend(0.001)
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         clock=clock,
         backend=backend,
         lock_path=tmp_path / "device.lockfile",
@@ -512,7 +512,7 @@ async def test_late_wait_cancel_cannot_release_promoted_lease(session_broker) ->
 async def test_active_session_close_is_rejected_without_interrupting_worker(tmp_path: Path) -> None:
     backend = GatedBackend()
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         backend=backend,
         lock_path=tmp_path / "device.lockfile",
         principal_valid=lambda principal_id, origin, scopes: True,
@@ -649,7 +649,7 @@ async def test_restart_has_no_resume_no_grant_and_no_automatic_replay(tmp_path: 
         store.close()
     backend = MockBackend(0.001)
     broker = Broker(
-        Settings(state_dir=state, allow_mock_execution=True),
+        Settings(state_dir=state),
         backend=backend,
         lock_path=tmp_path / "device.lockfile",
         principal_valid=lambda principal_id, origin, scopes: True,

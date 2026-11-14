@@ -13,7 +13,7 @@ from cardputer_mcp.models import TestName
 
 def _broker(root: Path) -> Broker:
     return Broker(
-        Settings(state_dir=root / "state", allow_mock_execution=True),
+        Settings(state_dir=root / "state"),
         lock_path=root / "device.lockfile",
         principal_valid=lambda *args: True,
     )

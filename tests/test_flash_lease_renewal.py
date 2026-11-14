@@ -144,7 +144,7 @@ async def test_renewal_preserves_authority_at_both_commit_guards(env, guard_numb
         elif change == "epoch":
             broker.epoch = "other"
         elif change == "registration":
-            env.configure(allow_flash=False)
+            env.configure(esptool_sha256="c" * 64)
         elif change == "revoked":
             broker.principal_valid = lambda *args: False
         elif change == "work_expired":
@@ -255,7 +255,7 @@ async def test_reentrant_renewal_cannot_bypass_binding_after_auth_callback(env, 
             if change == "lease":
                 env.broker.session = replace(env.broker.session)
             elif change == "registration":
-                env.configure(allow_flash=False)
+                env.configure(esptool_sha256="c" * 64)
             else:
                 env.broker.work_sessions["work-one"].state = "closed"
         return True

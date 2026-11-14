@@ -22,7 +22,7 @@ class ResourceTests(unittest.TestCase):
         self.base = Path(self.tmp.name).resolve()
         self.root = self.base / "cache"
         self.root.mkdir(mode=0o700)
-        registration = SimpleNamespace(cache_root=self.root, private_acl_confirmed=True)
+        registration = SimpleNamespace(cache_root=self.root)
         project = SimpleNamespace(
             source_repository=registration, project_dir=self.base / "work", build_root=None
         )

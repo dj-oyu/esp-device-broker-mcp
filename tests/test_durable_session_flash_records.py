@@ -269,9 +269,7 @@ async def test_prewrite_failure_outcome_says_no_write_and_success_names_lkg(env)
     metadata_root = env.broker.settings.flash_devices["fixture"].backup_directory / "lkg"
     from cardputer_mcp.flash_lkg_store import FirmwareSnapshots
 
-    metadata, _ = FirmwareSnapshots(metadata_root, windows_private_acl_confirmed=True).load(
-        env.selected
-    )
+    metadata, _ = FirmwareSnapshots(metadata_root).load(env.selected)
     app = metadata["bundle"]["segments"][-1]
     env.driver.data[app["offset"] + 3] ^= 1
     await _flash(env, "prewrite", build_job_id="build-one", lkg_receipt=env.selected)

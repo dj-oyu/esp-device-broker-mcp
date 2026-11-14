@@ -31,7 +31,7 @@ class Clock:
 @asynccontextmanager
 async def running(tmp_path, clock):
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         backend=MockBackend(0.001),
         clock=clock,
         lock_path=tmp_path / "device.lockfile",

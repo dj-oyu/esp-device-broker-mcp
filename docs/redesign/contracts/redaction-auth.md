@@ -139,7 +139,7 @@ Called only from `broker.py:1853-1856` (execute path). Rebuilds plan from DB wit
 
 - `key_registry._safe_file/_safe_directory` (`:126-153`): link/reparse/hardlink/size checks on all OSes; **owner/mode checks only on POSIX**. Module docstring (`:8-13`) states no ACL guarantee on Windows; operator must use an OS-user-private directory. `prepare_default_key_directory` does no ACL repair (`registry_defaults.py:25-32`); `mkdir(mode=0o700)` is a no-op for ACLs on Windows.
 - Runtime auth file is **refused** on Windows (`auth.py:39-41` → `private_runtime_credentials_unsupported`).
-- Contrast: flash backup / LKG / source cache require an explicit `windows_private_acl_confirmed` / `private_acl_confirmed` operator attestation on Windows (`flash_backup.py:32-35`; `source_snapshot.py:820-821`). Key registry has no such attestation.
+- Contrast (historical): flash backup / LKG / source cache once required an explicit operator attestation on Windows (`windows_private_acl_confirmed` / `private_acl_confirmed`). It was only a declaration, never an ACL check, and has been removed; they now behave like the key registry (POSIX owner/mode check, Windows ACL an operator prerequisite).
 
 ### B5. "Key registry refusal inside a git checkout" — does not exist for the key registry
 

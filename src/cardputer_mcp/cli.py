@@ -125,13 +125,13 @@ def parser() -> argparse.ArgumentParser:
     gateway = sub.add_parser(
         "gateway",
         help="Claude gateway (OAuth + MCP relay to the broker); opens Tailscale Funnel only "
-        "when the TOML's [gateway] sets funnel = true",
+        'when the TOML\'s [gateway] sets mode = "public"',
     )
     gateway.add_argument("--config", type=Path, required=True, help="Broker TOML with [gateway]")
     webui = sub.add_parser(
         "webui",
         help="Read-only web UI (Google login); runs tailscale serve (tailnet only) only "
-        "when the TOML's [webui] sets serve = true",
+        'when the TOML\'s [webui] sets mode = "tailnet" (mode = "public" uses Funnel)',
     )
     webui.add_argument("--config", type=Path, required=True, help="Broker TOML with [webui]")
     sub.add_parser(

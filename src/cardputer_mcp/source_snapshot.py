@@ -163,6 +163,7 @@ SOURCE_ERROR_CODES = frozenset(
         "source_linked_path_rejected",
         "source_log_not_available",
         "source_plan_changed",
+        # No longer raised; kept so records written by earlier versions stay readable.
         "source_private_acl_confirmation_required",
         "source_private_cache_required",
         "source_rate_limited",
@@ -912,8 +913,6 @@ class SourceSnapshots:
             info = root.stat()
             if info.st_uid != int(vars(os)["geteuid"]()) or stat.S_IMODE(info.st_mode) != 0o700:
                 raise SourceError("source_private_cache_required")
-        if os.name == "nt" and registration.private_acl_confirmed is not True:
-            raise SourceError("source_private_acl_confirmation_required")
         return project, registration
 
     def usage(self, project_id: str, *, stop: threading.Event | None = None) -> dict[str, int]:
@@ -1073,10 +1072,7 @@ class SourceSnapshots:
         self, plan: dict[str, Any], live: Callable[[], bool], stage: Callable[[str], None]
     ) -> dict[str, Any]:
         _, registration = self.registration(plan["project_id"])
-        BackupStore(
-            self.cache_root(registration),
-            windows_private_acl_confirmed=registration.private_acl_confirmed,
-        )
+        BackupStore(self.cache_root(registration))
         with self.cache_guard(plan["project_id"], write=True), ExitStack() as rollback:
             result = self._fetch(plan, live, stage, rollback)
             rollback.pop_all()
@@ -1120,10 +1116,7 @@ class SourceSnapshots:
             or usage["evidence_bytes"] - rotation_bytes + 32 * 1048576 > EVIDENCE_BYTES
         ):
             raise SourceError("source_cache_evidence_full")
-        root = BackupStore(
-            self.cache_root(registration),
-            windows_private_acl_confirmed=registration.private_acl_confirmed,
-        ).directory
+        root = BackupStore(self.cache_root(registration)).directory
         if shutil.disk_usage(root).free < LIMITS["expanded_bytes"] + 512 * 1048576:
             raise SourceError("source_disk_reserve_required")
         pending = root / ("pending-" + uuid4().hex)

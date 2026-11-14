@@ -43,7 +43,7 @@ def _config(tmp_path, *, broker_port=8765, gateway_port=None, ingress=True, extr
     path.write_text(
         f"port = {broker_port}\n"
         "[tunnel]\n"
-        f"ingress_enabled = {'true' if ingress else 'false'}\n"
+        f'mode = "{"ingress" if ingress else "off"}"\n'
         "[gateway]\n"
         f'public_url = "{PUBLIC}"\n'
         f"port = {gateway_port or 8770}\n"

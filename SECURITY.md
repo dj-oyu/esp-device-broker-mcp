@@ -80,6 +80,30 @@ and actual cloud compatibility require account-backed validation. `/readyz` is n
 proof of successful OpenAI authentication or polling. No public broker bind or
 network-security setting changes are made by these launchers.
 
+## Local settings that were removed or consolidated
+
+- **Registration is the hardware-write gate.** The per-device `allow_flash`,
+  `allow_backup` and `allow_restore` switches are gone: backup, flash and restore are
+  available for every registered flash device, and for no unregistered one. Everything
+  else still applies to each operation: a live lease, the exact prepared plan, an explicit
+  `execute`, readback and boot verification, ownership, cancellation, and an LKG or backup
+  baseline only when the request names one. Remote MCP callers still cannot register a
+  device, path or tool.
+- **Windows ACLs are an operator prerequisite, not an attestation.** The
+  `private_acl_confirmed` (source cache) and `private_backup_acl_confirmed` (flash backup
+  directory) declarations were operator-declared and never checked by the broker, so they
+  are gone. The broker still creates those directories with `0700`, refuses links and, on
+  POSIX, checks owner and mode. On Windows it does not inspect ACLs (the same as the key
+  registry): keep `cache_root` and `backup_directory` in a directory private to your account.
+- **Exposure is one `mode` per component and defaults to closed.** `[webui] mode`
+  (`off`/`tailnet`/`public`), `[gateway] mode` (`off`/`public`) and `[tunnel] mode`
+  (`off`/`ingress`) replace the boolean flags. They are read from the local TOML only; no
+  MCP request can change them. A legacy flag that contradicts `mode` stops startup.
+- **Legacy `false` never turns into "on".** A removed gate that still says `false` in an old
+  file (for example `allow_backup = false`) stops startup with a fixed message that names
+  only the key; `true` is accepted and ignored. See the README's "Upgrading an existing
+  configuration" for the exact list.
+
 ## Logical sessions and local queue management
 
 Logical resume capabilities and physical lease capabilities are different,

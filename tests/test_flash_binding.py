@@ -53,13 +53,14 @@ async def test_authentication_callback_cannot_change_registered_target(env, phas
         env.execute(prepared)
 
     def changed(*args):
-        env.configure(allow_flash=False)
+        env.configure(esptool_sha256="c" * 64)
         return True
 
     env.broker.principal_valid = changed
     if phase == "admission":
         with pytest.raises(
-            BrokerError, match="execution_intent_not_available|backend_preflight_failed"
+            BrokerError,
+            match="execution_intent_not_available|backend_preflight_failed|plan_backend_mismatch",
         ):
             env.execute(prepared)
         assert env.store.job("changed-target") is None

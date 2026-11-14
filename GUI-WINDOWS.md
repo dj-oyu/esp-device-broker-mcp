@@ -71,6 +71,7 @@ uv sync --frozen
 Tunnel の実際の ID や認証キーは自動設定しません。
 既存 broker の黙った再利用や強制終了、認証キーの永続保存はしません。
 GUI 右上の Tunnel... から、同じ broker TOML の非秘密設定と、GUI が起動した client の死活を管理できます。
+保存した `[tunnel]` では、専用入口の値は `mode`（旧 `ingress_enabled`）として保たれます。この値は GUI から変更できません（読み取り専用表示）。
 GUI を閉じるときは、所有する Tunnel があれば切断確認を表示します。broker と実行中の仕事は継続します。元の PowerShell で再度 GUI だけを開く場合:
 
 ```powershell

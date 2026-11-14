@@ -45,7 +45,7 @@ FULL_BACKUP_METADATA = dict(
 
 
 def test_envelope_keeps_compat_absent_distinct_from_null(tmp_path):
-    snapshots = FirmwareSnapshots(tmp_path / "lkg", windows_private_acl_confirmed=True)
+    snapshots = FirmwareSnapshots(tmp_path / "lkg")
     absent = snapshots.stage(dict(FULL_BACKUP_METADATA), {})
     null = snapshots.stage(FULL_BACKUP_METADATA | {"compat": None}, {})
     assert absent != null
@@ -66,7 +66,7 @@ def test_envelope_keeps_compat_absent_distinct_from_null(tmp_path):
 
 @pytest.mark.parametrize("envelope", [{"schema_version": 2}, {"extra": 1}])
 def test_envelope_schema_is_strict(tmp_path, envelope):
-    snapshots = FirmwareSnapshots(tmp_path / "lkg", windows_private_acl_confirmed=True)
+    snapshots = FirmwareSnapshots(tmp_path / "lkg")
     body = {"schema_version": 1, "metadata": FULL_BACKUP_METADATA, "files": {}} | envelope
     receipt = snapshots.put(json.dumps(body, sort_keys=True).encode())
     with pytest.raises(FlashFailure, match="^lkg_snapshot_missing_or_changed$"):
@@ -76,7 +76,7 @@ def test_envelope_schema_is_strict(tmp_path, envelope):
 @pytest.mark.parametrize("compat", ["null", "absent"])
 async def test_full_backup_lkg_with_compat_absent_or_null_is_a_flash_baseline(env, compat):
     root = env.broker.settings.flash_devices["fixture"].backup_directory / "lkg"
-    snapshots = FirmwareSnapshots(root, windows_private_acl_confirmed=True)
+    snapshots = FirmwareSnapshots(root)
     restored = env.prepare("restore-full", Action.RESTORE, backup_job_id="backup-one")
     env.execute(restored)
     await env.broker.queue.join()
@@ -124,7 +124,7 @@ RECEIPT = BackupReceipt("a" * 64, "b" * 64, len(DATA), hashlib.sha256(DATA).hexd
 
 @pytest.fixture
 def backups(tmp_path):
-    store = BackupStore(tmp_path / "private", windows_private_acl_confirmed=True)
+    store = BackupStore(tmp_path / "private")
     retained = store.save("backup-job", "owner", RECEIPT, DATA)
     return store, retained
 

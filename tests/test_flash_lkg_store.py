@@ -15,7 +15,7 @@ from cardputer_mcp.store import Store
 class PersistenceTests(unittest.TestCase):
     def test_competing_pending_object_is_preserved(self):
         with tempfile.TemporaryDirectory() as temp:
-            snapshots = FirmwareSnapshots(Path(temp), windows_private_acl_confirmed=True)
+            snapshots = FirmwareSnapshots(Path(temp))
             digest = hashlib.sha256(b"image").hexdigest()
             pending = snapshots.root / (digest + ".pending")
             pending.write_bytes(b"other-owner")
@@ -26,7 +26,7 @@ class PersistenceTests(unittest.TestCase):
 
     def test_disk_full_does_not_publish_or_replace_verified_objects(self):
         with tempfile.TemporaryDirectory() as temp:
-            snapshots = FirmwareSnapshots(Path(temp), windows_private_acl_confirmed=True)
+            snapshots = FirmwareSnapshots(Path(temp))
             receipt = snapshots.stage({"device": "synthetic"}, {"app.bin": b"image"})
             with patch.object(snapshots, "_publish", side_effect=OSError(errno.ENOSPC, "full")):
                 with self.assertRaises(FlashFailure):
@@ -59,7 +59,7 @@ class PersistenceTests(unittest.TestCase):
 
     def test_missing_immutable_bytes_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
-            snapshots = FirmwareSnapshots(Path(temp), windows_private_acl_confirmed=True)
+            snapshots = FirmwareSnapshots(Path(temp))
             receipt = snapshots.stage({"device": "synthetic"}, {"app.bin": b"image"})
             image = snapshots.put(b"image")
             (snapshots.root / image).unlink()

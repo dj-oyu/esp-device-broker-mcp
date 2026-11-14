@@ -49,6 +49,11 @@ refused before anything starts.
 
 - Backend, host/port, state directory and `[tunnel]` come from the profile and are checked by
   the exe. The launcher prints the exe's own reason code.
+- An older profile with a removed setting set to `false` (for example `allow_backup = false`,
+  `allow_restore = false`, `private_backup_acl_confirmed = false`) is refused at startup with
+  `removed_setting_<key>_false`; delete that line and start again (README, "Upgrading an
+  existing configuration"). Legacy `true` lines and `ingress_enabled`/`serve`/`funnel` booleans
+  still load (they map to `mode`); the launchers never edit the profile.
 - Tunnel preflight can refuse with, for example, `tunnel_metadata_incomplete` (no `[tunnel]`
   section), `tunnel_id_placeholder`, a release/ZIP mismatch, or a busy health port. The
   launcher stops **before** starting anything and tells you to fix the profile or use

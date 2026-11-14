@@ -42,7 +42,6 @@ async def test_registered_source_then_owned_receipt_build_without_operator(
         source_repository=SourceRepository(
             github_repository=REPOSITORY,
             cache_root=tmp_path / "source-cache",
-            private_acl_confirmed=True,
             submodule_repositories=["lieff/minimp3"] if with_submodule else [],
         ),
     )
@@ -370,7 +369,6 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         source_repository=SourceRepository(
             github_repository=REPOSITORY,
             cache_root=tmp_path / "private-source-cache",
-            private_acl_confirmed=True,
         ),
     )
     settings = service.resident.settings.model_copy(update={"build_projects": {"fixture": project}})

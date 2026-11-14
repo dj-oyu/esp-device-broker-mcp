@@ -160,17 +160,15 @@ FLASH_FIELDS = {
 def flash_readiness(registration: Any, has_lkg: bool) -> dict[str, Any]:
     """What a registered device allows; no hardware.
 
-    A flash needs no LKG or backup: `flash_baseline` is "not_required" whenever
-    flash is enabled. `lkg_recorded` says whether a verified LKG exists that a
-    flash or restore may name explicitly with `lkg_receipt`.
+    Backup, flash and restore are available for every registered device. A flash
+    needs no LKG or backup: `flash_baseline` is always "not_required".
+    `lkg_recorded` says whether a verified LKG exists that a flash or restore may
+    name explicitly with `lkg_receipt`.
     """
-    operations = {
-        name: getattr(registration, "allow_" + name) is True
-        for name in ("backup", "flash", "restore")
-    }
+    operations = {name: True for name in ("backup", "flash", "restore")}
     return {
         "operations": operations,
-        "flash_baseline": "not_required" if operations["flash"] else "flash_not_enabled",
+        "flash_baseline": "not_required",
         "lkg_recorded": has_lkg,
     }
 
@@ -273,12 +271,12 @@ def validate_flash_plan(plan: dict[str, Any]) -> None:
         raise ValueError("invalid_flash_plan")
 
 
-def _load_backup(directory: Path, acl: Any, job_id: str, principal: str) -> Any:
-    return BackupStore(directory, windows_private_acl_confirmed=acl).load(job_id, principal)
+def _load_backup(directory: Path, job_id: str, principal: str) -> Any:
+    return BackupStore(directory).load(job_id, principal)
 
 
-def _load_snapshot(directory: Path, acl: Any, receipt: str) -> Any:
-    return FirmwareSnapshots(directory, windows_private_acl_confirmed=acl).load(receipt)
+def _load_snapshot(directory: Path, receipt: str) -> Any:
+    return FirmwareSnapshots(directory).load(receipt)
 
 
 def _verify_bundle(root: Path, manifest: dict[str, Any], flash_bytes: int) -> Any:
@@ -351,8 +349,6 @@ class FirmwareFlash:
         registration = self.settings.flash_devices.get(device_id)
         if registration is None:
             raise FlashFailure("registered_flash_device_required")
-        if getattr(registration, "allow_" + operation) is not True:
-            raise FlashFailure("registered_flash_operation_not_enabled")
         if self.driver_factory is None:
             if self.backend.name != "serial" or self.settings.serial is None:
                 raise FlashFailure("flash_serial_opt_in_required")
@@ -389,16 +385,12 @@ class FirmwareFlash:
             "backup_load",
             _load_backup,
             registration.backup_directory,
-            registration.private_backup_acl_confirmed,
             job_id,
             plan["flash_principal"],
         )
 
     def _snapshots(self, registration: Any) -> FirmwareSnapshots:
-        return FirmwareSnapshots(
-            registration.backup_directory / "lkg",
-            windows_private_acl_confirmed=registration.private_backup_acl_confirmed,
-        )
+        return FirmwareSnapshots(registration.backup_directory / "lkg")
 
     def _known(self, registration: Any, device_id: str, receipt: str | None) -> Any:
         """The device's verified firmware; any principal with flash authority may build on it."""
@@ -413,7 +405,6 @@ class FirmwareFlash:
             "lkg_load",
             _load_snapshot,
             registration.backup_directory / "lkg",
-            registration.private_backup_acl_confirmed,
             row["receipt"],
         )
         selector = hashlib.sha256(registration.selector.model_dump_json().encode()).hexdigest()
@@ -494,13 +485,10 @@ class FirmwareFlash:
         readiness = flash_readiness(
             registration, self.store().firmware_current(request.device_id) is not None
         )
-        backup_enabled = readiness["operations"]["backup"]
         if code == "verified_lkg_or_initial_backup_required" and (
             getattr(request, "lkg_receipt", None) is not None
         ):
             step = "choose_lkg_receipt_from_status_recovery"
-        elif not backup_enabled:
-            step = "backup_not_enabled_in_local_registration"
         elif code == "verified_lkg_or_initial_backup_required":
             step = "run_firmware_backup_then_pass_backup_job_id"
         else:
@@ -839,10 +827,7 @@ class FirmwareFlash:
         if self.active or self.uncertain:
             raise FlashFailure("flash_device_busy_or_uncertain")
         registration, backup, bundle, images, recovery, metadata, snapshot_files, baseline = packet
-        backup_store = BackupStore(
-            registration.backup_directory,
-            windows_private_acl_confirmed=registration.private_backup_acl_confirmed,
-        )
+        backup_store = BackupStore(registration.backup_directory)
         factory = self.driver_factory or NativeFlashDriver
         driver = factory(
             registration,

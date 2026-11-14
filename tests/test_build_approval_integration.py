@@ -37,7 +37,6 @@ class BuildApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 settings = Settings(
                     backend=backend_name,
                     state_dir=root / "state",
-                    allow_mock_execution=backend_name == "mock",
                     serial=serial,
                     build_projects={
                         "registered": BuildProject(

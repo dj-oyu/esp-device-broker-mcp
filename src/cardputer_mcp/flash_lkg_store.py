@@ -14,10 +14,8 @@ from .flash_lkg_models import LkgEnvelope
 
 
 class FirmwareSnapshots:
-    def __init__(self, root: Path, *, windows_private_acl_confirmed: bool = False) -> None:
-        self.root = BackupStore(
-            root, windows_private_acl_confirmed=windows_private_acl_confirmed
-        ).directory
+    def __init__(self, root: Path) -> None:
+        self.root = BackupStore(root).directory
 
     def _directory_barrier(self, directory: Path) -> None:
         if os.name == "posix":

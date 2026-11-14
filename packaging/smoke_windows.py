@@ -173,8 +173,8 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
         config = folder / "mock.toml"
         config.write_text(
             f'backend = "mock"\nhost = "127.0.0.1"\nport = {port}\n'
-            f'state_dir = {json.dumps(str(folder / "state"))}\n'
-            'allow_mock_execution = false\n', encoding="utf-8",
+            f'state_dir = {json.dumps(str(folder / "state"))}\n',
+            encoding="utf-8",
         )
         # The frozen gateway imports its OAuth/JOSE stack, then refuses a TOML
         # without [gateway]; it never listens or starts Tailscale here.

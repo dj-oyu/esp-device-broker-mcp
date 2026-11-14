@@ -26,9 +26,7 @@ class HistoryFixture(CacheFixture):
     def setup_history(self):
         self.setup_cache()
         self.artifacts = BuildArtifacts(self.root / "state.sqlite3")
-        self.binaries = FirmwareSnapshots(
-            self.root / "firmware", windows_private_acl_confirmed=True
-        )
+        self.binaries = FirmwareSnapshots(self.root / "firmware")
 
     def publish_generation(self, number, principal="owner"):
         source = self.fetch(number, principal=principal)
@@ -339,10 +337,8 @@ class SourceHistoryFlashAdapterTests(HistoryFixture, unittest.TestCase):
         self.assertFalse(self.payload(old).exists())
         registration = SimpleNamespace(
             backup_directory=self.root,
-            private_backup_acl_confirmed=True,
             selector=SimpleNamespace(model_dump_json=lambda **_: "synthetic selector"),
             flash_bytes=8192,
-            allow_restore=True,
             model_dump_json=lambda **_: '{"synthetic":true}',
         )
         # Use the same immutable object store location as the production adapter.

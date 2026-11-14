@@ -10,9 +10,9 @@
 #
 # 1. start-cardputer.sh starts the authenticated broker in the background and waits until it is idle.
 # 2. `cardputer gateway --config <profile>` runs in the background. Funnel opens there only when
-#    the profile's [gateway] sets funnel = true.
+#    the profile's [gateway] sets mode = "public".
 # 3. `cardputer webui --config <profile>` runs in the background. tailscale serve (tailnet only)
-#    runs there only when the profile's [webui] sets serve = true.
+#    runs there only when the profile's [webui] sets mode = "tailnet" ("public" uses Funnel).
 #    Steps 2 and 3 get no CARDPUTER_* or OPENAI_* variables: each reads only the key files named
 #    in the profile. Without its section a helper prints *_config_missing and exits; the others
 #    are unaffected. Their output goes to gateway.log and webui.log next to broker.log.

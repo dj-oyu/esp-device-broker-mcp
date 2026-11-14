@@ -120,7 +120,6 @@ def test_save_changes_only_tunnel_semantics_and_can_round_trip_serial_tables(tmp
     path = broker_file(
         tmp_path,
         backend="serial",
-        allow_mock_execution=False,
         max_waiters=19,
         serial={
             "selector": {"vid": 123, "pid": 456, "serial_number": "SYNTHETIC\\identity"},

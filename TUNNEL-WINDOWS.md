@@ -106,10 +106,9 @@ backend = "mock"
 host = "127.0.0.1"
 port = 8765
 state_dir = ".state/tunnel-mock"
-allow_mock_execution = false
 
 [tunnel]
-ingress_enabled = false # 既定は無効。専用入口を使う場合だけ明示的に true
+mode = "off" # 既定は閉。専用入口を使う場合だけ明示的に "ingress"
 tunnel_id = "tunnel_00000000000000000000000000000000" # 接続前に既存 ID に置換
 client_exe = 'C:\Tools\tunnel-client-v0.0.15\tunnel-client.exe'
 client_archive = 'C:\Downloads\tunnel-client-v0.0.15-windows-amd64.zip'
@@ -126,7 +125,7 @@ API key、MCP/client key、bearer、autoconnect 等の追加フィールドは�
 指している場合だけ、canonical `[tunnel]` の省略フィールドを補完します。両方に明示した
 ID・exe・ZIP・health port が異なる場合は固定エラー `tunnel_config_conflict` で停止し、
 どちらかを黙って採用しません。利用者が対象ファイルを確認して一致させてください。
-`ingress_enabled` は canonical broker TOML が決定します。省略時は `false` です。
+`mode`（旧 `ingress_enabled`）は canonical broker TOML が決定します。省略時は `"off"` です。旧キー `ingress_enabled = true` は `mode = "ingress"` として読み、`false` は `"off"` です。`mode` と旧キーが食い違うと起動を拒否します。
 旧ファイルで省略した場合は canonical の値を保持し、旧ファイルにも明示した場合は
 canonical の実効値と一致する必要があります。旧ファイルだけで専用入口を有効にはできません。
 自動移行・旧ファイルの削除はしません。旧形式の例は `examples/tunnel.legacy.example.toml` です。
@@ -138,24 +137,24 @@ GUI の明示的な metadata 保存は切断中だけ行います。選択した
 
 ### 転送ヘッダー付きの Tunnel 専用入口を明示的に有効にする
 
-既定の `ingress_enabled = false` では従来どおり `/mcp` だけを使用します。
+既定の `mode = "off"` では従来どおり `/mcp` だけを使用します。
 今回の専用入口を使う場合は、実際に選んだ `broker.local.toml` 等の同じ `[tunnel]` に
 次の値を手動で設定します。既存の表を編集し、`[tunnel]` を二重に追加しないでください。
 
 ```toml
 [tunnel]
-ingress_enabled = true
+mode = "ingress"
 # tunnel_id / client_exe / client_archive / health_port は既存値を保持
 ```
 
-設定は TOML の真偽値だけを受け付けます。文字列 `"true"` や数値 `1` は拒否します。
+設定は `"off"` / `"ingress"` だけを受け付けます（旧キーは真偽値だけ。文字列 `"true"` や数値 `1` は拒否します）。
 読み込み・保存だけで接続せず、新しい認証キー・ポート・broker・proxy は作りません。
 GUI はこの値を読み取り専用で表示し、metadata 保存でも既存値を保持します。
 
 mock で切り替える手順:
 
 1. 所有 Tunnel を Disconnect し、mock broker に実行中のジョブ・所有者がないことを確認します
-2. 選んだ broker TOML を手動で編集し、`[tunnel] ingress_enabled = true` にします
+2. 選んだ broker TOML を手動で編集し、`[tunnel] mode = "ingress"` にします
 3. その idle broker を元のコンソールで停止します。GUI を閉じるだけでは broker は停止しません
 4. 同じ TOML で認証付き mock broker と GUI を起動し直します
 
@@ -174,7 +173,7 @@ GUI・ローカル CLI・接続前の broker 確認は引き続き `http://127.0
 古い broker、設定変更後に再起動していない broker、不明な値は
 `tunnel_broker_ingress_mismatch` で拒否し、公式 client を起動しません。
 GUI の Manual restart は Tunnel client だけを再起動するため、この設定の反映には不十分です。
-無効へ戻すときも `false` に変更して idle broker を再起動・TOML 再読込してください。
+無効へ戻すときも `mode = "off"` に変更して idle broker を再起動・TOML 再読込してください。
 
 専用入口では、有効な `remote_mcp` 認証を確認してから、既知の転送 metadata
 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Host`、`X-Forwarded-Proto`、
