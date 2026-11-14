@@ -6,7 +6,6 @@ Add the non-secret repository allowlist to the existing project registration:
 "source_repository": {
   "github_repository": "dj-oyu/cardputer-adv-pocketjs",
   "cache_root": "C:\\brksrc",
-  "private_acl_confirmed": true,
   "submodule_repositories": ["lieff/minimp3"]
 }
 ```
@@ -27,7 +26,7 @@ receipt SHA-256. Expanded submodule files participate in the immutable snapshot'
 full source SHA-256. Nested Gitlinks have a maximum depth of 3 and a maximum total
 of 16 modules. All repositories share the existing 64 MiB download, 256 MiB
 expanded, 100,000 file, 200,000 ZIP entry and 180 second operation limits; cache,
-Windows path, private ACL, principal, lease and cancellation checks still apply.
+Windows path, private-directory, principal, lease and cancellation checks still apply.
 Large/truncated Git tree metadata fails closed. There is no automatic cleanup.
 
 New snapshots containing submodules use receipt schema 2. The receipt and source

@@ -5,7 +5,6 @@ backend = "serial"
 host = "127.0.0.1"
 port = 8765
 state_dir = ".state/serial"
-allow_mock_execution = false
 
 [serial]
 protocol = "pocketjs-hello-v1"

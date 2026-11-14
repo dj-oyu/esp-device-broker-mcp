@@ -3,6 +3,5 @@ backend = "mock"
 host = "127.0.0.1"
 port = 8765
 state_dir = ".state/demo"
-# Legacy compatibility setting, ignored; each synthetic job needs explicit execute.
-allow_mock_execution = true
+# Each synthetic job needs an explicit execute request.
 mock_stage_seconds = 0.5

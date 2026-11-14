@@ -13,13 +13,13 @@ Node/Git tools. Add source_repository to that registered project (template only)
 ```json
 "source_repository": {
   "github_repository": "dj-oyu/cardputer-adv-pocketjs",
-  "cache_root": "C:\\brksrc",
-  "private_acl_confirmed": true
+  "cache_root": "C:\\brksrc"
 }
 ```
 
-The operator must actually create/verify a private cache ACL on Windows before
-confirming it. The application does not change authentication, connection
+On Windows the operator must keep the cache folder private to the account (ACLs are
+not inspected; the former `private_acl_confirmed` declaration was removed, and a legacy
+`true` is ignored while `false` stops startup). The application does not change authentication, connection
 permissions, Git credentials or user worktrees. Choose a short root outside the
 project, broker state, and build output roots. Paths/origin are registered locally;
 MCP accepts only the project ID, full lowercase 40-hex commit, or an opaque receipt.
@@ -188,14 +188,16 @@ Plans and receipts are bound to a digest of the approved registration facts that
 decide what executes or which provenance is trusted: the GitHub repository, the
 submodule allowlist, tool identities (path and SHA-256), profiles, allow flags and
 device selectors. Location-only fields are **not** bound, so moving a folder does not
-invalidate durable evidence: `cache_root`, `private_acl_confirmed`, `build_root`, and
-the flash `backup_directory`/`private_backup_acl_confirmed`. Tool or profile changes,
+invalidate durable evidence: `cache_root`, `build_root`, and
+the flash `backup_directory`. Tool or profile changes,
 a different repository, a different submodule allowlist, or a different esptool
 (path or hash) still invalidate bound plans and receipts, and unknown digests fail closed.
 
 New receipts and plans carry the path-independent digest. Receipts written by earlier
-releases carry a digest that included `cache_root` and `private_acl_confirmed`; they stay
-valid in place. After moving a cache, list the old location(s) in the registration so
+releases carry a digest that included `cache_root` and `private_acl_confirmed` (and, for flash
+bindings, the former `allow_*` flags and `unattended_flash.enabled`); they stay valid in
+place: the accepted set also holds the digest recomputed for every legacy value of the
+removed booleans. After moving a cache, list the old location(s) in the registration so
 those receipts are recognised again (nothing else is trusted; at most 8 absolute paths):
 
 ```toml

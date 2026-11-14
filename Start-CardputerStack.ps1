@@ -7,9 +7,9 @@ Same arguments as Start-CardputerGui.ps1. Run it with & from your usual PowerShe
 
 1. Start-Cardputer.ps1 starts the authenticated broker in its own console and waits until it is idle.
 2. A second console runs `cardputer.exe gateway --config <profile>`. Funnel opens there only when the
-   profile's [gateway] sets funnel = true; Ctrl+C in that console closes it.
+   profile's [gateway] sets mode = "public"; Ctrl+C in that console closes it.
 3. A third console runs `cardputer.exe webui --config <profile>`. tailscale serve (tailnet only)
-   runs there only when the profile's [webui] sets serve = true; Ctrl+C in that console closes it.
+   runs there only when the profile's [webui] sets mode = "tailnet" (mode = "public" uses Funnel); Ctrl+C in that console closes it.
    Consoles 2 and 3 get no CARDPUTER_* or OPENAI_* variables: each reads only the key files named
    in the profile. Without its section a console prints *_config_missing and exits; the others
    are unaffected.
@@ -77,9 +77,9 @@ function Start-HelperConsole([string]$Subcommand, [string]$Title) {
     }
 }
 Start-HelperConsole 'gateway' 'Cardputer gateway'
-Write-Host 'Gateway console opened. With funnel = true, wait for gateway_funnel_open there; a connected Claude connector keeps working across gateway restarts.'
+Write-Host 'Gateway console opened. With mode = "public", wait for gateway_funnel_open there; a connected Claude connector keeps working across gateway restarts.'
 Start-HelperConsole 'webui' 'Cardputer web UI'
-Write-Host 'Web UI console opened. With serve = true, wait for webui_serve_open there; after a restart, log in again.'
+Write-Host 'Web UI console opened. With mode = "tailnet", wait for webui_serve_open there; after a restart, log in again.'
 
 # 4. GUI in this prompt.
 Write-Host 'Opening local manager. Tunnel connects once at startup when its API key and CARDPUTER_REMOTE_TOKEN are set; otherwise click Connect.'

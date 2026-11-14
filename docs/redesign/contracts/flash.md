@@ -270,7 +270,7 @@ worker's per-file sha (flash_worker.py:238-243).
 
 ## 4. Persisted artifacts
 
-### 4a. Filesystem (under `registration.backup_directory`, private: 0700 / Windows ACL confirmation required; flash_backup.py:31-44)
+### 4a. Filesystem (under `registration.backup_directory`, private: 0700 / owner+mode check on POSIX; Windows ACLs are an operator prerequisite and are not checked, the former `private_backup_acl_confirmed` attestation was removed; flash_backup.py)
 | Path | Content | Writer / reader |
 |---|---|---|
 | `<job_id>.bin` | full plaintext flash | flash_backup.py:69-84 (O_CREAT\|O_EXCL\|O_NOFOLLOW, 0600, fsync) |
@@ -349,7 +349,7 @@ Disclosure strings live in `FLASH_EFFECTS` (firmware_flash.py:51-88) and are **v
 
 | Step | Tests |
 |---|---|
-| P4 registration disabled by default / allow gate | tests/test_flash_broker.py::test_registration_default_disables_flash_and_restore; tests/test_flash_policy.py::test_allow_flash_still_gates_operation; ::test_registration_is_explicit_strict_and_flash_only |
+| P4 registration is the gate (the per-device allow_* switches were removed) | tests/test_flash_broker.py::test_registration_has_no_per_operation_switch_to_refuse_flash; tests/test_flash_policy.py::test_registered_device_needs_no_operation_switch_but_unregistered_is_refused; ::test_registration_is_explicit_strict_and_flash_only; tests/test_config_removed_flags.py |
 | P4 tool-hash changed (`registered_flash_tools_changed`) | ✗ (skipped with injected drivers) |
 | P6 backup ownership / device mismatch | tests/test_flash_backup.py::test_private_receipt_roundtrip_and_principal_binding, ::test_tampering_fails_closed, ::test_unknown_backup_never_restores, ::test_remote_path_and_existing_backup_cannot_overwrite; tests/test_flash_recovery_point_refusal.py::* (public refusal details); `backup_registered_device_mismatch` ✗ |
 | P6' LKG binding/kind changed | ✗ |

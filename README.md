@@ -42,8 +42,9 @@ There is no product-level plan approval, image-delivery decision, capture policy
 arming window, confirmation keyword or operator-launch permission. Legacy
 approval/policy/arming HTTP endpoints authenticate and check scopes, then return
 `410 Gone` without effects. Legacy approval CLI/launcher entry points are retired;
-they are not aliases for execution. `allow_mock_execution` and legacy unattended
-flash permission settings grant no authority and are ignored.
+they are not aliases for execution. The retired `allow_mock_execution` and legacy unattended
+flash permission settings grant no authority and are ignored (see
+[Upgrading an existing configuration](#upgrading-an-existing-configuration)).
 
 Authentication and current scopes, registered operation capabilities, exact
 principal/device/firmware bindings, exclusive ownership, bounded I/O, deadlines,
@@ -137,8 +138,8 @@ Mock results establish synthetic transport/arbitration behavior; they do not
 establish a physical flash, capture or Tunnel connection. Stop the owned server
 with Ctrl+C when finished; active work keeps ownership until cleanup completes.
 
-`examples/mock-demo.toml` selects synthetic operations only. The legacy
-`allow_mock_execution` value is ignored; explicit execution requests are required.
+`examples/mock-demo.toml` selects synthetic operations only; explicit execution requests
+are always required.
 
 ## Connect Claude Code, Codex and Antigravity CLI
 
@@ -510,7 +511,7 @@ tokens or Tunnel API key, then the GUI.
 
 The read-only web UI (`cardputer webui --config <broker TOML>`, `[webui]`) shows
 the operator state, jobs, job logs and live updates to one Google account,
-tailnet-only through `tailscale serve` by default (public through `tailscale funnel` only with `funnel = true`), with a local read-only broker key. It
+closed by default (`mode = "off"`), tailnet-only through `tailscale serve` with `mode = "tailnet"` and public through `tailscale funnel` only with `mode = "public"`, with a local read-only broker key. It
 never exposes broker keys, the Google secret or environment variables to the
 browser. Setup and security model: [WEB-UI.md](WEB-UI.md).
 
@@ -526,7 +527,7 @@ Prerequisites (one-time, outside this repository):
 - A private file containing only `CARDPUTER_GATEWAY_GOOGLE_CLIENT_SECRET=<secret>`.
 
 Both files must be outside repositories and the installation, like the stdio env
-file. The broker TOML needs `[tunnel] ingress_enabled = true` and a section:
+file. The broker TOML needs `[tunnel] mode = "ingress"` and a section:
 
 ```toml
 [gateway]
@@ -536,10 +537,10 @@ google_client_id = "<id>.apps.googleusercontent.com"
 allowed_google_sub = "<your Google sub>"
 broker_env_file = 'C:\path\to\private\gateway-broker.env'
 google_client_secret_file = 'C:\path\to\private\gateway-google.env'
-funnel = false   # true opens Funnel while the gateway runs
+mode = "off"   # "public" opens Funnel while the gateway runs
 ```
 
-With `funnel = true` the gateway first checks Tailscale (machine name, Funnel
+With `mode = "public"` the gateway first checks Tailscale (machine name, Funnel
 permission, nothing on HTTPS 443), listens on 127.0.0.1, then runs
 `tailscale funnel --yes http://127.0.0.1:<port>` in the foreground as an owned
 child and waits until Funnel lists that target. Stopping the gateway (Ctrl+C)
@@ -549,6 +550,46 @@ connector with the URL `<public_url>/mcp`.
 Unverified so far: a real Google login, a real Claude connection, and that a
 force-terminated foreground Funnel always clears its configuration (check
 `tailscale funnel status` after an abnormal exit).
+
+## Upgrading an existing configuration
+
+Fewer settings now decide anything. Existing files keep starting, with one rule: a
+legacy key is read only when it cannot make something more open than before.
+
+| Legacy line | Now |
+| --- | --- |
+| `allow_flash = true`, `allow_backup = true`, `allow_restore = true` (in `[flash_devices.<id>]`) | accepted and ignored |
+| `allow_flash = false`, `allow_backup = false`, `allow_restore = false` | **startup error**: delete the line. Flash, backup and restore are available for every registered flash device |
+| `private_backup_acl_confirmed = true` / `private_acl_confirmed = true` | accepted and ignored |
+| `private_backup_acl_confirmed = false` / `private_acl_confirmed = false` | **startup error**: delete the line. Windows ACL privacy of `backup_directory` and `cache_root` is an operator prerequisite the broker never verified |
+| `enabled = true` in `[flash_devices.<id>.unattended_flash]` | accepted and ignored (the table's presence enables it; it grants no authority) |
+| `enabled = false` in that table | **startup error**: delete the whole `unattended_flash` table to disable it |
+| `allow_mock_execution = true` or `false` | accepted and ignored (it has granted nothing for a long time; explicit execution is always required) |
+| `[tunnel] ingress_enabled`, `[gateway] funnel`, `[webui] serve` / `funnel` | translated to `mode` (below); a contradiction is an error |
+
+An error names the key, never a value or a path, for example
+``removed_setting_allow_backup_false: `allow_backup = false` is no longer supported; delete
+the `allow_backup` line (backup is available for every registered flash device)``. All
+removed false keys of one table are reported together.
+
+Exposure is one `mode` per component, default `"off"` (closed):
+
+| Component | Legacy | New |
+| --- | --- | --- |
+| `[webui]` | `serve = true` | `mode = "tailnet"` |
+| `[webui]` | `funnel = true` | `mode = "public"` (port 8443 or 10000) |
+| `[gateway]` | `funnel = true` | `mode = "public"` |
+| `[tunnel]` | `ingress_enabled = true` | `mode = "ingress"` |
+| any of the above | all `false` / absent | `mode = "off"` (or omit) |
+
+A legacy key and a `mode` that disagree (for example `funnel = false` with
+`mode = "public"`, or `serve = true` with `funnel = true`) stop startup. Nothing is
+migrated or rewritten for you; edit the file when convenient. The Tunnel GUI's explicit
+Save writes `[tunnel] mode`.
+
+Backup and restore are now available for a registered device even if the old file said
+`allow_backup = false` or `allow_restore = false`. Each is still a separate, explicitly
+requested operation with a live lease and an exact plan.
 
 ## Verification and limits
 

@@ -5,7 +5,7 @@ profile TOML. Run from your existing PowerShell prompt, not a child powershell -
   & 'C:\path\to\Start-CardputerTunnel.ps1' -Exe 'C:\path\to\cardputer.exe' -Profile 'C:\path\to\device.local.toml' [-Url <broker url>] [-NoTunnel] [-NoSerial]
 This script never reads the profile; a profile whose broker is not on the default
 http://127.0.0.1:8765/mcp needs a matching -Url (see Start-Cardputer.ps1). Nothing from [tunnel] is passed as an argument:
-tunnel_id, client_exe, client_archive, health_port and ingress_enabled are read and validated
+tunnel_id, client_exe, client_archive, health_port and mode are read and validated
 by the exe's Tunnel module, which refuses with its own reason (for example
 tunnel_id_placeholder or tunnel_metadata_incomplete). -NoTunnel starts the broker alone.
 --enable-serial is passed by default; -NoSerial omits it (a serial profile is then refused).

@@ -1,7 +1,10 @@
 # Separately requested firmware operations
 
-Flash registrations are local, disabled by default, and separate from the
-ESP-IDF 6.0.1 build profile. Register an external Python executable with its SHA
+Flash registrations are local and separate from the ESP-IDF 6.0.1 build profile.
+A device that is not registered is refused; for a registered device backup, flash and
+restore are all available (there are no per-device `allow_*` switches or ACL
+attestations any more; the old keys are read as described in the README's
+"Upgrading an existing configuration" and a legacy `false` stops startup). Register an external Python executable with its SHA
 and exact version, and a dedicated esptool 5.1.0 package directory with its SHA.
 An existing IDF Python environment need not be downgraded. No SDK is bundled.
 
@@ -167,7 +170,7 @@ Such a flash has no recovery-bytes check, no pre-write comparison of current
 device bytes and no partition-layout match against a previous LKG: the partition
 table is written as part of the bundle, and partition/NVS/data compatibility is
 not checked (the summary records `data_compatibility: "not_checked"`). Unchanged:
-registration, `allow_flash` and tool hashes, the owned verified build and manifest
+registration and tool hashes, the owned verified build and manifest
 binding, the security probe, cancellation and authority checks, the single write,
 full readback, boot ELF/IDF check, confirmed close, final authority and the atomic
 commit that makes the build the device's LKG (`artifact_bundle`). The device
@@ -182,7 +185,7 @@ recovery point is required or kept; stored plans keep their original effects.
 
 Flashes that name `lkg_receipt` or `backup_job_id`, restore and backup are
 unchanged, including the pre-write fence. `status(view=targets)` reports
-`flash_baseline: "not_required"` whenever flash is enabled, plus `lkg_recorded`.
+`flash_baseline: "not_required"` for every registered device, plus `lkg_recorded`.
 
 A prepare refused for its named or implied recovery point
 (`verified_lkg_or_initial_backup_required`, `successful_owned_backup_required`,
@@ -191,10 +194,10 @@ A prepare refused for its named or implied recovery point
 `explanation`: `choose_lkg_receipt_from_status_recovery` (the named
 `lkg_receipt` is not recorded for this device),
 `run_firmware_backup_then_pass_backup_job_id` (no LKG is recorded),
-`name_own_succeeded_backup_of_this_device` (the named backup is not a
-succeeded backup of this device by the same principal) or
-`backup_not_enabled_in_local_registration` (an operator must set
-`allow_backup`). The refusal never contains job ids, principals or paths.
+or `name_own_succeeded_backup_of_this_device` (the named backup is not a
+succeeded backup of this device by the same principal). (The earlier
+`backup_not_enabled_in_local_registration` step is no longer produced.) The refusal
+never contains job ids, principals or paths.
 
 This protects the MCP write ranges, not subsequent firmware behavior. Firmware
 may erase or modify NVS/filesystems after boot, and firmware rollback cannot promise
