@@ -15,7 +15,6 @@ from cardputer_mcp.auth import AuthState
 from cardputer_mcp.backend import MockBackend
 from cardputer_mcp.broker import RetainedCapture, digest_plan
 from cardputer_mcp.capture import LegacyCaptureDecoder, mock_image
-from cardputer_mcp.derby_smoke import SMOKE
 from cardputer_mcp.gui_live_preview import DENIED, PreviewState
 from cardputer_mcp.gui_live_state import LiveState, apply, begin
 from cardputer_mcp.gui_live_transport import AUTH_FAILED, LiveRunner
@@ -34,7 +33,7 @@ def retain_capture(broker, *, derby=False):
         "broker_epoch": broker.epoch,
         "session_id": "c" * 32,
         "job_id": job_id,
-        "test": Action.DERBY.value if derby else Action.CAPTURE.value,
+        "test": "derby_smoke" if derby else Action.CAPTURE.value,
         "device": "mock-cardputer",
         "backend": "mock",
         **MockBackend().prepare(Action.CAPTURE),
@@ -42,8 +41,8 @@ def retain_capture(broker, *, derby=False):
     image = mock_image()
     result = "synthetic_capture_not_device"
     if derby:
-        # A retained serial-job history can be inspected by a mock resident. The
-        # serial schema is synthetic; no serial backend or inventory is called.
+        # A removed legacy job kind: its retained history can still be inspected by a
+        # mock resident. The serial schema is synthetic; no serial backend is called.
         plan.update(
             device="configured-cardputer",
             backend="serial",
@@ -55,7 +54,6 @@ def retain_capture(broker, *, derby=False):
             firmware_verification="configured_expected_hash_only",
             observe_seconds=None,
             effects=["Synthetic retained history; no device operation"],
-            smoke=SMOKE,
         )
         decoder = LegacyCaptureDecoder()
         decoder.feed(b"CAPTURE_BEGIN 240 135\n")
@@ -64,7 +62,8 @@ def retain_capture(broker, *, derby=False):
         decoder.feed(b"CAPTURE_END\n")
         image = decoder.finish()
         result = "derby_demo_cycle_observed_render_buffer_lcd_unverified"
-    PlanApprovals._schema(plan)
+    if not derby:
+        PlanApprovals._schema(plan)
     plan_hash = digest_plan(plan)
     broker._store().put_plan(plan_hash, plan)
     broker._store().add_job(job_id, plan_hash)
@@ -143,12 +142,7 @@ async def test_real_retained_preview_wire_accepts_current_epoch_without_renewal(
         # This is the actual Broker/operator JSON, with no response augmentation.
         assert response["broker_epoch"] == state.timeline.broker_epoch == broker.epoch
         assert response["recipient_principal"] == PRINCIPAL
-        if derby:
-            assert response["derby_scope"]["broker_epoch"] == response["broker_epoch"]
-            assert response["derby_scope"]["plan_hash"] == plan_hash
-            assert response["derby_scope"]["principal_id"] == PRINCIPAL
-        else:
-            assert "derby_scope" not in response
+        assert "derby_scope" not in response
         assert accepted.preview is not None and accepted.preview.png == retained.image.png
         assert accepted.row.expires_at <= original_deadline
         assert broker.captures[job_id] is retained and retained.deadline > broker.clock()

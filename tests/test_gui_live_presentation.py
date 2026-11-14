@@ -419,7 +419,6 @@ def device_window(test, state="succeeded"):
         Action.FIRMWARE,
         Action.WORKFLOW,
         Action.CAPTURE,
-        Action.DERBY,
     ],
 )
 def test_finished_device_job_asks_the_broker_for_its_log(test):
@@ -448,3 +447,11 @@ def test_empty_log_of_a_finished_job_says_nothing_was_received(state, expected):
     with patch("cardputer_mcp.gui_live.replace_text") as rendered:
         window._render_logs()
     assert rendered.call_args.args[1] == expected
+
+
+@pytest.mark.parametrize("test", ["derby_smoke", "derby_fixed_workload"])
+def test_legacy_removed_job_kinds_keep_their_log_read_path(test):
+    assert logs_applicable(test)
+    window = device_window(test)
+    window._read_logs()
+    assert window.logs.phase != "not_applicable"

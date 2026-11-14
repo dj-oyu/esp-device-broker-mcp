@@ -228,13 +228,11 @@ plan を積むツール。
 | `kind` | 旧 `TestName` | 積み込み | 必須 | 任意 | 禁止 |
 |---|---|---|---|---|---|
 | `fetch` | `firmware_fetch_source` | `execute` | `project_id`、`source_commit`(40 桁 hex) | | `session`、`device_id`、`build_job_id` など |
-| `build` | `firmware_build` | `execute` | `project_id` | `source_receipt`、`derby_detail_mode`、`derby_dma_mode` | `session`、`device_id` |
+| `build` | `firmware_build` | `execute` | `project_id` | `source_receipt` | `session`、`device_id` |
 | `backup` | `firmware_backup` | `execute` | `session`、`device_id` | | `build_job_id`、`backup_job_id`、`lkg_receipt`、`project_id` |
 | `flash` | `firmware_flash` | **`flash`** | `session`、`device_id`、`build_job_id` | `backup_job_id` か `lkg_receipt`(どちらか一方) | `project_id`、`source_*` |
 | `restore` | `firmware_restore` | **`flash`** | `session`、`device_id` | `backup_job_id` か `lkg_receipt`(どちらか一方) | `build_job_id`、`project_id` |
 | `app_session` | `app_session` | `execute` | `session`、`app`(`app_id`、`start`、許可する操作、上限など) | | `project_id` |
-| `derby_fixed` | `derby_fixed_workload` | `execute` | `session` | `flash_job_id` | `project_id` |
-| `derby` | `derby_smoke` | `execute` | `session` | | `project_id` |
 | `capture` | `capture_home` | `execute` | `session` | | `project_id` |
 | `restart` | `restart_and_observe` | `execute` | `session` | | `project_id` |
 | `observe` | `passive_observe` | `execute` | `session` | | `project_id` |
@@ -590,7 +588,7 @@ class JobKind(Protocol):
 - 各 `kind` の必須・禁止の完全な表(§4.2 の、`backup`/`flash`/`restore`/`fetch`/`build` 以外)。
 - ホストが、`allOf` の `if`/`then` を、どう扱うか。
 - 既存のエラーコードの全件数。
-- flash と restore 以外の種類(特に `derby`、`derby_fixed`、`restart`)が、デバイスのフラッシュを
+- flash と restore 以外の種類(特に `restart`)が、デバイスのフラッシュを
   書き換えないこと。`prepare_test` の説明には、「ROM のダウンロードモードへのリセットと、
   書き込み、観測」を開示する、とある。ここでの「書き込み」が、フラッシュの書き込みなのか、
   シリアルへの送信なのかを、コードで確かめていない。`JobKind.destructive` は種類ごとの値で、

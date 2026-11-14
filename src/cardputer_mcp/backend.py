@@ -6,8 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .capture import CapturedImage, mock_image
-from .derby_fixed import FixedTrial
-from .derby_observation import DerbyObservation
 from .device_observation import DeviceObservation
 from .models import TestName
 from .serial_diagnostics import sanitize_receive_summary
@@ -58,7 +56,6 @@ class DeviceOperationFailure(Exception):
             "serial_restart_buffer_discard_failed",
             "serial_restart_control_failed",
             "serial_reconnect_timeout",
-            "derby_fixed_trial_invalid",
         }
     )
     STEPS = frozenset(
@@ -126,8 +123,6 @@ class BackendResult:
     code: str
     image: CapturedImage | None = field(default=None, repr=False)
     observation: DeviceObservation | None = field(default=None, repr=False)
-    derby_observation: DerbyObservation | None = field(default=None, repr=False)
-    fixed_trial: FixedTrial | None = field(default=None, repr=False)
 
 
 class Backend(Protocol):

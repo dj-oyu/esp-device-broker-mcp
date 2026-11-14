@@ -1,5 +1,10 @@
 # Firmware safety contract inventory — flash / LKG / restore / backup
 
+> **Removal note.** The DERBY diagnostics (`derby_smoke`, `derby_fixed_workload`, `derby_detail_mode`, `derby_dma_mode`,
+> `flash_job_id`, the collector binding, the diagnostic recipes/proofs, private diagnostic results and their tests) were
+> removed after this inventory was written. Rows below that name them describe the earlier snapshot. Stored history of those
+> kinds is read-only: it is shown as generic records and can never be prepared or executed again.
+
 Source: `main` @ 5d79d2d (0.13.0). Read-only inventory; no code was run. Paths are relative to
 `src/cardputer_mcp/` unless they start with `tests/` or are a doc name. "SPEC:" marks speculation.
 Test coverage was mapped by grepping test files for failure-code fragments and test names, so a
@@ -377,7 +382,6 @@ Disclosure strings live in `FLASH_EFFECTS` (firmware_flash.py:51-88) and are **v
 | backup / restore separation | tests/test_flash_policy.py::test_backup_restore_and_full_backup_require_separate_explicit_request; ::test_preparation_never_executes_and_no_policy_grant_is_needed; ::test_exact_owned_source_receipt_auto_flash_commits_lkg_once; tests/test_flash_broker.py::test_backup_executes_explicit_authenticated_request_without_local_approval |
 | backup persistence failure (`backup_persistence_failed`) | ✗ |
 | device write fence | tests/test_deferred_device.py::test_device_write_between_parent_and_child_is_refused, ::test_unchanged_device_lets_the_continuation_run_even_after_hold_expiry |
-| collector requires current LKG | tests/test_collector_binding.py (parametrized `current`/`readback`) |
 | retention protection | tests/test_source_history_retention.py::* (6 tests); tests/test_flash_http.py's "build retention" step only clears RAM `_records` (**weak**: no build-dir deletion or overwrite is simulated) |
 | reset/reopen | tests/test_flash_driver.py::test_stop_before_reset_controls_never_opens, ::test_cancel_during_pulse_allows_deassertion_and_close, ::test_stop_during_disconnect_never_reopens; tests/test_serial_restart.py (reopen-once, second-disconnect, uncertain close …); tests/test_restart_observation_integration.py::* |
 | worker ranges / port | tests/test_flash_worker.py::test_rom_limit_rejects_32mb_before_device_open, ::test_rom_crossing_read_and_write_rejected_before_device_open, ::test_network_or_arbitrary_port_and_command_are_rejected |

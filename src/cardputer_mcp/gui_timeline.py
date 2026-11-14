@@ -17,7 +17,7 @@ from typing import Any, Literal, Protocol
 from .gui_images import ImagePreview, ImageRow
 from .gui_job_status import JobPresentation, job_presentation
 from .job_failure_reason import REASON_LABELS
-from .models import TestName
+from .models import LEGACY_TEST_NAMES, TestName
 from .operator_timeline import RESULTS, STAGES, STATES, observation_summary
 
 MAX_CARDS = 32
@@ -122,7 +122,7 @@ class TimelineCard:
         plan = _hex(data["plan_hash"], 64) if data["plan_hash"] is not None else None
         test, backend = data["test"], data["backend"]
         if test is not None:
-            test = TestName(test).value
+            test = test if test in LEGACY_TEST_NAMES else TestName(test).value
             if plan is None or backend not in ("serial", "mock", "registered_project"):
                 raise ValueError(INVALID_TIMELINE)
         elif backend is not None:
@@ -158,7 +158,7 @@ class TimelineCard:
         if image and (
             image.job_id != job
             or state != "succeeded"
-            or test not in ("capture_home", "derby_smoke")
+            or test not in ("capture_home", *LEGACY_TEST_NAMES)
             or image.source != ("synthetic_fixture" if backend == "mock" else "render_buffer")
         ):
             raise ValueError(INVALID_TIMELINE)

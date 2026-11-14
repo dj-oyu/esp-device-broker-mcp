@@ -27,7 +27,7 @@ import pytest
 from test_flash_policy import env as env
 from test_pending_execution import prepare, running, submit
 
-from cardputer_mcp import collector_binding, flash_binding, registration_digest
+from cardputer_mcp import flash_binding, registration_digest
 from cardputer_mcp.broker import BrokerError
 
 JOB = "submitted"
@@ -38,7 +38,6 @@ PNA, EINA = "principal_not_authorized", "execution_intent_not_available"
 def patch_everywhere(mp, name, value):
     """Patch ``name`` in every package module that imported the same function object."""
     original = {
-        "collector_live": collector_binding.collector_live,
         "live_binding": flash_binding.live_binding,
         "flash_digests": registration_digest.flash_digests,
     }[name]
@@ -101,10 +100,6 @@ def _runtime_binding(c):
         "settings",
         b.settings.model_copy(update={"mock_stage_seconds": b.settings.mock_stage_seconds + 1}),
     )
-
-
-def _collector_unbound(c):
-    patch_everywhere(c.mp, "collector_live", lambda *args: False)
 
 
 def _flash_binding_not_live(c):
@@ -215,8 +210,6 @@ MATRIX = {
     "validator_replaced": (Flip(_validator_replaced), EINA, EINA, DENY, DENY, DENY),
     "validator_removed_before": (Flip(_validator_removed, before=True), N, N, DENY, DENY, DENY),
     "runtime_binding": (Flip(_runtime_binding), EINA, EINA, DENY, DENY, DENY),
-    # flash_live has no collector_live.
-    "collector_unbound": (Flip(_collector_unbound), EINA, EINA, DENY, ALLOW, ALLOW),
     # A non-flash plan has no flash binding; RUNNING never reads one.
     "flash_binding_not_live": (Flip(_flash_binding_not_live), ALLOW, ALLOW, ALLOW, DENY, DENY),
     # Registration allow/digest is read only by the flash gate, before its callback.

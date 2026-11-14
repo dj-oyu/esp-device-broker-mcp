@@ -31,7 +31,6 @@ OPERATOR_STOPPABLE = frozenset(
     {
         DeviceStop.QUEUED,
         DeviceStop.APP_EVENT,
-        DeviceStop.SMOKE,
         DeviceStop.SOURCE,
         DeviceStop.BUILD,
     }
@@ -39,7 +38,6 @@ OPERATOR_STOPPABLE = frozenset(
 AUDIT_EVENTS = {
     DeviceStop.QUEUED: "operator_cancelled_queued",
     DeviceStop.APP_EVENT: "operator_stop_requested",
-    DeviceStop.SMOKE: "operator_stop_requested",
     DeviceStop.SOURCE: "operator_stop_requested",
     DeviceStop.BUILD: "operator_stop_requested",
 }

@@ -1,4 +1,4 @@
-"""DERBY-only revocation checks around owned IO; close always remains allowed."""
+"""Revocation checks around owned IO (HOME recovery); close always remains allowed."""
 
 import threading
 from collections.abc import Callable

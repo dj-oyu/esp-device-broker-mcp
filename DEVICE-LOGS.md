@@ -110,8 +110,7 @@ contains the redacted report; avoid shared files unless sharing is intended.
 
 Separately from the five-minute report above, the broker saves the serial text it
 receives for every serial device job that opens the port (`passive_observe`,
-`firmware_observe`, `restart_and_observe`, `hello`, `capture_home`, `derby_smoke`,
-`derby_fixed_workload`) on every outcome:
+`firmware_observe`, `restart_and_observe`, `hello`, `capture_home`) on every outcome:
 success, failure, needs review, cancellation and exceptions. Saving has no
 outcome condition. It is passive: the backend copies bytes it already read, and
 never adds a port open, reset, retry or read. A storage failure never fails the

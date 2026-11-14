@@ -85,7 +85,7 @@ SITES = {
         "identity_body": [("read", False)],  # client_identity
         "targets_body": [("read", False)],  # list_registered_targets
         "source_body": [("read", False)] * 2,  # read_source_resources
-        "job_body": [("read", False)] * 4 + [("read", True)],  # job_status
+        "job_body": [("read", False)] * 2 + [("read", True)],  # job_status
         "build_logs_body": [("read", False)] * 3,  # read_build_logs
         "capture_result": [("read", False)],  # read_capture
         # prepare_test: deferred, profile, device (always + require_owner), then the gated

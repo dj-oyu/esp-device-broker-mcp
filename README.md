@@ -37,8 +37,6 @@ principal, lease, device, firmware configuration and plan checks pass.
 There is no approval argument.
 Preparation alone never starts work. Repeated execution returns the original job;
 connection loss never replays it. Inspect `status(view=job)` after an uncertain reply.
-An explicitly requested DERBY smoke can retain [bounded numeric diagnostics](DERBY-DIAGNOSTICS.md)
-for its requesting principal through the same read operation.
 
 There is no product-level plan approval, image-delivery decision, capture policy,
 arming window, confirmation keyword or operator-launch permission. Legacy
@@ -423,7 +421,7 @@ The endpoint is `http://127.0.0.1:8765/mcp`. Tools with arguments accept a neste
 | Tool | Distinguishing argument | Effect |
 | --- | --- | --- |
 | `status` | `view`: `identity`, `targets`, `source`, `device`, `session`, `job`, `logs` (with `stream`: `broker`, `build`, `device`, `app`), `capture`, `apps` | Read-only: backend/device/broker status, shared cached events, your completed device log report from RAM, durable job results, any read-scoped caller's view of a succeeded job's PNG (five-minute RAM copy, then the saved copy in state until pruned beyond 200 images / 64 MiB) |
-| `submit` | `kind`: `fetch`, `build`, `backup`, `flash`, `restore`, `app_session`, `derby_fixed`, `derby`, `capture`, `restart`, `observe`, `observe_firmware`, `hello`, `diagnostics`, `workflow`; `job_id`, and `session` for device kinds | Persist an immutable allowlisted plan; performs no device operation |
+| `submit` | `kind`: `fetch`, `build`, `backup`, `flash`, `restore`, `app_session`, `capture`, `restart`, `observe`, `observe_firmware`, `hello`, `diagnostics`, `workflow`; `job_id`, and `session` for device kinds | Persist an immutable allowlisted plan; performs no device operation |
 | `execute` | `op`: `run` (`plan_hash`, optional `session`), `app_input`, `home_recovery` (`job_id`, `source_job_id`) | Queue the exact plan (any plan except flash/restore); device operations require an owned live lease. `home_recovery` requests one bounded DERBY exit after recorded capture failure/close |
 | `flash` | `plan_hash`, optional `session` | Queue the exact flash or restore plan; refuses any other plan |
 | `cancel` | `target`: `job` (`job_id`, optional `session`, `plan_hash`), `request` | Cancel your job (a bounded recovery keeps ownership until confirmed close) or a waiting device request |

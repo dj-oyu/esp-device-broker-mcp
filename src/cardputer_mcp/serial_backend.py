@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import re
-import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
@@ -18,9 +17,6 @@ from typing import Any, Protocol
 from .backend import BackendResult, DeviceOperationFailure
 from .capture import CapturedImage, CaptureError, LegacyCaptureDecoder
 from .config import SerialSettings
-from .derby_fixed import FIXED_PLAN, FixedCollector, FixedTrial
-from .derby_observation import DerbyObservation
-from .derby_telemetry import DerbyDiagnosticsCollector
 from .device_faults import fault_category, fault_detail
 from .device_observation import MAX_RECEIVE_BYTES, DeviceLogCollector, DeviceObservation
 from .job_logs import DeviceLogTap
@@ -66,7 +62,6 @@ class SerialPort(Protocol):
 class SerialFailure(DeviceOperationFailure):
     """Fixed-category failure; unknown device outcome always requires review."""
 
-    fixed_trial: FixedTrial | None = None
     observation: DeviceObservation | None
     primary_failure_code: str | None
 
@@ -145,11 +140,7 @@ class Reader:
         deadline: float,
     ) -> None:
         self.port, self.emit, self.clock, self.deadline = port, emit, clock, deadline
-        self.phase_observer: Callable[[bytes], None] | None = None
-        self.wire_observer: Callable[[bytes], None] | None = None
-        self.fixed_collector: FixedCollector | None = None
-        self.derby_observation: Callable[[], DerbyObservation] | None = None
-        self.derby_diagnostics: DerbyDiagnosticsCollector | None = None
+        # Set only by the explicit HOME recovery reader (home_recovery.py).
         self.derby_mode = False
         self.pending = b""
         self.lines: list[bytes] = []
@@ -181,16 +172,6 @@ class Reader:
             recognized_markers=self.recognized_markers,
             receive_summary=self.receive_diagnostics.snapshot(self.diagnostic_pending_bytes),
         )
-        if self.fixed_collector is not None:
-            failure.diagnostic["workload_end_observed"] = self.fixed_collector.end_seen
-            failure.diagnostic["owner_exit_observed"] = self.fixed_collector.exit_seen
-            failure.diagnostic["app_stopped_observed"] = self.fixed_collector.stopped
-            failure.diagnostic["home_ready_observed"] = self.fixed_collector.home
-            failure.diagnostic["partial_workload_is_terminal_success"] = False
-        if self.derby_observation is not None:
-            failure.diagnostic["derby_observation"] = self.derby_observation().model_dump(
-                mode="json", exclude_none=True
-            )
         return failure
 
     def read_once(self) -> bool:
@@ -213,11 +194,6 @@ class Reader:
             self.bytes_read += len(incoming)
             if self.device_tap is not None:
                 self.device_tap.feed(incoming)
-            if self.wire_observer is not None:
-                try:
-                    self.wire_observer(incoming)
-                except ValueError:
-                    raise self.failure("derby_fixed_trial_invalid") from None
             self.receive_diagnostics.observe_bytes(incoming)
             # Count returned bytes even if their read exceeded the deadline.
             # Classify framing before a fault or invalid frame rejects a chunk;
@@ -233,15 +209,6 @@ class Reader:
                         self.receive_diagnostics.observe_stale_open_fragment(fragment)
                         diagnostic_line = diagnostic_line[fragment:]
                 self.receive_diagnostics.observe_line(diagnostic_line)
-                if self.derby_diagnostics is not None:
-                    # Feed exact complete wire lines before normalization and
-                    # fatal checks. The collector retains only bounded numbers
-                    # and fixed categories, never console text or frame pixels.
-                    self.derby_diagnostics.feed(diagnostic_line)
-                if self.phase_observer is not None:
-                    # Record bounded host-observed markers in wire order, even
-                    # if a subsequent frame record fails decoder validation.
-                    self.phase_observer(clean_line(diagnostic_line))
         if self.capture_guard and self.clock() >= self.deadline:
             raise self.failure("serial_capture_timeout")
         if not incoming:
@@ -249,12 +216,10 @@ class Reader:
         if self.bytes_read > 256 * 1024:
             raise self.failure("serial_capture_limit")
         cleaned = ANSI.sub(b"", self.fault_tail + incoming)
-        category = fault_category(cleaned, fixed_workload=self.fixed_collector is not None)
+        category = fault_category(cleaned)
         if category is not None or (
             self.derby_mode and re.search(rb"DEMOFAIL|FRAMEFAIL|LOADFAIL|DEGRADE|app: OOM", cleaned)
         ):
-            if self.derby_diagnostics is not None and self.diagnostic_pending_bytes:
-                self.derby_diagnostics.mark_partial_line_or_fault()
             failure = self.failure("serial_fault_marker")
             failure.diagnostic["device_fault_category"] = category or "derby_runtime_fault"
             if detail := fault_detail(cleaned):
@@ -325,8 +290,7 @@ class Reader:
             rb"HELLO_COUNT 1": "HELLO_COUNT_ONE",
         }.get(marker)
         capture_escape = key == b"\x1b" and marker == rb"HOME_READY" and step == "capture_home"
-        derby_down = self.derby_mode and key == b"d" and marker == rb"APP \d+"
-        if key not in (b"q", b"a", b"u", b"e") and not capture_escape and not derby_down:
+        if key not in (b"q", b"a", b"u", b"e") and not capture_escape:
             raise self.failure("command_not_allowlisted")
         # Drain already-buffered data through the same reader, preserving fault
         # detection. Never use reset_input_buffer to silently discard evidence.
@@ -392,13 +356,6 @@ class Reader:
         self.pending = b""
         self.lines.clear()
         self.device_tap = None
-        self.phase_observer = None
-        self.wire_observer = None
-        self.fixed_collector = None
-        self.derby_observation = None
-        if self.derby_diagnostics is not None:
-            self.derby_diagnostics.clear()
-            self.derby_diagnostics = None
         self.fault_tail = b""
         self.capture_decoder = None
 
@@ -572,7 +529,6 @@ class SerialBackend:
         self.ownership_uncertain = False
         self._unclosed_port: SerialPort | None = None
         self.last_closed_plan: dict[str, Any] | None = None
-        self.smoke_stop = threading.Event()
         # Set by the broker for one device job; never opens or reads anything itself.
         self.device_log: DeviceLogTap | None = None
 
@@ -590,30 +546,21 @@ class SerialBackend:
             return "unavailable"
         return "present"
 
-    def prepare_fixed_receipt(self, expected_elf_sha256: str) -> dict[str, Any]:
-        """Internal receipt-bound preflight; never mutates the registered config."""
-        if re.fullmatch(r"[a-f0-9]{64}", expected_elf_sha256) is None:
-            raise ValueError("collector_flash_binding_invalid")
-        return self._prepare(TestName.DERBY_FIXED, expected_elf_sha256)
-
     def prepare(self, test: TestName) -> dict[str, Any]:
         return self._prepare(test)
 
-    def _prepare(self, test: TestName, receipt_elf: str | None = None) -> dict[str, Any]:
+    def _prepare(self, test: TestName) -> dict[str, Any]:
         if test not in (
             TestName.OBSERVE,
             TestName.FIRMWARE,
             TestName.RESTART,
             TestName.HELLO,
             TestName.CAPTURE,
-            TestName.DERBY,
-            TestName.DERBY_FIXED,
         ):
             raise ValueError("test_not_available_for_backend")
         if (
-            test in (TestName.HELLO, TestName.CAPTURE, TestName.DERBY, TestName.DERBY_FIXED)
+            test in (TestName.HELLO, TestName.CAPTURE)
             and self.config.expected_firmware_sha256 is None
-            and receipt_elf is None
         ):
             raise ValueError("expected_firmware_required")
         inventory = list(self.inventory())
@@ -638,34 +585,6 @@ class SerialBackend:
                 "One frame only, 18-second reader budget, no automatic retry",
                 "Render-buffer capture does not prove LCD transfer or coherent snapshot",
                 "No reset command, firmware flash, upload or GRID run",
-            ]
-        if test == TestName.DERBY:
-            effects = [
-                "Operator verifies HOME and exact normal firmware; no physical input during job",
-                "Opens/closes serial; drivers may glitch control lines or reset device",
-                "Fixed Esc/a/u x16/d x12/e navigation requires local.derby and DERBY READY",
-                "Observe automatic demo up to 120 seconds; whole serial job at most 180 seconds",
-                "One s only at a currently observed photo phase; no timed fallback; "
-                "no photo before the deadline means no image and an unverified photo result",
-                "Reserve 18 seconds for capture, 12 for exit and 5 seconds margin; "
-                "record bounded host phase/race/seed and capture timing; pixels may be private",
-                "One explicit q exit requiring fresh HOME_READY; game exit may save player state",
-                "Cancellation/lease loss stops new writes, including q; game may remain running",
-                "Render buffer does not prove LCD transfer; "
-                "missing phases do not prove a full cycle",
-                "No keytest build, firmware flash, arbitrary keys, retries, or automatic reopen",
-            ]
-        if test == TestName.DERBY_FIXED:
-            effects = [
-                "Operator verifies HOME and the exact fixed-workload firmware; no physical input",
-                "Opens/closes the owned serial port; control lines may reset the device",
-                "Fixed Esc/a/u x16/d x12/e navigation launches local.derby once",
-                "Collects at most 64 KiB for 200 seconds with 1024-byte lines and no retry",
-                "Requires three ordered repetitions, END, matching owner EXIT, "
-                "APP_STOPPED and HOME_READY",
-                "Stores raw transport privately for the requesting principal with its SHA-256",
-                "Host checks transport and known work; device quality fields are not a receipt",
-                "Cancellation or lease loss stops I/O; no automatic reopen or flash operation",
             ]
         if test == TestName.FIRMWARE:
             effects = [
@@ -702,17 +621,9 @@ class SerialBackend:
                 "Device-reported firmware metadata is unverified and does not attest the image",
             ]
         protocol: str = self.config.protocol
-        verification = (
-            "successful_flash_receipt"
-            if receipt_elf is not None
-            else "configured_expected_hash_only"
-        )
+        verification = "configured_expected_hash_only"
         observe_seconds = self.config.observe_seconds if test == TestName.OBSERVE else None
-        if test == TestName.DERBY:
-            protocol = "pocketjs-derby-smoke-v1"
-        elif test == TestName.DERBY_FIXED:
-            protocol = "pocketjs-derby-fixed-v2"
-        elif test == TestName.CAPTURE:
+        if test == TestName.CAPTURE:
             protocol = "pocketjs-legacy-capture-v1"
         elif test in (TestName.FIRMWARE, TestName.RESTART):
             protocol = "esp-idf-startup-log-v1"
@@ -723,17 +634,11 @@ class SerialBackend:
             "port": port.port,
             "device_fingerprint": fingerprint(port),
             "protocol": protocol,
-            "expected_firmware_sha256": receipt_elf or self.config.expected_firmware_sha256,
+            "expected_firmware_sha256": self.config.expected_firmware_sha256,
             "firmware_verification": verification,
             "observe_seconds": observe_seconds,
             "effects": effects,
         }
-        if test == TestName.DERBY:
-            from .derby_smoke import SMOKE
-
-            details["smoke"] = SMOKE
-        if test == TestName.DERBY_FIXED:
-            details["fixed_workload"] = dict(FIXED_PLAN)
         if test == TestName.RESTART:
             details["restart"] = {
                 "method": RESTART_METHOD,
@@ -751,21 +656,8 @@ class SerialBackend:
     ) -> str | BackendResult:
         return await self._execute(plan, stage)
 
-    def request_smoke_stop(self) -> bool:
-        self.smoke_stop.set()
-        return bool(self.active)
-
-    async def execute_smoke(
-        self, plan: dict[str, Any], stage: Callable[[str], None], live: Callable[[], bool]
-    ) -> str | BackendResult:
-        self.smoke_stop.clear()
-        return await self._execute(plan, stage, live=live)
-
     async def _execute(
-        self,
-        plan: dict[str, Any],
-        stage: Callable[[str], None],
-        live: Callable[[], bool] | None = None,
+        self, plan: dict[str, Any], stage: Callable[[str], None]
     ) -> str | BackendResult:
         if self.active:
             raise SerialFailure("multiple_device_owners")
@@ -777,19 +669,7 @@ class SerialBackend:
         def emit(value: str) -> None:
             loop.call_soon_threadsafe(stage, value)
 
-        async def check_on_loop() -> bool:
-            return live is not None and live() is True
-
-        def worker_live() -> bool:
-            return asyncio.run_coroutine_threadsafe(check_on_loop(), loop).result(timeout=5)
-
-        worker = loop.run_in_executor(
-            None,
-            self._execute_sync,
-            plan,
-            emit,
-            worker_live if live is not None else None,
-        )
+        worker = loop.run_in_executor(None, self._execute_sync, plan, emit)
         interrupted = False
         try:
             # asyncio cancellation cannot stop an OS serial read/thread. Wait for
@@ -799,8 +679,6 @@ class SerialBackend:
                     await asyncio.shield(worker)
                 except asyncio.CancelledError:
                     interrupted = True
-                    if plan["test"] in (TestName.DERBY.value, TestName.DERBY_FIXED.value):
-                        self.smoke_stop.set()
                 except Exception:
                     # Retrieve/rethrow the worker's exception after its queued
                     # stage notifications have crossed the same loop barrier.
@@ -816,14 +694,9 @@ class SerialBackend:
                     await asyncio.shield(drained)
                 except asyncio.CancelledError:
                     interrupted = True
-                    if plan["test"] in (TestName.DERBY.value, TestName.DERBY_FIXED.value):
-                        self.smoke_stop.set()
             result = worker.result()
             if interrupted:
-                failure = SerialFailure("operation_interrupted_review_required")
-                if plan["test"] == TestName.DERBY_FIXED.value and isinstance(result, BackendResult):
-                    failure.fixed_trial = result.fixed_trial
-                raise failure
+                raise SerialFailure("operation_interrupted_review_required")
             return result
         except SerialFailure as failure:
             # Both shield(worker) and worker.result() can raise. Drop serial
@@ -838,27 +711,16 @@ class SerialBackend:
                 self.active -= 1
 
     def _execute_sync(
-        self,
-        plan: dict[str, Any],
-        emit: Callable[[str], None],
-        live: Callable[[], bool] | None = None,
+        self, plan: dict[str, Any], emit: Callable[[str], None]
     ) -> str | BackendResult:
         self.last_closed_plan = None
         test = TestName(plan["test"])
-        current = (
-            self.prepare_fixed_receipt(plan["collector_binding"]["expected_elf_sha256"])
-            if test == TestName.DERBY_FIXED and "collector_binding" in plan
-            else self.prepare(test)
-        )
+        current = self.prepare(test)
         if any(plan.get(key) != value for key, value in current.items()):
             raise SerialFailure("device_or_plan_changed")
         if test == TestName.RESTART:
             return self._execute_restart_sync(current, emit)
         port = self.factory()
-        if test in (TestName.DERBY, TestName.DERBY_FIXED):
-            from .smoke_port import SmokePort
-
-            port = SmokePort(port, live, self.smoke_stop)
         reader: Reader | None = None
         operation_failure: SerialFailure | None = None
         try:
@@ -890,16 +752,7 @@ class SerialBackend:
                 port,
                 emit,
                 self.clock,
-                self.clock()
-                + (
-                    18
-                    if test == TestName.CAPTURE
-                    else 180
-                    if test == TestName.DERBY
-                    else 200
-                    if test == TestName.DERBY_FIXED
-                    else 90
-                ),
+                self.clock() + (18 if test == TestName.CAPTURE else 90),
             )
             reader.device_tap = self.device_log
             emit(test.value)
@@ -907,17 +760,6 @@ class SerialBackend:
                 reader.step = "passive_observe"
                 reader.observe(self.config.observe_seconds)
                 return "serial_observation_completed_no_commands"
-            if test == TestName.DERBY:
-                from .derby_smoke import derby_smoke
-
-                image, code = derby_smoke(reader)
-                assert reader.derby_observation is not None
-                return BackendResult(code, image, derby_observation=reader.derby_observation())
-            if test == TestName.DERBY_FIXED:
-                from .derby_fixed import execute_fixed
-
-                trial = execute_fixed(reader)
-                return BackendResult("derby_fixed_trial_verified", fixed_trial=trial)
             if test == TestName.CAPTURE:
                 image = capture_home(reader)
                 # Python completes finally before returning this result. The
@@ -929,39 +771,13 @@ class SerialBackend:
             # Close itself may block. Release raw read-frame references before
             # entering that ownership-preserving wait, not only at async return.
             operation_failure = failure
-            if reader is not None and reader.derby_observation is not None:
-                failure.diagnostic.setdefault(
-                    "derby_observation",
-                    reader.derby_observation().model_dump(mode="json", exclude_none=True),
-                )
-            if (
-                reader is not None
-                and reader.fixed_collector is not None
-                and failure.fixed_trial is None
-            ):
-                failure.fixed_trial = reader.fixed_collector.snapshot(
-                    self.clock(), disconnect=failure.code == "serial_read_failed"
-                )
             failure.__traceback__ = None
             failure.__context__ = None
             failure.__cause__ = None
             raise failure from None
         except Exception:
-            uncertain = SerialFailure("serial_operation_uncertain")
-            if reader is not None and reader.fixed_collector is not None:
-                uncertain.fixed_trial = reader.fixed_collector.snapshot(self.clock())
-            raise uncertain from None
+            raise SerialFailure("serial_operation_uncertain") from None
         finally:
-            derby_summary = (
-                reader.derby_observation().model_dump(mode="json", exclude_none=True)
-                if reader is not None and reader.derby_observation is not None
-                else None
-            )
-            fixed_summary = (
-                reader.fixed_collector.snapshot(self.clock())
-                if reader is not None and reader.fixed_collector is not None
-                else None
-            )
             if reader is not None:
                 reader.clear_transient()
             # Exactly this worker owns close. No other consumer opens a second port.
@@ -985,14 +801,9 @@ class SerialBackend:
                         close_failure.diagnostic["device_fault_detail"] = (
                             operation_failure.diagnostic["device_fault_detail"]
                         )
-                if derby_summary is not None:
-                    close_failure.diagnostic["derby_observation"] = derby_summary
-                close_failure.fixed_trial = fixed_summary
                 raise close_failure from None
             else:
                 self.hardware_connected = False
-                if operation_failure is not None and test == TestName.DERBY_FIXED:
-                    operation_failure.diagnostic["serial_close_confirmed"] = True
                 if port.is_open is False:
                     self.last_closed_plan = json.loads(json.dumps(plan))
                 emit("serial_close")

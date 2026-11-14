@@ -6,7 +6,7 @@ from-state for the requested to-state, and the rowcount says whether it was writ
 An illegal transition is refused and counted; it never changes a committed outcome.
 
 Not covered here on purpose (already guarded in SQL, see the store): `finish_firmware`,
-`finish_fixed_trial`, `consume_home_attempt`, `finish_home_recovery`, the legacy
+`consume_home_attempt`, `finish_home_recovery`, the legacy
 `awaiting_approval` migration and `recover()`. Insertion (`add_job`,
 `enqueue_requested`) always writes `queued`.
 

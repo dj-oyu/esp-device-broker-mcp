@@ -1,5 +1,10 @@
 # Contract inventory: job lifecycle, tickets, hold, deferred jobs, ownership, cancellation
 
+> **Removal note.** The DERBY diagnostics (`derby_smoke`, `derby_fixed_workload`, `derby_detail_mode`, `derby_dma_mode`,
+> `flash_job_id`, the collector binding, the diagnostic recipes/proofs, private diagnostic results and their tests) were
+> removed after this inventory was written. Rows below that name them describe the earlier snapshot. Stored history of those
+> kinds is read-only: it is shown as generic records and can never be prepared or executed again.
+
 Source: `main` @ 5d79d2d (0.13.0). Read-only inventory. Paths are relative to
 `src/cardputer_mcp/` unless they start with `tests/`. "SPEC:" marks speculation or
 inference that the code alone does not settle. "UNTESTED" means a grep of `tests/`
@@ -559,8 +564,7 @@ grep of `tests/` found nothing for these:
 - **Ticket limits and expiry:** `ticket_limit` (256), `MAX_PENDING_DEFERRED` / `queue_full` for deferred jobs, `TICKET_TTL` (1800 s for hold=`none`).
 - **Admission reason codes:** pinned since stage 0.5 by `tests/test_stage05_admission.py`.
 - **Failure codes:** `profile_plan_inconsistent`; home-recovery `cancelled` / `expired` / `shutdown` job writes.
-  (`fixed_trial_persist_failed` and `firmware_final_commit_failed` are pinned since stage 3a by
-  `tests/test_stage3a_fixed_trial_persist.py` and `tests/test_stage3a_finish_characterization.py`.)
+  (`firmware_final_commit_failed` is pinned since stage 3a by `tests/test_stage3a_finish_characterization.py`.)
 - **Fencing:** no test that fencing is skipped for early-consumed tickets, or for the `request_device(after=)` path.
 - **Hold ordering:** hold not started while queue or intents are non-empty, then retried next tick; the hold priority move to the tail on release (`_release_hold` reordering).
 - **Restart leftovers:** a job wait that is `waiting` at restart becomes a `device_requests` needs_review row and blocks home recovery.

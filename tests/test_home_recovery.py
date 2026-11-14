@@ -102,8 +102,13 @@ async def running(tmp_path):
         backend="serial",
         device="configured-cardputer",
         job_id="failed-derby",
-        test="derby_smoke",
-        **backend.prepare(Action.DERBY),
+        # A legacy (removed) job kind: the plan is synthetic history, never prepared.
+        **{
+            **backend.prepare(Action.HELLO),
+            "test": "derby_smoke",
+            "stages": ["serial_open", "derby_smoke", "serial_close"],
+            "protocol": "pocketjs-derby-smoke-v1",
+        },
     )
     store = broker._store()
     digest = digest_plan(plan)

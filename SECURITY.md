@@ -18,7 +18,7 @@ Automatically managed runtime-auth.json credential-file mode is intentionally
 unsupported on Windows. See SERIAL.md. The explicit, user-managed stdio client
 env file described below is a separate mechanism.
 
-Serial observation, HOME/DERBY capture, restart and explicit firmware
+Serial observation, HOME capture, restart and explicit firmware
 backup/flash/restore require separate explicit client requests. Automated hardware tests use
 synthetic devices; packaging success does not prove physical operation.
 Opening/closing a serial port may cause driver control-line glitches. Plans

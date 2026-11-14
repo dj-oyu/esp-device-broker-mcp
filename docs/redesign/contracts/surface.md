@@ -1,5 +1,10 @@
 # External contract inventory — the 6-tool MCP surface (0.13.0, main 5d79d2d)
 
+> **Removal note.** The DERBY diagnostics (`derby_smoke`, `derby_fixed_workload`, `derby_detail_mode`, `derby_dma_mode`,
+> `flash_job_id`, the collector binding, the diagnostic recipes/proofs, private diagnostic results and their tests) were
+> removed after this inventory was written. Rows below that name them describe the earlier snapshot. Stored history of those
+> kinds is read-only: it is shown as generic records and can never be prepared or executed again.
+
 Scope: `status`, `submit`, `execute`, `flash`, `cancel`, `session`. This is a read-only inventory, and no repo
 file was edited. Evidence comes from three places: reading the code, an in-process `create_server(...).list_tools()`
 dump (saved next to this file as `tools_list.json`), and in-process `call_tool` probes. The probes ran without the
@@ -298,7 +303,6 @@ are no longer raised by `job_status`. The local operator's `_retained_job_logs` 
 - test_client_identity.py
 - test_chain_http.py::test_continuation_through_the_six_tools (job.chain, device.device_hold)
 - test_capture_http.py
-- test_derby_http.py
 - test_work_session_http.py / test_operator_http.py / test_tunnel_ingress.py (view=session)
 - test_source_preflight.py (view=source)
 - stream=build: test_durable_build_logs.py, test_flash_http.py, test_source_http.py, test_flash_boot_evidence.py, test_input_diagnostics.py
@@ -315,9 +319,8 @@ are no longer raised by `job_status`. The local operator's `_retained_job_logs` 
 - `project_id`
 - `source_commit` `^[a-f0-9]{40}$`
 - `source_receipt` Digest
-- `device_id`, `build_job_id`, `backup_job_id`, `flash_job_id`
+- `device_id`, `build_job_id`, `backup_job_id`
 - `lkg_receipt` Digest
-- `derby_detail_mode` / `derby_dma_mode` (ON|OFF)
 - `after` Crockford `^[0-9A-HJKMNP-TV-Z]{8}$`
 - `lease_seconds` 1..300
 - `app` AppSessionOptions (`app_models.py:21-41`, extra=forbid)
@@ -331,8 +334,6 @@ are no longer raised by `job_status`. The local operator's `_retained_job_logs` 
 | flash | firmware_flash |
 | restore | firmware_restore |
 | app_session | app_session |
-| derby_fixed | derby_fixed_workload |
-| derby | derby_smoke |
 | capture | capture_home |
 | restart | restart_and_observe |
 | observe | passive_observe |
@@ -345,12 +346,11 @@ are no longer raised by `job_status`. The local operator's `_retained_job_logs` 
 | kind | required | optional |
 |---|---|---|
 | fetch | job_id, project_id, source_commit | – |
-| build | job_id, project_id | source_receipt, derby_detail_mode, derby_dma_mode, after |
+| build | job_id, project_id | source_receipt, after |
 | backup | job_id, session, device_id | – |
 | flash | job_id, session, device_id, build_job_id | backup_job_id, lkg_receipt |
 | restore | job_id, session, device_id | backup_job_id, lkg_receipt |
 | app_session | job_id, session, app | – |
-| derby_fixed | job_id, session | flash_job_id |
 | other device kinds | job_id, session | – |
 
 `after` handling (`:592-600`):
@@ -750,7 +750,7 @@ The description says "job or request" and omits `ticket`.
 | tests/test_app_broker.py | 6-tool set, status/execute annotations, app_input/apps/app in schema |
 | tests/test_pending_execution_http.py (4) | no approval/operator tool, wait_for_approval rejected on execute & flash |
 | tests/test_stdio_adapter.py (14) | adapter catalog parity, listChanged false, fixed errors, no replay |
-| tests/test_flash_http.py, test_work_session_http.py, test_capture_http.py, test_home_recovery_http.py, test_tunnel_ingress.py, test_authenticated_mock.py, test_derby_http.py, test_durable_build_logs.py, test_source_http.py, test_device_observation_integration.py, test_restart_observation_integration.py | end-to-end behaviour through the six tools |
+| tests/test_flash_http.py, test_work_session_http.py, test_capture_http.py, test_home_recovery_http.py, test_tunnel_ingress.py, test_authenticated_mock.py, test_durable_build_logs.py, test_source_http.py, test_device_observation_integration.py, test_restart_observation_integration.py | end-to-end behaviour through the six tools |
 | tests/test_mcp_diagnostics.py | GUI reads `$defs.Kind` / `$defs.View`, status(view=device) single call |
 
 **Unpinned** (no test found by grep):

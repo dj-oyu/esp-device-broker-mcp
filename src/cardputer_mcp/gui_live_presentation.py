@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from .models import DEVICE_LOG_TESTS, MODULE_LOG_TESTS
+from .models import DEVICE_LOG_TESTS, LEGACY_TEST_NAMES, MODULE_LOG_TESTS
 
 MAX_LOG_LINES = 256
 MAX_LOG_BYTES = 128 * 1024
@@ -15,7 +15,7 @@ FINISHED_STATES = frozenset({"succeeded", "failed", "cancelled", "needs_review"}
 
 def logs_applicable(test: str | None) -> bool:
     """Unknown historical request types keep the existing guarded read path."""
-    return test is None or test in LOG_TESTS
+    return test is None or test in LOG_TESTS or test in LEGACY_TEST_NAMES
 
 
 def log_message(view: "LogView", job_state: str | None) -> str:

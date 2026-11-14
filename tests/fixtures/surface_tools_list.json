@@ -348,14 +348,6 @@
           "title": "AppSessionOptions",
           "type": "object"
         },
-        "DiagnosticMode": {
-          "enum": [
-            "ON",
-            "OFF"
-          ],
-          "title": "DiagnosticMode",
-          "type": "string"
-        },
         "Kind": {
           "enum": [
             "fetch",
@@ -364,8 +356,6 @@
             "flash",
             "restore",
             "app_session",
-            "derby_fixed",
-            "derby",
             "capture",
             "restart",
             "observe",
@@ -434,30 +424,6 @@
               "description": "flash",
               "title": "Build Job Id"
             },
-            "derby_detail_mode": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/DiagnosticMode"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "build"
-            },
-            "derby_dma_mode": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/DiagnosticMode"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "build"
-            },
             "device_id": {
               "anyOf": [
                 {
@@ -471,20 +437,6 @@
               "default": null,
               "description": "backup|flash|restore",
               "title": "Device Id"
-            },
-            "flash_job_id": {
-              "anyOf": [
-                {
-                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "derby_fixed",
-              "title": "Flash Job Id"
             },
             "job_id": {
               "pattern": "^[a-zA-Z0-9_-]{1,64}$",

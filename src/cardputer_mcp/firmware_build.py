@@ -13,7 +13,7 @@ from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .build_artifacts import BuildArtifacts, manifest_digest
+from .build_artifacts import BuildArtifacts, has_legacy_diagnostic, manifest_digest
 from .build_ccache import CONTRACT as CCACHE_CONTRACT
 from .build_ccache import ccache_statistics, configure_ccache, probe_ccache
 from .build_locations import (
@@ -31,17 +31,13 @@ from .build_locations import (
 from .build_logs import BuildLogs
 from .build_process import BuildProcess
 from .build_security import BuildSecurityConfigError, interpret_idf601_security
-from .diagnostic_dma_modeproof import collect_dma_modeproof
-from .diagnostic_modeproof import collect_modeproof
-from .diagnostic_registry import (
-    same_entry_binding,
-    validate_diagnostic_record,
-    validate_diagnostic_selection,
-    validate_entry_binding,
-)
 from .job_logs import attach
 from .manifest_export import export_response
-from .models import DiagnosticMode
+
+# Frozen: the compiler-cache namespace of ordinary builds hashed these axes as absent.
+# Keeping the value keeps existing compiler caches valid after the diagnostic options
+# were removed; it carries no selection.
+CCACHE_NAMESPACE_MODES = {"derby_detail_mode": None, "derby_dma_mode": None}
 
 ALLOWED_ENV = frozenset(
     {
@@ -413,22 +409,8 @@ class FirmwareBuild:
         project_id: str | None,
         principal: str,
         source_receipt: str | None = None,
-        derby_detail_mode: DiagnosticMode | str | None = None,
-        derby_dma_mode: DiagnosticMode | str | None = None,
     ) -> dict[str, Any]:
         project, provenance = self._project(project_id, principal, source_receipt)
-        if derby_detail_mode is not None:
-            derby_detail_mode = DiagnosticMode(derby_detail_mode).value
-        if derby_dma_mode is not None:
-            derby_dma_mode = DiagnosticMode(derby_dma_mode).value
-        entry = validate_diagnostic_selection(provenance or {}, derby_detail_mode, derby_dma_mode)
-        selection = (
-            {"derby_detail_mode": derby_detail_mode, "diagnostic_entry_sha256": entry.sha256}
-            if entry is not None
-            else {}
-        )
-        if derby_dma_mode is not None:
-            selection["derby_dma_mode"] = derby_dma_mode
         if hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
             self.settings.state_dir.resolve()
         ):
@@ -436,12 +418,6 @@ class FirmwareBuild:
         if not (project.project_dir / "CMakeLists.txt").is_file():
             raise ValueError("idf_project_required")
         registered_tools = self._registered_tools(project)
-        # Recipe tool requirements apply only to an explicit diagnostic build.
-        # Ordinary registered builds do not acquire diagnostic admission rules.
-        if entry is not None:
-            node = registered_tools.get("node")
-            if node is None or int(node.version.split(".")[0][1:]) < 16:
-                raise ValueError("registered_node_16_required_for_source_project")
         build_root = getattr(project, "build_root", None)
         if build_root is not None:
             source = project.project_dir.resolve()
@@ -466,7 +442,6 @@ class FirmwareBuild:
                         else (),
                     ),
                     "project_id": project_id,
-                    **selection,
                     **({"source_receipt": source_receipt} if source_receipt is not None else {}),
                     "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
                     "profile": hash_file(project.trusted_profile),
@@ -501,7 +476,6 @@ class FirmwareBuild:
                 if provenance
                 else {}
             ),
-            **selection,
             fingerprint=fingerprint,
             expected_idf=project.expected_idf,
             target=project.target,
@@ -519,16 +493,6 @@ class FirmwareBuild:
                 "-B",
                 "fingerprint-build-directory",
                 *(["-D", "SDKCONFIG=build-output-sdkconfig"] if provenance is not None else []),
-                *(
-                    ["-D", "POCKET_DERBY_DETAIL_MEASURE=" + derby_detail_mode]
-                    if derby_detail_mode is not None
-                    else []
-                ),
-                *(
-                    ["-D", "KASANE_DMA_OVERLAP=" + derby_dma_mode]
-                    if derby_dma_mode is not None
-                    else []
-                ),
                 "build",
             ],
         )
@@ -659,8 +623,6 @@ class FirmwareBuild:
                 plan["project_id"],
                 principal,
                 plan.get("source_receipt"),
-                plan.get("derby_detail_mode"),
-                **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -668,8 +630,6 @@ class FirmwareBuild:
         project, provenance = self._project(
             plan["project_id"], principal, plan.get("source_receipt")
         )
-        if plan.get("derby_detail_mode") is not None:
-            validate_entry_binding(provenance or {}, plan)
         logs = BuildLogs(principal, job_id=plan["job_id"], on_change=self.on_logs_change)
         logs.redactions = tuple(
             value
@@ -893,7 +853,7 @@ class FirmwareBuild:
             plan["project_id"],
             principal,
             environment_fingerprint,
-            {key: plan.get(key) for key in ("derby_detail_mode", "derby_dma_mode")},
+            CCACHE_NAMESPACE_MODES,
         )
         logs.append("-- Compiler cache: " + cache_receipt["reason"])
         cache_before = (
@@ -913,8 +873,6 @@ class FirmwareBuild:
                 plan["project_id"],
                 principal,
                 plan.get("source_receipt"),
-                plan.get("derby_detail_mode"),
-                **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -940,10 +898,6 @@ class FirmwareBuild:
             ]
         if provenance is not None:
             build_args += ["-D", "SDKCONFIG=" + str(build_dir / "sdkconfig")]
-        if plan.get("derby_detail_mode") is not None:
-            build_args += ["-D", "POCKET_DERBY_DETAIL_MEASURE=" + plan["derby_detail_mode"]]
-        if "derby_dma_mode" in plan:
-            build_args += ["-D", "KASANE_DMA_OVERLAP=" + plan["derby_dma_mode"]]
         # The broker already owns and drains both output pipes. IDF's optional
         # nested asyncio hints collector can stall after CMake exits on Windows;
         # use IDF's direct subprocess path, retaining broker logs and teardown.
@@ -973,8 +927,6 @@ class FirmwareBuild:
                 plan["project_id"],
                 principal,
                 plan.get("source_receipt"),
-                plan.get("derby_detail_mode"),
-                **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -1004,37 +956,8 @@ class FirmwareBuild:
         self._check_cancelled()
         flash_security, security_summary = build_flash_security_receipt(build_dir, project.target)
         self._check_cancelled()
-        diagnostic = None
-        if plan.get("derby_detail_mode") is not None:
-            diagnostic = (
-                collect_dma_modeproof(
-                    build_dir,
-                    plan["derby_detail_mode"],
-                    plan["derby_dma_mode"],
-                    provenance or {},
-                    artifacts,
-                )
-                if "derby_dma_mode" in plan
-                else collect_modeproof(
-                    build_dir, plan["derby_detail_mode"], provenance or {}, artifacts
-                )
-            )
         manifest = dict(
             schema_version=1,
-            **(
-                {
-                    "derby_detail_mode": plan["derby_detail_mode"],
-                    "diagnostic_modeproof": diagnostic,
-                    "diagnostic_entry_sha256": plan["diagnostic_entry_sha256"],
-                    **(
-                        {"derby_dma_mode": plan["derby_dma_mode"]}
-                        if "derby_dma_mode" in plan
-                        else {}
-                    ),
-                }
-                if diagnostic is not None
-                else {}
-            ),
             **({"source_provenance": provenance} if provenance is not None else {}),
             build_job_id=plan["job_id"],
             build_plan_hash=hashlib.sha256(
@@ -1091,8 +1014,6 @@ class FirmwareBuild:
                 plan["project_id"],
                 principal,
                 plan.get("source_receipt"),
-                plan.get("derby_detail_mode"),
-                **({"derby_dma_mode": plan["derby_dma_mode"]} if "derby_dma_mode" in plan else {}),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -1184,7 +1105,6 @@ class FirmwareBuild:
                 manifest_digest(manifest) != reference.get("manifest_sha256")
                 or manifest.get("build_job_id") != job_id
                 or manifest.get("build_plan_hash") != reference.get("build_plan_hash")
-                or not same_entry_binding(manifest, reference)
                 or manifest.get("idf_version") != "6.0.1"
                 or manifest.get("target") != project.target
                 or manifest.get("flash_authorized") is not False
@@ -1197,27 +1117,10 @@ class FirmwareBuild:
             raise BuildLocationError("build_output_identity_mismatch")
         if self.artifacts.history is not None:
             self._verify_owned_artifacts(root, manifest)
-        entry = validate_diagnostic_record(manifest.get("source_provenance", {}), manifest)
-        if entry is not None:
-            validate_entry_binding(manifest.get("source_provenance", {}), manifest)
-            verified = (
-                collect_dma_modeproof(
-                    root,
-                    manifest["derby_detail_mode"],
-                    manifest["derby_dma_mode"],
-                    manifest.get("source_provenance", {}),
-                    manifest["artifacts"],
-                )
-                if entry.contract == "derby-dma-diagnostic-v1"
-                else collect_modeproof(
-                    root,
-                    manifest["derby_detail_mode"],
-                    manifest.get("source_provenance", {}),
-                    manifest["artifacts"],
-                )
-            )
-            if verified != manifest.get("diagnostic_modeproof"):
-                raise BuildLocationError("build_output_identity_mismatch")
+        if has_legacy_diagnostic(manifest):
+            # The recipe proof verifier was removed; a legacy diagnostic build can no
+            # longer be re-verified, so it is not resolved for flash or status.
+            raise BuildLocationError("build_output_identity_mismatch")
         return root, manifest
 
     @staticmethod

@@ -9,7 +9,18 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .diagnostic_registry import same_diagnostic_selection, same_entry_binding
+# Removed diagnostic build selection; present only in legacy plans and manifests.
+_LEGACY_DIAGNOSTIC_KEYS = (
+    "derby_detail_mode",
+    "derby_dma_mode",
+    "diagnostic_entry_sha256",
+    "diagnostic_modeproof",
+)
+
+
+def has_legacy_diagnostic(record: dict[str, Any]) -> bool:
+    """True when a stored plan/manifest carries the removed diagnostic build selection."""
+    return any(key in record for key in _LEGACY_DIAGNOSTIC_KEYS)
 
 
 def manifest_digest(manifest: dict[str, Any]) -> str:
@@ -75,7 +86,8 @@ class BuildArtifacts:
                         or manifest.get("build_job_id") != job_id
                         or manifest.get("build_plan_hash") != digest
                         or manifest.get("fingerprint") != plan.get("fingerprint")
-                        or not same_diagnostic_selection(manifest, plan)
+                        or has_legacy_diagnostic(manifest)
+                        or has_legacy_diagnostic(plan)
                     ):
                         raise ValueError("invalid_internal_artifact_receipt")
                     reference = {
@@ -87,8 +99,6 @@ class BuildArtifacts:
                         "manifest_sha256": manifest_digest(manifest),
                         "root_sha256": hashlib.sha256(str(root.resolve()).encode()).hexdigest(),
                     }
-                    if "diagnostic_entry_sha256" in plan:
-                        reference["diagnostic_entry_sha256"] = plan["diagnostic_entry_sha256"]
                     payload = json.dumps(reference, sort_keys=True, separators=(",", ":"))
                     if len(payload.encode()) > 4096:
                         raise ValueError("invalid_internal_artifact_receipt")
@@ -122,7 +132,6 @@ class BuildArtifacts:
                 or reference.get("project_id") != project_id
                 or reference.get("build_plan_hash") != digest
                 or reference.get("fingerprint") != plan.get("fingerprint")
-                or not same_entry_binding(reference, plan)
             ):
                 raise ValueError("owned_build_artifact_not_available")
             return reference

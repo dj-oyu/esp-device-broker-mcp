@@ -15,7 +15,7 @@ is a visible row of ``RULES`` and not a missing ``and`` in a copied expression:
   without a principal.
 - ``RUNNING`` (non-flash executors and commits) turns any exception into a refusal.
 - ``FLASH_IO`` / ``FLASH_COMMIT`` alone check the registration (``allow_<op>`` and the
-  digest), before the callback; they have no ``collector_live``; their running-job
+  digest), before the callback; their running-job
   check uses the weaker ``_execution_uncertain(allow_profile_cleanup=True)``; a callback
   exception is not swallowed; ``FLASH_COMMIT`` passes ``committing=True`` (the guard
   inside ``Store.finish_firmware``'s ``BEGIN IMMEDIATE``).
@@ -36,7 +36,6 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from .collector_binding import collector_live
 from .flash_binding import live_binding
 from .job_kinds import sync_section
 from .registration_digest import flash_digests
@@ -223,11 +222,6 @@ def _flash_binding_bound(b: Broker, g: Gate, s: _Pass) -> bool:
 def _flash_binding_live(b: Broker, g: Gate, s: _Pass) -> bool:
     assert g.flash_binding is not None  # flash_binding_bound runs first
     return live_binding(b, g.flash_binding, g.plan)
-
-
-@_step("collector_live")
-def _collector_live(b: Broker, g: Gate, s: _Pass) -> bool:
-    return collector_live(b, g.plan, g.lease.principal_id or "")
 
 
 @_step("registration_allows")
@@ -426,7 +420,7 @@ _FLASH_STEPS = (
     "snapshot_validator",
     "snapshot_runtime_binding",
     "principal_callback",
-    # After the callback. No collector_live here.
+    # After the callback.
     "authorized",
     "validator_unchanged",
     "runtime_binding_unchanged_across_callback",
@@ -451,7 +445,6 @@ RULES: Mapping[Checkpoint, Rules] = MappingProxyType(
                 "validator_unchanged",
                 "runtime_binding_unchanged",
                 "flash_binding_live_if_bound",
-                "collector_live",
                 "session_is_lease",
                 "intent_binding_live",
                 "not_closing",
@@ -474,7 +467,6 @@ RULES: Mapping[Checkpoint, Rules] = MappingProxyType(
                 "validator_unchanged",
                 "runtime_binding_unchanged",
                 "flash_binding_live_if_bound",
-                "collector_live",
                 "state_lock_held",
                 "job_row_queued",
                 "job_row_plan_hash",
@@ -503,7 +495,6 @@ RULES: Mapping[Checkpoint, Rules] = MappingProxyType(
                 "authorized",
                 "validator_unchanged",
                 "runtime_binding_unchanged",
-                "collector_live",
                 "session_is_lease",
                 "running_lease_binding_live",
                 "device_lock_held",

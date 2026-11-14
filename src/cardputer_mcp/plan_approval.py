@@ -147,24 +147,6 @@ class PlanApprovals:
                 "argv_template",
                 "profile_execution_policy",
             }
-            if "derby_detail_mode" in plan:
-                expected_keys |= {"derby_detail_mode"}
-                if plan["derby_detail_mode"] not in ("ON", "OFF") or "source_receipt" not in plan:
-                    raise ValueError
-            if "derby_dma_mode" in plan:
-                expected_keys |= {"derby_dma_mode"}
-                if "diagnostic_entry_sha256" not in plan:
-                    raise ValueError
-            from .diagnostic_registry import validate_diagnostic_record
-
-            validate_diagnostic_record(plan.get("source_provenance", {}), plan)
-            if "diagnostic_entry_sha256" in plan:
-                from .diagnostic_registry import validate_entry_binding
-
-                if "derby_detail_mode" not in plan:
-                    raise ValueError
-                expected_keys |= {"diagnostic_entry_sha256"}
-                validate_entry_binding(plan.get("source_provenance", {}), plan)
             if "source_receipt" in plan:
                 expected_keys |= {"source_receipt", "source_provenance"}
                 provenance = plan.get("source_provenance")
@@ -227,16 +209,6 @@ class PlanApprovals:
                         if "source_receipt" in plan
                         else []
                     ),
-                    *(
-                        ["-D", "POCKET_DERBY_DETAIL_MEASURE=" + plan["derby_detail_mode"]]
-                        if "derby_detail_mode" in plan
-                        else []
-                    ),
-                    *(
-                        ["-D", "KASANE_DMA_OVERLAP=" + plan["derby_dma_mode"]]
-                        if "derby_dma_mode" in plan
-                        else []
-                    ),
                     "build",
                 ]
             ):
@@ -296,23 +268,6 @@ class PlanApprovals:
                 raise ValueError
         elif backend == "serial":
             expected_keys = _BASE_KEYS | _SERIAL_KEYS
-            if test == "derby_smoke":
-                from .derby_smoke import SMOKE
-
-                expected_keys = expected_keys | {"smoke"}
-                if plan.get("smoke") != SMOKE:
-                    raise ValueError
-            if test == TestName.DERBY_FIXED.value:
-                from .derby_fixed import FIXED_PLAN
-
-                expected_keys = expected_keys | {"fixed_workload"}
-                if plan.get("fixed_workload") != FIXED_PLAN:
-                    raise ValueError
-                if "flash_job_id" in plan or "collector_binding" in plan:
-                    from .collector_binding import validate_collector_schema
-
-                    expected_keys |= {"flash_job_id", "collector_binding"}
-                    validate_collector_schema(plan)
             if test == "restart_and_observe":
                 expected_keys = expected_keys | {"restart"}
                 restart = plan.get("restart")
@@ -378,8 +333,6 @@ class PlanApprovals:
                     "passive_observe",
                     "hello",
                     "capture_home",
-                    "derby_smoke",
-                    "derby_fixed_workload",
                     "firmware_observe",
                     "restart_and_observe",
                 )
@@ -393,17 +346,11 @@ class PlanApprovals:
                 != (
                     "unverified_device_report"
                     if test in ("firmware_observe", "restart_and_observe")
-                    else "successful_flash_receipt"
-                    if test == "derby_fixed_workload" and "flash_job_id" in plan
                     else "configured_expected_hash_only"
                 )
                 or plan.get("protocol")
                 != (
-                    "pocketjs-derby-smoke-v1"
-                    if test == "derby_smoke"
-                    else "pocketjs-derby-fixed-v2"
-                    if test == "derby_fixed_workload"
-                    else "pocketjs-legacy-capture-v1"
+                    "pocketjs-legacy-capture-v1"
                     if test == "capture_home"
                     else "esp-idf-startup-log-v1"
                     if test in ("firmware_observe", "restart_and_observe")
@@ -471,18 +418,8 @@ class PlanApprovals:
                 raise BrokerError("plan_session_mismatch")
         elif plan["backend"] == "serial":
             config = self.broker.settings.serial
-            receipt_bound = plan["test"] == TestName.DERBY_FIXED.value and "flash_job_id" in plan
-            if receipt_bound:
-                from .collector_binding import validate_collector_schema
-
-                validate_collector_schema(plan)
-                if plan["collector_binding"]["principal_id"] != lease.principal_id:
-                    raise BrokerError("plan_session_mismatch")
             if config is None or (
-                (
-                    not receipt_bound
-                    and plan["expected_firmware_sha256"] != config.expected_firmware_sha256
-                )
+                plan["expected_firmware_sha256"] != config.expected_firmware_sha256
                 or plan["observe_seconds"]
                 != (
                     config.observe_seconds
@@ -541,18 +478,6 @@ class PlanApprovals:
                         plan["project_id"],
                         lease.principal_id or "",
                         plan.get("source_receipt"),
-                        plan.get("derby_detail_mode"),
-                        **(
-                            {"derby_dma_mode": plan["derby_dma_mode"]}
-                            if "derby_dma_mode" in plan
-                            else {}
-                        ),
-                    )
-                elif plan["test"] == TestName.DERBY_FIXED.value and "flash_job_id" in plan:
-                    from .collector_binding import prepare_collector
-
-                    details = prepare_collector(
-                        self.broker, plan["flash_job_id"], lease.principal_id or ""
                     )
                 else:
                     details = self.broker.backend.prepare(TestName(plan["test"]))

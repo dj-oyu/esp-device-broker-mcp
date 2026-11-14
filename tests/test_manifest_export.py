@@ -1,19 +1,11 @@
-"""Offline export schema with synthetic linked DMA images and private sentinels."""
+"""Offline export schema with synthetic legacy diagnostic envelopes and private sentinels."""
 
 import copy
 import hashlib
 import json
-import tempfile
 import unittest
-from pathlib import Path
-
-from test_dma_modeproof import dma_fixture, resign
 
 from cardputer_mcp.build_artifacts import manifest_digest
-from cardputer_mcp.diagnostic_dma_modeproof import (
-    collect_dma_modeproof,
-    verify_dma_modeproof_bytes,
-)
 from cardputer_mcp.manifest_export import (
     MAX_CACHE_BYTES,
     MAX_EXPORT_BYTES,
@@ -29,30 +21,52 @@ from cardputer_mcp.manifest_export import (
 
 class ManifestExportTests(unittest.TestCase):
     def manifest(self, detail="OFF", dma="ON"):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            source, artifacts, files = dma_fixture(root, detail, dma)
-            envelope = collect_dma_modeproof(root, detail, dma, source, artifacts)
-            envelope["cmake_cache"] += (
-                "PRIVATE_PATH:PATH=C:/SYNTHETIC_PRIVATE\nTOKEN:STRING=SYNTHETIC_SECRET\n"
+        """A legacy build manifest: the removed diagnostic proof envelope with a private cache."""
+        cache = "\n".join(
+            (
+                f"POCKET_DERBY_DETAIL_MEASURE:BOOL={detail}",
+                f"KASANE_DMA_OVERLAP:BOOL={dma}",
+                "PRIVATE_PATH:PATH=C:/SYNTHETIC_PRIVATE",
+                "TOKEN:STRING=SYNTHETIC_SECRET",
+                "",
             )
-            cache_hash = hashlib.sha256(envelope["cmake_cache"].encode()).hexdigest()
-            proof = envelope["proof"]
-            proof["dma_overlap"]["cmake_cache_sha256"] = cache_hash
-            for key in ("build_mode", "build_measure"):
-                proof["diagnostic"][key]["cmake_cache_sha256"] = cache_hash
-            resign(envelope)
-            verify_dma_modeproof_bytes(envelope, source, artifacts, files)
-            return {
-                "schema_version": 1,
-                "build_job_id": "synthetic-build",
-                "build_plan_hash": "a" * 64,
-                "diagnostic_modeproof": envelope,
-                "derby_detail_mode": detail,
-                "derby_dma_mode": dma,
-            }
+        )
+        digest = hashlib.sha256(cache.encode()).hexdigest()
+        envelope = {
+            "cmake_cache": cache,
+            "proof": {
+                "dma_overlap": {"cmake_cache_sha256": digest},
+                "diagnostic": {
+                    "build_mode": {"cmake_cache_sha256": digest},
+                    "build_measure": {"cmake_cache_sha256": digest},
+                },
+            },
+        }
+        return {
+            "schema_version": 1,
+            "build_job_id": "synthetic-build",
+            "build_plan_hash": "a" * 64,
+            "diagnostic_modeproof": envelope,
+            "derby_detail_mode": detail,
+            "derby_dma_mode": dma,
+        }
 
-    def test_four_axes_export_keeps_original_digest_without_private_cache(self):
+    def test_ordinary_manifest_exports_unchanged(self):
+        original = {
+            "schema_version": 1,
+            "build_job_id": "synthetic-build",
+            "build_plan_hash": "a" * 64,
+        }
+        result = export_response(original)
+        self.assertEqual(result["manifest"], original)
+        self.assertEqual(
+            result["manifest_export"]["original_manifest_sha256"], manifest_digest(original)
+        )
+        self.assertEqual(
+            result["manifest_export_sha256"], manifest_export_sha256(result["manifest_export"])
+        )
+
+    def test_legacy_diagnostic_export_keeps_original_digest_without_private_cache(self):
         for detail in ("ON", "OFF"):
             for dma in ("ON", "OFF"):
                 with self.subTest(detail=detail, dma=dma):

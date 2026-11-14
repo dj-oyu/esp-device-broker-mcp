@@ -35,9 +35,9 @@ from .app_models import (
     AppSessionOptions,
 )
 from .broker import BrokerError
-from .derby_reports import binding_unchanged, private_job, shared_job
 from .firmware_flash import flash_readiness
 from .home_recovery import CancelHomeRecovery, RequestHomeRecovery
+from .job_view import shared_job
 from .models import (
     DEFERRED_DEVICE_TESTS,
     FLASH_TESTS,
@@ -49,7 +49,6 @@ from .models import (
     Capability,
     CloseWorkSessionRequest,
     CreateWorkSessionRequest,
-    DiagnosticMode,
     Digest,
     ExecuteRequest,
     Identifier,
@@ -108,8 +107,6 @@ class Kind(StrEnum):
     FLASH = "flash"
     RESTORE = "restore"
     APP_SESSION = "app_session"
-    DERBY_FIXED = "derby_fixed"
-    DERBY = "derby"
     CAPTURE = "capture"
     RESTART = "restart"
     OBSERVE = "observe"
@@ -146,8 +143,6 @@ KIND_TEST = {
     Kind.FLASH: TestName.FLASH,
     Kind.RESTORE: TestName.RESTORE,
     Kind.APP_SESSION: TestName.APP_SESSION,
-    Kind.DERBY_FIXED: TestName.DERBY_FIXED,
-    Kind.DERBY: TestName.DERBY,
     Kind.CAPTURE: TestName.CAPTURE,
     Kind.RESTART: TestName.RESTART,
     Kind.OBSERVE: TestName.OBSERVE,
@@ -199,9 +194,6 @@ class SubmitRequest(StrictModel):
     build_job_id: Identifier | None = Field(default=None, description="flash")
     backup_job_id: Identifier | None = Field(default=None, description="flash|restore")
     lkg_receipt: Digest | None = Field(default=None, description="flash|restore")
-    derby_detail_mode: DiagnosticMode | None = Field(default=None, description="build")
-    derby_dma_mode: DiagnosticMode | None = Field(default=None, description="build")
-    flash_job_id: Identifier | None = Field(default=None, description="derby_fixed")
     after: str | None = Field(
         default=None,
         pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
@@ -425,8 +417,6 @@ _DEVICE_KINDS = {
     Kind.FLASH,
     Kind.RESTORE,
     Kind.APP_SESSION,
-    Kind.DERBY_FIXED,
-    Kind.DERBY,
     Kind.CAPTURE,
     Kind.RESTART,
     Kind.OBSERVE,
@@ -440,13 +430,12 @@ SUBMIT_RULES: dict[Kind, tuple[set[str], set[str]]] = {
     Kind.FETCH: ({"job_id", "project_id", "source_commit"}, set()),
     Kind.BUILD: (
         {"job_id", "project_id"},
-        {"source_receipt", "derby_detail_mode", "derby_dma_mode", "after"},
+        {"source_receipt", "after"},
     ),
     Kind.BACKUP: ({"job_id", "session", "device_id"}, set()),
     Kind.FLASH: ({"job_id", "session", "device_id", "build_job_id"}, set(_RECOVERY)),
     Kind.RESTORE: ({"job_id", "session", "device_id"}, set(_RECOVERY)),
     Kind.APP_SESSION: ({"job_id", "session", "app"}, set()),
-    Kind.DERBY_FIXED: ({"job_id", "session"}, {"flash_job_id"}),
 }
 for _kind in _DEVICE_KINDS - set(SUBMIT_RULES):
     SUBMIT_RULES[_kind] = ({"job_id", "session"}, set())
@@ -654,41 +643,12 @@ def register_surface(
         return await _result_async(report)
 
     def job_body(job_id: str, ctx: Context[Any, Any]) -> dict[str, Any]:
-        """Persisted job state; any read-scoped principal, derby private extras owner-only."""
+        """Persisted job state; any read-scoped principal."""
 
         def get_job() -> dict[str, Any]:
             job = resident.job(job_id)
             store = resident._store()
             plan = store.plan(job["plan_hash"])
-            if plan is not None and plan.get("test") in (
-                TestName.DERBY.value,
-                TestName.DERBY_FIXED.value,
-            ):
-                try:
-                    owner = require(ctx, "read", honor_auth_required=False)
-                except BrokerError:
-                    if auth_required:
-                        raise
-                    return shared_job(job)
-                epoch = resident.epoch
-                result = private_job(store, job, plan, owner.principal_id)
-                if "derby_diagnostics" in result or "fixed_trial" in result:
-                    try:
-                        current = require(ctx, "read", honor_auth_required=False)
-                    except BrokerError:
-                        if auth_required:
-                            raise
-                        return shared_job(job)
-                    if (
-                        resident.store is not store
-                        or resident.epoch != epoch
-                        or resident.closing
-                        or current.principal_id != owner.principal_id
-                        or current.origin != owner.origin
-                        or not binding_unchanged(store, job, plan, current.principal_id)
-                    ):
-                        return shared_job(job)
-                return result
             # Status is readable by any read-scoped principal, whoever started the job.
             if plan is not None and plan.get("operation") == "home_recovery":
                 require(ctx, "read", honor_auth_required=False)
@@ -901,8 +861,6 @@ def register_surface(
                 )
             if request.test in (
                 TestName.CAPTURE,
-                TestName.DERBY,
-                TestName.DERBY_FIXED,
                 TestName.FIRMWARE,
                 TestName.RESTART,
                 *FLASH_TESTS,
@@ -1248,7 +1206,7 @@ def register_surface(
             return error
 
         def home_recovery() -> dict[str, Any]:
-            # One bounded q after a proved-closed DERBY capture failure; no retry.
+            # One bounded q after a proved-closed capture failure; no retry.
             owner = require(ctx, "control", honor_auth_required=False)
             return cast(
                 dict[str, Any],
