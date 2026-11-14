@@ -88,7 +88,7 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
         config = folder / "mock.toml"
         config.write_text(
             f'backend = "mock"\nhost = "127.0.0.1"\nport = {port}\n'
-            f"state_dir = {json.dumps(str(folder / 'state'))}\n"
+            f"state_dir = {json.dumps(str(folder / 'state'))}\n",
             encoding="utf-8",
         )
         # The frozen gateway and web UI import their stacks, then refuse a TOML
