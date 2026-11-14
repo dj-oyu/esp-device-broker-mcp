@@ -44,6 +44,7 @@ from .models import (
     AcquireRequest,
     BuildLogLevel,
     BuildLogRequest,
+    BuildVariantName,
     CancelDeviceRequest,
     CancelRequest,
     Capability,
@@ -69,7 +70,7 @@ from .source_preflight import settings_identity, source_inventory, source_usage
 from .source_resources import resource_report
 from .source_snapshot import SourceError
 
-TOOL_SET_VERSION = 2
+TOOL_SET_VERSION = 3
 
 # Plans of these tests overwrite device flash. Only the `flash` tool may queue them;
 # the broker derives this from the stored plan, never from the request.
@@ -190,6 +191,9 @@ class SubmitRequest(StrictModel):
     project_id: Identifier | None = Field(default=None, description="fetch|build")
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$", description="fetch")
     source_receipt: Digest | None = Field(default=None, description="build")
+    variant: BuildVariantName | None = Field(
+        default=None, description="build; sdkconfig.variant.<name> in source"
+    )
     device_id: Identifier | None = Field(default=None, description="backup|flash|restore")
     build_job_id: Identifier | None = Field(default=None, description="flash")
     backup_job_id: Identifier | None = Field(default=None, description="flash|restore")
@@ -430,7 +434,7 @@ SUBMIT_RULES: dict[Kind, tuple[set[str], set[str]]] = {
     Kind.FETCH: ({"job_id", "project_id", "source_commit"}, set()),
     Kind.BUILD: (
         {"job_id", "project_id"},
-        {"source_receipt", "after"},
+        {"source_receipt", "variant", "after"},
     ),
     Kind.BACKUP: ({"job_id", "session", "device_id"}, set()),
     Kind.FLASH: ({"job_id", "session", "device_id", "build_job_id"}, set(_RECOVERY)),
@@ -666,6 +670,13 @@ def register_surface(
             evidence = job_reads.flash_recovery_evidence(resident, job, plan)
             if evidence is not None:
                 shared["recovery"] = evidence
+
+            def build_plan(build_id: str) -> dict[str, Any] | None:
+                build = store.job(build_id)
+                return store.plan(build["plan_hash"]) if build is not None else None
+
+            if plan is not None and plan.get("test") == TestName.FLASH.value:
+                shared.update(job_reads.build_variant_display(plan, build_plan))
             return shared
 
         def checked() -> dict[str, Any]:

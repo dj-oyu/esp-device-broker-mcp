@@ -160,6 +160,8 @@ RESULTS = (
             "build_inputs_changed",
             "build_authority_check_timeout",
             "idf_build_failed_needs_review",
+            "build_variant_config_conflict",
+            "build_variant_not_applied",
             "build_target_mismatch",
             "build_artifacts_missing",
             "artifact_count_limit",

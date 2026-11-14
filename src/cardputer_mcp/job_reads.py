@@ -17,10 +17,11 @@ import json
 import re
 import secrets
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from . import build_variant
 from .models import FLASH_TESTS, TestName
 
 PLAN_PRINCIPAL_KEYS = ("principal_id", "flash_principal", "build_principal", "source_principal")
@@ -228,6 +229,19 @@ def _firmware(plan: Mapping[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def build_variant_display(
+    flash_plan: Mapping[str, Any] | None, lookup: Callable[[str], Mapping[str, Any] | None]
+) -> dict[str, str]:
+    """The build variant name of a flash plan's build, for display only.
+
+    Never a gate or a filter: it is omitted when the build had no variant.
+    """
+    build_id = flash_plan.get("build_job_id") if isinstance(flash_plan, Mapping) else None
+    build = lookup(build_id) if isinstance(build_id, str) else None
+    name = build.get("build_variant") if isinstance(build, Mapping) else None
+    return {"build_variant": name} if isinstance(name, str) and build_variant.name_ok(name) else {}
+
+
 # Fixed vocabulary: the only failure codes that get recovery evidence, each with a
 # next step that tells an agent how to continue without guessing.
 _FLASH_RECOVERY_STEPS: dict[str, tuple[str, str]] = {
@@ -345,6 +359,7 @@ def recovery(broker: Any, caller: str | None) -> dict[str, Any]:
                     "recorded": row["finished"],
                     "recorded_by_caller": same_principal(row["principal"], caller),
                     **_firmware(plan),
+                    **build_variant_display(plan, lambda build_id: job_plan(build_id)[1]),
                 }
             )
         backups: list[dict[str, Any]] = []
