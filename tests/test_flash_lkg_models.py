@@ -29,7 +29,7 @@ METADATA = {"kind": "full_backup", "device_id": "fixture", "z_first": 1, "a_last
 
 @pytest.fixture
 def snapshots(tmp_path):
-    return FirmwareSnapshots(tmp_path / "lkg", windows_private_acl_confirmed=True)
+    return FirmwareSnapshots(tmp_path / "lkg")
 
 
 def _put_envelope(snapshots, body):
@@ -159,7 +159,7 @@ def test_reading_never_rewrites_stored_objects(snapshots):
 
 def _lkg(env):
     root = env.broker.settings.flash_devices["fixture"].backup_directory / "lkg"
-    return FirmwareSnapshots(root, windows_private_acl_confirmed=True)
+    return FirmwareSnapshots(root)
 
 
 def _record(env, metadata, files, kind="artifact_bundle", current=False):

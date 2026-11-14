@@ -72,17 +72,12 @@ async def env(tmp_path, request):
             esptool_directory=tmp_path / "tools",
             esptool_sha256="b" * 64,
             backup_directory=tmp_path / "backups",
-            private_backup_acl_confirmed=True,
             original_elf_sha256=elf_hash,
-            allow_backup=True,
-            allow_flash=True,
-            allow_restore=True,
         )
         broker = Broker(
             source.settings.model_copy(
                 update={
                     "flash_devices": {"fixture": registration},
-                    "allow_mock_execution": True,
                 }
             ),
             lock_path=tmp_path / "device.lockfile",
@@ -194,10 +189,9 @@ async def env(tmp_path, request):
                 stage=lambda _: None,
             )
             assert backup_receipt is not None and backup_data is not None
-            BackupStore(
-                registration.backup_directory,
-                windows_private_acl_confirmed=registration.private_backup_acl_confirmed,
-            ).save("backup-one", "alice", backup_receipt, backup_data)
+            BackupStore(registration.backup_directory).save(
+                "backup-one", "alice", backup_receipt, backup_data
+            )
             assert driver.closed and not backup_engine.active and not backup_engine.uncertain
             store.add_job("backup-one", initial["plan_hash"])
             store.set_job("backup-one", "succeeded")
@@ -336,7 +330,7 @@ async def test_queued_authorization_is_rechecked_before_device_writes(env, chang
     env.execute(prepared)
     before = env.driver.writes
     if change == "registration":
-        env.configure(allow_flash=False)
+        env.configure(esptool_sha256="c" * 64)
     elif change == "project":
         project = env.broker.settings.build_projects["fixture"]
         env.broker.settings = env.broker.settings.model_copy(
@@ -374,7 +368,7 @@ async def test_revocation_in_last_auth_callback_cannot_start_device(env):
         calls += 1
         # Worker's final callback after full policy provenance validation.
         if calls == 2:
-            env.configure(allow_flash=False)
+            env.configure(esptool_sha256="c" * 64)
         return True
 
     env.broker.principal_valid = current
@@ -392,7 +386,7 @@ async def test_failed_or_late_revoked_flash_preserves_lkg_and_current_guards(env
     if late_revoke:
 
         def commit(plan, result, live):
-            env.configure(allow_flash=False)
+            env.configure(esptool_sha256="c" * 64)
             return original(plan, result, live)
 
         env.broker.firmware_flash.commit_success = commit
@@ -426,7 +420,7 @@ def test_registration_is_explicit_strict_and_flash_only():
         source_repository="fixture/project",
         source_commit="a" * 40,
     )
-    assert UnattendedFlash(**data).enabled is False
+    assert not hasattr(UnattendedFlash(**data), "enabled")
     for update in (
         {"enabled": "true"},
         {"operation": "firmware_restore"},
@@ -437,10 +431,22 @@ def test_registration_is_explicit_strict_and_flash_only():
             UnattendedFlash(**(data | update))
 
 
-async def test_allow_flash_still_gates_operation(env):
-    env.configure(allow_flash=False)
-    with pytest.raises(BrokerError, match="registered_flash_operation_not_enabled"):
-        env.prepare("disabled-operation", build_job_id="build-one")
+async def test_registered_device_needs_no_operation_switch_but_unregistered_is_refused(env):
+    env.configure()
+    prepared = env.prepare("registered-only", build_job_id="build-one")
+    assert prepared["plan"]["flash_operation"] == "flash"
+    assert env.prepare("registered-backup", Action.BACKUP)["plan"]["flash_operation"] == "backup"
+    for action in (Action.FLASH, Action.BACKUP, Action.RESTORE):
+        with pytest.raises(BrokerError, match="registered_flash_device_required"):
+            env.broker.prepare(
+                PrepareRequest(
+                    session=env.session,
+                    job_id="unregistered-" + action.value,
+                    test=action,
+                    device_id="not-registered",
+                    **({"build_job_id": "build-one"} if action == Action.FLASH else {}),
+                )
+            )
 
 
 async def test_second_atomic_commit_guard_rechecks_registration_and_rolls_back(env):
@@ -455,7 +461,7 @@ async def test_second_atomic_commit_guard_rechecks_registration_and_rolls_back(e
             nonlocal calls
             calls += 1
             if calls == 2:
-                env.configure(allow_flash=False)
+                env.configure(esptool_sha256="c" * 64)
             return guard()
 
         return original(job_id, result, promotion, guarded, *args)

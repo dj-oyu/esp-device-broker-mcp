@@ -82,7 +82,7 @@ def binding(tmp_path, *, work_state=None):
 
     clock = Clock()
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         clock=clock,
         lock_path=tmp_path / "device.lockfile",
     )
@@ -188,7 +188,7 @@ async def gated(tmp_path):
     from cardputer_mcp.config import Settings
 
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         backend=backend,
         clock=clock,
         lock_path=tmp_path / "device.lockfile",
@@ -367,7 +367,7 @@ async def test_device_failure_outcome_through_the_broker(tmp_path, close, kind, 
 
     backend = FailingBackend(code, close)
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         backend=backend,
         lock_path=tmp_path / "device.lockfile",
         principal_valid=lambda *args: True,

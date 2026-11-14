@@ -14,7 +14,7 @@ is a visible row of ``RULES`` and not a missing ``and`` in a copied expression:
   callbacks, re-reads the validator for its call, and skips the call for a lease
   without a principal.
 - ``RUNNING`` (non-flash executors and commits) turns any exception into a refusal.
-- ``FLASH_IO`` / ``FLASH_COMMIT`` alone check the registration (``allow_<op>`` and the
+- ``FLASH_IO`` / ``FLASH_COMMIT`` alone check the registration (still registered, and the
   digest), before the callback; their running-job
   check uses the weaker ``_execution_uncertain(allow_profile_cleanup=True)``; a callback
   exception is not swallowed; ``FLASH_COMMIT`` passes ``committing=True`` (the guard
@@ -228,9 +228,7 @@ def _flash_binding_live(b: Broker, g: Gate, s: _Pass) -> bool:
 def _registration_allows(b: Broker, g: Gate, s: _Pass) -> bool:
     registration = b.settings.flash_devices.get(g.plan["device_id"])
     return not (
-        registration is None
-        or getattr(registration, "allow_" + g.plan["flash_operation"]) is not True
-        or g.plan["registration_sha256"] not in flash_digests(registration)
+        registration is None or g.plan["registration_sha256"] not in flash_digests(registration)
     )
 
 

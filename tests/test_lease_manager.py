@@ -128,7 +128,7 @@ def test_shorten_and_renew_write_the_given_session_even_if_not_current():
 
 
 def test_broker_session_reads_and_overwrites_through_the_manager(tmp_path):
-    broker = Broker(Settings(state_dir=tmp_path / "state", allow_mock_execution=True))
+    broker = Broker(Settings(state_dir=tmp_path / "state"))
     assert broker.session is None and broker.leases.current is None
     granted = lease()
     broker.session = granted  # test seam

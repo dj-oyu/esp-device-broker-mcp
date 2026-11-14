@@ -36,13 +36,10 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
             esptool_directory=self.root / "tools",
             esptool_sha256="b" * 64,
             backup_directory=self.root / "backup",
-            private_backup_acl_confirmed=True,
-            allow_backup=True,
         )
         self.broker = Broker(
             Settings(
                 state_dir=self.root / "state",
-                allow_mock_execution=True,
                 flash_devices={"fixture": self.registration},
             ),
             lock_path=self.root / "device.lockfile",
@@ -124,10 +121,10 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.driver.closed)
         self.assertEqual(self.driver.writes, 0)
 
-    async def test_registration_default_disables_flash_and_restore(self):
-        self.assertFalse(self.registration.allow_flash)
-        self.assertFalse(self.registration.allow_restore)
-        with self.assertRaisesRegex(BrokerError, "not_enabled"):
+    async def test_registration_has_no_per_operation_switch_to_refuse_flash(self):
+        self.assertFalse(hasattr(self.registration, "allow_flash"))
+        self.assertFalse(hasattr(self.registration, "allow_restore"))
+        with self.assertRaises(BrokerError) as refused:
             self.broker.prepare(
                 PrepareRequest(
                     session=self.token,
@@ -138,6 +135,8 @@ class FlashBrokerTests(unittest.IsolatedAsyncioTestCase):
                     backup_job_id="backup-one",
                 )
             )
+        # Refused for what the request names (no such build/backup here), not for a gate.
+        self.assertNotIn("not_enabled", str(refused.exception))
 
     async def test_native_failure_survives_broker_timeline_and_gui(self):
         from cardputer_mcp.flash_lifecycle import FlashFailure

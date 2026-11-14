@@ -87,7 +87,6 @@ class ReceiptFixture(unittest.TestCase):
                     source_repository=SourceRepository(
                         github_repository=REPOSITORY,
                         cache_root=self.root / "cache",
-                        private_acl_confirmed=True,
                     ),
                 )
             },

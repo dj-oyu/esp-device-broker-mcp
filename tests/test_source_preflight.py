@@ -27,7 +27,6 @@ def registered(settings, tmp_path):
         source_repository=SourceRepository(
             github_repository="synthetic/example",
             cache_root=tmp_path / "synthetic-cache",
-            private_acl_confirmed=True,
         ),
     )
     return settings.model_copy(update={"build_projects": {"fixture": project}})

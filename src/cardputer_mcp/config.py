@@ -3,11 +3,21 @@
 import re
 import tomllib
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .exposure import (
+    GATEWAY_LEGACY_FLAGS,
+    TUNNEL_LEGACY_FLAGS,
+    WEBUI_LEGACY_FLAGS,
+    GatewayMode,
+    TunnelIngressMode,
+    WebUIMode,
+    resolve_mode,
+)
 from .flash_models import FlashDevice
+from .legacy_keys import drop_removed_gates
 from .models import Digest
 from .ports import DeviceSelector
 
@@ -28,7 +38,18 @@ class TunnelMetadata(BaseModel):
     client_exe: Path | None = None
     client_archive: Path | None = None
     health_port: int = Field(default=8766, strict=True, ge=1024, le=65535)
-    ingress_enabled: bool = Field(default=False, strict=True)
+    # "ingress" lets the broker serve the Tunnel route. The legacy `ingress_enabled`
+    # boolean is still read (see exposure.py).
+    mode: TunnelIngressMode = "off"
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_flags(cls, data: Any) -> Any:
+        return resolve_mode(data, "tunnel", TUNNEL_LEGACY_FLAGS)
+
+    @property
+    def ingress_enabled(self) -> bool:
+        return self.mode == "ingress"
 
     @field_validator("client_exe", "client_archive", mode="before")
     @classmethod
@@ -57,9 +78,19 @@ class GatewaySettings(BaseModel):
     # file holding only CARDPUTER_GATEWAY_GOOGLE_CLIENT_SECRET=<value>.
     broker_env_file: Path
     google_client_secret_file: Path
-    # Funnel opens only when this is explicitly true, and closes with the gateway.
-    funnel: bool = Field(default=False, strict=True)
+    # Funnel opens only when this is explicitly "public", and closes with the gateway.
+    # The legacy `funnel = true` boolean is still read (see exposure.py).
+    mode: GatewayMode = "off"
     tailscale_exe: Path = Path(r"C:\Program Files\Tailscale\tailscale.exe")
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_flags(cls, data: Any) -> Any:
+        return resolve_mode(data, "gateway", GATEWAY_LEGACY_FLAGS)
+
+    @property
+    def funnel(self) -> bool:
+        return self.mode == "public"
 
     @field_validator("broker_env_file", "google_client_secret_file", "tailscale_exe")
     @classmethod
@@ -93,13 +124,25 @@ class WebUISettings(BaseModel):
     # holding only CARDPUTER_GATEWAY_GOOGLE_CLIENT_SECRET=<value>.
     broker_env_file: Path
     google_client_secret_file: Path
-    # `tailscale serve` (tailnet only) runs only when this is explicitly true.
-    serve: bool = Field(default=False, strict=True)
-    # `tailscale funnel` (public internet, Google login still required) runs only when
-    # this is explicitly true; it is exclusive with `serve` and needs a Funnel-capable
-    # port (8443 or 10000) in public_url.
-    funnel: bool = Field(default=False, strict=True)
+    # "off" (default) opens nothing; "tailnet" runs `tailscale serve` (tailnet only);
+    # "public" runs `tailscale funnel` (public internet, Google login still required)
+    # and needs a Funnel-capable port (8443 or 10000) in public_url. The legacy
+    # `serve`/`funnel` booleans are still read (see exposure.py).
+    mode: WebUIMode = "off"
     tailscale_exe: Path = Path(r"C:\Program Files\Tailscale\tailscale.exe")
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_flags(cls, data: Any) -> Any:
+        return resolve_mode(data, "webui", WEBUI_LEGACY_FLAGS)
+
+    @property
+    def serve(self) -> bool:
+        return self.mode == "tailnet"
+
+    @property
+    def funnel(self) -> bool:
+        return self.mode == "public"
 
     @field_validator("broker_env_file", "google_client_secret_file", "tailscale_exe")
     @classmethod
@@ -110,8 +153,6 @@ class WebUISettings(BaseModel):
 
     @model_validator(mode="after")
     def exclusive_exposure(self) -> "WebUISettings":
-        if self.serve and self.funnel:
-            raise ValueError("webui_serve_and_funnel_exclusive")
         if self.funnel and int(self.public_url.rsplit(":", 1)[1]) not in (8443, 10000):
             raise ValueError("webui_funnel_port_must_be_8443_or_10000")
         return self
@@ -133,17 +174,27 @@ class RegisteredBuildTool(BaseModel):
         return value
 
 
+REMOVED_SOURCE_GATES = {
+    "private_acl_confirmed": "the broker no longer asks for this declaration; keep the "
+    "cache_root directory private to this user",
+}
+
+
 class SourceRepository(BaseModel):
     """Locally trusted public GitHub origin and private snapshot root."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
     github_repository: str = Field(pattern=r"^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$")
     cache_root: Path
-    private_acl_confirmed: bool = Field(default=False, strict=True)
     submodule_repositories: list[str] = Field(default_factory=list, max_length=16)
     # Migration aid: earlier cache locations whose old-style digests stay trusted.
     # Location only; never part of any digest. Keep this field last.
     previous_cache_roots: list[Path] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="before")
+    @classmethod
+    def removed_attestation(cls, data: Any) -> Any:
+        return drop_removed_gates(data, REMOVED_SOURCE_GATES)
 
     @field_validator("previous_cache_roots")
     @classmethod
@@ -217,12 +268,13 @@ class BuildProject(BaseModel):
 
 
 class Settings(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # The root model decides whether error text echoes the input: it must not carry
+    # registered private paths or serials.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
     backend: Literal["mock", "serial"] = "mock"
     host: Literal["127.0.0.1"] = "127.0.0.1"
     port: int = Field(default=8765, ge=1024, le=65535)
     state_dir: Path = Path(".state")
-    allow_mock_execution: bool = False
     mock_stage_seconds: float = Field(default=0.15, ge=0.001, le=10)
     max_queue: int = Field(default=32, ge=1, le=256)
     max_work_sessions: int = Field(default=128, ge=1, le=1024)
@@ -234,6 +286,17 @@ class Settings(BaseModel):
     tunnel: TunnelMetadata | None = None
     gateway: GatewaySettings | None = None
     webui: WebUISettings | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def ignored_legacy_mock_switch(cls, data: Any) -> Any:
+        # `allow_mock_execution` has granted nothing for a long time (explicit execution
+        # is always required), so either legacy value is read and ignored.
+        if isinstance(data, dict) and "allow_mock_execution" in data:
+            if type(data["allow_mock_execution"]) is not bool:
+                raise ValueError("removed_setting_allow_mock_execution_must_be_boolean")
+            return {k: v for k, v in data.items() if k != "allow_mock_execution"}
+        return data
 
     @model_validator(mode="after")
     def guard_real_mode(self) -> "Settings":

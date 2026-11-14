@@ -7,7 +7,6 @@ from test_profile_jobs import register
 from test_registry_http import registry_service as registry_service
 
 from cardputer_mcp.client import call, connect
-from cardputer_mcp.flash_models import FlashDevice
 from cardputer_mcp.source_snapshot import SourceError
 from cardputer_mcp.surface import _result
 
@@ -108,33 +107,9 @@ async def test_http_submit_rule_failures_return_fixed_codes_and_never_echo_input
     assert service.resident._store().record_count("jobs") == 0
 
 
-@pytest.mark.parametrize("configured", [False, True])
-async def test_http_flash_registration_and_operation_disabled_have_distinct_codes(
-    registry_service, tmp_path, configured
-):
+async def test_http_flash_to_an_unregistered_device_is_refused(registry_service):
     service = registry_service
     broker = service.resident
-    if configured:
-        registration = FlashDevice(
-            selector={"vid": 1, "pid": 2, "serial_number": "SYNTHETIC"},
-            flash_bytes=8388608,
-            project_id="fixture",
-            python_tool={
-                "executable": tmp_path / "python.exe",
-                "sha256": "b" * 64,
-                "version": "Python 3.13.16",
-            },
-            esptool_directory=tmp_path / "tools",
-            esptool_sha256="c" * 64,
-            backup_directory=tmp_path / "backups",
-            private_backup_acl_confirmed=True,
-            original_elf_sha256="d" * 64,
-            allow_flash=False,
-        )
-        broker.settings = broker.settings.model_copy(
-            update={"flash_devices": {"disabled": registration}}
-        )
-        broker.firmware_flash.settings = broker.settings
     async with connect(service.url, service.keys["second"].token) as client:
         lease = await call(
             client, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 30}
@@ -142,17 +117,9 @@ async def test_http_flash_registration_and_operation_disabled_have_distinct_code
         response = await call(
             client,
             "submit",
-            flash(
-                session=lease["session"],
-                device_id="disabled" if configured else "SYNTHETIC_UNREGISTERED",
-            ),
+            flash(session=lease["session"], device_id="SYNTHETIC_UNREGISTERED"),
         )
-    assert response == dict(
-        ok=False,
-        error="registered_flash_operation_not_enabled"
-        if configured
-        else "registered_flash_device_required",
-    )
+    assert response == dict(ok=False, error="registered_flash_device_required")
     assert service.backend.calls == 0 and not service.backend.hardware_connected
     assert broker._store().record_count("jobs") == 0
 

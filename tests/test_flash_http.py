@@ -50,11 +50,7 @@ async def test_explicit_mcp_backup_flash_restore_and_cancel(registry_service, tm
         esptool_directory=tmp_path / "tools",
         esptool_sha256="b" * 64,
         backup_directory=tmp_path / "backups",
-        private_backup_acl_confirmed=True,
         original_elf_sha256=elf_hash,
-        allow_backup=True,
-        allow_flash=True,
-        allow_restore=True,
     )
     service.resident.settings = service.resident.settings.model_copy(
         update={

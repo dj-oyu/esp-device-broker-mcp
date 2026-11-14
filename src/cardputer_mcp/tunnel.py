@@ -25,11 +25,12 @@ from typing import Any
 
 import httpx2
 from filelock import FileLock, Timeout
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .broker_link import DEFAULT_BROKER_URL, canonical_broker_port
 from .client import SURFACE_TOOLS, call, connect, validate_url
 from .config import Settings, TunnelMetadata, load_settings
+from .exposure import TUNNEL_LEGACY_FLAGS, TunnelIngressMode, resolve_mode
 from .tunnel_checks import (
     CONSOLE_CONFIGURATION,
     CONSOLE_IDENTITY,
@@ -58,10 +59,20 @@ class TunnelSettings(BaseModel):
     tunnel_id: str = Field(pattern=r"^tunnel_[a-f0-9]{32}$")
     broker_config: Path = Path("examples/tunnel-mock.toml")
     health_port: int = Field(default=8766, strict=True, ge=1024, le=65535)
-    ingress_enabled: bool = Field(default=False, strict=True)
+    # "ingress" selects the broker's Tunnel route; legacy `ingress_enabled` is still read.
+    mode: TunnelIngressMode = "off"
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_flags(cls, data: Any) -> Any:
+        return resolve_mode(data, "tunnel", TUNNEL_LEGACY_FLAGS)
+
+    @property
+    def ingress_enabled(self) -> bool:
+        return self.mode == "ingress"
 
 
-_METADATA_FIELDS = ("tunnel_id", "client_exe", "client_archive", "health_port", "ingress_enabled")
+_METADATA_FIELDS = ("tunnel_id", "client_exe", "client_archive", "health_port", "mode")
 
 
 def _project_path(path: Path, project: Path) -> Path:
@@ -90,7 +101,7 @@ def _legacy_values(path: Path, project: Path) -> tuple[Path, dict[str, Any]]:
         {
             key: getattr(legacy, key)
             for key in _METADATA_FIELDS
-            if key != "ingress_enabled" or key in legacy.model_fields_set
+            if key != "mode" or key in legacy.model_fields_set
         }
     )
     return _project_path(legacy.broker_config, project), _metadata_values(metadata, project)
@@ -105,7 +116,7 @@ def _resolve_metadata(
     values = {} if broker.tunnel is None else _metadata_values(broker.tunnel, project)
     # Only the canonical broker TOML can enable its HTTP route. A legacy file
     # cannot enable a route the running broker would never load.
-    values["ingress_enabled"] = broker.tunnel.ingress_enabled if broker.tunnel else False
+    values["mode"] = broker.tunnel.mode if broker.tunnel else "off"
     legacy_path = _project_path(legacy_path or Path("tunnel.local.toml"), project)
     if legacy_path != broker_config and legacy_path.exists():
         legacy_broker, legacy = _legacy_values(legacy_path, project)
@@ -238,12 +249,15 @@ def save_gui_config(
             metadata = {
                 key: getattr(metadata, key)
                 for key in _METADATA_FIELDS
-                if key != "ingress_enabled" or key in metadata.model_fields_set
+                if key != "mode" or key in metadata.model_fields_set
             }
         # The GUI only edits launcher metadata. Preserve the manually selected
         # broker mode when that read-only field was not supplied by its caller.
-        if "ingress_enabled" not in metadata and "ingress_enabled" in raw.get("tunnel", {}):
-            metadata = {**metadata, "ingress_enabled": raw["tunnel"]["ingress_enabled"]}
+        if not {"mode", "ingress_enabled"} & set(metadata):
+            kept = {
+                k: v for k, v in raw.get("tunnel", {}).items() if k in {"mode", "ingress_enabled"}
+            }
+            metadata = {**metadata, **kept}
         selected = TunnelMetadata.model_validate(metadata)
         raw["tunnel"] = selected.model_dump(mode="json", exclude_none=True, exclude_unset=True)
         # Persist portable TOML path spellings, independent of the saving OS.

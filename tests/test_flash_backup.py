@@ -17,7 +17,7 @@ class BackupTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name) / "private"
-        self.store = BackupStore(self.directory, windows_private_acl_confirmed=True)
+        self.store = BackupStore(self.directory)
         self.data = b"synthetic-backup-data"
         self.receipt = BackupReceipt(
             "a" * 64, "b" * 64, len(self.data), hashlib.sha256(self.data).hexdigest()

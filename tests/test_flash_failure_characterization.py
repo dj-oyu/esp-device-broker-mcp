@@ -256,9 +256,7 @@ async def test_readback_mismatch_needs_review_and_keeps_prior_lkg(env):
 
 
 async def test_lkg_prewrite_current_firmware_mismatch_never_writes(env):
-    metadata, _ = FirmwareSnapshots(_lkg_root(env), windows_private_acl_confirmed=True).load(
-        env.selected
-    )
+    metadata, _ = FirmwareSnapshots(_lkg_root(env)).load(env.selected)
     app = metadata["bundle"]["segments"][-1]
     env.driver.data[app["offset"] + 3] ^= 1
     before = _durable(env)
@@ -296,7 +294,7 @@ async def test_lkg_promotion_cancel_after_verified_write_keeps_prior_lkg(env, ho
 
 async def test_existing_cas_object_changed_during_staging_keeps_prior_lkg(env, monkeypatch):
     root = _lkg_root(env)
-    _, files = FirmwareSnapshots(root, windows_private_acl_confirmed=True).load(env.selected)
+    _, files = FirmwareSnapshots(root).load(env.selected)
     target = root / hashlib.sha256(files["app.elf"]).hexdigest()
     original = FlashLifecycle.run
 
@@ -368,9 +366,7 @@ async def test_failed_flash_job_reports_recovery_evidence_from_broker_state(env)
     """The agent can retry without guessing: attempted hashes, unchanged LKG, next step."""
     from cardputer_mcp import job_reads
 
-    metadata, _ = FirmwareSnapshots(_lkg_root(env), windows_private_acl_confirmed=True).load(
-        env.selected
-    )
+    metadata, _ = FirmwareSnapshots(_lkg_root(env)).load(env.selected)
     app = metadata["bundle"]["segments"][-1]
     env.driver.data[app["offset"] + 3] ^= 1
     before = _durable(env)

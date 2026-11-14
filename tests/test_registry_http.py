@@ -71,9 +71,7 @@ async def registry_service(
         "KeyRegistry",
         lambda path, *, create: KeyRegistry(path, clock=lambda: now[0], create=create),
     )
-    settings = Settings(
-        state_dir=tmp_path / "state", port=port, allow_mock_execution=True, mock_stage_seconds=0.001
-    )
+    settings = Settings(state_dir=tmp_path / "state", port=port, mock_stage_seconds=0.001)
     backend = MockBackend(0.001)
     resident = Broker(settings, backend=backend, lock_path=tmp_path / "device.lockfile")
     auth = AuthState({Origin.LOCAL: LOCAL, Origin.REMOTE: REMOTE})

@@ -425,7 +425,6 @@ class FirmwareVerticalTests(unittest.TestCase):
                     source_repository=SourceRepository(
                         github_repository=fixture.REPOSITORY,
                         cache_root=root / "source-cache",
-                        private_acl_confirmed=True,
                     ),
                 )
                 tree = tree_hash(

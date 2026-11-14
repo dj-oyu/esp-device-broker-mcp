@@ -470,9 +470,8 @@ async def serve_ingress(
             state_dir=tmp_path / "state",
             port=port,
             mock_stage_seconds=0.001,
-            tunnel=TunnelMetadata(ingress_enabled=enabled),
+            tunnel=TunnelMetadata(mode="ingress" if enabled else "off"),
         )
-        assert settings.allow_mock_execution is False
         backend = MockBackend(0.001)
         broker = Broker(settings, backend=backend, lock_path=tmp_path / "device.lockfile")
         app = create_app(

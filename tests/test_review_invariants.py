@@ -66,7 +66,7 @@ async def test_review_expired_lease_does_not_eat_shutdown_sentinel(tmp_path: Pat
     backend = ObservedBackend(0.001)
     backend.gate = asyncio.Event()
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         backend=backend,
         clock=clock,
         lock_path=tmp_path / "device.lockfile",
@@ -102,7 +102,7 @@ async def test_review_expiry_cancels_pending_but_pins_active_owner(tmp_path: Pat
     backend = ObservedBackend(0.001)
     backend.gate = asyncio.Event()
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         backend=backend,
         clock=clock,
         lock_path=tmp_path / "device.lockfile",
@@ -174,7 +174,7 @@ async def test_review_recovery_never_replays_and_allows_fresh_acquire(tmp_path: 
     store.close()
     backend = ObservedBackend(0.001)
     broker = Broker(
-        Settings(state_dir=state, allow_mock_execution=True),
+        Settings(state_dir=state),
         backend=backend,
         lock_path=tmp_path / "device.lockfile",
         principal_valid=lambda *args: True,

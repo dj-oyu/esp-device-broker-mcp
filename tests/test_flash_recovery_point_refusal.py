@@ -51,25 +51,17 @@ def _expect(body, code, baseline, lkg, step):
     }
 
 
-@pytest.mark.parametrize(
-    "changes,baseline,step",
-    [
-        ({}, "not_required", "run_firmware_backup_then_pass_backup_job_id"),
-        ({"allow_backup": False}, "not_required", "backup_not_enabled_in_local_registration"),
-        (
-            {"allow_flash": False},
-            "flash_not_enabled",
-            "run_firmware_backup_then_pass_backup_job_id",
-        ),
-    ],
-)
-async def test_restore_without_any_lkg_names_the_baseline_and_next_step(
-    env, changes, baseline, step
-):
-    env.configure(**changes)
+async def test_restore_without_any_lkg_names_the_baseline_and_next_step(env):
+    env.configure()
     _forget_lkg(env)
     body = _body(env, "restore-none", Action.RESTORE)
-    _expect(body, "verified_lkg_or_initial_backup_required", baseline, False, step)
+    _expect(
+        body,
+        "verified_lkg_or_initial_backup_required",
+        "not_required",
+        False,
+        "run_firmware_backup_then_pass_backup_job_id",
+    )
 
 
 @pytest.mark.parametrize("action", [Action.FLASH, Action.RESTORE])
@@ -105,27 +97,34 @@ async def test_another_principals_backup_is_refused_without_naming_it(env):
     assert "backup-one" not in text and "alice" not in text and "bob" not in text
 
 
-@pytest.mark.parametrize("allow_backup", [True, False])
-async def test_a_non_backup_job_named_as_backup(env, allow_backup):
-    env.configure(allow_backup=allow_backup)
+async def test_a_non_backup_job_named_as_backup(env):
+    env.configure()
     body = _body(
         env, "flash-named", Action.FLASH, build_job_id="build-one", backup_job_id="build-one"
     )
-    step = (
-        "name_own_succeeded_backup_of_this_device"
-        if allow_backup
-        else "backup_not_enabled_in_local_registration"
+    _expect(
+        body,
+        "successful_owned_backup_required",
+        "not_required",
+        True,
+        "name_own_succeeded_backup_of_this_device",
     )
-    _expect(body, "successful_owned_backup_required", "not_required", True, step)
     assert "build-one" not in json.dumps(body)
 
 
 async def test_other_flash_refusals_keep_the_bare_code(env):
-    env.configure(allow_restore=False)
-    assert _body(env, "off", Action.RESTORE) == {
-        "ok": False,
-        "error": "registered_flash_operation_not_enabled",
-    }
+    env.configure()
+    body = _result(
+        lambda: env.broker.prepare(
+            PrepareRequest(
+                session=env.broker.session.capability,
+                job_id="unregistered",
+                test=Action.RESTORE,
+                device_id="not-registered",
+            )
+        )
+    )
+    assert body == {"ok": False, "error": "registered_flash_device_required"}
 
 
 @pytest.mark.parametrize(

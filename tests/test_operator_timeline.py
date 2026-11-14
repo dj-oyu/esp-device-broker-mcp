@@ -55,7 +55,7 @@ async def running(tmp_path, *, automatic=False, backend=None):
     backend = backend or MockBackend(0.001)
     settings = {"backend": "serial", "serial": backend.config} if backend.name == "serial" else {}
     broker = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=automatic, **settings),
+        Settings(state_dir=tmp_path / "state", **settings),
         backend=backend,
         clock=clock,
         lock_path=tmp_path / "device.lockfile",

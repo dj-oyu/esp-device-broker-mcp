@@ -5,8 +5,10 @@ import json
 import shutil
 import tempfile
 import unittest
+from itertools import product
 from pathlib import Path
 
+from pydantic import BaseModel, ConfigDict
 from test_source_lifecycle import CacheFixture
 
 from cardputer_mcp.config import BuildProject, RegisteredBuildTool, SourceRepository
@@ -63,10 +65,82 @@ def flash(**kwargs):
         "esptool_directory": BASE / "esptool",
         "esptool_sha256": SHA_A,
         "backup_directory": BASE / "backups",
-        "allow_flash": True,
         **kwargs,
     }
     return FlashDevice(**values)
+
+
+class OldSourceRepository(BaseModel):
+    """The exact field set and order of SourceRepository before the ACL flag was removed."""
+
+    model_config = ConfigDict(frozen=True)
+    github_repository: str
+    cache_root: Path
+    private_acl_confirmed: bool
+    submodule_repositories: list[str]
+    previous_cache_roots: list[Path] = []
+
+
+class OldBuildProject(BuildProject):
+    source_repository: OldSourceRepository | None = None  # type: ignore[assignment]
+
+
+class OldUnattendedFlash(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    enabled: bool
+    principal_id: str
+    device_id: str
+    project_id: str
+    operation: str
+    source_receipt: str
+    source_repository: str
+    source_commit: str
+
+
+class OldFlashDevice(BaseModel):
+    """FlashDevice as it was before allow_*/ACL/enabled were removed (same field order)."""
+
+    model_config = ConfigDict(frozen=True)
+    selector: dict
+    flash_bytes: int
+    project_id: str
+    python_tool: dict
+    esptool_directory: Path
+    esptool_sha256: str
+    esptool_version: str = "5.1.0"
+    backup_directory: Path
+    private_backup_acl_confirmed: bool
+    original_elf_sha256: str | None = None
+    allow_backup: bool
+    allow_flash: bool
+    unattended_flash: OldUnattendedFlash | None = None
+    allow_restore: bool
+
+
+UNATTENDED = {
+    "principal_id": "alice",
+    "device_id": "device",
+    "project_id": "project",
+    "operation": "firmware_flash",
+    "source_receipt": "e" * 64,
+    "source_repository": "owner/repo",
+    "source_commit": "f" * 40,
+}
+
+
+def old_flash(registration, *, acl, backup, allow, restore, enabled):
+    data = registration.model_dump(mode="json")
+    if data["unattended_flash"] is not None:
+        data["unattended_flash"] = {"enabled": enabled, **data["unattended_flash"]}
+    return OldFlashDevice(
+        **{
+            **data,
+            "private_backup_acl_confirmed": acl,
+            "allow_backup": backup,
+            "allow_flash": allow,
+            "allow_restore": restore,
+        }
+    )
 
 
 def old_source_json(repository, root, acl, submodules):
@@ -101,16 +175,36 @@ class SourceDigestTests(unittest.TestCase):
 
     def test_old_style_digests_are_reproduced_exactly(self):
         for submodules in ([], ["a/b"]):
+            registration = source(submodule_repositories=submodules)
+            # The removed private_acl_confirmed was hashed with either value.
             for acl in (False, True):
-                registration = source(private_acl_confirmed=acl, submodule_repositories=submodules)
                 expected = sha(old_source_json("owner/repo", BASE / "cache", acl, submodules))
                 self.assertIn(expected, source_digests(registration))
                 self.assertIn(expected, source_digests(registration, schema_version=2))
-        current = project()
-        old = sha(current.model_dump_json(exclude={"source_repository": {"previous_cache_roots"}}))
-        self.assertIn(old, project_digests(current))
-        self.assertNotIn(sha("unknown"), project_digests(current))
-        self.assertIn(sha(flash().model_dump_json()), flash_digests(flash()))
+        self.assertNotIn(sha("unknown"), project_digests(project()))
+
+    def test_old_project_digests_with_the_removed_acl_flag_are_still_accepted(self):
+        for submodules in ([], ["a/b"]):
+            for acl in (False, True):
+                current = project(source_repository=source(submodule_repositories=submodules))
+                old = OldBuildProject(
+                    **{
+                        **{name: getattr(current, name) for name in BuildProject.model_fields},
+                        "source_repository": OldSourceRepository(
+                            github_repository="owner/repo",
+                            cache_root=BASE / "cache",
+                            private_acl_confirmed=acl,
+                            submodule_repositories=submodules,
+                        ),
+                    }
+                )
+                expected = sha(
+                    old.model_dump_json(exclude={"source_repository": {"previous_cache_roots"}})
+                )
+                self.assertIn(expected, project_digests(current))
+                self.assertIn(project_digest(current), project_digests(current))
+        without_source = project(source_repository=None)
+        self.assertIn(sha(without_source.model_dump_json()), project_digests(without_source))
 
     def test_only_listed_previous_roots_are_trusted(self):
         old = sha(old_source_json("owner/repo", BASE / "old", False, []))
@@ -122,6 +216,47 @@ class SourceDigestTests(unittest.TestCase):
                 source(previous_cache_roots=roots)
         with self.assertRaises(ValueError):
             source(previous_cache_roots=[BASE / "o", BASE / "o"])
+
+
+class OldFlashDigestTests(unittest.TestCase):
+    """Digests stored while allow_*/ACL/enabled existed stay valid, for every combination."""
+
+    def test_every_legacy_combination_is_accepted(self):
+        for unattended in (None, UNATTENDED):
+            registration = flash(**({"unattended_flash": unattended} if unattended else {}))
+            accepted = flash_digests(registration)
+            enabled_values = (True, False) if unattended else (None,)
+            for acl, backup, allow, restore, enabled in product(
+                (True, False), (True, False), (True, False), (True, False), enabled_values
+            ):
+                old = old_flash(
+                    registration,
+                    acl=acl,
+                    backup=backup,
+                    allow=allow,
+                    restore=restore,
+                    enabled=enabled,
+                )
+                location_free = {"backup_directory", "private_backup_acl_confirmed"}
+                with self.subTest(
+                    unattended=bool(unattended), acl=acl, b=backup, f=allow, r=restore, e=enabled
+                ):
+                    self.assertIn(sha(old.model_dump_json()), accepted)
+                    self.assertIn(sha(old.model_dump_json(exclude=location_free)), accepted)
+            self.assertIn(flash_digest(registration), accepted)
+            self.assertNotIn(sha("unknown"), accepted)
+
+    def test_a_different_registration_is_not_accepted_through_the_legacy_set(self):
+        self.assertTrue(
+            flash_digests(flash()).isdisjoint(flash_digests(flash(esptool_sha256=SHA_B)))
+        )
+        moved = flash(backup_directory=BASE / "elsewhere")
+        self.assertIn(flash_digest(flash()), flash_digests(moved))
+
+    def test_new_digest_ignores_legacy_true_values_of_removed_keys(self):
+        self.assertEqual(
+            flash_digest(flash()), flash_digest(flash(allow_flash=True, allow_backup=True))
+        )
 
 
 class BuildAndFlashDigestTests(unittest.TestCase):
@@ -144,8 +279,6 @@ class BuildAndFlashDigestTests(unittest.TestCase):
         for change in (
             {"esptool_sha256": SHA_B},
             {"esptool_directory": BASE / "other-esptool"},
-            {"allow_flash": False},
-            {"allow_backup": True},
             {"project_id": "other"},
             {"selector": {"vid": 1, "pid": 3, "serial_number": "serial"}},
         ):
@@ -165,7 +298,6 @@ class MovedCacheRootTests(CacheFixture, unittest.TestCase):
         registration = SourceRepository(
             github_repository="fixture/project",
             cache_root=root,
-            private_acl_confirmed=True,
             previous_cache_roots=list(previous),
         )
         self.settings.build_projects["fixture"].source_repository = registration
@@ -212,7 +344,6 @@ class MovedCacheRootTests(CacheFixture, unittest.TestCase):
         self.settings.build_projects["fixture"].source_repository = SourceRepository(
             github_repository="fixture/other",
             cache_root=self.cache,
-            private_acl_confirmed=True,
         )
         with self.assertRaises(SourceError):
             self.snapshots.resolve("fixture", result["source_receipt"], "owner")

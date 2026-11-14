@@ -45,13 +45,11 @@ async def running(
     *,
     backend: MockBackend | None = None,
     clock: Clock | None = None,
-    allow_mock_execution: bool = True,
     max_queue: int = 32,
 ) -> AsyncIterator[Broker]:
     instance = Broker(
         Settings(
             state_dir=path / "state",
-            allow_mock_execution=allow_mock_execution,
             max_queue=max_queue,
         ),
         backend=backend or MockBackend(0.001),
@@ -107,7 +105,7 @@ async def test_capture_requires_principal_bound_lease_before_preparing(tmp_path:
 
 
 async def test_capture_explicit_execution_and_delivery_are_deduplicated(tmp_path: Path) -> None:
-    async with running(tmp_path, allow_mock_execution=False) as broker:
+    async with running(tmp_path) as broker:
         session = acquire(broker)
         first = prepare(broker, session, "requested")
         prepare(broker, session, "not-requested")
@@ -506,7 +504,7 @@ async def test_capture_durable_copy_survives_restart_owner_only(tmp_path: Path) 
         assert restarted.backend.calls == 0
     # Authorization is still rechecked per request against the recorded origin.
     instance = Broker(
-        Settings(state_dir=tmp_path / "state", allow_mock_execution=True),
+        Settings(state_dir=tmp_path / "state"),
         backend=MockBackend(0.001),
         clock=Clock(),
         lock_path=tmp_path / "device.lockfile",

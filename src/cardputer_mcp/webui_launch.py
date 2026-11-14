@@ -4,7 +4,7 @@ Startup order: validate the broker TOML's ``[webui]`` section, the broker key fi
 and the Google secret file; confirm the broker key reads the operator views and
 cannot act; check Tailscale (this machine's name, nothing on the serve port);
 listen on 127.0.0.1; then run ``tailscale serve --https=<port>`` (or, only with
-``funnel = true``, ``tailscale funnel --https=<port>``) in the foreground as an owned
+``mode = "public"``, ``tailscale funnel --https=<port>``) in the foreground as an owned
 Job Object child and confirm that it lists our target and that the port is Funnel
 exactly when Funnel was asked for. Shutdown closes it first, then the listener.
 

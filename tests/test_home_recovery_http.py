@@ -32,9 +32,7 @@ def seed_closed_derby_source(env, principal):
     )
     broker = env.resident
     broker.backend = backend
-    broker.settings = broker.settings.model_copy(
-        update={"backend": "serial", "serial": config, "allow_mock_execution": False}
-    )
+    broker.settings = broker.settings.model_copy(update={"backend": "serial", "serial": config})
     plan = {
         "version": 1,
         "broker_epoch": broker.epoch,

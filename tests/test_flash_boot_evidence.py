@@ -47,10 +47,7 @@ async def test_terminal_boot_failure_retains_owned_redacted_evidence(
         esptool_directory=tmp_path / "tools",
         esptool_sha256="b" * 64,
         backup_directory=tmp_path / "backup",
-        private_backup_acl_confirmed=True,
         original_elf_sha256=elf,
-        allow_backup=True,
-        allow_restore=True,
     )
     broker.settings = broker.settings.model_copy(
         update={"flash_devices": {"fixture": registration}}

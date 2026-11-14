@@ -30,8 +30,7 @@ def main():
             project_dir=root / "worktree", trusted_profile=profile, build_root=root / "out",
             node_tool=registered, build_min_free_bytes=0,
             source_repository=SourceRepository(
-                github_repository="dj-oyu/cardputer-adv-pocketjs", cache_root=root / "cache",
-                private_acl_confirmed=True, submodule_repositories=["boschsensortec/BMI270_SensorAPI", "lieff/minimp3", "xiph/opus"],
+                github_repository="dj-oyu/cardputer-adv-pocketjs", cache_root=root / "cache", submodule_repositories=["boschsensortec/BMI270_SensorAPI", "lieff/minimp3", "xiph/opus"],
             ),
         )})
         sources = SourceSnapshots(settings)

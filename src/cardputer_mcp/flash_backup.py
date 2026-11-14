@@ -29,11 +29,9 @@ def _not_link(path: Path) -> None:
 
 
 class BackupStore:
-    def __init__(self, directory: Path, *, windows_private_acl_confirmed: bool = False) -> None:
+    def __init__(self, directory: Path) -> None:
         if not directory.is_absolute() or ".." in directory.parts:
             raise FlashFailure("registered_private_backup_directory_required")
-        if os.name == "nt" and windows_private_acl_confirmed is not True:
-            raise FlashFailure("private_backup_acl_confirmation_required")
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         _not_link(directory)
         info = directory.stat()
