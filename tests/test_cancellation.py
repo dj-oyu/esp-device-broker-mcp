@@ -13,8 +13,6 @@ from cardputer_mcp.models import TestName as Action
 RUNNING = [
     (Action.APP_SESSION.value, DeviceStop.APP_EVENT),
     (Action.SOURCE.value, DeviceStop.SOURCE),
-    (Action.DERBY.value, DeviceStop.SMOKE),
-    (Action.DERBY_FIXED.value, DeviceStop.SMOKE),
     (Action.BUILD.value, DeviceStop.BUILD),
     *[(test.value, DeviceStop.FLASH) for test in sorted(FLASH_TESTS)],
 ]
@@ -158,3 +156,10 @@ def test_every_target_kind_has_a_route():
 def test_unknown_target_is_rejected():
     with pytest.raises(TypeError):
         cancellation.cancel_job(SimpleNamespace(), object())  # type: ignore[call-overload]
+
+
+@pytest.mark.parametrize("test", ["derby_smoke", "derby_fixed_workload"])
+def test_removed_job_kinds_have_no_stop_primitive(test):
+    # Legacy rows are history only; a running one (impossible after restart) is refused.
+    assert device_stop("running", test) is DeviceStop.REFUSE
+    assert device_stop("queued", test) is DeviceStop.QUEUED

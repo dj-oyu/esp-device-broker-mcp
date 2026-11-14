@@ -607,42 +607,26 @@ async def test_source_build_lease_is_idempotent_expiry_blocks_execute_and_queue_
     broker._store().set_job("leased-source", "cancelled", "synthetic_test_cleanup")
 
 
-@pytest.mark.parametrize("mode", ["ON", "OFF"])
-async def test_registered_profile_forwards_explicit_source_mode(
-    registry_service, tmp_path, monkeypatch, mode
-):
+@pytest.mark.parametrize("option", ["derby_detail_mode", "derby_dma_mode"])
+async def test_removed_diagnostic_build_options_are_refused(registry_service, tmp_path, option):
     service = registry_service
     register(service, tmp_path)
     broker = service.resident
     key = service.keys["second"]
-    original = broker.firmware_build.prepare
-    seen = []
-
-    def build_prepare(project, principal, receipt, selected_mode=None):
-        seen.append((receipt, selected_mode))
-        return {
-            **original(project, principal),
-            "source_receipt": receipt,
-            "derby_detail_mode": selected_mode,
-        }
-
-    monkeypatch.setattr(broker.firmware_source, "authorize_receipt", lambda *args: None)
-    monkeypatch.setattr(broker.firmware_build, "prepare", build_prepare)
     async with connect(service.url, key.token) as remote:
-        prepared = await call(
-            remote,
-            "submit",
-            {
-                "job_id": "mode-build",
-                "kind": "build",
-                "project_id": "fixture",
-                "source_receipt": "c" * 64,
-                "derby_detail_mode": mode,
-            },
-        )
-    assert prepared["ok"]
-    assert prepared["plan"]["derby_detail_mode"] == mode
-    assert seen == [("c" * 64, mode)]
+        with pytest.raises(ValueError, match="MCP request rejected"):
+            await call(
+                remote,
+                "submit",
+                {
+                    "job_id": "mode-build",
+                    "kind": "build",
+                    "project_id": "fixture",
+                    "source_receipt": "c" * 64,
+                    option: "ON",
+                },
+            )
+    assert broker._store().job("mode-build") is None
     assert broker.session is None
     assert service.backend.calls == 0
 

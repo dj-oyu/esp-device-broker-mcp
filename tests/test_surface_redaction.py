@@ -6,7 +6,6 @@ import pytest
 from test_registry_http import registry_service as registry_service
 
 from cardputer_mcp.client import call, connect
-from cardputer_mcp.derby_reports import PROVENANCE_KEY
 
 SECRET = "C:/Users/SYNTHETIC_PRIVATE/secret"
 
@@ -35,7 +34,7 @@ async def test_cancel_of_a_requested_job_returns_the_shared_job_view(registry_se
         "id": "synthetic-job",
         "state": "cancelled",
         "diagnostic": {
-            PROVENANCE_KEY: {"private": "SYNTHETIC_PROVENANCE"},
+            "derby_diagnostics_provenance": {"private": "SYNTHETIC_PROVENANCE"},
             "derby_observation": {"diagnostics": "SYNTHETIC_DIAGNOSTICS", "kept": True},
         },
         "derby_diagnostics": "SYNTHETIC_REPORT",

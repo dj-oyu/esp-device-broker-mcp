@@ -1,67 +1,91 @@
 """Explicit MCP HOME recovery after a proved serial close; synthetic serial only."""
 
+from copy import deepcopy
+from types import SimpleNamespace
+
 import httpx2
 import pytest
-from test_derby_http import derby_service as derby_service
-from test_derby_smoke import Wire
 from test_home_recovery import Clock, Port
 from test_registry_http import LOCAL
 from test_serial_http import serial_service as serial_service
 
+from cardputer_mcp.broker import digest_plan
 from cardputer_mcp.client import call, connect
 from cardputer_mcp.config import SerialSettings
+from cardputer_mcp.models import TestName as Action
 from cardputer_mcp.ports import PortInfo
 from cardputer_mcp.serial_backend import SerialBackend
 
 
-class BrokenCapture(Wire):
-    def write(self, data):
-        if data != b"s":
-            return super().write(data)
-        self.writes.append(data)
-        # Valid family/dimensions, invalid first row sequence, then a proved close.
-        self.queue.append(b"CAPTURE_BEGIN 240 135\nPIX 1 " + b"0000" * 240 + b"\n")
-        return 1
-
-
-async def fail_derby(env, remote, http):
-    source = BrokenCapture()
+def seed_closed_derby_source(env, principal):
+    """Legacy history: a removed derby_smoke job whose capture failed and whose close was proved."""
     home = Port(Clock())
     config = SerialSettings(
         selector={"vid": 1, "pid": 2, "serial_number": "synthetic"},
         expected_firmware_sha256="a" * 64,
     )
-    env.resident.backend = SerialBackend(
+    backend = SerialBackend(
         config,
         inventory=lambda: [PortInfo(port="COM42", vid=1, pid=2, serial_number="synthetic")],
-        factory=lambda: home if source.closed else source,
-        clock=lambda: home.clock() if source.closed else source.now,
+        factory=lambda: home,
+        clock=home.clock,
     )
-    env.resident.settings = env.resident.settings.model_copy(
+    broker = env.resident
+    broker.backend = backend
+    broker.settings = broker.settings.model_copy(
         update={"backend": "serial", "serial": config, "allow_mock_execution": False}
     )
-    lease = await call(
-        remote, "session", {"action": "open", "owner": "remote_mcp", "lease_seconds": 300}
-    )
-    p = await call(
-        remote, "submit", {"session": lease["session"], "job_id": "derby-source", "kind": "derby"}
-    )
-    await call(
-        remote,
-        "execute",
+    plan = {
+        "version": 1,
+        "broker_epoch": broker.epoch,
+        "session_id": "d" * 32,
+        "backend": "serial",
+        "device": "configured-cardputer",
+        "job_id": "derby-source",
+        **backend.prepare(Action.HELLO),
+        "test": "derby_smoke",
+        "stages": ["serial_open", "derby_smoke", "serial_close"],
+        "protocol": "pocketjs-derby-smoke-v1",
+    }
+    store = broker._store()
+    digest = digest_plan(plan)
+    store.put_plan(digest, plan)
+    store.add_job(plan["job_id"], digest)
+    store.db.execute("UPDATE jobs SET stage='serial_close' WHERE id=?", (plan["job_id"],))
+    store.db.commit()
+    store.set_job(
+        plan["job_id"],
+        "needs_review",
+        "serial_capture_invalid",
         {
-            "op": "run",
-            "session": lease["session"],
-            "plan_hash": p["plan_hash"],
+            "expected_marker": "CAPTURE_END",
+            "receive_summary": {"last_command": "capture_frame", "command_write_completed": True},
         },
     )
-    await env.resident.queue.join()
-    source_job = env.resident.job("derby-source")
-    assert source_job["result"] == "serial_capture_invalid", source_job
-    assert source.closed and b"q" not in source.writes
-    assert env.resident._store().home_source("derby-source") is not None
-    await call(remote, "session", {"action": "release", "session": lease["session"]})
+    backend.last_closed_plan = deepcopy(plan)
+    broker.home_recovery.record_closed(plan, principal, "remote_mcp")
+    assert store.home_source("derby-source") is not None
     return home
+
+
+@pytest.fixture
+async def derby_service(serial_service):
+    """Exercise actual HTTP authentication without a filesystem key registry."""
+    url, resident, _ = serial_service
+    return SimpleNamespace(
+        url=url,
+        resident=resident,
+        keys={
+            "second": SimpleNamespace(
+                token="b" * 64,
+                metadata=SimpleNamespace(principal_id="ephemeral:remote_mcp"),
+            ),
+            "local": SimpleNamespace(
+                token="a" * 64,
+                metadata=SimpleNamespace(principal_id="ephemeral:local_cli"),
+            ),
+        },
+    )
 
 
 @pytest.mark.parametrize("requester", ["second", "local"])
@@ -75,9 +99,8 @@ async def test_closed_derby_recovery_requires_same_authenticated_requester(
             trust_env=False,
             headers={"Authorization": "Bearer " + LOCAL},
         ) as http,
-        connect(env.url, env.keys["second"].token) as source_remote,
     ):
-        home = await fail_derby(env, source_remote, http)
+        home = seed_closed_derby_source(env, env.keys["second"].metadata.principal_id)
         async with connect(env.url, env.keys[requester].token) as remote:
             names = {t.name for t in (await remote.list_tools()).tools}
             assert {"execute", "cancel"} <= names

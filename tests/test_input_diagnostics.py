@@ -5,6 +5,7 @@ import unittest
 
 from cardputer_mcp.input_diagnostics import REQUEST_MODELS, validate_arguments
 from cardputer_mcp.models import PrepareRequest
+from cardputer_mcp.surface import SubmitRequest
 
 
 class InputDiagnosticTests(unittest.TestCase):
@@ -102,15 +103,24 @@ class InputDiagnosticTests(unittest.TestCase):
             "project_id": "fixture",
             "source_receipt": "a" * 64,
         }
-        for mode in ("ON", "OFF"):
-            self.assertEqual(PrepareRequest(**base, derby_detail_mode=mode).derby_detail_mode, mode)
-        for mode in ("-DANY=1", "on", "ON;echo unsafe", True):
+        PrepareRequest(**base)
+        # The removed diagnostic build options and the removed collector binding are no
+        # longer fields of any request model.
+        for removed in (
+            {"derby_detail_mode": "ON"},
+            {"derby_dma_mode": "OFF"},
+            {"flash_job_id": "flash"},
+        ):
             with self.assertRaises(ValueError):
-                PrepareRequest(**base, derby_detail_mode=mode)
-        with self.assertRaises(ValueError):
-            PrepareRequest(job_id="build", test="firmware_build", derby_detail_mode="OFF")
-        with self.assertRaises(ValueError):
-            PrepareRequest(**base, flash_job_id="flash")
+                PrepareRequest(**base, **removed)
+            with self.assertRaises(ValueError):
+                SubmitRequest(kind="build", job_id="build", project_id="fixture", **removed)
+        for removed_kind in ("derby", "derby_fixed"):
+            with self.assertRaises(ValueError):
+                SubmitRequest(kind=removed_kind, job_id="derby", session="a" * 64)
+        for removed_test in ("derby_smoke", "derby_fixed_workload"):
+            with self.assertRaises(ValueError):
+                PrepareRequest(job_id="derby", test=removed_test, session="a" * 64)
 
     def test_request_models_cover_exactly_the_six_surface_tools(self):
         self.assertEqual(

@@ -59,7 +59,7 @@ def test_the_kept_differences_are_rows_of_the_table():
     assert _has("not_physically_busy") == {Checkpoint.DISPATCH}
     assert _has("job_row_queued") == _has("plan_epoch") == {Checkpoint.DISPATCH}
     assert _has("registration_allows") == FLASH
-    assert _has("collector_live") == {Checkpoint.ENQUEUE, Checkpoint.DISPATCH, Checkpoint.RUNNING}
+    assert _has("collector_live") == set()  # the removed fixed-collector step
     # The strong _execution_uncertain() only at admission; the running gates use the
     # weaker allow_profile_cleanup=True inside _running_job_binding_live.
     assert _has("not_uncertain") == {Checkpoint.ENQUEUE, Checkpoint.DISPATCH}
@@ -106,7 +106,7 @@ def test_the_broker_gates_go_through_the_authority():
         ]
         assert calls.count(call) == 1, name
         # No copied chain is left beside the authority call.
-        for direct in ("collector_live", "live_binding", "flash_digests"):
+        for direct in ("live_binding", "flash_digests"):
             assert direct not in calls, (name, direct)
     assert _decorated(_broker_function(tree, "admit"))
     source = Path(inspect.getsourcefile(broker_module)).read_text(encoding="utf-8")

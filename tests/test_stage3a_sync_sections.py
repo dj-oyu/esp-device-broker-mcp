@@ -29,7 +29,6 @@ REQUIRED = {
         "_commit_app_session",
         "_commit_flash",
         "_commit_source",
-        "_commit_fixed_trial",
         "_commit_succeeded",
     },
 }

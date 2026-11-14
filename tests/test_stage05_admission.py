@@ -122,20 +122,6 @@ def _flash_binding_invalid(b, c, d, mp):
     mp.setattr(broker_module, "validate_binding", lambda *args: False)
 
 
-def _collector_raises(b, c, d, mp):
-    rewrite_plan(b, d, flash_job_id="synthetic-flash")
-
-    def fail(*args):
-        raise ValueError("synthetic")
-
-    mp.setattr(broker_module, "prepare_collector", fail)
-
-
-def _collector_differs(b, c, d, mp):
-    rewrite_plan(b, d, flash_job_id="synthetic-flash")
-    mp.setattr(broker_module, "prepare_collector", lambda *args: {"device_fingerprint": "x"})
-
-
 def _second_callback(answer_second):
     def mutate(b, c, d, mp):
         calls = []
@@ -207,10 +193,8 @@ ADMISSION = [
         "cancelled",
         "principal_or_lease_no_longer_valid",
     ),
-    # step 11 / 12: flash binding and fixed collector re-derivation
+    # step 11 / 12: flash binding re-derivation
     ("flash_binding", _flash_binding_invalid, "cancelled", "flash_binding_invalid"),
-    ("collector_raises", _collector_raises, "cancelled", "collector_binding_changed"),
-    ("collector_differs", _collector_differs, "cancelled", "collector_binding_changed"),
     # step 13 / 14: second callback and the callback-free composite
     (
         "second_callback_false",
@@ -302,17 +286,6 @@ ORDER = [
         (_log_delivery_missing, _flash_binding_invalid),
         "principal_or_lease_no_longer_valid",
     ),
-    (
-        "callback_before_collector",
-        (_callback_false, _collector_raises),
-        "principal_or_lease_no_longer_valid",
-    ),
-    (
-        "flash_before_collector",
-        (_flash_binding_invalid, _collector_raises),
-        "flash_binding_invalid",
-    ),
-    ("collector_before_composite", (_collector_raises, _busy), "collector_binding_changed"),
 ]
 
 
@@ -450,7 +423,6 @@ SYNCHRONOUS = [
     (JobLedger, "mark_reviewed"),
     (Store, "enqueue_requested"),
     (Store, "finish_firmware"),
-    (Store, "finish_fixed_trial"),
     (Store, "consume_home_attempt"),
     (Store, "finish_home_recovery"),
     (Store, "recover"),
