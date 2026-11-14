@@ -139,7 +139,7 @@ class FirmwareSource:
             return "source_snapshot_fetched_no_build_no_flash"
         except Exception as failure:
             code = failure.code if isinstance(failure, SourceError) else "source_fetch_failed"
-            self.record_failure(plan, code)
+            self.record_failure(plan, code, getattr(failure, "log_detail", None))
             if isinstance(failure, SourceError):
                 raise
             raise SourceError(code) from None
@@ -148,7 +148,7 @@ class FirmwareSource:
             self.snapshots.publication = None
             self.active = False
 
-    def record_failure(self, plan: dict[str, Any], code: str) -> None:
+    def record_failure(self, plan: dict[str, Any], code: str, detail: str | None = None) -> None:
         code = SourceError(code).code
         self.results.pop(plan["job_id"], None)
         logs = self.logs.get(plan["job_id"])
@@ -167,8 +167,14 @@ class FirmwareSource:
             "source",
         )
         message = "error: source fetch failed: " + code
-        if not logs.entries or logs.entries[-1]["text"] != message:
-            logs.append(message)
+        if logs.entries and logs.entries[-1]["text"] == message:
+            return
+        # The detail line precedes the message so a repeated record_failure stays idempotent.
+        # It only ever comes from RateLimited.log_detail (bounded integers and a flag).
+        if code == "source_rate_limited" and detail is not None:
+            if detail.startswith("error: github rate limit: ") and len(detail) <= 160:
+                logs.append(detail)
+        logs.append(message)
 
     def commit_success(self, plan: dict[str, Any], result: str, live: Any) -> None:
         if self.stop.is_set() or live() is not True or self.active:

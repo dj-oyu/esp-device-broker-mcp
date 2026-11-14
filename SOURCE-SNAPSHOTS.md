@@ -76,11 +76,40 @@ and records its SHA-256 receipt in the build manifest. Final publication and
 durable artifact resolution verify that evidence again. This build option alone
 does not add a serial diagnostic request or establish hardware performance.
 
+## GitHub rate limit and API token
+
+Unauthenticated GitHub API requests are limited to 60 per hour per IP address. A fetch
+spends several (root commit and each fixed submodule commit, plus tree/blob requests when
+a snapshot is rebuilt from `.gitmodules`), and failed attempts count too, so a few fetches
+in an hour can exhaust the quota.
+
+- When GitHub answers 403/429 with an exhausted quota, the job fails with
+  `source_rate_limited` (not `source_download_failed`). The job log gets one line before
+  the usual error line: `error: github rate limit: authenticated=<yes|no> limit=<n>
+  remaining=<n> resets_in_seconds=<n>`. Only those bounded numbers are logged, never
+  headers or response bodies. Wait `resets_in_seconds` before retrying; retries meanwhile
+  only spend quota.
+- Set `CARDPUTER_GITHUB_TOKEN` in the environment of the broker process to authenticate
+  (5,000 requests per hour). No token scope is needed for public repositories; use a
+  fine-grained token with no repository permissions. The token is read from the
+  environment on each request; it is not a registration/profile field, is not part of any
+  receipt or digest, is sent only as `Authorization: Bearer` to `api.github.com` and
+  `codeload.github.com` over https (redirects stay rejected), and is not in the build
+  or Tunnel child environments (those are allowlists). A GUI/helper started by
+  `Start-CardputerStack.ps1` clears `CARDPUTER_*`, so only the broker sees it. An already
+  open shell keeps its old environment: set the variable, then start the broker from a
+  new shell.
+- A blank value means anonymous access. A set but malformed value fails closed with
+  `source_github_token_invalid`; a token GitHub rejects (401) fails with
+  `source_github_token_rejected`. Neither value is ever logged.
+
 ## Source format, limits and target compatibility
 
 Public HTTPS only, fixed api.github.com/codeload.github.com URLs constructed by
-the broker. Redirects are rejected. No caller URL, shell, Git hooks, credentials,
-submodule update or LFS download. The archive's root must name the exact commit.
+the broker. Redirects are rejected. No caller URL, shell, Git hooks, registered or
+caller-supplied credentials, submodule update or LFS download. The only credential is the
+optional process-environment token described in "GitHub rate limit and API token" below.
+The archive's root must name the exact commit.
 Fixed allowlisted Git submodules are recursively acquired as described in
 SOURCE-SUBMODULES.md. Git blob/tree SHA-1 is reconstructed from extracted bytes/modes and matched to
 that commit's GitHub tree metadata; SHA-256 receipts additionally protect retained
@@ -99,6 +128,32 @@ Explicit fetches first reuse a fully verified, durably successful owned receipt.
 When capacity is needed they reclaim only proven unreferenced source payloads;
 immutable receipts and protected source/recovery data remain retained. No limit
 is raised, and there is no unbounded archive or forced removal of referenced data.
+
+### Self-healing of changed unreferenced payloads
+
+A payload can stop matching its receipt without any tampering: a tool run from inside the
+cache can add a file (for example Python writing `__pycache__/*.pyc`), or antivirus/sync
+software can touch one. Build preparation still fails for such a payload (`Extra/missing/
+changed files fail`), and a referenced payload is never deleted. For a payload that
+nothing references, a fetch no longer stops at it:
+
+- Eviction (cache full): a candidate whose regular files differ from the receipt (extra,
+  missing or modified) is reclaimed like an intact one. The fetch stage is
+  `source_reclaim_corrupt_payload` instead of `source_reclaim_unreferenced_payload`, so
+  the event stays visible in the job/operator timeline.
+- Same commit: fetching the commit of a changed, unreferenced payload removes that payload
+  and re-downloads it as a restore, so the new bytes are verified against the original
+  receipt; the receipt itself is never rewritten.
+- Only the payload goes. The receipt, durable job evidence and ownership remain, and a
+  later fetch of the same commit restores verified bytes.
+- Still fail closed, with no deletion: links or hard links, non-regular entries, unknown
+  names in the receipt directory, an unreadable or invalid receipt, incomplete reference
+  evidence, and anything a plan, unfinished job, recovery or LKG association protects
+  (`source_cache_protected`, `source_snapshot_changed`).
+
+This changes the earlier rule that a tampered payload is never deleted: it now holds only
+for referenced payloads and for entries that are not plain files. There is no retry loop and
+no device, build or flash action; only the cache the fetch already manages is touched.
 
 Historical pre-submodule target checked: cardputer-adv-pocketjs commit
 6a139780b7eeececfaa17cf2ddee576a10a027f5 (1,524 files, about 28 MB). No gitlinks,

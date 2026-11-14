@@ -518,13 +518,98 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         self.assertTrue(data.exists())
         self.assertEqual(data.read_bytes(), outside.read_bytes())
 
-    def test_tampered_payload_and_unknown_entries_are_never_deleted(self):
+    def stages_of(self, number, job):
+        stages = []
+        plan = self.plan(number, job)
+        self.add(plan, "running")
+        self.snapshots.publication = lambda receipt: self.store.record_source_publication(
+            receipt, plan["job_id"], "fixture", "owner"
+        )
+        self.snapshots.fetch(plan, lambda: True, stages.append)
+        return stages
+
+    def test_unreferenced_payload_with_changed_content_is_healed_during_eviction(self):
+        first = self.fetch(1)
+        (self.payload(first) / "extra").write_text("stray bytecode")
+        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
+            stages = self.stages_of(2, "source-2")
+        self.assertIn("source_reclaim_corrupt_payload", stages)
+        self.assertNotIn("source_reclaim_unreferenced_payload", stages)
+        self.assertFalse(self.payload(first).exists())
+        # Only the payload went; the receipt stays as evidence for a later restore.
+        self.assertTrue((self.root / "cache" / first["source_receipt"] / "receipt.json").exists())
+
+    def test_missing_and_modified_files_are_healed_the_same_way(self):
+        first, second = self.fetch(1), self.fetch(2)
+        (self.payload(first) / "CMakeLists.txt").write_bytes(b"x")
+        (self.payload(second) / "CMakeLists.txt").unlink()
+        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=2):
+            self.fetch(3)
+            self.fetch(4)
+        self.assertFalse(self.payload(first).exists() or self.payload(second).exists())
+
+    def test_intact_payload_is_still_reclaimed_with_the_ordinary_stage(self):
+        first = self.fetch(1)
+        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
+            stages = self.stages_of(2, "source-2")
+        self.assertIn("source_reclaim_unreferenced_payload", stages)
+        self.assertNotIn("source_reclaim_corrupt_payload", stages)
+        self.assertFalse(self.payload(first).exists())
+
+    def test_referenced_payload_with_changed_content_is_never_deleted(self):
         first = self.fetch(1)
         (self.payload(first) / "extra").write_text("unknown")
+        self.add(
+            {
+                "job_id": "build-1",
+                "test": "firmware_build",
+                "broker_epoch": "epoch",
+                "project_id": "fixture",
+                "build_principal": "owner",
+                "source_receipt": first["source_receipt"],
+            },
+            "running",
+        )
         with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
-            with self.assertRaisesRegex(SourceError, "source_snapshot_changed"):
+            with self.assertRaisesRegex(SourceError, "source_cache_protected"):
                 self.fetch(2)
         self.assertTrue((self.payload(first) / "extra").exists())
+
+    def test_linked_or_unknown_entries_are_never_deleted_even_when_unreferenced(self):
+        first = self.fetch(1)
+        os.link(self.payload(first) / "CMakeLists.txt", self.payload(first) / "alias")
+        with patch.dict("cardputer_mcp.source_snapshot.LIMITS", cache_snapshots=1):
+            with self.assertRaisesRegex(SourceError, "source_linked_path_rejected"):
+                self.fetch(2)
+        self.assertTrue((self.payload(first) / "alias").exists())
+
+    def test_same_commit_with_changed_unreferenced_payload_is_restored_and_verified(self):
+        first = self.fetch(1)
+        (self.payload(first) / "extra").write_text("stray bytecode")
+        stages = self.stages_of(1, "source-1-again")
+        self.assertIn("source_reclaim_corrupt_payload", stages)
+        self.assertEqual(self.downloads, 2)  # re-downloaded and checked against the old receipt
+        self.assertFalse((self.payload(first) / "extra").exists())
+        self.snapshots.resolve("fixture", first["source_receipt"], "owner")
+
+    def test_same_commit_with_changed_referenced_payload_keeps_failing(self):
+        first = self.fetch(1)
+        (self.payload(first) / "extra").write_text("unknown")
+        self.add(
+            {
+                "job_id": "build-1",
+                "test": "firmware_build",
+                "broker_epoch": "epoch",
+                "project_id": "fixture",
+                "build_principal": "owner",
+                "source_receipt": first["source_receipt"],
+            },
+            "running",
+        )
+        with self.assertRaisesRegex(SourceError, "source_snapshot_changed"):
+            self.fetch(1, job="source-1-again")
+        self.assertTrue((self.payload(first) / "extra").exists())
+        self.assertEqual(self.downloads, 1)
 
     def test_thread_and_other_process_cannot_enter_owned_cache(self):
         self.fetch(1)
