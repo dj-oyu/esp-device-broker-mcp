@@ -230,7 +230,7 @@ Success is `{"ok":true, **call()}`. Pinned by
 **Per-view rules** (`STATUS_RULES` `:315-328`; `STREAM_RULES` `:329-337`, re-checked at `:536-539`)
 | view | required | optional | routes to (server.py) | scope |
 |---|---|---|---|---|
-| identity | – | – | `client_identity` :611-627 (+`tool_set_version: 2`, surface.py:61,484) | read, always |
+| identity | – | – | `client_identity` :611-627 (+`tool_set_version: 3`, surface.py:61,484) | read, always |
 | targets | – | – | `list_registered_targets` :629-653 | read, always |
 | source | project_id | – | `read_source_resources` :655-710 (own try/except, same mapping as `_result`) | read, always (checked twice) |
 | device | – | – | `device_status` :712-715 → `Broker.status` broker.py:1234 | read if auth_required |
@@ -274,7 +274,7 @@ are no longer raised by `job_status`. The local operator's `_retained_job_logs` 
 **Output**
 - Always a `CallToolResult` built by `_wrap` (isError false). The exception is view=capture.
 - view=identity: `{"ok":true,"authenticated":true,"origin","principal_id","scopes":[sorted],
-  "tunnel_ingress_enabled","tool_set_version":2}`. Pinned by
+  "tunnel_ingress_enabled","tool_set_version":3}`. Pinned by
   `tests/test_client_identity.py::test_identity_reports_request_principal_without_acquiring`.
   `tool_set_version` is added only when ok.
 - view=job (stored job): `shared_job(store.job(...))`, i.e. the job row keys `id, plan_hash, state, stage, result,
@@ -319,6 +319,7 @@ are no longer raised by `job_status`. The local operator's `_retained_job_logs` 
 - `project_id`
 - `source_commit` `^[a-f0-9]{40}$`
 - `source_receipt` Digest
+- `variant` `^[A-Za-z0-9_-]{1,24}$` (build only; name of `sdkconfig.variant.<name>` in the source, see FIRMWARE-BUILD.md)
 - `device_id`, `build_job_id`, `backup_job_id`
 - `lkg_receipt` Digest
 - `after` Crockford `^[0-9A-HJKMNP-TV-Z]{8}$`
@@ -346,7 +347,7 @@ are no longer raised by `job_status`. The local operator's `_retained_job_logs` 
 | kind | required | optional |
 |---|---|---|
 | fetch | job_id, project_id, source_commit | – |
-| build | job_id, project_id | source_receipt, after |
+| build | job_id, project_id | source_receipt, variant, after |
 | backup | job_id, session, device_id | – |
 | flash | job_id, session, device_id, build_job_id | backup_job_id, lkg_receipt |
 | restore | job_id, session, device_id | backup_job_id, lkg_receipt |
@@ -385,7 +386,8 @@ Then:
   `after_only_for_registered_build_without_receipt`, `diagnostic_mode_requires_source_build`,
   `diagnostic_dma_requires_explicit_source_axes`, `flash_job_id_only_for_fixed_collector`,
   `source_fetch_requires_registered_project_and_full_commit`, `source_commit_only_for_fetch`,
-  `source_receipt_only_for_registered_build`, `flash_references_only_for_flash_operations`,
+  `source_receipt_only_for_registered_build`, `build_variant_requires_source_build`,
+  `flash_references_only_for_flash_operations`,
   `registered_flash_device_required`, `project_id_not_allowed_for_flash_operations`,
   `backup_has_no_build_or_backup_input`, `choose_one_recovery_source`, `successful_build_job_required`,
   `restore_uses_backup_only`, `app_options_required_only_for_app_session`.
@@ -745,7 +747,7 @@ The description says "job or request" and omits `ticket`.
 | tests/test_mcp_input_http.py (6 tests) | tool names, annotations, submit schema text/description, invalid_tool_request shape, submit rule codes (device_session_required, argument_not_allowed/project_id, argument_conflict/lkg_receipt), flash-disabled codes, source receipt code, `_result` masking |
 | tests/test_input_diagnostics.py (3) | pre-validation reasons/fields for all 6 tools, REQUEST_MODELS == 6 tools, legacy names → None, PrepareRequest allOf schema |
 | tests/test_chain_http.py (2) | continues/ticket/chain/device_hold, `after` rules, ticket cancel |
-| tests/test_client_identity.py (1) | identity body incl. tool_set_version 2 |
+| tests/test_client_identity.py (1) | identity body incl. tool_set_version 3 |
 | tests/test_registered_targets.py (3) | status schema/annotations, targets, argument_not_allowed/job_id, 401 bodies |
 | tests/test_app_broker.py | 6-tool set, status/execute annotations, app_input/apps/app in schema |
 | tests/test_pending_execution_http.py (4) | no approval/operator tool, wait_for_approval rejected on execute & flash |

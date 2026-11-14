@@ -19,7 +19,7 @@ async def test_identity_reports_request_principal_without_acquiring(authenticate
             "principal_id": f"ephemeral:{expected}",
             "scopes": ["control", "read"],
             "tunnel_ingress_enabled": False,
-            "tool_set_version": 2,
+            "tool_set_version": 3,
         }
         assert token not in json.dumps(result)
     assert resident.active_job is None and resident.session is None

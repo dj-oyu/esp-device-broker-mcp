@@ -13,6 +13,7 @@ from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import build_variant
 from .build_artifacts import BuildArtifacts, has_legacy_diagnostic, manifest_digest
 from .build_ccache import CONTRACT as CCACHE_CONTRACT
 from .build_ccache import ccache_statistics, configure_ccache, probe_ccache
@@ -113,6 +114,8 @@ class FixedDiagnosticFailure(BuildPreflightFailure):
             "node_requires_explicit_local_registration",
             "build_inputs_changed",
             "idf_build_failed_needs_review",
+            "build_variant_config_conflict",
+            "build_variant_not_applied",
             "build_target_mismatch",
             "build_artifacts_missing",
             "artifact_count_limit",
@@ -409,8 +412,13 @@ class FirmwareBuild:
         project_id: str | None,
         principal: str,
         source_receipt: str | None = None,
+        variant: str | None = None,
     ) -> dict[str, Any]:
+        if variant is not None and source_receipt is None:
+            raise ValueError(build_variant.REQUIRES_SOURCE)
         project, provenance = self._project(project_id, principal, source_receipt)
+        # Bound only when named; an absent variant leaves every hash below unchanged.
+        selection = build_variant.bind(project.project_dir, variant) if variant is not None else {}
         if hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
             self.settings.state_dir.resolve()
         ):
@@ -442,6 +450,7 @@ class FirmwareBuild:
                         else (),
                     ),
                     "project_id": project_id,
+                    **selection,
                     **({"source_receipt": source_receipt} if source_receipt is not None else {}),
                     "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
                     "profile": hash_file(project.trusted_profile),
@@ -471,6 +480,7 @@ class FirmwareBuild:
         ).hexdigest()
         return dict(
             project_id=project_id,
+            **selection,
             **(
                 {"source_receipt": source_receipt, "source_provenance": provenance}
                 if provenance
@@ -593,6 +603,8 @@ class FirmwareBuild:
                 in {
                     "build_inputs_changed",
                     "idf_build_failed_needs_review",
+                    "build_variant_config_conflict",
+                    "build_variant_not_applied",
                     "build_target_mismatch",
                     "build_artifacts_missing",
                     "artifact_count_limit",
@@ -623,6 +635,7 @@ class FirmwareBuild:
                 plan["project_id"],
                 principal,
                 plan.get("source_receipt"),
+                **build_variant.plan_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -845,6 +858,7 @@ class FirmwareBuild:
         build_dir = claim_build_directory(
             self.settings.state_dir, build_root, plan["fingerprint"], environment_fingerprint
         )
+        variant = build_variant.identity(plan)
         cache_receipt = configure_ccache(
             cache_policy,
             env,
@@ -853,7 +867,13 @@ class FirmwareBuild:
             plan["project_id"],
             principal,
             environment_fingerprint,
-            CCACHE_NAMESPACE_MODES,
+            CCACHE_NAMESPACE_MODES
+            if variant is None
+            else {
+                **CCACHE_NAMESPACE_MODES,
+                "build_variant": variant[0],
+                "build_variant_sha256": variant[1],
+            },
         )
         logs.append("-- Compiler cache: " + cache_receipt["reason"])
         cache_before = (
@@ -873,12 +893,19 @@ class FirmwareBuild:
                 plan["project_id"],
                 principal,
                 plan.get("source_receipt"),
+                **build_variant.plan_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
             logs.append("error: build inputs changed before launch; prepare a new plan")
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
+        if variant is not None:
+            if provenance is None:
+                raise ValueError(build_variant.REQUIRES_SOURCE)
+            symbols = build_variant.expected_symbols(project.project_dir, *variant)
+            build_variant.seed(build_dir, symbols)
+            self._check_cancelled()
         build_args = [
             str(python),
             str(idf_py),
@@ -927,6 +954,7 @@ class FirmwareBuild:
                 plan["project_id"],
                 principal,
                 plan.get("source_receipt"),
+                **build_variant.plan_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -956,8 +984,21 @@ class FirmwareBuild:
         self._check_cancelled()
         flash_security, security_summary = build_flash_security_receipt(build_dir, project.target)
         self._check_cancelled()
+        variant_config = (
+            build_variant.verify_applied(build_dir, symbols) if variant is not None else None
+        )
+        self._check_cancelled()
         manifest = dict(
             schema_version=1,
+            **(
+                {
+                    "build_variant": variant[0],
+                    "build_variant_sha256": variant[1],
+                    "build_variant_config": variant_config,
+                }
+                if variant is not None
+                else {}
+            ),
             **({"source_provenance": provenance} if provenance is not None else {}),
             build_job_id=plan["job_id"],
             build_plan_hash=hashlib.sha256(
@@ -991,6 +1032,8 @@ class FirmwareBuild:
         try:
             with self._lock:
                 self._check_cancelled()
+                if variant is not None:
+                    build_variant.verify_receipt(build_dir, variant_config)
                 candidate.replace(build_dir / "broker-manifest.json")
                 self.artifacts.publish(plan["job_id"], principal, build_dir, manifest)
                 self.manifests[plan["job_id"]] = (principal, manifest)
@@ -1014,6 +1057,7 @@ class FirmwareBuild:
                 plan["project_id"],
                 principal,
                 plan.get("source_receipt"),
+                **build_variant.plan_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -1021,6 +1065,11 @@ class FirmwareBuild:
         if not live():
             raise ValueError("build_final_commit_not_authorized")
         self._check_cancelled()
+        if "build_variant" in plan:
+            try:
+                build_variant.verify_receipt(root, manifest.get("build_variant_config"))
+            except ValueError:
+                raise FixedDiagnosticFailure("build_variant_not_applied") from None
         (root / "broker-manifest.pending.json").replace(root / "broker-manifest.json")
         self._release_output_lock()
         self.artifacts.publish(plan["job_id"], principal, root, manifest)
@@ -1117,11 +1166,24 @@ class FirmwareBuild:
             raise BuildLocationError("build_output_identity_mismatch")
         if self.artifacts.history is not None:
             self._verify_owned_artifacts(root, manifest)
+        self._verify_variant(root, manifest)
         if has_legacy_diagnostic(manifest):
             # The recipe proof verifier was removed; a legacy diagnostic build can no
             # longer be re-verified, so it is not resolved for flash or status.
             raise BuildLocationError("build_output_identity_mismatch")
         return root, manifest
+
+    @staticmethod
+    def _verify_variant(root: Path, manifest: dict[str, Any]) -> None:
+        """A variant build's generated sdkconfig must still be the verified bytes."""
+        try:
+            if build_variant.identity(manifest) is None:
+                if "build_variant_config" in manifest:
+                    raise ValueError
+                return
+            build_variant.verify_receipt(root, manifest.get("build_variant_config"))
+        except ValueError:
+            raise BuildLocationError("build_output_identity_mismatch") from None
 
     @staticmethod
     def _verify_owned_artifacts(root: Path, manifest: dict[str, Any]) -> None:

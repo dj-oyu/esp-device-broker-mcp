@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .app_models import AppSessionOptions
 
 Identifier = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
+BuildVariantName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,24}$")]
 Capability = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 
@@ -149,6 +150,7 @@ class PrepareRequest(StrictModel):
     )
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
     source_receipt: Digest | None = None
+    variant: BuildVariantName | None = Field(default=None, exclude_if=lambda value: value is None)
     after: str | None = Field(
         default=None,
         pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
@@ -193,6 +195,13 @@ class PrepareRequest(StrictModel):
             self.test != TestName.BUILD or self.project_id is None
         ):
             raise ValueError("source_receipt_only_for_registered_build")
+        if "variant" in self.model_fields_set and (
+            self.variant is None
+            or self.test != TestName.BUILD
+            or self.project_id is None
+            or self.source_receipt is None
+        ):
+            raise ValueError("build_variant_requires_source_build")
         if self.test not in FLASH_TESTS:
             if any(
                 value is not None

@@ -27,6 +27,10 @@ from cardputer_mcp.models import (
 )
 from cardputer_mcp.models import TestName as Action
 
+VARIANT_KINDS = ("match", "manifest_sha", "plan_only", "manifest_only", "source_changed")
+VARIANT_FILE = "sdkconfig.variant.probe"
+VARIANT_BYTES = b"CONFIG_PROBE=y\n"
+
 
 @pytest.fixture
 async def env(tmp_path, request):
@@ -34,10 +38,19 @@ async def env(tmp_path, request):
     # the prerequisite backup avoids repeating broker dispatch/stage commits;
     # the full 8 MiB broker bootstrap remains covered explicitly below.
     bootstrap = getattr(request, "param", None)
+    # "variant[:kind]": the build carries a source-bound build variant ("match" completes the
+    # normal bootstrap; every other kind is a binding mismatch and only prepares).
+    variant_kind = None
+    if isinstance(bootstrap, str) and bootstrap.startswith("variant"):
+        variant_kind = bootstrap.partition(":")[2] or "match"
+        assert variant_kind in VARIANT_KINDS, "unknown variant fixture kind"
+        bootstrap = None if variant_kind == "match" else "prepare-only"
     assert bootstrap in (None, "broker-bootstrap", "prepare-only"), "unknown bootstrap fixture mode"
     broker_bootstrap = bootstrap == "broker-bootstrap"
     flash_size = "8MB" if broker_bootstrap else "4MB"
     flash_bytes = (8 if broker_bootstrap else 4) * 1024 * 1024
+    if variant_kind is not None:
+        source_tests.FILES[VARIANT_FILE] = VARIANT_BYTES
     source = source_tests.SourceTests()
     source.setUp()
     fixture = manifest_tests.FlashManifestTests("test_verified_layout_is_inert_and_manifest_bound")
@@ -128,6 +141,24 @@ async def env(tmp_path, request):
             "source_receipt": receipt,
             "source_provenance": provenance,
         }
+        if variant_kind is not None:
+            planned = hashlib.sha256(VARIANT_BYTES).hexdigest()
+            other = hashlib.sha256(b"CONFIG_OTHER=y\n").hexdigest()
+            config = b"CONFIG_PROBE=y\n# CONFIG_UNRELATED is not set\n"
+            (output / "sdkconfig").write_bytes(config)
+            config_receipt = fixture.receipt("sdkconfig", config)
+            variant_keys = {
+                "build_variant": "probe",
+                "build_variant_sha256": other if variant_kind == "source_changed" else planned,
+            }
+            manifest_keys = dict(variant_keys, build_variant_config=config_receipt)
+            if variant_kind == "manifest_sha":
+                manifest_keys["build_variant_sha256"] = other
+            if variant_kind != "manifest_only":
+                build_plan.update(variant_keys)
+            if variant_kind == "plan_only":
+                manifest_keys = {}
+            fixture.manifest.update(manifest_keys)
         build_hash = digest_plan(build_plan)
         store.put_plan(build_hash, build_plan)
         store.add_job("build-one", build_hash)
@@ -238,6 +269,7 @@ async def env(tmp_path, request):
             await broker.close()
         fixture.doCleanups()
         source.tearDown()
+        source_tests.FILES.pop(VARIANT_FILE, None)
 
 
 @pytest.mark.parametrize("env", ["broker-bootstrap"], indirect=True)
