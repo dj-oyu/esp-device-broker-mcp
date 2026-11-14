@@ -1987,6 +1987,7 @@ class Broker:
                     request.project_id,
                     session.principal_id or "",
                     request.source_receipt,
+                    request.variant,
                 )
                 storage = self.firmware_build.storage(request.project_id or "")
             else:

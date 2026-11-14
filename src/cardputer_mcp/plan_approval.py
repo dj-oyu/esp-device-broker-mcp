@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from . import build_variant
 from .broker import Broker, BrokerError, Session, digest_plan
 from .models import FLASH_TESTS, TestName
 
@@ -182,6 +183,10 @@ class PlanApprovals:
                     from .source_snapshot import validate_submodule_provenance
 
                     validate_submodule_provenance(provenance["submodules"])
+            if "build_variant" in plan or "build_variant_sha256" in plan:
+                expected_keys |= {"build_variant", "build_variant_sha256"}
+                if build_variant.identity(plan) is None or "source_receipt" not in plan:
+                    raise ValueError
             if (
                 backend not in ("mock", "serial")
                 or plan.get("device")
@@ -478,6 +483,7 @@ class PlanApprovals:
                         plan["project_id"],
                         lease.principal_id or "",
                         plan.get("source_receipt"),
+                        **build_variant.plan_kwargs(plan),
                     )
                 else:
                     details = self.broker.backend.prepare(TestName(plan["test"]))

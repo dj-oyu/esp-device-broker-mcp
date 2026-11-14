@@ -211,6 +211,7 @@ class ProfileJobs:
                 request.project_id,
                 principal,
                 request.source_receipt,
+                request.variant,
             )
             storage = broker.firmware_build.storage(request.project_id)
         plan = dict(

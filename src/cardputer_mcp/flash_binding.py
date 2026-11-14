@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from . import build_variant
 from .build_artifacts import has_legacy_diagnostic
 from .logs import Event
 from .models import TestName
@@ -90,8 +91,17 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
         phase = "diagnostic_selection"
         if has_legacy_diagnostic(manifest) or has_legacy_diagnostic(build):
             raise ValueError
+        phase = "build_variant"
+        variant = build_variant.identity(build)
+        # The plan and the verified manifest name the same variant bytes, or neither does.
+        if variant != build_variant.identity(manifest) or (
+            variant is None and "build_variant_config" in manifest
+        ):
+            raise ValueError
         receipt = build.get("source_receipt")
         provenance = manifest.get("source_provenance")
+        if variant is not None and receipt is None:
+            raise ValueError
         if receipt is None:
             phase = "worktree_provenance"
             if provenance is not None or build.get("source_provenance") is not None:
@@ -102,7 +112,7 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
         broker.firmware_source.authorize_receipt(project_id, receipt, principal)
         # Same memoized call as authorize_receipt: the snapshot is hashed once per pass.
         phase = "source_resolve"
-        _, metadata = pure_io(
+        source_root, metadata = pure_io(
             "source_resolve",
             broker.firmware_source.snapshots.resolve,
             project_id,
@@ -127,6 +137,10 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             )
         ):
             raise ValueError
+        if variant is not None:
+            # The fragment inside the receipt-verified source still hashes to the bound bytes.
+            phase = "build_variant_source"
+            pure_io("build_variant_source", build_variant.expected_symbols, source_root, *variant)
         phase = "fetch_record"
         fetch = store.job(metadata["fetch_job_id"])
         if fetch is None:
