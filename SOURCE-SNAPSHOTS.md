@@ -118,6 +118,32 @@ When capacity is needed they reclaim only proven unreferenced source payloads;
 immutable receipts and protected source/recovery data remain retained. No limit
 is raised, and there is no unbounded archive or forced removal of referenced data.
 
+### Self-healing of changed unreferenced payloads
+
+A payload can stop matching its receipt without any tampering: a tool run from inside the
+cache can add a file (for example Python writing `__pycache__/*.pyc`), or antivirus/sync
+software can touch one. Build preparation still fails for such a payload (`Extra/missing/
+changed files fail`), and a referenced payload is never deleted. For a payload that
+nothing references, a fetch no longer stops at it:
+
+- Eviction (cache full): a candidate whose regular files differ from the receipt (extra,
+  missing or modified) is reclaimed like an intact one. The fetch stage is
+  `source_reclaim_corrupt_payload` instead of `source_reclaim_unreferenced_payload`, so
+  the event stays visible in the job/operator timeline.
+- Same commit: fetching the commit of a changed, unreferenced payload removes that payload
+  and re-downloads it as a restore, so the new bytes are verified against the original
+  receipt; the receipt itself is never rewritten.
+- Only the payload goes. The receipt, durable job evidence and ownership remain, and a
+  later fetch of the same commit restores verified bytes.
+- Still fail closed, with no deletion: links or hard links, non-regular entries, unknown
+  names in the receipt directory, an unreadable or invalid receipt, incomplete reference
+  evidence, and anything a plan, unfinished job, recovery or LKG association protects
+  (`source_cache_protected`, `source_snapshot_changed`).
+
+This changes the earlier rule that a tampered payload is never deleted: it now holds only
+for referenced payloads and for entries that are not plain files. There is no retry loop and
+no device, build or flash action; only the cache the fetch already manages is touched.
+
 Historical pre-submodule target checked: cardputer-adv-pocketjs commit
 6a139780b7eeececfaa17cf2ddee576a10a027f5 (1,524 files, about 28 MB). No gitlinks,
 .gitmodules or LFS pointers are required. QuickJS-NG/PocketJS and other components
