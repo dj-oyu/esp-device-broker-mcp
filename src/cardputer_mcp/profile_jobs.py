@@ -10,6 +10,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from .broker import BrokerError, digest_plan
+from .build_artifacts import has_legacy_diagnostic
 from .build_locations import BuildLocationError
 from .build_process import ProcessDeadlineExpired
 from .config import Settings
@@ -210,12 +211,6 @@ class ProfileJobs:
                 request.project_id,
                 principal,
                 request.source_receipt,
-                request.derby_detail_mode,
-                **(
-                    {"derby_dma_mode": request.derby_dma_mode}
-                    if request.derby_dma_mode is not None
-                    else {}
-                ),
             )
             storage = broker.firmware_build.storage(request.project_id)
         plan = dict(
@@ -320,10 +315,6 @@ class ProfileJobs:
             registration_sha256=registration,
             continues={"parent_job_id": parent_id},
         )
-        if request.derby_detail_mode is not None:
-            plan["derby_detail_mode"] = request.derby_detail_mode.value
-        if request.derby_dma_mode is not None:
-            plan["derby_dma_mode"] = request.derby_dma_mode.value
         digest = digest_plan(plan)
         existing = store.job(request.job_id)
         waiting = broker.deferred.get(request.job_id)
@@ -410,7 +401,9 @@ class ProfileJobs:
         receipt = ((parent.get("diagnostic") or {}).get("source") or {}).get("source_receipt")
         if not isinstance(receipt, str):
             return cancel("chain_broken")
-        modes = {k: plan[k] for k in ("derby_detail_mode", "derby_dma_mode") if k in plan}
+        if has_legacy_diagnostic(plan):
+            # The removed diagnostic build selection can no longer be prepared.
+            return cancel("plan_not_found_or_changed")
         try:
             prepared = self.prepare(
                 PrepareRequest(
@@ -418,7 +411,6 @@ class ProfileJobs:
                     test=TestName.BUILD,
                     project_id=plan["project_id"],
                     source_receipt=receipt,
-                    **modes,
                 ),
                 str(row["principal_id"]),
                 str(row["origin"]),

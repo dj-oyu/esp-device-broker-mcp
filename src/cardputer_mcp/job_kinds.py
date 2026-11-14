@@ -22,13 +22,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from .backend import BackendResult
-from .fixed_diagnostic import DiagnosticContext, finish_fixed_diagnostic
 from .logs import Event
 from .models import FLASH_TESTS, TestName
 
 if TYPE_CHECKING:
     from .broker import Broker, ExecutionIntent
-    from .derby_provenance import DerbyProvenance
     from .flash_binding import FlashBinding
     from .job_logs import DeviceLogTap, JobLog
     from .lease_manager import Session
@@ -55,7 +53,6 @@ class AdmittedJob:
     current_binding: str | None
     flash_binding: FlashBinding | None
     capture_principal: str | None
-    derby_scope: DerbyProvenance | None
     job_log: JobLog | None = None
     device_tap: DeviceLogTap | None = None
 
@@ -114,23 +111,6 @@ async def _execute_build(broker: Broker, run: AdmittedJob) -> Result:
     return await broker.firmware_build.execute(run.plan, partial(broker._on_stage, run))
 
 
-async def _execute_smoke(broker: Broker, run: AdmittedJob) -> Result:
-    from .broker import BrokerError
-    from .serial_backend import SerialBackend
-
-    if not isinstance(broker.backend, SerialBackend):
-        raise BrokerError("backend_not_available")
-    running_authorized = partial(broker._running_authorized, run)
-    result = await broker.backend.execute_smoke(
-        run.plan, partial(broker._on_stage, run), running_authorized
-    )
-    if run.test == TestName.DERBY.value and (
-        not running_authorized() or broker.backend.smoke_stop.is_set()
-    ):
-        raise BrokerError("operation_interrupted_review_required")
-    return result
-
-
 async def _execute_backend(broker: Broker, run: AdmittedJob) -> Result:
     return await broker.backend.execute(run.plan, partial(broker._on_stage, run))
 
@@ -174,50 +154,10 @@ def _commit_source(
 
 
 @sync_section
-def _commit_fixed_trial(
-    broker: Broker, run: AdmittedJob, result: Result, completed: Any
-) -> tuple[Event, bool]:
-    from .serial_backend import SerialBackend
-
-    if (
-        not isinstance(result, BackendResult)
-        or result.fixed_trial is None
-        or run.capture_principal is None
-        or not isinstance(broker.backend, SerialBackend)
-    ):
-        raise ValueError("fixed_trial_result_invalid")
-    fixed_review = not broker._running_authorized(run) or broker.backend.smoke_stop.is_set()
-    finish_fixed_diagnostic(
-        DiagnosticContext(
-            run.capture_principal,
-            origin=run.lease.owner,
-            epoch=broker.epoch,
-            lease_id=run.lease.id,
-        ),
-        run.job_id,
-        run.job["plan_hash"],
-        completed,
-        result.fixed_trial,
-        fixed_review,
-        run.store,
-    )
-    return Event.PASSED, fixed_review
-
-
-@sync_section
 def _commit_succeeded(
     broker: Broker, run: AdmittedJob, result: Result, completed: Any
 ) -> tuple[Event, bool]:
-    diagnostic = (
-        {"derby_observation": result.derby_observation.model_dump(mode="json", exclude_none=True)}
-        if isinstance(result, BackendResult)
-        and result.derby_observation is not None
-        and run.test == TestName.DERBY.value
-        else None
-    )
-    run.store.ledger.transition(
-        run.job_id, "succeeded", completed, broker._derby_diagnostic(run, diagnostic)
-    )
+    run.store.ledger.transition(run.job_id, "succeeded", completed)
     return Event.PASSED, False
 
 
@@ -232,8 +172,6 @@ JOB_KINDS: Mapping[str, JobKind] = MappingProxyType(
         **{test.value: _FLASH for test in FLASH_TESTS},
         TestName.SOURCE.value: JobKind(_execute_source, _commit_source),
         TestName.BUILD.value: JobKind(_execute_build, _commit_succeeded),
-        TestName.DERBY.value: JobKind(_execute_smoke, _commit_succeeded),
-        TestName.DERBY_FIXED.value: JobKind(_execute_smoke, _commit_fixed_trial),
         TestName.DIAGNOSTICS.value: _BACKEND,
         TestName.WORKFLOW.value: _BACKEND,
         TestName.OBSERVE.value: _BACKEND,

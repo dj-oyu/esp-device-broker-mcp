@@ -1,4 +1,9 @@
-"""One authenticated, explicit DERBY exit after a proved close; never a replay."""
+"""One authenticated, explicit DERBY exit after a proved close; never a replay.
+
+The only eligible source is a legacy ``derby_smoke`` job whose capture failed. That job
+kind was removed, so no new source can appear; this path is kept for rows that already
+exist in the durable history.
+"""
 
 import asyncio
 import math
@@ -12,6 +17,8 @@ from .ports import resolve_port
 from .serial_backend import Reader, SerialBackend, SerialFailure, fingerprint
 from .smoke_port import SmokePort
 
+# The removed job kind whose recorded capture failure is the only recovery source.
+LEGACY_SOURCE_TEST = "derby_smoke"
 CAPTURE_FAILURES = frozenset({"serial_capture_invalid", "serial_capture_timeout"})
 
 
@@ -78,7 +85,7 @@ class HomeRecovery:
         diagnostic = job["diagnostic"] or {}
         summary = diagnostic.get("receive_summary", {})
         if not (
-            plan.get("test") == "derby_smoke"
+            plan.get("test") == LEGACY_SOURCE_TEST
             and plan.get("backend") == "serial"
             and job["state"] == "needs_review"
             and job["result"] in CAPTURE_FAILURES
@@ -162,7 +169,7 @@ class HomeRecovery:
             or not isinstance(source_plan, dict)
             or digest_plan(source_plan) != e.proof["plan_hash"]
             or source_plan != p["source_plan"]
-            or source_plan.get("test") != "derby_smoke"
+            or source_plan.get("test") != LEGACY_SOURCE_TEST
             or source_plan.get("backend") != "serial"
             or any(
                 source_plan.get(k) != p[k]

@@ -4,15 +4,17 @@ Durable job outcomes outlive the short-lived pixel cache. Immutable plans are
 read only for display; observing a prepared plan never requests execution.
 """
 
+import json
 import math
 import re
 from datetime import UTC, datetime
 from typing import Any
 
 from .backend import DeviceOperationFailure
-from .broker import Broker, BrokerError
+from .broker import Broker, BrokerError, digest_plan
 from .device_observation import FIRMWARE_LIMITATIONS, REDACTION_LIMITATIONS
 from .job_failure_reason import failure_reason
+from .models import LEGACY_TEST_NAMES
 from .plan_approval import PlanApprovals
 from .source_snapshot import SOURCE_ERROR_CODES
 
@@ -34,56 +36,70 @@ STATES = frozenset(
         "unknown",
     }
 )
-STAGES = frozenset(
+# Stage and result values written by the removed DERBY job kinds; history is still read.
+LEGACY_RESULTS = frozenset(
     {
-        "mock_capture",
-        "mock_flash",
-        "mock_boot",
-        "mock_test",
-        "mock_diagnostics",
-        "serial_open",
-        "serial_close",
-        "serial_close_unconfirmed",
-        "passive_observe",
-        "firmware_observe",
-        "restart_and_observe",
-        "serial_restart_requested",
-        "serial_restart_complete",
-        "serial_reconnect_wait",
-        "serial_reopened",
-        "hello",
-        "capture_home",
-        "derby_fixed_workload",
-        "serial_home_ready",
-        "serial_category_apps",
-        "serial_row_hello",
-        "serial_identity_hello",
-        "serial_hello_ready",
-        "serial_hello_count_one",
-        "serial_frame_presented",
-        "serial_app_stopped",
-        "source_download",
-        "source_validate",
-        "source_publish",
-        "source_reuse_verified",
-        "source_reclaim_unreferenced_payload",
-        "source_reclaim_corrupt_payload",
-        "source_rotate_receipt_evidence",
-        "idf_profile",
-        "idf_diagnostics",
-        "idf_build",
-        "flash_security_probe",
-        "flash_backup_or_verify",
-        "flash_backup_read",
-        "flash_backup_prewrite_check",
-        "flash_write_or_restore",
-        "flash_write",
-        "flash_restore_write",
-        "flash_readback_verify",
-        "flash_boot_observe",
-        "flash_close",
+        "derby_fixed_trial_verified",
+        "derby_fixed_trial_invalid",
+        "fixed_trial_persist_failed",
+        "derby_photo_not_verified_no_capture",
+        "derby_demo_cycle_observed_render_buffer_lcd_unverified",
+        "derby_image_observed_demo_cycle_or_photo_phase_not_verified",
     }
-) | frozenset("serial_wait_" + step for step in DeviceOperationFailure.STEPS)
+)
+STAGES = (
+    frozenset(
+        {
+            "mock_capture",
+            "mock_flash",
+            "mock_boot",
+            "mock_test",
+            "mock_diagnostics",
+            "serial_open",
+            "serial_close",
+            "serial_close_unconfirmed",
+            "passive_observe",
+            "firmware_observe",
+            "restart_and_observe",
+            "serial_restart_requested",
+            "serial_restart_complete",
+            "serial_reconnect_wait",
+            "serial_reopened",
+            "hello",
+            "capture_home",
+            "serial_home_ready",
+            "serial_category_apps",
+            "serial_row_hello",
+            "serial_identity_hello",
+            "serial_hello_ready",
+            "serial_hello_count_one",
+            "serial_frame_presented",
+            "serial_app_stopped",
+            "source_download",
+            "source_validate",
+            "source_publish",
+            "source_reuse_verified",
+            "source_reclaim_unreferenced_payload",
+            "source_reclaim_corrupt_payload",
+            "source_rotate_receipt_evidence",
+            "idf_profile",
+            "idf_diagnostics",
+            "idf_build",
+            "flash_security_probe",
+            "flash_backup_or_verify",
+            "flash_backup_read",
+            "flash_backup_prewrite_check",
+            "flash_write_or_restore",
+            "flash_write",
+            "flash_restore_write",
+            "flash_readback_verify",
+            "flash_boot_observe",
+            "flash_close",
+        }
+    )
+    | frozenset("serial_wait_" + step for step in DeviceOperationFailure.STEPS)
+    | LEGACY_TEST_NAMES
+)
 RESULTS = (
     DeviceOperationFailure.CODES
     | SOURCE_ERROR_CODES
@@ -92,8 +108,7 @@ RESULTS = (
             "mock_pass",
             "synthetic_capture_not_device",
             "render_buffer_captured_lcd_unverified",
-            "derby_fixed_trial_verified",
-            "fixed_trial_persist_failed",
+            *LEGACY_RESULTS,
             "serial_observation_completed_no_commands",
             "firmware_observation_completed_no_commands",
             "restart_observation_completed_unverified",
@@ -422,6 +437,9 @@ class OperatorTimeline:
             # public schema. It does not prepare/open a hardware backend.
             return self.plans._plan(str(plan_hash))
         except Exception:
+            legacy = self._legacy_plan(str(plan_hash))
+            if legacy is not None:
+                return legacy
             try:
                 # Preserve the existing 16 KiB read bound for profile display too.
                 db = self.broker._store().db
@@ -442,9 +460,34 @@ class OperatorTimeline:
             except Exception:
                 return None
 
+    def _legacy_plan(self, plan_hash: str) -> dict[str, Any] | None:
+        """Display-only projection of a plan of a removed job kind; never executable."""
+        try:
+            db = self.broker._store().db
+            row = db.execute(
+                "SELECT payload FROM plans WHERE hash=? AND length(CAST(payload AS BLOB))<=?",
+                (plan_hash, 16 * 1024),
+            ).fetchone()
+            if row is None or type(row[0]) is not str:
+                return None
+            raw = json.loads(row[0])
+            if (
+                type(raw) is not dict
+                or digest_plan(raw) != plan_hash
+                or raw.get("test") not in LEGACY_TEST_NAMES
+                or raw.get("backend") not in ("serial", "mock")
+                or not _matches(raw.get("job_id"), r"[a-zA-Z0-9_-]{1,64}")
+            ):
+                return None
+            return {key: raw.get(key) for key in ("job_id", "test", "backend", "broker_epoch")} | {
+                "session_id": raw.get("session_id")
+            }
+        except Exception:
+            return None
+
     def _saved_image(self, job_id: str, plan: dict[str, Any] | None) -> dict[str, Any] | None:
         """The saved capture's summary once the RAM copy is gone (e.g. after restart)."""
-        if plan is None or plan.get("test") not in ("capture_home", "derby_smoke"):
+        if plan is None or plan.get("test") not in ("capture_home", *LEGACY_TEST_NAMES):
             return None
         try:
             row = self.broker.operator_saved_image_summary(job_id)

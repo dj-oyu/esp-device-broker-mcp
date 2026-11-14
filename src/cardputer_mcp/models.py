@@ -32,11 +32,12 @@ class TestName(StrEnum):
     RESTORE = "firmware_restore"
     HELLO = "hello"
     CAPTURE = "capture_home"
-    DERBY = "derby_smoke"
-    DERBY_FIXED = "derby_fixed_workload"
     APP_SESSION = "app_session"
 
 
+# Job kinds removed from TestName. Stored history may still name them: such rows are read
+# and displayed as legacy records only and can never be prepared, planned or executed.
+LEGACY_TEST_NAMES = frozenset({"derby_smoke", "derby_fixed_workload"})
 FLASH_TESTS = frozenset({TestName.BACKUP, TestName.FLASH, TestName.RESTORE})
 # Jobs whose own module writes their durable output log (not the serial tee).
 MODULE_LOG_TESTS = frozenset({TestName.SOURCE, TestName.BUILD, TestName.APP_SESSION, *FLASH_TESTS})
@@ -59,11 +60,6 @@ class LeaseRequest(StrictModel):
 
 class RenewRequest(LeaseRequest):
     lease_seconds: int = Field(default=30, ge=1, le=300)
-
-
-class DiagnosticMode(StrEnum):
-    ON = "ON"
-    OFF = "OFF"
 
 
 class PrepareRequest(StrictModel):
@@ -153,11 +149,6 @@ class PrepareRequest(StrictModel):
     )
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
     source_receipt: Digest | None = None
-    derby_detail_mode: DiagnosticMode | None = None
-    derby_dma_mode: DiagnosticMode | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
-    flash_job_id: Identifier | None = None
     after: str | None = Field(
         default=None,
         pattern=r"^[0-9A-HJKMNP-TV-Z]{8}$",
@@ -183,19 +174,6 @@ class PrepareRequest(StrictModel):
                 raise ValueError("session_not_allowed_with_after")
         if self.lease_seconds is not None and self.after is None:
             raise ValueError("lease_seconds_only_with_after")
-        if "derby_dma_mode" in self.model_fields_set and (
-            self.derby_dma_mode is None
-            or self.derby_detail_mode is None
-            or self.test != TestName.BUILD
-            or self.source_receipt is None
-        ):
-            raise ValueError("diagnostic_dma_requires_explicit_source_axes")
-        if self.derby_detail_mode is not None and (
-            self.test != TestName.BUILD or self.source_receipt is None
-        ):
-            raise ValueError("diagnostic_mode_requires_source_build")
-        if self.flash_job_id is not None and self.test != TestName.DERBY_FIXED:
-            raise ValueError("flash_job_id_only_for_fixed_collector")
         if (
             self.test not in (TestName.SOURCE, TestName.BUILD)
             and self.session is None

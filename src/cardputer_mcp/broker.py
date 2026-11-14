@@ -28,7 +28,6 @@ from .build_locations import BuildLocationError
 from .cancellation import DeviceStop, device_stop
 from .capture import CapturedImage
 from .capture_store import CaptureStore
-from .collector_binding import prepare_collector
 from .config import Settings
 from .continuation import (
     HOLD_SECONDS,
@@ -38,8 +37,6 @@ from .continuation import (
     TicketError,
     Tickets,
 )
-from .derby_provenance import capture_provenance, finish_provenance
-from .derby_reports import PROVENANCE_KEY
 from .device_failure_outcome import FailureEvidence
 from .device_failure_outcome import classify as classify_failure
 from .device_observation import DeviceObservation
@@ -98,6 +95,8 @@ _NON_DEVICE_LOG_TESTS = frozenset(test.value for test in MODULE_LOG_TESTS)
 _TERMINAL_LOG_STATES = frozenset({"succeeded", "failed", "needs_review", "cancelled"})
 
 
+# Saved captures of removed legacy jobs stay readable (read paths only).
+_CAPTURE_READ_TESTS = (TestName.CAPTURE.value, "derby_smoke")
 _CATALOG_INVALIDATING_TESTS = frozenset(
     {
         TestName.FLASH.value,
@@ -537,14 +536,11 @@ class Broker:
         else:
             # Serial jobs never call a flash write; the mock workflow models one.
             write_started, closed = test == TestName.WORKFLOW.value, serial_closed
-        from .home_recovery import CAPTURE_FAILURES
-
         return FailureEvidence(
             code=code,
             known=True,
             close_confirmed=closed,
             write_possibly_started=write_started,
-            home_recovery_source=test == TestName.DERBY.value and code in CAPTURE_FAILURES,
         )
 
     def _cancel_execution_intent(self, intent: ExecutionIntent, reason: str) -> None:
@@ -1119,12 +1115,9 @@ class Broker:
                 "build_job_id",
                 "backup_job_id",
                 "lkg_receipt",
-                "flash_job_id",
             )
             if getattr(request, name) is not None
         }
-        if "derby_detail_mode" in request.model_fields_set and request.derby_detail_mode:
-            params["derby_detail_mode"] = request.derby_detail_mode.value
         plan: dict[str, Any] = dict(
             version=2,
             execution_context="device_deferred",
@@ -1951,8 +1944,6 @@ class Broker:
                 {
                     TestName.APP_SESSION,
                     TestName.CAPTURE,
-                    TestName.DERBY,
-                    TestName.DERBY_FIXED,
                     TestName.FIRMWARE,
                     TestName.RESTART,
                     TestName.BUILD,
@@ -1996,18 +1987,8 @@ class Broker:
                     request.project_id,
                     session.principal_id or "",
                     request.source_receipt,
-                    request.derby_detail_mode,
-                    **(
-                        {"derby_dma_mode": request.derby_dma_mode}
-                        if request.derby_dma_mode is not None
-                        else {}
-                    ),
                 )
                 storage = self.firmware_build.storage(request.project_id or "")
-            elif request.test == TestName.DERBY_FIXED and request.flash_job_id is not None:
-                if request.project_id is not None:
-                    raise ValueError("project_only_for_build")
-                details = prepare_collector(self, request.flash_job_id, session.principal_id or "")
             else:
                 if request.project_id is not None:
                     raise ValueError("project_only_for_build")
@@ -2275,13 +2256,6 @@ class Broker:
         if stop is DeviceStop.SOURCE:
             accepted = self.firmware_source.request_stop(request.job_id)
             return {**job, "stop_requested": accepted, "requires_review": accepted}
-        if stop is DeviceStop.SMOKE:
-            from .serial_backend import SerialBackend
-
-            if not isinstance(self.backend, SerialBackend):
-                raise BrokerError("backend_not_available")
-            accepted = self.backend.request_smoke_stop()
-            return {**job, "stop_requested": accepted, "requires_review": accepted}
         if stop in (DeviceStop.BUILD, DeviceStop.FLASH):
             controller = self.firmware_build if stop is DeviceStop.BUILD else self.firmware_flash
             accepted = controller.request_stop(request.job_id)
@@ -2538,7 +2512,7 @@ class Broker:
             self.closing
             or job is None
             or plan is None
-            or plan.get("test") not in (TestName.CAPTURE.value, TestName.DERBY.value)
+            or plan.get("test") not in _CAPTURE_READ_TESTS
             or job["state"] != "succeeded"
             or not isinstance(principal_id, str)
             or not principal_id
@@ -2658,7 +2632,7 @@ class Broker:
             self.closing
             or job is None
             or plan is None
-            or plan.get("test") not in (TestName.CAPTURE.value, TestName.DERBY.value)
+            or plan.get("test") not in _CAPTURE_READ_TESTS
             or job["state"] != "succeeded"
         ):
             return None
@@ -2714,40 +2688,13 @@ class Broker:
         if job_id not in self.captures:
             return self._operator_saved_image(job_id)
         retained = self._operator_capture(job_id)
-        job = self._store().job(job_id)
-        plan = self._store().plan(job["plan_hash"]) if job else None
-        provenance = {}
-        if plan and plan["test"] == TestName.DERBY.value:
-            if (
-                job is None
-                or plan["broker_epoch"] != self.epoch
-                or digest_plan(plan) != job["plan_hash"]
-            ):
-                raise BrokerError("stale_image_preview")
-            provenance = {
-                "derby_scope": {
-                    "broker_epoch": self.epoch,
-                    "job_id": job_id,
-                    "plan_hash": digest_plan(plan),
-                    "principal_id": retained.principal_id,
-                    "device_fingerprint": plan["device_fingerprint"],
-                    "expected_firmware_sha256": plan["expected_firmware_sha256"],
-                }
-            }
         result = {
             "broker_epoch": self.epoch,
-            **provenance,
             **self._image_summary(job_id, retained),
             "metadata": retained.image.metadata(),
             "image_base64": base64.b64encode(retained.image.png).decode("ascii"),
             "delivery_revision": self._delivery_revision(job_id, retained),
         }
-        if provenance and (
-            plan is None
-            or self._operator_capture(job_id) is not retained
-            or plan["broker_epoch"] != self.epoch
-        ):
-            raise BrokerError("stale_image_preview")
         return result
 
     def operator_decide_image(
@@ -2982,14 +2929,6 @@ class Broker:
         ):
             self._cancel_execution_intent(queued_intent, "flash_binding_invalid")
             return None
-        if "flash_job_id" in plan:
-            try:
-                fresh = prepare_collector(self, plan["flash_job_id"], lease.principal_id or "")
-                if any(plan.get(key) != value for key, value in fresh.items()):
-                    raise ValueError("collector_binding_changed")
-            except Exception:
-                self._cancel_execution_intent(queued_intent, "collector_binding_changed")
-                return None
         # The last principal callback, then the durable row and every binding again
         # before any backend work starts: the callbacks above can change the queued
         # row, the original intent, the lease or the clock (execution_authority DISPATCH).
@@ -3022,11 +2961,6 @@ class Broker:
         if not store.ledger.transition(job_id, "running"):
             # Unreachable after the final synchronous check; never run unrecorded.
             raise RuntimeError("job_transition_refused")
-        derby_scope = (
-            capture_provenance(self, plan, job_id, capture_principal or "")
-            if plan["test"] == TestName.DERBY.value
-            else None
-        )
         return AdmittedJob(
             job_id=job_id,
             store=store,
@@ -3037,7 +2971,6 @@ class Broker:
             current_binding=current_binding,
             flash_binding=flash_binding,
             capture_principal=capture_principal,
-            derby_scope=derby_scope,
         )
 
     # --- callbacks handed to executors; each reads only the admitted job ---------------
@@ -3045,20 +2978,6 @@ class Broker:
     def _on_stage(self, run: AdmittedJob, name: str) -> None:
         run.store.set_stage(run.job_id, name)
         self.logs.append(Event.STAGE, stage=name)
-
-    def _derby_diagnostic(
-        self, run: AdmittedJob, diagnostic: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
-        if diagnostic is None or run.derby_scope is None:
-            return diagnostic
-        scoped = dict(diagnostic)
-        # Freeze observed dispatch/completion evidence. Reading a
-        # historic report never consults a newer firmware target.
-        scoped[PROVENANCE_KEY] = finish_provenance(
-            run.derby_scope,
-            capture_provenance(self, run.plan, run.job_id, run.capture_principal or ""),
-        ).model_dump(mode="json", exclude_none=True)
-        return scoped
 
     def _running_authorized(self, run: AdmittedJob) -> bool:
         """The RUNNING checkpoint: non-flash executors and their commits."""
@@ -3076,30 +2995,6 @@ class Broker:
         """Validate the executor's result and retain private output, or raise."""
         job_id, plan, lease = run.job_id, run.plan, run.lease
         capture_principal = run.capture_principal
-        if plan["test"] == TestName.DERBY.value:
-            from .derby_observation import NO_CAPTURE, DerbyObservation
-
-            if (
-                not isinstance(result, BackendResult)
-                or not isinstance(result.derby_observation, DerbyObservation)
-                or not result.derby_observation.exit_home_observed
-                or result.derby_observation.image_acquired is not (result.image is not None)
-                or (
-                    result.image is None
-                    and (
-                        result.code != NO_CAPTURE
-                        or not result.derby_observation.no_capture_completed()
-                    )
-                )
-            ):
-                raise BrokerError("capture_result_invalid")
-        if plan["test"] == TestName.DERBY_FIXED.value and (
-            not isinstance(result, BackendResult)
-            or result.fixed_trial is None
-            or not result.fixed_trial.valid
-            or result.image is not None
-        ):
-            raise BrokerError("fixed_trial_result_invalid")
         if plan["test"] == TestName.CAPTURE.value and (
             not isinstance(result, BackendResult) or result.image is None
         ):
@@ -3136,7 +3031,7 @@ class Broker:
                 )
         if isinstance(result, BackendResult) and result.image is not None:
             if (
-                plan["test"] not in (TestName.CAPTURE.value, TestName.DERBY.value)
+                plan["test"] != TestName.CAPTURE.value
                 or capture_principal is None
                 or self.backend.active
                 or self.backend.hardware_connected
@@ -3187,8 +3082,7 @@ class Broker:
 
     @sync_section
     def _finish_failure(self, run: AdmittedJob, failure: Exception) -> None:
-        job_id, plan, store = run.job_id, run.plan, run.store
-        capture_principal = run.capture_principal
+        job_id, plan = run.job_id, run.plan
         if isinstance(failure, (FlashFailure, FlashAdmissionError)):
             self._record_failure(
                 job_id,
@@ -3217,42 +3111,8 @@ class Broker:
             self.logs.append(Event.REVIEW)
             self._cancel_queued("recovery_review_required")
         elif isinstance(failure, DeviceOperationFailure):
-            from .serial_backend import SerialFailure
-
             evidence = self._failure_evidence(plan, job_id, failure.code)
-            if (
-                plan["test"] == TestName.DERBY_FIXED.value
-                and isinstance(failure, SerialFailure)
-                and failure.fixed_trial is not None
-                and capture_principal is not None
-            ):
-                outcome = classify_failure(evidence)
-                try:
-                    store.finish_fixed_trial(
-                        job_id,
-                        run.job["plan_hash"],
-                        capture_principal,
-                        outcome,
-                        failure.code,
-                        failure.fixed_trial,
-                        failure.diagnostic,
-                    )
-                except Exception:
-                    self._latch_execution("fixed_trial_persist_failed")
-                    self._record_review(job_id, "fixed_trial_persist_failed")
-                    outcome = "needs_review"
-                if outcome == "failed":
-                    self.logs.append(Event.FAILED)
-                else:
-                    self.logs.append(Event.REVIEW)
-                    self._cancel_queued("recovery_review_required")
-            else:
-                self._record_failure(
-                    job_id,
-                    failure.code,
-                    self._derby_diagnostic(run, failure.diagnostic),
-                    evidence,
-                )
+            self._record_failure(job_id, failure.code, failure.diagnostic, evidence)
         elif isinstance(failure, DeviceDisconnected):
             self._record_failure(
                 job_id,
@@ -3279,7 +3139,7 @@ class Broker:
         job_id, plan = run.job_id, run.plan
         try:
             completed = result.code if isinstance(result, BackendResult) else result
-            terminal_event, fixed_review = kind_for(run.test).commit(self, run, result, completed)
+            terminal_event, needs_review = kind_for(run.test).commit(self, run, result, completed)
         except Exception as failure:
             self._latch_execution("job_final_commit_failed")
             if plan["test"] == TestName.SOURCE.value:
@@ -3287,17 +3147,12 @@ class Broker:
                 self.firmware_source.record_failure(plan, code)
                 self._record_review(job_id, code, {"code": code})
             else:
-                self._record_review(
-                    job_id,
-                    "fixed_trial_persist_failed"
-                    if plan["test"] == TestName.DERBY_FIXED.value
-                    else "firmware_final_commit_failed",
-                )
+                self._record_review(job_id, "firmware_final_commit_failed")
             self.logs.append(Event.REVIEW)
             self._cancel_queued("recovery_review_required")
         else:
-            self.logs.append(Event.REVIEW if fixed_review else terminal_event)
-            if fixed_review:
+            self.logs.append(Event.REVIEW if needs_review else terminal_event)
+            if needs_review:
                 self._cancel_queued("recovery_review_required")
 
     @sync_section

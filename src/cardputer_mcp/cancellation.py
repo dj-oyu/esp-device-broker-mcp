@@ -44,14 +44,12 @@ class DeviceStop(Enum):
     INTENT = "intent"  # legacy awaiting_approval: cancel the execution intent
     APP_EVENT = "app_event"  # running app_session: set its cancelled event
     SOURCE = "source"  # running source: firmware_source.request_stop
-    SMOKE = "smoke"  # running DERBY / DERBY fixed: backend.request_smoke_stop
     BUILD = "build"  # running build: firmware_build.request_stop
     FLASH = "flash"  # running flash/restore/backup: firmware_flash.request_stop
     QUEUED = "queued"  # queued: cancelled client_cancelled_queued
     REFUSE = "refuse"  # anything else: only_queued_jobs_can_be_cancelled
 
 
-_SMOKE_TESTS = frozenset({TestName.DERBY.value, TestName.DERBY_FIXED.value})
 _FLASH_TESTS = frozenset(test.value for test in FLASH_TESTS)
 
 
@@ -64,8 +62,6 @@ def device_stop(state: str, test: str) -> DeviceStop:
             return DeviceStop.APP_EVENT
         if test == TestName.SOURCE.value:
             return DeviceStop.SOURCE
-        if test in _SMOKE_TESTS:
-            return DeviceStop.SMOKE
         if test == TestName.BUILD.value:
             return DeviceStop.BUILD
         if test in _FLASH_TESTS:

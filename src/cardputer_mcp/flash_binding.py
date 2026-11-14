@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .diagnostic_registry import same_diagnostic_selection
+from .build_artifacts import has_legacy_diagnostic
 from .logs import Event
 from .models import TestName
 from .offload_io import pure_io
@@ -88,7 +88,7 @@ def prepare_binding(broker: "Broker", plan: dict[str, Any]) -> FlashBinding:
             project_id,
         )
         phase = "diagnostic_selection"
-        if not same_diagnostic_selection(manifest, build):
+        if has_legacy_diagnostic(manifest) or has_legacy_diagnostic(build):
             raise ValueError
         receipt = build.get("source_receipt")
         provenance = manifest.get("source_provenance")
