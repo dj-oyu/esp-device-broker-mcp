@@ -12,6 +12,7 @@ from cardputer_mcp.firmware_source import FirmwareSource
 from cardputer_mcp.source_snapshot import (
     GITHUB_TOKEN_ENVIRONMENT,
     SOURCE_ERROR_CODES,
+    LocalFailure,
     RateLimited,
     SourceError,
     download,
@@ -201,3 +202,40 @@ def test_foreign_detail_text_is_never_logged():
     source.record_failure(plan, "source_download_failed", "error: github rate limit: x")
     texts = [entry["text"] for entry in source.logs["j2"].entries]
     assert all("secret" not in text and "rate limit: x" not in text for text in texts)
+
+
+def test_local_failure_detail_is_bounded_and_allowlisted():
+    class Custom(Exception):
+        errno = 10**9
+        winerror = "C:\secret"
+
+    failure = LocalFailure("source_publish; rm", Custom("token ghp_x"))
+    assert failure.code == "source_fetch_failed"
+    assert failure.log_detail == (
+        "error: local failure (not a github rate limit): stage=unknown kind=other"
+    )
+    assert "ghp_x" not in failure.log_detail
+
+
+def test_unclassified_and_download_failures_explain_they_are_not_rate_limits():
+    for code in ("source_fetch_failed", "source_download_failed"):
+        explanation = SourceError(code).public()["explanation"]
+        assert "source_rate_limited" in explanation
+
+
+def test_job_log_records_the_local_failure_line_once():
+    source = FirmwareSource(object(), lambda: None)
+    plan = {"job_id": "j3", "source_principal": "owner"}
+    detail = LocalFailure("source_publish", PermissionError(13, "x")).log_detail
+    source.record_failure(plan, "source_fetch_failed", detail)
+    source.record_failure(plan, "source_fetch_failed")
+    texts = [entry["text"] for entry in source.logs["j3"].entries]
+    assert texts == [
+        "error: local failure (not a github rate limit): "
+        "stage=source_publish kind=PermissionError errno=13",
+        "error: source fetch failed: source_fetch_failed",
+    ]
+    source.record_failure(
+        {"job_id": "j4", "source_principal": "owner"}, "source_fetch_failed", "Bearer secret"
+    )
+    assert all("secret" not in e["text"] for e in source.logs["j4"].entries)

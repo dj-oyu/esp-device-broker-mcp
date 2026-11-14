@@ -440,7 +440,7 @@ async def test_failed_source_retains_safe_diagnostic_through_broker(
         assert job["state"] == ("needs_review" if failure_kind.startswith("commit_") else "failed")
         assert job["result"] == expected
         expected_diagnostic = {"code": expected}
-        if failure_kind == "cache_protected":
+        if "explanation" in SourceError(expected).public():
             expected_diagnostic["explanation"] = SourceError(expected).public()["explanation"]
         assert job["diagnostic"] == expected_diagnostic
         assert service.resident._store().needs_review() == failure_kind.startswith("commit_")

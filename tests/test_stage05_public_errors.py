@@ -71,7 +71,14 @@ def _async_raise(exc: BaseException):
     [
         *[(BrokerError(code), {"ok": False, "error": code}) for code in PASSTHROUGH_CODES],
         (SourceError("source_fetch_busy"), {"ok": False, "error": "source_fetch_busy"}),
-        (SourceError(SECRET), {"ok": False, "error": "source_fetch_failed"}),
+        (
+            SourceError(SECRET),
+            {
+                "ok": False,
+                "error": "source_fetch_failed",
+                "explanation": SourceError("source_fetch_failed").public()["explanation"],
+            },
+        ),
         (
             SourceError("source_cache_protected"),
             {

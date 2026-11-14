@@ -92,6 +92,20 @@ in an hour can exhaust the quota.
   `source_github_token_invalid`; a token GitHub rejects (401) fails with
   `source_github_token_rejected`. Neither value is ever logged.
 
+## Telling a local failure from a rate limit
+
+`source_fetch_failed` is the catch-all for an unclassified failure inside the broker. It is
+not a GitHub rate limit (that is `source_rate_limited`) and not a download problem (that is
+`source_download_failed`). The failure response and the `diagnostic` of a failed job carry
+an `explanation` saying so. When the failure came from an exception during the fetch, the
+job log gets one line before the usual error line:
+`error: local failure (not a github rate limit): stage=<stage> kind=<class> [errno=<n>]
+[winerror=<n>]`. The stage is one of the fixed fetch stages and the class an allowlisted
+exception name (otherwise `other`); paths, messages and values are never logged. A single
+`PermissionError` at `source_publish` right after the files were written points at a brief
+Windows file-system conflict (scanner or indexer); one retry of the same fetch is
+reasonable. The same line repeating is a local environment problem.
+
 ## Source format, limits and target compatibility
 
 Public HTTPS only, fixed api.github.com/codeload.github.com URLs constructed by
