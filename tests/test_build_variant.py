@@ -1095,6 +1095,8 @@ def test_diagnostics_never_echo_fragment_text_or_paths(harness):
 
 async def test_variant_build_over_authenticated_mcp(registry_service, tmp_path):
     """submit(kind=build, variant) through the real tool surface, with a fake IDF."""
+    if os.name != "nt":
+        pytest.skip("the build runs on the external Windows IDF contract")
     from test_source_snapshot import COMMIT, REPOSITORY
 
     from cardputer_mcp.client import call, connect
