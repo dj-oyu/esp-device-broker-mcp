@@ -10,7 +10,12 @@ from .build_logs import BuildLogs
 from .job_logs import attach
 from .offload_io import pure_io
 from .source_retention import retention_evidence
-from .source_snapshot import SOURCE_ERROR_CODES, SourceError, SourceSnapshots
+from .source_snapshot import (
+    LOCAL_FAILURE_PREFIX,
+    SOURCE_ERROR_CODES,
+    SourceError,
+    SourceSnapshots,
+)
 
 
 class FirmwareSource:
@@ -170,9 +175,12 @@ class FirmwareSource:
         if logs.entries and logs.entries[-1]["text"] == message:
             return
         # The detail line precedes the message so a repeated record_failure stays idempotent.
-        # It only ever comes from RateLimited.log_detail (bounded integers and a flag).
-        if code == "source_rate_limited" and detail is not None:
-            if detail.startswith("error: github rate limit: ") and len(detail) <= 160:
+        # It only ever comes from RateLimited or LocalFailure (bounded integers, a flag, an
+        # allowlisted stage and exception class name).
+        if detail is not None and len(detail) <= 200:
+            if (
+                code == "source_rate_limited" and detail.startswith("error: github rate limit: ")
+            ) or (code == "source_fetch_failed" and detail.startswith(LOCAL_FAILURE_PREFIX)):
                 logs.append(detail)
         logs.append(message)
 

@@ -218,6 +218,22 @@ class SourceError(ValueError):
             "source_cache_owner_conflict": (
                 "Cache is bound to another state store; no shared-store reclamation"
             ),
+            "source_fetch_failed": (
+                "An unclassified failure inside the broker, not a GitHub rate limit "
+                "(a rate limit reports source_rate_limited) and not a download failure "
+                "(that reports source_download_failed). The fetch log's last "
+                "'error: local failure' line names the stage and the error class; on Windows "
+                "a brief file-system conflict with a scanner or indexer is a common, transient "
+                "cause, so one retry of the same fetch is reasonable. Repeated failures with "
+                "the same line are a local environment problem, not something a longer wait "
+                "for GitHub will fix"
+            ),
+            "source_download_failed": (
+                "GitHub could not be reached or returned an unusable response. A rate limit "
+                "is reported separately as source_rate_limited with a log line; this code "
+                "means the cause was something else, such as the network, a redirect or an "
+                "unexpected status"
+            ),
             "source_rate_limited": (
                 "GitHub refused the request because its rate limit is exhausted; retry after "
                 f"the reset, or set {GITHUB_TOKEN_ENVIRONMENT} for the broker process "
@@ -256,6 +272,65 @@ class RateLimited(SourceError):
             f"authenticated={'yes' if self.authenticated else 'no'} limit={self.limit} "
             f"remaining={self.remaining} resets_in_seconds={self.resets_in}"
         )
+
+
+_LOCAL_KINDS = frozenset(
+    {
+        "BlockingIOError",
+        "ConnectionError",
+        "FileExistsError",
+        "FileNotFoundError",
+        "InterruptedError",
+        "IsADirectoryError",
+        "KeyError",
+        "MemoryError",
+        "NotADirectoryError",
+        "OSError",
+        "PermissionError",
+        "RuntimeError",
+        "TimeoutError",
+        "TypeError",
+        "UnicodeError",
+        "ValueError",
+    }
+)
+_LOCAL_STAGES = frozenset(
+    {
+        "source_reclaim_unreferenced_payload",
+        "source_rotate_receipt_evidence",
+        "source_download",
+        "source_validate",
+        "source_publish",
+    }
+)
+LOCAL_FAILURE_PREFIX = "error: local failure (not a github rate limit): "
+
+
+class LocalFailure(SourceError):
+    """An unclassified exception; only the stage, the class name and two bounded integers."""
+
+    def __init__(self, stage: str, failure: BaseException) -> None:
+        super().__init__("source_fetch_failed")
+        self.stage = stage if stage in _LOCAL_STAGES else "unknown"
+        name = type(failure).__name__
+        self.kind = name if name in _LOCAL_KINDS else "other"
+        self.errno = self._bounded(getattr(failure, "errno", None))
+        self.winerror = self._bounded(getattr(failure, "winerror", None))
+
+    @staticmethod
+    def _bounded(value: object) -> int | None:
+        if type(value) is int and -1_000_000 <= value <= 1_000_000:
+            return value
+        return None
+
+    @property
+    def log_detail(self) -> str:
+        parts = [f"stage={self.stage}", f"kind={self.kind}"]
+        if self.errno is not None:
+            parts.append(f"errno={self.errno}")
+        if self.winerror is not None:
+            parts.append(f"winerror={self.winerror}")
+        return LOCAL_FAILURE_PREFIX + " ".join(parts)
 
 
 class CacheScanLimit(SourceError):
@@ -1092,6 +1167,11 @@ class SourceSnapshots:
         _, registration = self.registration(project_id)
         self.restore_source = None
         deadline = time.monotonic() + LIMITS["operation_seconds"]
+        reached = ["unknown"]
+
+        def mark(name: str) -> None:
+            reached[0] = name
+            stage(name)
 
         def valid() -> bool:
             return time.monotonic() < deadline and live() is True
@@ -1100,7 +1180,7 @@ class SourceSnapshots:
         if self.retention is not None:
             from .source_payloads import admit_source
 
-            reused, rotation = admit_source(self, plan, valid, stage)
+            reused, rotation = admit_source(self, plan, valid, mark)
             if reused is not None:
                 return reused
         usage = self.usage(project_id)
@@ -1140,12 +1220,12 @@ class SourceSnapshots:
 
                 rotate_evidence(self, plan, rotation, valid, stage, rollback)
             repository, commit = plan["source_repository"], plan["source_commit"]
-            stage("source_download")
+            mark("source_download")
             source = pending / "source"
             archives = RepositoryArchives(
                 self.transport, registration, deadline, valid, root / ("f" * 64) / "source"
             )
-            stage("source_validate")
+            mark("source_validate")
             files, evidence = archives.fetch(repository, commit, source)
             value = dict(
                 schema_version=2 if archives.submodules else 1,
@@ -1191,7 +1271,7 @@ class SourceSnapshots:
                 os.fsync(handle.fileno())
             if valid() is not True:
                 raise SourceError("source_fetch_interrupted")
-            stage("source_publish")
+            mark("source_publish")
             target = root / receipt
             if restoring is not None:
                 if (
@@ -1230,8 +1310,8 @@ class SourceSnapshots:
             )
         except SourceError:
             raise
-        except Exception:
-            raise SourceError("source_fetch_failed") from None
+        except Exception as failure:
+            raise LocalFailure(reached[0], failure) from None
         finally:
             try:
                 if pending.exists():

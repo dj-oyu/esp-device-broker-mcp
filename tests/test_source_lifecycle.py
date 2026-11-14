@@ -409,6 +409,36 @@ class SourceLifecycleTests(CacheFixture, unittest.TestCase):
         self.assertEqual(self.snapshots.usage("fixture")["snapshots"], 0)
         self.assertEqual(list((self.root / "cache").rglob("receipt.json")), [])
 
+    def test_publish_rename_failure_reports_a_local_failure_not_a_rate_limit(self):
+        original = Path.rename
+        stages = []
+
+        def refuse(path, target):
+            if path.name.startswith("pending-"):
+                error = PermissionError(13, "synthetic secret path")
+                error.winerror = 5  # type: ignore[attr-defined]
+                raise error
+            return original(path, target)
+
+        plan = self.plan(1)
+        self.add(plan, "running")
+        self.snapshots.publication = lambda receipt: self.store.record_source_publication(
+            receipt, plan["job_id"], "fixture", "owner"
+        )
+        with patch.object(Path, "rename", refuse):
+            with self.assertRaises(SourceError) as caught:
+                self.snapshots.fetch(plan, lambda: True, stages.append)
+        failure = caught.exception
+        self.assertEqual(failure.code, "source_fetch_failed")
+        self.assertEqual(stages[-1], "source_publish")
+        self.assertEqual(
+            failure.log_detail,
+            "error: local failure (not a github rate limit): "
+            "stage=source_publish kind=PermissionError errno=13 winerror=5",
+        )
+        self.assertNotIn("secret", failure.log_detail + str(failure.public()))
+        self.assertIn("not a GitHub rate limit", failure.public()["explanation"])
+
     def test_two_real_fetches_cannot_download_or_reserve_concurrently(self):
         entered, release = threading.Event(), threading.Event()
         original = self.snapshots.__class__

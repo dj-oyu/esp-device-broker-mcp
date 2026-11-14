@@ -160,5 +160,9 @@ def test_only_typed_allowlisted_source_errors_escape_generic_value_error_mask():
     def other():
         raise ValueError("SYNTHETIC_SECRET")
 
-    assert _result(source) == {"ok": False, "error": "source_fetch_failed"}
+    assert _result(source) == {
+        "ok": False,
+        "error": "source_fetch_failed",
+        "explanation": SourceError("source_fetch_failed").public()["explanation"],
+    }
     assert _result(other) == {"ok": False, "error": "invalid_request"}
