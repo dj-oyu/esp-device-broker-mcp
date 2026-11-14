@@ -140,8 +140,7 @@ retry. The broker does not install ccache or change the local IDF environment.
 An enabled build records the cache executable's version/content/path digests,
 configuration digest and normalization contract in its environment identity.
 The cache root is `state_dir/compiler-cache/<project-and-owner-digest>`.
-Namespaces additionally separate the exact resolved environment and detail/DMA
-modes, while excluding generation-specific source hashes from that namespace.
+Namespaces additionally separate the exact resolved environment, while excluding generation-specific source hashes from that namespace.
 Ccache itself keys each compilation by compiler content, arguments and source/
 included-header inputs. Different sources remain different compilation inputs.
 The root's native ccache cleanup target is **2 GiB**, shared across its namespaces;
@@ -489,72 +488,18 @@ unsuccessful jobs, another principal, concurrent-reader limits, event-loop progr
 and grant/registration/job invalidation during hash IO. Existing durable path/link
 and hash checks are reused; no native build, USB or production DB is involved.
 
-## Fixed diagnostic recipes and ON/OFF comparison
+## Removed diagnostic build options
 
-`submit.request.derby_detail_mode` accepts only `ON` or `OFF` for a
-`kind=build` (`firmware_build`) with a registered project's owned `source_receipt`. An explicit
-single detail selector chooses the built-in `j1-fixed-v1` recipe. Supplying both
-`derby_detail_mode` and `derby_dma_mode` chooses `derby-dma-diagnostic-v1`.
-The latter requires both typed axes; it does not infer missing values or fall
-back after invalid evidence. No arbitrary CMake arguments or commands are accepted.
+The `derby_detail_mode` and `derby_dma_mode` build options, the fixed diagnostic
+recipes behind them and their BIN/ELF proof were removed. `submit(kind="build")`
+no longer accepts them, and no build runs with the removed CMake definitions.
+Ordinary builds are unchanged: their plans, fingerprints, manifests and
+compiler-cache namespaces are byte-identical to before.
 
-There is no diagnostic source-commit admission catalogue. Compatible new commits
-use the same recipe without updating the broker. Full source/tree/submodule and
-registered project/profile/tool identities remain bound to the existing owned
-source receipt and build plan. A source SHA identifies bytes, not firmware quality
-or execution authority. Ordinary builds without diagnostic selectors remain
-independent of optional diagnostics and CI status.
-
-Both requested axes, when present, are frozen into the plan, fingerprint, isolated
-build directory, build-local sdkconfig and durable manifest. Diagnostic recipe
-tool requirements apply to explicitly selected diagnostic builds. Existing
-registered tool/environment restrictions still apply to ordinary builds.
-
-The recipe adapter checks mandatory bounded producer proof against actual BIN/ELF
-bytes, mode and hardware-seed symbols, fixed completion contract and IDF 6.0.1
-BIN/ELF pairing. DMA evidence additionally binds actual cache settings and native
-submit/finish functions. An enabled DMA image cannot be relabelled using nested
-J1-only proof. Missing or inconsistent evidence fails validation; a contract ID
-alone cannot certify compatibility or quality.
-
-The existing `diagnostic_entry_sha256` wire field remains an identity digest of
-source plus selected recipe, using its historical descriptor encoding. It is not
-an entry in an approval list. Saved hashes/plans/receipts are not rewritten.
-Only the exact original J1 repository/commit/contract without a DMA axis may omit
-this field in legacy records. Present wrong/null digests are rejected. Unknown
-contracts are unsupported, known-contract evidence can be incompatible, and an
-unavailable requested feature is not inferred from a source commit.
-
-Successful manifests retain proof and canonical hashes. `status(view=logs, stream=build)` can
-revalidate retained exact bytes after log expiry/restart, independently of missing
-RAM output. Changed or missing artifacts make evidence unavailable; expiry/gap
-still describe lost logs. Artifact verification does not mean CI or hardware pass.
-Raw CMake cache remains private and bounded to 128 KiB; export v1 publishes only
-bounded cache hash/size and commits the projection through the immutable flash
-plan. Existing original-manifest, export, owner and success-plan checks remain.
-
-For a receipt-bound trial, `submit(kind="derby_fixed", flash_job_id=... )`
-uses the principal's successful verified flash that remains the registered device's
-current firmware receipt. Retained build/source/proof/artifact identities select
-the comparison, not a caller hash or configured expected hash. Existing leases,
-recovery, explicit execution, current authority, END/EXIT/STOP/HOME/quiet and
-confirmed-close requirements remain. Legacy unbound trials do not become verified
-receipt-bound comparisons.
-
-Firmware CI owns quality/regression and diagnostic-contract validation. Its
-source/configuration/run/job/attempt and exact artifact identities can accompany
-retained evidence. Source-only CI success is not proof that a different local
-rebuild's bytes passed artifact tests. Runtime execution requires no live CI API
-or new approval/attestation service. CI-unrun local development remains possible
-within registered capabilities; quality evidence is reported as unverified when
-not established. No CI/host/mock result substitutes for physical acceptance.
-
-Historical synthetic DMA fixtures use commit
-`ac7cce7d20eb34fdd54659e6678d672d23e5d2d1` and descriptor digest
-`e40c3f8972225ae25b3a4765e54650a7d2876bfdd4690989ca4383e0cf6ed5d8`.
-Their bytes and hashes remain compatible; they no longer require a test patch
-or a production admission entry. Local registration, deployment and device use
-remain separate explicit operations. This change performs none of them.
+Stored build plans and manifests of earlier diagnostic builds stay readable as
+history. The diagnostic proof verifier is gone, so such a build is not resolved
+for flash and its artifact status reads as unavailable. Flash refuses a build
+whose plan or manifest carries the removed diagnostic selection.
 
 
 ### Source cache scan time budget
@@ -605,15 +550,15 @@ Canonical JSON is UTF-8 with sorted keys, compact `,`/`:` separators, ASCII
 escapes (`ensure_ascii=True`) and no nonfinite numbers (`allow_nan=False`).
 The complete canonical export is bounded to 1 MiB. `cache_evidence` has exactly
 `retained_private: true`, strict integer `bytes` in 1..131072, and lowercase
-64-hex `sha256`; the hash must match the typed proof's DMA and both detail cache
-hashes. Raw cache text, cached paths and secret values remain private.
+64-hex `sha256`. It only appears for an older manifest that carries the removed
+diagnostic proof envelope, where it must match the cache hashes inside that proof.
+Raw cache text, cached paths and secret values remain private.
 
 New flash plans commit `manifest_export_sha256` in their existing immutable plan
 hash, alongside the unchanged internal `manifest_sha256`. Prepare revalidation,
-dispatch and retained collector reads recheck that commitment. The successful
-flash job and planned/captured collector bindings still bind the exact flash
-plan hash and original manifest hash, owner, jobs, device, source, modes, entry,
-proof and BIN/ELF identities. The export hash is not a replacement image digest
+and dispatch recheck that commitment. The successful flash job still binds the
+exact flash plan hash and original manifest hash, owner, jobs, device, source and
+BIN/ELF identities. The export hash is not a replacement image digest
 or an execution permission. The read's existing final current-owner, job,
 registration and epoch checks cover the export too.
 
@@ -623,10 +568,9 @@ return no export. Damaged durable plans/references (including duplicate keys or
 a plan payload whose hash changed) do not fall back to RAM. Exporting performs
 no state migration or receipt rewrite.
 
-Existing plans and receipts are never supplemented. Exact legacy J1 manifests
-remain usable through the original full-manifest hash check. A secret-redacted
-legacy DMA export without a committed export hash cannot pass the new offline
-contract. A present malformed commitment must reject, not fall back to legacy.
+Existing plans and receipts are never supplemented. A legacy manifest without a
+committed export hash cannot pass the offline contract, and a present malformed
+commitment must reject, not fall back to legacy.
 The original digest remains the value bound by the successful plan: the redacted
 export cannot recompute a hash that includes the omitted private cache text.
 Consumers verify the export hash against a fixed trusted flash plan and its
@@ -636,20 +580,9 @@ record trust boundary, not authenticity of an entirely forged JSON archive.
 
 The response field is `manifest_export_sha256`; `export_sha256` is not an alias.
 The same name in a flash plan remains part of that plan's immutable commitment.
-The pinned FW consumer from commit `824e9f91b52069c08df68e967d83b44e9f7d5240`
-is retained unchanged as `tests/fixtures/derby_manifest_export_pr38.py.txt`
-(original blob `7f4c42db24c69855c10c4b03304d62792b7a7ef1`, SHA256
-`fb275ee8e763e89a59d5deea132529e9d18787d731fae0f27b84acd06f1fc726`).
-Tests pass unmodified producer and durable `status(view=logs, stream=broker)` responses through its
-`read_export_response` and `bind_export` functions for all four detail/DMA choices,
-including fresh logs, restart, log expiry and fixed-anchor tampering refusals.
-The dedicated pinned-FW junction workflow also checks out that exact FW head and
-the exact producer PR head on Linux and Windows. It exercises the complete host
-record chain and the existing HTTP authorization/restart/corruption tests under
-frozen dependencies. All images and durable records in these tests are synthetic;
-no production registry, deployment, device session or hardware action is involved.
-It adds no source admission, authorization scope, credential, device operation,
-deployment or automatic replay.
+All records in the export tests are synthetic; no production registry, deployment,
+device session or hardware action is involved. The export adds no source admission,
+authorization scope, credential, device operation, deployment or automatic replay.
 
 
 ## Failure diagnostics

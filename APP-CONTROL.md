@@ -45,7 +45,7 @@ Timeout/cancel/authority loss stops new input and requests the pre-agreed bounde
 STOP/CLOSE cleanup. Device TTL is at most 90 seconds; host input runs at most
 87 seconds, reserving cleanup time. Uncertain command/teardown/port close yields
 needs_review. A close failure retains the existing serial ownership barrier.
-No disconnect/restart reopens, relaunches or replays input. No DERBY recovery is
+No disconnect/restart reopens, relaunches or replays input. No HOME recovery is
 used as a generic stop guarantee.
 
 `status(view=logs, stream=app)` returns private control events and redacted logs on separate

@@ -396,7 +396,7 @@ plan の形:
 
 先積みの対象:
 
-- 非対話の種類: `flash`、`restore`、`capture`、`derby`、`derby_fixed`、`restart`、`observe` など。
+- 非対話の種類: `flash`、`restore`、`capture`、`restart`、`observe` など。
 - 対象外(従来の結び付きのまま): `app_session`(`execute` の `op=app_input` が、クライアントの
   リースの capability を要する)。`backup` は、長い読み取り(最大 9660 秒)に明示的な
   リースの延長を要する、という現在の方針(「ブローカーは自動では延長しない」)と、

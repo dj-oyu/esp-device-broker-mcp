@@ -1,5 +1,9 @@
 # 設計: 内部構造の作り直し(段階 0: 契約の棚卸し)
 
+> 注記: この文書の後に、DERBY 診断(`derby_smoke`、`derby_fixed_workload`、`derby_detail_mode`、`derby_dma_mode`、
+> collector の結び付き、診断レシピとその証明)を削除した。以下の記述のうち、それらに触れる箇所は、削除前の状態を指す。
+> 保存済みの履歴は読み取りだけが残り、新しい準備や実行はできない。
+
 状態: **確定**(コード変更なし。§5 の決定事項は 2026-10-25 に利用者が確認)。対象: `main` の `5d79d2d`(0.13.0、未タグ)。
 
 0.13.0 で外向きの面を 6 ツールに絞った。今回は、その内側を作り直す。外から見える振る舞いと、
@@ -135,8 +139,7 @@
 - `keys.sqlite3` は state_dir と別の場所(`%LOCALAPPDATA%\DeviceBroker`)にあり、`user_version=1` を厳格に要求する。
 - 旧形式の読み取り:
   - 受領書 schema_version 2
-  - DERBY v1 の計画
-  - J1 の例外
+  - 削除済みの DERBY 診断が書いた計画と、診断ビルドの選択(読み取りだけ。実行はできない)
   - export のないフラッシュ計画
   - 平らな `tunnel.local.toml`
   - `build_location` のないマニフェスト
@@ -160,10 +163,10 @@
    `succeeded` の書き込み(`profile_jobs.py:658`)より先。
 5. (取り下げ)「`expected_app_bin_sha256` を実行時に確かめていない」は誤り。この値は、バンドルのセグメントの
    ハッシュから作る(`firmware_flash.py:387`)。セグメントは、確かめ済みの `manifest_sha256` に含まれる。
-   LKG のメタデータと、collector の結び付き(`collector_binding.py:147/256`)で照合している。
+   LKG のメタデータで照合している。
 6. **時計が 2 つ混ざっている。** hold の期限は差し替えられる `Broker.clock` で、経過時間・チケットの TTL・
    チェーンの予算は `time.time()` と SQLite の 1 秒刻みの時刻を比べている。
-7. **ジョブのリースは更新できない**(最大 300 秒)。長い先積みのフラッシュや DERBY が、途中で権限を失いうる(SPEC)。
+7. **ジョブのリースは更新できない**(最大 300 秒)。長い先積みのフラッシュが、途中で権限を失いうる(SPEC)。
 8. 再起動時に生きていた先積みジョブの待ちは、`needs_review` の行になり、ホームリカバリを止める。テストがない。
 
 ### 2.2 秘匿情報・認可
@@ -364,7 +367,7 @@ Tunnel のプロセスの監督(CLI の `Popen` と GUI の Job Object)と起動
 - `Broker._work` は、キューの読み取り、フラッシュの束縛の先読み(`_prefetch_flash_binding`)、実行器の 3 つだけを
   `await` する。その間は、次の同期関数が受け持つ。
   - `Broker.admit(job_id, binding_reads)`: 許可判定(`jobs.md` §5 の 2〜15、順番も理由コードも同じ)から
-    `running` への遷移と DERBY の来歴の取得まで。判定で終わったジョブは None を返す。
+    `running` への遷移まで。判定で終わったジョブは None を返す。
   - `Broker._accept_result(run, result)`: 実行器の結果の検査と、私的な出力(観測・画像)の保持。
   - `Broker.finish(run, result, failure)`: 失敗の対応付け(`_finish_failure`。元の `except` の順と同じ
     `isinstance` の並び)か、種類ごとの `commit` による確定(`_finish_success`)。
@@ -373,12 +376,12 @@ Tunnel のプロセスの監督(CLI の `Popen` と GUI の Job Object)と起動
 - `job_kinds.py` の `JOB_KINDS` が、テスト名ごとの `JobKind(execute, commit)` を 1 か所で宣言する。
   `execute` だけが待つ。`commit` は同期関数。表にない名前は、今までどおりバックエンドで走る。
 - 入れ子のクロージャは、許可されたジョブ(`AdmittedJob`)を読むメソッドにした:
-  `_running_authorized`、`_flash_live(committing=)`、`_derby_diagnostic`、`_on_stage`。
+  `_running_authorized`、`_flash_live(committing=)`、`_on_stage`。
 - 同期区間は `@sync_section` で印を付ける。`tests/test_stage3a_sync_sections.py` が AST で、`admit`・`finish`・
   印の付いた関数が `async def` でなく、`await` / `async with` / `async for` を含まないこと、`_work` が上の 3 つしか
   待たないことを確かめる。
-- 分割の前に、終了処理の分岐を固定するテストを足した(`tests/test_stage3a_finish_characterization.py`、
-  `tests/test_stage3a_fixed_trial_persist.py`)。許可判定の理由コードは、段階 0.5 のテストが固定している。
+- 分割の前に、終了処理の分岐を固定するテストを足した(`tests/test_stage3a_finish_characterization.py`。
+  固定トライアルの永続化テストは、DERBY 診断とともに削除した)。許可判定の理由コードは、段階 0.5 のテストが固定している。
 - 振る舞いは変えていない。理由コード、診断、遷移、リースと期限の扱い、`tools/list` は同じ。
 - `ProfileJobs._work`(プロファイルの列)は、別のキューと別の状態を持ち、この表に入れると危険が増えるので、
   そのまま残した。
@@ -550,8 +553,7 @@ ChatGPT 側の Refresh は要らない。各 PR は、先に今の振る舞い�
 
 - 使う側が 1 つしかないモジュールを、持ち主に移した。コードと SQL の文は、そのまま写した。
   - `flash_lkg_geometry`(`factory_layout`、`FactoryLayout`) → `flash_lkg_bundle`
-  - `diagnostic_contracts`(`DiagnosticContract`、J1、DMA、`known_contract`、`select_contract`、
-    `validate_source_identity`) → `diagnostic_registry`
+  - `diagnostic_contracts` → `diagnostic_registry`(DERBY 診断とともに削除済み)
   - `timeline_order`(`initialize_timeline_order`) → `store`。SQL は `Store` の中だけ、という §3 の規則に合う。
 - テストのファイル名は変えていない(`tests/test_flash_lkg_geometry.py` などは import だけ直した)。
 - 確かめたこと: 新しい `tests/test_store_timeline_order.py` が、新しい DB、`timeline_order` より前の履歴
@@ -588,7 +590,7 @@ ChatGPT 側の Refresh は要らない。各 PR は、先に今の振る舞い�
 **#124 修正(作り直しではない): GUI でデバイスのジョブのログを読む。**
 
 - 前は、GUI がログを読むジョブを source / build / flash / app_session に限っていた。そのため、終わった
-  observe / hello / restart / diagnostics / capture / derby / firmware のジョブは、ブローカーに聞かずに
+  observe / hello / restart / diagnostics / capture / firmware のジョブは、ブローカーに聞かずに
   「Logs unsupported for this job type.」と出ていた。ブローカーはデバイスのジョブのシリアル出力を、すべて
   永続のログに残している。
 - 両側の分け方を、`models.py` の `MODULE_LOG_TESTS` / `DEVICE_LOG_TESTS` の 1 か所から作るようにした。

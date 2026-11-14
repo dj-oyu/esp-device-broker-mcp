@@ -1,5 +1,10 @@
 # Persistence contract inventory — esp-device-broker-mcp 0.13.0 (main 5d79d2d)
 
+> **Removal note.** The DERBY diagnostics (`derby_smoke`, `derby_fixed_workload`, `derby_detail_mode`, `derby_dma_mode`,
+> `flash_job_id`, the collector binding, the diagnostic recipes/proofs, private diagnostic results and their tests) were
+> removed after this inventory was written. Rows below that name them describe the earlier snapshot. Stored history of those
+> kinds is read-only: it is shown as generic records and can never be prepared or executed again.
+
 This inventory comes from reading the source only. I did not open any installed state, run any server or touch hardware.
 All paths are relative to `src/cardputer_mcp/` unless they say otherwise. Anything I inferred rather than read in the code is marked **[speculation]**.
 
@@ -333,10 +338,6 @@ Already pydantic: DerbyProvenance (derby_provenance.py:54), DerbyDiagnostics, al
 | LKG metadata with absent `compat` vs `compat: null`, extra keys | tests/test_flash_lkg_models.py::test_metadata_view_keeps_compat_absent_distinct_from_null_and_keeps_extras, ::test_artifact_bundle_lkg_without_compat_skips_the_layout_check, ::test_extra_metadata_key_is_accepted_and_kept |
 | `timeline_order` backfill on a pre-existing DB (undated legacy prefix, trigger probe) | tests/test_store_timeline_order.py::test_pre_timeline_history_gets_undated_plan_prefix_then_dated_jobs, ::test_incomplete_timeline_backfills_after_existing_rows, ::test_complete_triggers_skip_backfill_on_reopen |
 | Interrupted reclaim / reservation reconciliation | tests/test_source_lifecycle.py::test_restart_recovers_interrupted_reclamation_preserving_receipt, ::test_terminal_reservation_reconciled_on_restart_active_and_unknown_preserved |
-| DERBY fixed v1 (LEGACY_PLAN) trial evidence | tests/test_device_faults.py::test_legacy_evidence_is_readable_without_upgrading_old_success, ::test_owner_exit_contract_and_explicit_legacy_read |
-| Legacy DERBY job rows without new diagnostics/provenance | tests/test_derby_diagnostic_reports.py::test_legacy_row_and_missing_plan_never_acquire_or_leak_new_details, ::test_persisted_history_keeps_legacy_anonymous_summary_and_owned_restart_read |
-| Legacy DERBY photo-timing fallback plan | tests/test_derby_photo_timing.py::test_legacy_fallback_plan_cannot_open_or_execute_new_behavior |
-| J1 legacy descriptor hash / omitted collector digest | tests/test_diagnostic_registry.py::test_legacy_descriptor_hash_and_exact_omission_boundary_are_preserved, ::test_binding_null_and_mode_downgrade_never_select_legacy; tests/test_dma_collector_binding.py::test_collector_dma_axis_has_no_legacy_default |
 | Flash plan without manifest_export_sha256 | tests/test_manifest_export.py::test_fixed_plan_commitment_rejects_rehashed_other_job_or_manifest (legacy block :152-155); tests/test_manifest_export_binding.py::test_commitment_damage_cannot_reuse_a_fixed_trusted_plan_hash |
 | Job log schema_version 1 written before records / `app` stream existed | tests/test_durable_session_flash_records.py::test_pre_record_v1_job_log_still_reads |
 | keys.sqlite3 user_version | tests/test_key_registry.py::test_schema_version_not_silently_downgraded |

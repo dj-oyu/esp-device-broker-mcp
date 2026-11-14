@@ -1,5 +1,9 @@
 # Bounded DERBY HOME recovery
 
+The `derby_smoke` job was removed, so no new recovery source can appear. This
+operation remains only for a failed capture recorded earlier by a legacy
+`derby_smoke` job that is still unreviewed.
+
 This is a separate, explicitly requested operation for a DERBY capture that failed
 after the app launched. It sends exactly one `q`, requires a fresh `APP_STOPPED`
 then `HOME_READY`, confirms serial close, and checks authority again before
@@ -9,9 +13,8 @@ resolving the original capture job's review barrier. It does not capture an imag
 
 The broker must have recorded confirmed serial close for that exact serial
 `derby_smoke` plan, with a capture timeout or invalid capture result and a completed
-capture command. Only new failures observed by this implementation can acquire
-that durable receipt. Existing historical failures are not backfilled from a log,
-an operator assertion, or a guessed device state.
+capture command. The durable receipt was recorded by the legacy job when it observed the failure.
+Nothing is backfilled from a log, an operator assertion, or a guessed device state.
 
 The requesting principal must own the source failure and retain read/control
 access. The old lease must be released; no lease, queued/running job, build,

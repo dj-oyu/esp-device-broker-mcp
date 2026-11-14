@@ -1,5 +1,10 @@
 # Contract inventory — redaction, public errors, auth, child env
 
+> **Removal note.** The DERBY diagnostics (`derby_smoke`, `derby_fixed_workload`, `derby_detail_mode`, `derby_dma_mode`,
+> `flash_job_id`, the collector binding, the diagnostic recipes/proofs, private diagnostic results and their tests) were
+> removed after this inventory was written. Rows below that name them describe the earlier snapshot. Stored history of those
+> kinds is read-only: it is shown as generic records and can never be prepared or executed again.
+
 Source: `main` @ 5d79d2d (0.13.0), read-only. Paths relative to repo root `src/cardputer_mcp/` unless prefixed `tests/`.
 Labels: **[obs]** = read in code; **[verified]** = reproduced by a short local Python call (no server, no hardware);
 **[spec]** = speculation / inference, not confirmed.
