@@ -127,6 +127,30 @@ def _fresh(snapshots: SourceSnapshots, receipt: str, live: Callable[[], bool]) -
     return evidence
 
 
+def _measure(
+    root: Path,
+    files: dict[str, Any],
+    live: Callable[[], bool],
+    receipt: str,
+    corrupt: set[str] | None,
+) -> int:
+    """Size of an unreferenced payload that is about to be removed.
+
+    Content that no longer matches its receipt (an extra, missing or modified regular file)
+    must not stop the removal of a payload nothing references: the receipt stays as evidence
+    and a later fetch of the same commit restores and re-verifies the bytes. Links, unknown
+    entries and the entry limit still fail closed, as they would never be safe to delete.
+    """
+    try:
+        return _check_tree(root, files, live)
+    except SourceError as failure:
+        if failure.code != "source_snapshot_changed":
+            raise
+        if corrupt is not None:
+            corrupt.add(receipt)
+        return _check_tree(root, None, live)
+
+
 def _reclaim(
     snapshots: SourceSnapshots,
     plan: dict[str, Any],
@@ -135,6 +159,7 @@ def _reclaim(
     live: Callable[[], bool],
     *,
     dry_run: bool = False,
+    corrupt: set[str] | None = None,
 ) -> int:
     _, registration = snapshots.registration(plan["project_id"])
     root = snapshots.cache_root(registration) / receipt
@@ -159,14 +184,21 @@ def _reclaim(
         if source.exists() and removing.exists():
             raise SourceError("source_cache_unknown_entry")
         if source.exists():
-            payload_bytes += _check_tree(source, value["files"], live)
+            payload_bytes += _measure(source, value["files"], live, receipt, corrupt)
         if removing.exists():
-            payload_bytes += _check_tree(removing, value["files"], live)
+            payload_bytes += _measure(removing, value["files"], live, receipt, corrupt)
     else:
         if removing.exists():
             raise SourceError("source_cache_unknown_entry")
-        snapshots.resolve(plan["project_id"], receipt, value["principal"])
-        payload_bytes = sum(item["bytes"] for item in value["files"].values())
+        try:
+            snapshots.resolve(plan["project_id"], receipt, value["principal"])
+            payload_bytes = sum(item["bytes"] for item in value["files"].values())
+        except SourceError as failure:
+            if failure.code != "source_snapshot_changed":
+                raise
+            if corrupt is not None:
+                corrupt.add(receipt)
+            payload_bytes = _check_tree(source, None, live)
     _fresh(snapshots, receipt, live)
     if dry_run:
         return payload_bytes
@@ -366,11 +398,27 @@ def admit_source(
             if snapshots._evidence_only(path):
                 snapshots.restore_source = value
             else:
-                snapshots.resolve(plan["project_id"], receipt, plan["source_principal"])
-                if live() is not True:
-                    raise SourceError("source_fetch_interrupted")
-                stage("source_reuse_verified")
-                return {**proofs[0]["summary"], "reused": True}, {}
+                try:
+                    snapshots.resolve(plan["project_id"], receipt, plan["source_principal"])
+                except SourceError as failure:
+                    # The cached payload of this very commit no longer matches its receipt.
+                    # If nothing references it, drop the payload and re-download: the fresh
+                    # bytes are verified against the same receipt (restore), so a successful
+                    # heal can never change what the receipt attests. A referenced payload
+                    # (_reclaim refuses it) keeps failing.
+                    if (
+                        failure.code != "source_snapshot_changed"
+                        or receipt in evidence["protected"]
+                    ):
+                        raise
+                    stage("source_reclaim_corrupt_payload")
+                    _reclaim(snapshots, plan, receipt, value, live, corrupt=set())
+                    snapshots.restore_source = value
+                else:
+                    if live() is not True:
+                        raise SourceError("source_fetch_interrupted")
+                    stage("source_reuse_verified")
+                    return {**proofs[0]["summary"], "reused": True}, {}
         finished = min((item["finished"] for item in proofs), default="")
         if receipt not in evidence["protected"]:
             if snapshots._evidence_only(path):
@@ -405,6 +453,7 @@ def admit_source(
     usage = snapshots.usage(plan["project_id"])
     # Establish enough eligible capacity before removing any source payload.
     chosen = []
+    corrupt: set[str] = set()
     remaining_count, remaining_bytes = usage["snapshots"], usage["bytes"] - rotation_bytes
     for _, receipt, value in sorted(candidates, key=lambda item: (item[0], item[1])):
         if (
@@ -412,7 +461,7 @@ def admit_source(
             and remaining_bytes + LIMITS["expanded_bytes"] + 32 * 1048576 <= LIMITS["cache_bytes"]
         ):
             break
-        freed = _reclaim(snapshots, plan, receipt, value, live, dry_run=True)
+        freed = _reclaim(snapshots, plan, receipt, value, live, dry_run=True, corrupt=corrupt)
         chosen.append((receipt, value))
         remaining_count -= 1
         remaining_bytes -= freed
@@ -422,7 +471,11 @@ def admit_source(
     ):
         raise SourceError("source_cache_protected")
     for receipt, value in chosen:
-        stage("source_reclaim_unreferenced_payload")
+        stage(
+            "source_reclaim_corrupt_payload"
+            if receipt in corrupt
+            else "source_reclaim_unreferenced_payload"
+        )
         _reclaim(snapshots, plan, receipt, value, live)
     usage = snapshots.usage(plan["project_id"])
     if full():

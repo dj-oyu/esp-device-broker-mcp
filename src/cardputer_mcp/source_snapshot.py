@@ -11,6 +11,8 @@ import shutil
 import stat
 import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from collections.abc import Callable, Iterator
@@ -153,6 +155,8 @@ SOURCE_ERROR_CODES = frozenset(
         "source_gitlink_path_conflict",
         "source_gitmodules_gitlink_mismatch",
         "source_gitmodules_limit",
+        "source_github_token_invalid",
+        "source_github_token_rejected",
         "source_gitmodules_rejected",
         "source_http_rejected",
         "source_idf_project_missing",
@@ -161,6 +165,7 @@ SOURCE_ERROR_CODES = frozenset(
         "source_plan_changed",
         "source_private_acl_confirmation_required",
         "source_private_cache_required",
+        "source_rate_limited",
         "source_receipt_changed",
         "source_receipt_invalid",
         "source_receipt_limit",
@@ -212,12 +217,44 @@ class SourceError(ValueError):
             "source_cache_owner_conflict": (
                 "Cache is bound to another state store; no shared-store reclamation"
             ),
+            "source_rate_limited": (
+                "GitHub refused the request because its rate limit is exhausted; retry after "
+                f"the reset, or set {GITHUB_TOKEN_ENVIRONMENT} for the broker process "
+                "(unauthenticated requests are limited to 60 per hour)"
+            ),
+            "source_github_token_rejected": (
+                f"GitHub rejected the token in {GITHUB_TOKEN_ENVIRONMENT}; it is expired, "
+                "revoked or not accepted. The token value is never logged"
+            ),
+            "source_github_token_invalid": (
+                f"{GITHUB_TOKEN_ENVIRONMENT} is set but is not a plausible token; "
+                "unset it or provide a valid one. The value is never logged"
+            ),
         }
         if self.code in explanations:
             result["explanation"] = explanations[self.code]
         if isinstance(self, CacheScanLimit):
             result["scan"] = dict(self.scan)
         return result
+
+
+class RateLimited(SourceError):
+    """GitHub rate limit; only bounded integers and a flag, never headers or bodies."""
+
+    def __init__(self, limit: int, remaining: int, resets_in: int, authenticated: bool) -> None:
+        super().__init__("source_rate_limited")
+        self.limit = max(0, min(limit, 1_000_000))
+        self.remaining = max(0, min(remaining, 1_000_000))
+        self.resets_in = max(0, min(resets_in, 86_400))
+        self.authenticated = authenticated
+
+    @property
+    def log_detail(self) -> str:
+        return (
+            "error: github rate limit: "
+            f"authenticated={'yes' if self.authenticated else 'no'} limit={self.limit} "
+            f"remaining={self.remaining} resets_in_seconds={self.resets_in}"
+        )
 
 
 class CacheScanLimit(SourceError):
@@ -328,10 +365,60 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise SourceError("source_redirect_rejected")
 
 
+GITHUB_TOKEN_ENVIRONMENT = "CARDPUTER_GITHUB_TOKEN"
+_GITHUB_HOSTS = frozenset({"api.github.com", "codeload.github.com"})
+_GITHUB_TOKEN = re.compile(r"[A-Za-z0-9_\-]{20,255}")
+
+
+def github_token() -> str | None:
+    """Optional broker-process credential: never a registration, argv, log or receipt field.
+
+    Unset or blank means unauthenticated access. A set but malformed value fails closed so a
+    typo cannot silently fall back to the 60-requests-per-hour anonymous limit.
+    """
+    value = os.environ.get(GITHUB_TOKEN_ENVIRONMENT)
+    if value is None or value.strip() == "":
+        return None
+    if _GITHUB_TOKEN.fullmatch(value) is None:
+        raise SourceError("source_github_token_invalid")
+    return value
+
+
+def _header_int(headers: Any, name: str) -> int | None:
+    raw = headers.get(name) if headers is not None else None
+    if type(raw) is str and raw.isascii() and raw.isdigit() and len(raw) <= 12:
+        return int(raw)
+    return None
+
+
+def _rate_limited(failure: urllib.error.HTTPError, authenticated: bool) -> RateLimited | None:
+    headers = failure.headers
+    remaining = _header_int(headers, "X-RateLimit-Remaining")
+    retry_after = _header_int(headers, "Retry-After")
+    if failure.code not in (403, 429) or not (remaining == 0 or retry_after is not None):
+        return None
+    reset = _header_int(headers, "X-RateLimit-Reset")
+    resets_in = retry_after if retry_after is not None else 0
+    if retry_after is None and reset is not None:
+        resets_in = reset - int(time.time())
+    limit = _header_int(headers, "X-RateLimit-Limit")
+    return RateLimited(limit if limit is not None else 0, remaining or 0, resets_in, authenticated)
+
+
 def download(url: str, deadline: float, live: Callable[[], bool], limit: int) -> bytes:
     # URLs are constructed exclusively from trusted registration and a full SHA.
     opener = urllib.request.build_opener(NoRedirect())
-    request = urllib.request.Request(url, headers={"User-Agent": "esp-device-broker-source-v1"})
+    headers = {"User-Agent": "esp-device-broker-source-v1"}
+    token = github_token()
+    # The token goes only to the two fixed GitHub hosts over https; redirects are rejected, so
+    # it cannot be forwarded elsewhere.
+    parsed = urllib.parse.urlsplit(url)
+    authenticated = (
+        token is not None and parsed.scheme == "https" and parsed.hostname in _GITHUB_HOSTS
+    )
+    if authenticated:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
     parts: list[bytes] = []
     total = 0
     try:
@@ -352,6 +439,13 @@ def download(url: str, deadline: float, live: Callable[[], bool], limit: int) ->
                 parts.append(block)
     except SourceError:
         raise
+    except urllib.error.HTTPError as failure:
+        limited = _rate_limited(failure, authenticated)
+        if limited is not None:
+            raise limited from None
+        if failure.code == 401 and authenticated:
+            raise SourceError("source_github_token_rejected") from None
+        raise SourceError("source_download_failed") from None
     except Exception:
         raise SourceError("source_download_failed") from None
     return b"".join(parts)

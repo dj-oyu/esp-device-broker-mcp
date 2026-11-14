@@ -11,6 +11,7 @@ import secrets
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
@@ -72,7 +73,7 @@ from .models import (
 from .offload_io import IOMemo, complete, offload
 from .operator_notifications import OperatorNotifications
 from .resource_recheck import uncertainty
-from .source_snapshot import SourceError
+from .source_snapshot import SourceError, SourceSnapshots
 from .store import Store
 
 # Longest a pre-requested job may wait for the device once its parent has finished.
@@ -1034,6 +1035,21 @@ class Broker:
             )
             self.execute(ExecuteRequest(session=lease.capability, plan_hash=prepared["plan_hash"]))
         except Exception as failure:
+            if (
+                plan["test"] == TestName.FLASH.value
+                and isinstance(failure, SourceError)
+                and failure.code == "source_fetch_busy"
+            ):
+                # Publication now encounters cache contention before execution's
+                # binding check. Preserve the same bounded deferred retry policy.
+                try:
+                    self.logs.append(
+                        Event.TRANSITION_REFUSED,
+                        stage="flash_binding:source_reservation:source_fetch_busy",
+                    )
+                except Exception:
+                    pass
+                failure = TransientRefusal("flash_binding_invalid")
             now = self.clock()
             first = self._deferred_busy.get(job_id, (now, now))[0]
             if isinstance(failure, TransientRefusal) and now - first < DEFERRED_BUSY_WINDOW_SECONDS:
@@ -2018,19 +2034,39 @@ class Broker:
         }
         if request.test in (TestName.FIRMWARE, TestName.RESTART, TestName.APP_SESSION):
             payload["log_delivery"] = self._log_delivery(session)
-        digest = digest_plan(payload)
-        existing = store.job(request.job_id)
-        if existing and existing["plan_hash"] != digest:
-            raise BrokerError("job_id_conflict")
-        if store.plan(digest) is None and store.record_count("plans") >= 10000:
-            raise BrokerError("history_full_archive_offline")
-        store.put_plan(digest, payload)
+        with self._source_plan_guard(payload):
+            digest = digest_plan(payload)
+            existing = store.job(request.job_id)
+            if existing and existing["plan_hash"] != digest:
+                raise BrokerError("job_id_conflict")
+            if store.plan(digest) is None and store.record_count("plans") >= 10000:
+                raise BrokerError("history_full_archive_offline")
+            store.put_plan(digest, payload)
         return {
             "plan_hash": digest,
             "plan": payload,
             **({"storage": storage} if storage is not None else {}),
             "approval_required": False,
         }
+
+    def _source_plan_guard(self, plan: dict[str, Any]) -> AbstractContextManager[None]:
+        """Serialize indirect source reservations with reclamation through plan commit.
+
+        Flash preflight checks owned artifacts before this call. Unlike a build
+        preflight, it need not resolve source, so explicitly take the cache guard.
+        Acquisition never waits: a fetch worker may be awaiting this resident loop.
+        Once published, the immutable plan protects its source in retention reads.
+        """
+        if plan["test"] != TestName.FLASH.value:
+            return nullcontext()
+        store = self._store()
+        job = store.job(plan["build_job_id"])
+        build = store.plan(job["plan_hash"]) if job else None
+        if build is None:
+            raise BrokerError("successful_owned_build_required")
+        if build.get("source_receipt") is None:
+            return nullcontext()
+        return SourceSnapshots(self.settings).cache_guard(build["project_id"])
 
     @staticmethod
     def _log_delivery(session: Session) -> dict[str, Any]:
