@@ -488,6 +488,59 @@ unsuccessful jobs, another principal, concurrent-reader limits, event-loop progr
 and grant/registration/job invalidation during hash IO. Existing durable path/link
 and hash checks are reused; no native build, USB or production DB is involved.
 
+## Build variants
+
+`submit(kind="build", source_receipt=..., variant="<name>")` builds the same
+receipt-verified source with one named Kconfig fragment. The fragment is the
+file `sdkconfig.variant.<name>` at the root of the fetched source, so its bytes
+are already covered by the source receipt. `variant` is available for every
+owned source-receipt build; there is no registration flag, and the project
+registration digest is unchanged. It is refused without `source_receipt`.
+
+The name matches `[A-Za-z0-9_-]{1,24}` and is only ever inserted into the fixed
+file name. The caller supplies no Kconfig, CMake argument, shell text or path.
+
+Fragment grammar (anything else is `build_variant_invalid`): ASCII, LF-only
+lines, at most 4096 bytes, 128 lines and 16 symbols, each symbol declared once.
+A line is `CONFIG_<NAME>=y|n|<decimal integer>|0x<lowercase hex>`,
+`# CONFIG_<NAME> is not set`, a blank line, or a `# ` comment that does not begin
+`# CONFIG_`. Strings, includes and every other form are refused. Symbols under
+`CONFIG_SECURE_`, `CONFIG_BOOTLOADER_`, `CONFIG_PARTITION_TABLE_`,
+`CONFIG_ESPTOOLPY_`, `CONFIG_EFUSE_`, `CONFIG_IDF_TARGET`,
+`CONFIG_FLASH_ENCRYPTION_`, `CONFIG_APP_ROLLBACK_` and `CONFIG_APP_ANTI_ROLLBACK`
+are refused: a variant switches features, never layout, security or target. The
+file is read no-follow, regular file, single link, size bounded. A missing file
+is `build_variant_not_found`.
+
+Binding. The name and the SHA-256 of the fragment bytes become `build_variant`
+and `build_variant_sha256` in the plan, and so in the plan fingerprint, the
+isolated build slot, the compiler-cache namespace and the manifest. Two variants,
+or a variant and no variant, never share a slot, cache namespace or artifact. A
+build without `variant` has the same plan keys, fingerprint, cache namespace and
+manifest as before.
+
+Application and checks. The broker seeds the isolated output's `sdkconfig` with
+the fragment declarations (no extra build argument). A reused `sdkconfig` that
+does not carry them is `build_variant_config_conflict` and nothing is rewritten.
+After IDF has run, the actual generated `sdkconfig` must declare every fragment
+symbol exactly once with the requested value (an `n` symbol must read
+`# CONFIG_X is not set`, so a symbol Kconfig dropped is caught); otherwise the
+build fails with `build_variant_not_applied` and publishes nothing. The generated
+bytes are recorded in the manifest as `build_variant_config` and rechecked before
+publication, at the final commit, and whenever the durable artifacts are resolved
+for flash (a changed `sdkconfig` is `build_output_identity_mismatch`). The flash
+binding requires the build plan and the verified manifest to name the same
+variant bytes, and the fragment in the receipt-verified source to still hash to
+them. No retry, rollback or other automatic action is added.
+
+A variant build may become the last known good like any other build; the name is
+shown (`build_variant`) in `status(view=recovery)` entries and flash job views
+only as information, never as a gate. Builds made with the removed diagnostic
+options stay non-flashable. `variant` does not say anything about NVS or data
+compatibility. Verification here uses synthetic sources and a fake IDF; it does
+not prove that a real IDF 6.0.1 merges the seeded `sdkconfig` with
+`sdkconfig.defaults` as intended or that the built firmware behaves differently.
+
 ## Removed diagnostic build options
 
 The `derby_detail_mode` and `derby_dma_mode` build options, the fixed diagnostic
