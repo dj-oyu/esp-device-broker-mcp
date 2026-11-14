@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
@@ -1077,11 +1077,17 @@ class SourceSnapshots:
             self.cache_root(registration),
             windows_private_acl_confirmed=registration.private_acl_confirmed,
         )
-        with self.cache_guard(plan["project_id"], write=True):
-            return self._fetch(plan, live, stage)
+        with self.cache_guard(plan["project_id"], write=True), ExitStack() as rollback:
+            result = self._fetch(plan, live, stage, rollback)
+            rollback.pop_all()
+            return result
 
     def _fetch(
-        self, plan: dict[str, Any], live: Callable[[], bool], stage: Callable[[str], None]
+        self,
+        plan: dict[str, Any],
+        live: Callable[[], bool],
+        stage: Callable[[str], None],
+        rollback: ExitStack,
     ) -> dict[str, Any]:
         project_id, principal = plan["project_id"], plan["source_principal"]
         expected = self.prepare(project_id, plan["source_commit"], principal)
@@ -1094,21 +1100,24 @@ class SourceSnapshots:
         def valid() -> bool:
             return time.monotonic() < deadline and live() is True
 
+        rotation: dict[str, bytes] = {}
         if self.retention is not None:
             from .source_payloads import admit_source
 
-            reused = admit_source(self, plan, valid, stage)
+            reused, rotation = admit_source(self, plan, valid, stage)
             if reused is not None:
                 return reused
         usage = self.usage(project_id)
+        rotation_bytes = sum(map(len, rotation.values()))
         if (
             usage["snapshots"] >= LIMITS["cache_snapshots"]
-            or usage["bytes"] + LIMITS["expanded_bytes"] + 32 * 1048576 > LIMITS["cache_bytes"]
+            or usage["bytes"] - rotation_bytes + LIMITS["expanded_bytes"] + 32 * 1048576
+            > LIMITS["cache_bytes"]
         ):
             raise SourceError("source_cache_full")
         if self.restore_source is None and (
-            usage["evidence_snapshots"] >= EVIDENCE_SNAPSHOTS
-            or usage["evidence_bytes"] + 32 * 1048576 > EVIDENCE_BYTES
+            usage["evidence_snapshots"] - len(rotation) >= EVIDENCE_SNAPSHOTS
+            or usage["evidence_bytes"] - rotation_bytes + 32 * 1048576 > EVIDENCE_BYTES
         ):
             raise SourceError("source_cache_evidence_full")
         root = BackupStore(
@@ -1133,6 +1142,10 @@ class SourceSnapshots:
                 )
                 handle.flush()
                 os.fsync(handle.fileno())
+            if rotation:
+                from .source_payloads import rotate_evidence
+
+                rotate_evidence(self, plan, rotation, valid, stage, rollback)
             repository, commit = plan["source_repository"], plan["source_commit"]
             stage("source_download")
             source = pending / "source"
