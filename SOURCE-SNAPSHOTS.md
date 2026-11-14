@@ -65,11 +65,40 @@ Every snapshot file is rehashed during build preparation, again before invoking
 build and after it completes. Extra/missing/changed files fail; source changes
 require a new fetch/plan. A receipt cannot be borrowed from another principal.
 
+## GitHub rate limit and API token
+
+Unauthenticated GitHub API requests are limited to 60 per hour per IP address. A fetch
+spends several (root commit and each fixed submodule commit, plus tree/blob requests when
+a snapshot is rebuilt from `.gitmodules`), and failed attempts count too, so a few fetches
+in an hour can exhaust the quota.
+
+- When GitHub answers 403/429 with an exhausted quota, the job fails with
+  `source_rate_limited` (not `source_download_failed`). The job log gets one line before
+  the usual error line: `error: github rate limit: authenticated=<yes|no> limit=<n>
+  remaining=<n> resets_in_seconds=<n>`. Only those bounded numbers are logged, never
+  headers or response bodies. Wait `resets_in_seconds` before retrying; retries meanwhile
+  only spend quota.
+- Set `CARDPUTER_GITHUB_TOKEN` in the environment of the broker process to authenticate
+  (5,000 requests per hour). No token scope is needed for public repositories; use a
+  fine-grained token with no repository permissions. The token is read from the
+  environment on each request; it is not a registration/profile field, is not part of any
+  receipt or digest, is sent only as `Authorization: Bearer` to `api.github.com` and
+  `codeload.github.com` over https (redirects stay rejected), and is not in the build
+  or Tunnel child environments (those are allowlists). A GUI/helper started by
+  `Start-CardputerStack.ps1` clears `CARDPUTER_*`, so only the broker sees it. An already
+  open shell keeps its old environment: set the variable, then start the broker from a
+  new shell.
+- A blank value means anonymous access. A set but malformed value fails closed with
+  `source_github_token_invalid`; a token GitHub rejects (401) fails with
+  `source_github_token_rejected`. Neither value is ever logged.
+
 ## Source format, limits and target compatibility
 
 Public HTTPS only, fixed api.github.com/codeload.github.com URLs constructed by
-the broker. Redirects are rejected. No caller URL, shell, Git hooks, credentials,
-submodule update or LFS download. The archive's root must name the exact commit.
+the broker. Redirects are rejected. No caller URL, shell, Git hooks, registered or
+caller-supplied credentials, submodule update or LFS download. The only credential is the
+optional process-environment token described in "GitHub rate limit and API token" below.
+The archive's root must name the exact commit.
 Fixed allowlisted Git submodules are recursively acquired as described in
 SOURCE-SUBMODULES.md. Git blob/tree SHA-1 is reconstructed from extracted bytes/modes and matched to
 that commit's GitHub tree metadata; SHA-256 receipts additionally protect retained
