@@ -76,3 +76,19 @@ code, not remote input or a sandbox for arbitrary build scripts.
 The native producer must recheck cancellation and current authority immediately
 before each child launch, including after callbacks; entry validation is not a
 reusable authorization grant for later subprocesses.
+
+## Native producer composition (still uninstalled)
+
+`NativePrivateProducer` keeps source composition and output in separate protected
+scratch roots and captures only bounded `.bin`/`.elf` outputs through the Windows
+handle reader with manifest hashes. A trusted compiler callback must use exactly
+those roots and the private log sink. The ESP-IDF callback is not implemented yet.
+Existing active/uncertain children block new workspace creation; cancellation is
+checked again after preparation and immediately before invoking the compiler.
+
+If child termination is unconfirmed, both roots and handles are retained instead
+of deleting underneath the child, and `output_uncertain` is latched. Only explicit
+trusted recovery after confirmed join may release them; this does not clear other
+broker uncertainty latches. Cleanup failure also prevents a success candidate.
+Host tests substitute only generated scratch/reader boundaries. Native integration
+and the actual compiler path remain required before production installation.
