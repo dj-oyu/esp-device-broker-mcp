@@ -82,3 +82,13 @@ mismatched builder/plan/Store execution is refused. Running or uncertain childre
 retain the guard for explicit joined recovery; guard-release failures latch
 uncertainty without undoing a successful commit. Generated host fixtures inject a
 synthetic guard explicitly; production does not substitute one for native checks.
+
+## Local registration ingestion (not invoked automatically)
+
+`ingest_registered_input` verifies authenticated import authority, source receipt
+ownership/commit, current recipe and the exact registered inventory before native
+private reads. The native DB guard covers reader-to-owned-receipt storage; changes
+to registration or authority cancel collection. Final source/recipe revalidation
+must pass before returning a receipt. If that final check fails after storage commit,
+an old-binding receipt can remain private, but no usable-import success is reported.
+No root-selection/upload MCP API or automatic import/registration is introduced.
