@@ -147,3 +147,20 @@ def test_artifact_limits_and_path_collisions_leave_job_running(tmp_path):
         assert db.execute("SELECT state FROM jobs").fetchone()[0] == "running"
     finally:
         db.close()
+
+
+def test_runtime_live_guard_observes_running_before_atomic_terminal_transition(tmp_path):
+    db, store, args = create(tmp_path / "fixture.db")
+    observed = []
+    try:
+        def live():
+            state = db.execute("SELECT state FROM jobs").fetchone()[0]
+            observed.append(state)
+            return state == "running"
+
+        receipt = store.publish(**(args | {"guard": live}))
+        assert observed == ["running", "running"]
+        assert db.execute("SELECT state FROM jobs").fetchone()[0] == "succeeded"
+        assert store.resolve(receipt=receipt, principal="owner") == args["files"]
+    finally:
+        db.close()

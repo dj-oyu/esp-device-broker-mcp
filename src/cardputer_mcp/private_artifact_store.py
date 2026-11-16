@@ -118,14 +118,16 @@ class PrivateArtifactStore:
                 "INSERT INTO private_artifact_bytes VALUES (?,?,?)",
                 ((receipt, p, b) for p, b in files),
             )
+            # The runtime live check requires running. Keep the final callback
+            # before the terminal transition; remaining validation/SQL is synchronous, with no external callbacks.
+            if guard() is not True:
+                raise ValueError("private_artifact_final_commit_denied")
             self.db.execute(
                 "UPDATE jobs SET state='succeeded',result='private_build_succeeded_no_flash',"
                 "finished=CURRENT_TIMESTAMP WHERE id=? AND state='running'",
                 (plan["job_id"],),
             )
             self.resolve(receipt=receipt, principal=principal)
-            if guard() is not True:
-                raise ValueError("private_artifact_final_commit_denied")
             self.db.execute("COMMIT")
         except BaseException:
             self._rollback()
