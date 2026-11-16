@@ -14,7 +14,7 @@ from cardputer_mcp.private_state_windows import verified_private_database_path
 
 @pytest.fixture
 def fixture(tmp_path):
-    path = tmp_path / "generated #?.db"
+    path = tmp_path / "generated #.db"
     db = sqlite3.connect(path)
     PrivateInputStore(db)
     events = []
@@ -115,3 +115,4 @@ def test_connect_path_mismatch_closes_and_fails(fixture, monkeypatch):
         with factory():
             pytest.fail("yielded")
     assert events[-1] == "unpin"
+
