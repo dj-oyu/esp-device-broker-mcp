@@ -9,7 +9,7 @@ import shutil
 import stat
 import threading
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -38,7 +38,7 @@ from .manifest_export import export_response
 from .private_build_output import PrivateBuildLogs, no_private_compiler_cache
 from .private_build_runtime import PrivateBuildRuntime
 from .private_input_contract import InputFile, _inventory
-from .private_input_store import PrivateInputStore
+from .private_input_store import PrivateInputReader, PrivateInputStore
 
 # Frozen: the compiler-cache namespace of ordinary builds hashed these axes as absent.
 # Keeping the value keeps existing compiler caches valid after the diagnostic options
@@ -427,6 +427,7 @@ class FirmwareBuild:
         *,
         private_input_id: str | None = None,
         private_input_receipt: str | None = None,
+        _private_reader: PrivateInputReader | None = None,
     ) -> dict[str, Any]:
         if variant is not None and source_receipt is None:
             raise ValueError(build_variant.REQUIRES_SOURCE)
@@ -503,9 +504,16 @@ class FirmwareBuild:
             ):
                 raise ValueError("private_build_requires_owned_receipts")
             registration = getattr(project, "private_inputs", {}).get(private_input_id)
-            if registration is None or self.private_store_factory is None:
+            if registration is None or (
+                _private_reader is None and self.private_store_factory is None
+            ):
                 raise ValueError("private_build_registration_unavailable")
-            with self.private_store_factory() as store:
+            if _private_reader is not None:
+                context: AbstractContextManager[PrivateInputReader] = nullcontext(_private_reader)
+            else:
+                assert self.private_store_factory is not None
+                context = self.private_store_factory()
+            with context as store:
                 private_selection = private_build_binding.bind_private_build(
                     store=store,
                     registration=registration,
@@ -554,13 +562,24 @@ class FirmwareBuild:
             ],
         )
 
-    def _reprepare(self, plan: dict[str, Any], principal: str) -> dict[str, Any]:
+    def _reprepare(
+        self,
+        plan: dict[str, Any],
+        principal: str,
+        *,
+        _private_reader: PrivateInputReader | None = None,
+    ) -> dict[str, Any]:
+        selection: dict[str, Any] = {
+            **build_variant.plan_kwargs(plan),
+            **private_build_binding.plan_kwargs(plan),
+        }
+        if _private_reader is not None:
+            selection["_private_reader"] = _private_reader
         prepared = self.prepare(
             plan["project_id"],
             principal,
             plan.get("source_receipt"),
-            **build_variant.plan_kwargs(plan),
-            **private_build_binding.plan_kwargs(plan),
+            **selection,
         )
         private_build_binding.require_same_binding(plan, prepared)
         return prepared

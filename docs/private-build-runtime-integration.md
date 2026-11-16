@@ -59,3 +59,14 @@ Before installing a runtime into a live broker:
 The current code has no automatic production runtime installation. A typed selector
 alone must not open that gate. Deployment, real-input ingestion and real compilation
 remain separate actions with separate evidence and applicable authorization.
+
+### Read-only preparation diagnostic
+
+`preflight_private_activation` checks an existing plan for the actual caller under
+native database protection, reusing receipt/recipe verification without creating
+private tables or invoking the configured store factory. Its fixed summary is
+neither an activation token nor evidence of a real compiler run. The helper does
+not establish live executable/config provenance, create registrations, install a
+runtime, inspect or modify existing ACLs beyond the protection checks, or prove
+scratch capacity/availability. Execution must repeat its checks under its own
+operation guard; a successful diagnostic cannot be carried across changed state.

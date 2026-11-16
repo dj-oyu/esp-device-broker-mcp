@@ -6,12 +6,12 @@ from typing import Any
 
 from .private_input_contract import _hash
 from .private_input_registration import PrivateInputRegistration
-from .private_input_store import PrivateInputStore
+from .private_input_store import PrivateInputReader
 
 
 def bind_private_build(
     *,
-    store: PrivateInputStore,
+    store: PrivateInputReader,
     registration: PrivateInputRegistration,
     project_id: str,
     input_id: str,

@@ -25,7 +25,63 @@ def inventory_digest(files: tuple[InputFile, ...]) -> str:
     return hashlib.sha256(raw.encode("ascii")).hexdigest()
 
 
-class PrivateInputStore:
+class PrivateInputReader:
+    """Read existing tables only; construction never creates schema or ingests bytes."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+
+    def resolve(
+        self,
+        *,
+        receipt: str,
+        registration: PrivateInputRegistration,
+        project_id: str,
+        input_id: str,
+        principal: str,
+    ) -> tuple[tuple[str, bytes], ...]:
+        _hash(receipt)
+        row = self.connection.execute(
+            "SELECT record FROM private_input_receipts WHERE receipt=?", (receipt,)
+        ).fetchone()
+        if row is None or hashlib.sha256(row[0].encode("ascii")).hexdigest() != receipt:
+            raise ValueError("private_input_receipt_unavailable")
+        record = json.loads(row[0])
+        if record.get("principal") != principal or not principal:
+            raise ValueError("private_input_not_owned")
+        if (
+            record.get("project") != project_id
+            or record.get("input") != input_id
+            or record.get("registration")
+            != registration.identity(project_id=project_id, input_id=input_id)
+        ):
+            raise ValueError("private_input_registration_changed")
+        count, total = self.connection.execute(
+            "SELECT COUNT(*),COALESCE(SUM(LENGTH(payload)),0) "
+            "FROM private_input_bytes WHERE receipt=?",
+            (receipt,),
+        ).fetchone()
+        if count > registration.max_files or total > registration.max_bytes:
+            raise ValueError("private_input_limit")
+        rows = self.connection.execute(
+            "SELECT path,payload FROM private_input_bytes WHERE receipt=? ORDER BY path", (receipt,)
+        ).fetchall()
+        files = tuple(
+            InputFile(path, len(payload), hashlib.sha256(payload).hexdigest())
+            for path, payload in rows
+        )
+        if (
+            len(files) > registration.max_files
+            or sum(file.size for file in files) > registration.max_bytes
+            or inventory_digest(files) != registration.inventory_sha256
+            or [asdict(file) for file in files] != record.get("files")
+            or record.get("schema") != "private-input-receipt-v1"
+        ):
+            raise ValueError("private_input_bytes_changed")
+        return tuple((path, bytes(payload)) for path, payload in rows)
+
+
+class PrivateInputStore(PrivateInputReader):
     """Append-only operations; a receipt is returned only after durable commit.
 
     A dedicated connection is required, with no caller transaction in progress.
@@ -118,52 +174,3 @@ class PrivateInputStore:
                 self.connection.execute("ROLLBACK")
             raise
         return receipt
-
-    def resolve(
-        self,
-        *,
-        receipt: str,
-        registration: PrivateInputRegistration,
-        project_id: str,
-        input_id: str,
-        principal: str,
-    ) -> tuple[tuple[str, bytes], ...]:
-        _hash(receipt)
-        row = self.connection.execute(
-            "SELECT record FROM private_input_receipts WHERE receipt=?", (receipt,)
-        ).fetchone()
-        if row is None or hashlib.sha256(row[0].encode("ascii")).hexdigest() != receipt:
-            raise ValueError("private_input_receipt_unavailable")
-        record = json.loads(row[0])
-        if record.get("principal") != principal or not principal:
-            raise ValueError("private_input_not_owned")
-        if (
-            record.get("project") != project_id
-            or record.get("input") != input_id
-            or record.get("registration")
-            != registration.identity(project_id=project_id, input_id=input_id)
-        ):
-            raise ValueError("private_input_registration_changed")
-        count, total = self.connection.execute(
-            "SELECT COUNT(*),COALESCE(SUM(LENGTH(payload)),0) "
-            "FROM private_input_bytes WHERE receipt=?",
-            (receipt,),
-        ).fetchone()
-        if count > registration.max_files or total > registration.max_bytes:
-            raise ValueError("private_input_limit")
-        rows = self.connection.execute(
-            "SELECT path,payload FROM private_input_bytes WHERE receipt=? ORDER BY path", (receipt,)
-        ).fetchall()
-        files = tuple(
-            InputFile(path, len(payload), hashlib.sha256(payload).hexdigest())
-            for path, payload in rows
-        )
-        if (
-            len(files) > registration.max_files
-            or sum(file.size for file in files) > registration.max_bytes
-            or inventory_digest(files) != registration.inventory_sha256
-            or [asdict(file) for file in files] != record.get("files")
-            or record.get("schema") != "private-input-receipt-v1"
-        ):
-            raise ValueError("private_input_bytes_changed")
-        return tuple((path, bytes(payload)) for path, payload in rows)
