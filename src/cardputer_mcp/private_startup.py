@@ -1,7 +1,8 @@
 """Trusted local startup composition; never enabled by MCP or normal settings.
 
-This helper does not provision inputs, change ACLs, start a broker or grant build
-permission. It composes the existing native guards and real compiler path.
+This helper does not change ACLs, start a broker or grant build permission.
+Imports require a separate explicit local request batch with dynamic authority.
+It composes the existing native guards and real compiler path.
 """
 
 import os
@@ -18,6 +19,7 @@ from .private_build_producer import NativePrivateProducer
 from .private_build_runtime import PrivateBuildRuntime
 from .private_input_windows import _root_parts
 from .private_runtime_session import PrivateRuntimeSession
+from .private_startup_import import StartupImports
 from .private_store_session import PrivateStoreSession
 from .private_workspace_windows import _Scratch
 
@@ -81,7 +83,10 @@ def _verify_container(container: Path) -> None:
 
 
 def private_startup_factories(
-    settings: Settings, config: PrivateStartup | None = None
+    settings: Settings,
+    config: PrivateStartup | None = None,
+    *,
+    imports: StartupImports | None = None,
 ) -> PrivateFactories:
     """Explicit local caller supplies kwargs to Broker; off returns no overrides.
 
@@ -89,10 +94,14 @@ def private_startup_factories(
     its database before opening SQLite; runtime factory validates scratch again
     immediately before installing. Per-job source/receipt/authority checks remain.
     """
+    if imports is not None and type(imports) is not StartupImports:
+        raise ValueError("private_startup_import_batch_invalid")
     config = config if config is not None else PrivateStartup()
     if type(config.enabled) is not bool:
         raise ValueError("private_startup_enabled_invalid")
     if not config.enabled:
+        if imports is not None:
+            raise ValueError("private_startup_import_requires_enabled_runtime")
         return {}
     if os.name != "nt":
         raise ValueError("private_startup_windows_required")
@@ -116,6 +125,10 @@ def private_startup_factories(
             raise ValueError("private_startup_settings_changed")
         _validate_paths(captured, container)
         _verify_container(container)
+        if imports is not None:
+            imports.run(builder, session.store)
+            if builder.settings != captured or settings != captured:
+                raise ValueError("private_startup_settings_changed")
         producer = NativePrivateProducer(builder, container)
         runtime = PrivateBuildRuntime(producer, PrivateArtifactStore(session.store.db))
         return PrivateRuntimeSession(builder, session, runtime)

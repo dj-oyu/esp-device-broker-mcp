@@ -41,3 +41,30 @@ async def test_native_composed_startup_uses_real_producer_and_retains_store(tmp_
     finally:
         await broker.close()
     database.rename(state / "moved.sqlite3")
+
+
+@pytest.mark.parametrize("unprotected", ["state", "scratch"])
+async def test_native_composed_startup_refuses_unprotected_roots_without_db_write(
+    tmp_path, unprotected
+):
+    state_parent, scratch_parent = tmp_path / "state", tmp_path / "scratch"
+    state_parent.mkdir()
+    scratch_parent.mkdir()
+    state = state_parent if unprotected == "state" else new_protected_directory(state_parent)
+    scratch = (
+        scratch_parent if unprotected == "scratch" else new_protected_directory(scratch_parent)
+    )
+    database = state / "history.sqlite3"
+    database.touch()
+    settings = Settings(state_dir=state)
+    factories = private_startup_factories(settings, PrivateStartup(True, scratch))
+    broker = Broker(settings, lock_path=tmp_path / "device.lock", **factories)
+    with pytest.raises(ValueError, match="private_workspace_acl_"):
+        await broker.start()
+    assert broker.store is None
+    assert broker.firmware_build.private_runtime is None
+    assert broker.worker is None and broker.profile_jobs.worker is None
+    assert database.read_bytes() == b""
+    assert not database.with_name(database.name + "-wal").exists()
+    await broker.close()
+    database.rename(state / "moved.sqlite3")

@@ -205,3 +205,31 @@ failed-start pin retention; source/receipt resolution and producer remain
 synthetic. The reported Windows private suite reached 285 passes on its tested
 checkpoint, not a real-input ESP-IDF build. The composition helper needs its own
 same-head native test before production use.
+
+### Explicit local startup imports
+
+Startup imports are a separate opt-in argument, not part of `Settings` or
+`PrivateStartup.enabled`. A trusted local caller creates a `StartupImports`
+batch of exact immutable `PrivateImportRequest` values and supplies required
+`authorized(request)` and `cancelled()` callbacks. There is no permissive
+production default. Then pass `imports=batch` to `private_startup_factories`.
+Off mode rejects supplied batches instead of silently ingesting them.
+
+Requests bind project/input identifiers, a full source receipt, principal,
+bounded immutable inventory and optional source-bound build variant name.
+Startup invokes the existing `ingest_registered_input` under native state guards
+after Store recovery and before runtime installation or any worker starts.
+The existing registration/source/recipe/authority checks remain mandatory;
+principal text or receipt possession alone is not authorization. Captured
+settings are checked again after imports. Normal server authentication is unchanged.
+
+A batch is one-attempt only, including a failed attempt. Its `receipts` property
+is a private local tuple of successfully returned import receipts, in request
+order. Neither request contents nor receipts appear in object representations or
+public broker events. Import errors are reduced to a fixed code, not raw callback
+or OS details. A failure aborts startup using the existing protected cleanup path.
+Imports are **not batch-atomic**: earlier commits remain in the protected DB if a
+later import fails, and an import whose final recheck failed may have committed a
+receipt without returning it. Do not infer absence of a receipt from an exception
+or automatically retry; reconcile protected state before constructing a new batch.
+No real assets, registration changes, live activation or compiler run are implied.
