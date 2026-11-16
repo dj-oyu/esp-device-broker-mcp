@@ -12,11 +12,12 @@ import os
 import secrets
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .private_input_contract import InputFile, _hash, _inventory
 from .private_input_windows import (
+    PrivateInputReadError,
     _IoStatus,
     _Native,
     _ObjectAttributes,
@@ -197,10 +198,51 @@ def win32security_token(security: Any, api: Any, con: Any) -> Iterator[Any]:
         token.Close()
 
 
+class WindowsWorkspaceScope:
+    """Read outputs relative to a live owned root, without reopening that root."""
+
+    def __init__(self, path: Path, native: _Scratch, handle: int) -> None:
+        self.path = path
+        self._native = native
+        self._handle: int | None = handle
+
+    def read_outputs(
+        self, manifest: tuple[InputFile, ...], *, cancelled: Callable[[], bool]
+    ) -> Iterator[tuple[str, bytes]]:
+        _inventory(manifest)
+        if len(manifest) > 32 or sum(item.size for item in manifest) > 128 * 1024 * 1024:
+            raise ValueError("private_artifact_limit")
+        for item in manifest:
+            if self._handle is None:
+                raise WindowsWorkspaceError("private_workspace_scope_closed")
+            if cancelled():
+                raise PrivateInputReadError("private_input_cancelled")
+            with ExitStack() as handles:
+                parent = self._handle
+                parts = PureWindowsPath(item.path).parts
+                for part in parts[:-1]:
+                    parent = self._native.child(parent, part, True, handles)
+                handle = self._native.child(parent, parts[-1], False, handles)
+                payload = self._native.read(handle, item.size, cancelled)
+                if hashlib.sha256(payload).hexdigest() != item.sha256:
+                    raise PrivateInputReadError("private_input_bytes_changed")
+            yield item.path, payload
+
+
 @contextmanager
 def materialize_windows_workspace(
     plan: WorkspacePlan, *, container: Path, cancelled: Callable[[], bool] = lambda: False
 ) -> Iterator[Path]:
+    with materialize_windows_workspace_scope(
+        plan, container=container, cancelled=cancelled
+    ) as scope:
+        yield scope.path
+
+
+@contextmanager
+def materialize_windows_workspace_scope(
+    plan: WorkspacePlan, *, container: Path, cancelled: Callable[[], bool] = lambda: False
+) -> Iterator[WindowsWorkspaceScope]:
     """Use only trusted container and authenticated plan; not an authorization API."""
     _hash(plan.identity)
     if any(type(data) is not bytes for _, data in plan.files):
@@ -222,6 +264,7 @@ def materialize_windows_workspace(
         name = "private-work-" + secrets.token_hex(16)
         root = native.open_object(parent, name, True, create=True)
         path = container / name
+        scope = WindowsWorkspaceScope(path, native, root)
         try:
             native.info(root, True)
             native.verify_acl(root)
@@ -262,8 +305,9 @@ def materialize_windows_workspace(
                     if native.read(file, len(payload), cancelled) != payload:
                         raise WindowsWorkspaceError("private_workspace_write_mismatch")
             check()
-            yield path
+            yield scope
         finally:
+            scope._handle = None
             try:
                 native.clean(root, path)
                 native.remove(root)

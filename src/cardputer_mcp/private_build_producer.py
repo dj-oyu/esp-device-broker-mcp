@@ -14,11 +14,8 @@ from .private_build_output import PrivateBuildLogs
 from .private_build_runtime import PrivateBuildCandidate
 from .private_build_workspace import _recheck, stage_private_build
 from .private_input_contract import InputFile, _inventory
-from .private_input_registration import PrivateInputRegistration
-from .private_input_store import inventory_digest
-from .private_input_windows import read_registered_windows
 from .private_workspace_plan import WorkspacePlan
-from .private_workspace_windows import materialize_windows_workspace
+from .private_workspace_windows import materialize_windows_workspace_scope
 
 if TYPE_CHECKING:
     from .firmware_build import FirmwareBuild
@@ -50,13 +47,14 @@ class NativePrivateProducer:
             source = contexts.enter_context(
                 stage_private_build(builder, plan, principal=principal, container=self.container)
             )
-            output = contexts.enter_context(
-                materialize_windows_workspace(
+            output_scope = contexts.enter_context(
+                materialize_windows_workspace_scope(
                     WorkspacePlan(source.composition_identity, (("broker-output.marker", b""),)),
                     container=self.container,
                     cancelled=builder.process.stop_requested.is_set,
                 )
             )
+            output = output_scope.path
             if (
                 source.directory == output
                 or source.directory.is_relative_to(output)
@@ -81,20 +79,8 @@ class NativePrivateProducer:
             _inventory(manifest)
             if any(Path(item.path).suffix not in {".bin", ".elf"} for item in manifest):
                 raise ValueError("private_artifact_type_invalid")
-            registration = builder.settings.build_projects[plan["project_id"]].private_inputs[
-                plan["private_input_id"]
-            ]
-            output_registration = PrivateInputRegistration(
-                local_root=output,
-                destination="outputs",
-                source_commit=registration.source_commit,
-                inventory_sha256=inventory_digest(manifest),
-                recipe_sha256=registration.recipe_sha256,
-            )
             files = tuple(
-                read_registered_windows(
-                    output_registration, manifest, cancelled=builder.process.stop_requested.is_set
-                )
+                output_scope.read_outputs(manifest, cancelled=builder.process.stop_requested.is_set)
             )
             _recheck(builder, plan, principal)
             candidate = PrivateBuildCandidate(source.composition_identity, files)

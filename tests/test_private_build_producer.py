@@ -56,8 +56,17 @@ def fixture(tmp_path, monkeypatch):
             yield item.path, data
 
     monkeypatch.setattr(module, "stage_private_build", stage)
-    monkeypatch.setattr(module, "materialize_windows_workspace", scratch)
-    monkeypatch.setattr(module, "read_registered_windows", read)
+
+    @contextmanager
+    def output_scope(*args, **kwargs):
+        with scratch(*args, **kwargs) as path:
+
+            def read_outputs(manifest, **read_kwargs):
+                return read(SimpleNamespace(local_root=path), manifest, **read_kwargs)
+
+            yield SimpleNamespace(path=path, read_outputs=read_outputs)
+
+    monkeypatch.setattr(module, "materialize_windows_workspace_scope", output_scope)
     return builder, plan, paths, tmp_path
 
 
