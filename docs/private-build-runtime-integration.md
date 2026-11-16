@@ -129,3 +129,33 @@ An explicit close retry may resume a failed drain only after the original
 adapter/Store identity is restored and the recorded failure is the fixed ownership
 mismatch. Sentinel submission is tracked so that this retry cannot enqueue a second
 one. Other drain failures remain blocked; they are not treated as transient errors.
+
+### Explicit protected Store startup
+
+`Broker(..., private_store_session_factory=...)` is an internal, in-process
+injection point. Its default is `None`; no configuration enables it automatically.
+The factory receives the expected existing database path and the broker's
+`on_commit` callback, and must return a new, unopened `PrivateStoreSession` for
+that path. Startup enters the session before opening the writable Store, preserving
+the callback and native lifetime pin. This path does not chmod the database or
+change existing ACLs. The protected database must already exist.
+
+The session alone does not install `PrivateRuntimeSession`, a private producer,
+or receipt ingestion. Those remain explicit subsequent steps. Synthetic startup
+and shutdown tests do not establish that actual private assets can build.
+
+A known-idle startup failure closes Store before unpinning and releases the broker
+locks. If a worker has started, a child is active/unknown, or cleanup is uncertain,
+the broker retains the reachable session and locks instead. Reusing that Broker
+for another start is refused. Explicit `Broker.close()` performs verified shutdown;
+it may also retry partial Store-initialization cleanup when no worker/runtime/child
+ownership remains unconfirmed. A failed SQLite close retains the pin for another
+explicit attempt after the fault is resolved. A session's unknown-handle cleanup
+latch is never cleared by this retry, so not every failed startup is recoverable
+in-process. A factory-returned already-open session is refused without taking
+ownership or closing it.
+
+At final shutdown, a protected Store session is closed even when no runtime adapter
+was installed. If both exist, the adapter must reference that same session and
+Store. Captured identities are checked across shutdown awaits to prevent closing a
+replacement database or releasing a different session's protection.

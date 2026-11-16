@@ -28,7 +28,14 @@ class PrivateStoreSession:
     Retain the session object for explicit recovery if context exit fails.
     """
 
-    def __init__(self, path: Path, *, path_guard: PathGuard = verified_private_database_path):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        path_guard: PathGuard = verified_private_database_path,
+        on_commit: Callable[[], None] | None = None,
+    ):
+        self._on_commit = on_commit
         self._path = path
         self._guard = path_guard
         self._owner = threading.get_ident()
@@ -57,7 +64,11 @@ class PrivateStoreSession:
                 identity = self._held.enter_context(self._guard(self._path))
                 # Keep the object reachable even if initialization raises after connect.
                 self._store = Store.__new__(Store)
-                Store.__init__(self._store, self._path)
+                Store.__init__(
+                    self._store,
+                    self._path,
+                    **({"on_commit": self._on_commit} if self._on_commit is not None else {}),
+                )
                 actual = private_database_path(self._store.db)
                 if os.path.normcase(str(actual)) != os.path.normcase(str(self._path)):
                     raise ValueError("private_state_database_changed")

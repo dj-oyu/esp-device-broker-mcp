@@ -70,6 +70,7 @@ from .models import (
 from .offload_io import IOMemo, complete, offload
 from .operator_notifications import OperatorNotifications
 from .private_runtime_session import PrivateRuntimeSession
+from .private_store_session import PrivateStoreSession
 from .resource_recheck import uncertainty
 from .source_snapshot import SourceError, SourceSnapshots
 from .store import Store
@@ -223,7 +224,14 @@ class Broker:
         lock_path: Path | None = None,
         serial_enabled: bool = False,
         principal_valid: Callable[[str, str, frozenset[str]], bool] | None = None,
+        private_store_session_factory: (
+            Callable[[Path, Callable[[], None]], PrivateStoreSession] | None
+        ) = None,
     ) -> None:
+        # Explicit trusted in-process injection only; no configuration auto-activation.
+        self._private_store_session_factory = private_store_session_factory
+        self._private_store_session: PrivateStoreSession | None = None
+        self._private_start_attempted = False
         self.settings = settings
         if settings.backend == "serial" and not serial_enabled:
             raise BrokerError("serial_runtime_opt_in_required")
@@ -274,7 +282,7 @@ class Broker:
 
         self.profile_jobs = ProfileJobs(self)
         self.private_runtime_session: PrivateRuntimeSession | None = None
-        self._shutdown_identity: tuple[Any, Any] | None = None
+        self._shutdown_identity: tuple[Any, Any, Any] | None = None
         from .firmware_flash import FirmwareFlash
 
         self.firmware_flash = FirmwareFlash(
@@ -368,6 +376,10 @@ class Broker:
         return self.store
 
     async def start(self) -> None:
+        if self._private_store_session_factory is not None:
+            if self._private_start_attempted:
+                raise BrokerError("broker_already_running")
+            self._private_start_attempted = True
         self.settings.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         try:
             self._device_lock.acquire()
@@ -376,11 +388,22 @@ class Broker:
             self._device_lock.release()
             raise BrokerError("broker_already_running") from exc
         try:
-            self.store = Store(
-                self.settings.state_dir / "history.sqlite3",
-                on_commit=self.operator_changes.notify,
-            )
-            if os.name != "nt":
+            path = self.settings.state_dir / "history.sqlite3"
+            if self._private_store_session_factory is None:
+                self.store = Store(path, on_commit=self.operator_changes.notify)
+            else:
+                candidate = self._private_store_session_factory(path, self.operator_changes.notify)
+                if (
+                    not isinstance(candidate, PrivateStoreSession)
+                    or candidate._opened
+                    or candidate._closed
+                    or candidate._path != path
+                ):
+                    raise BrokerError("private_runtime_session_ownership_changed")
+                self._private_store_session = candidate
+                self._private_store_session.__enter__()
+                self.store = self._private_store_session.store
+            if self._private_store_session is None and os.name != "nt":
                 os.chmod(self.settings.state_dir / "history.sqlite3", 0o600)
             self.store.ledger.on_refused = partial(self.logs.append, Event.TRANSITION_REFUSED)
             self.store.recover()
@@ -393,7 +416,27 @@ class Broker:
                 self._maintain(), name="single-device-maintenance"
             )
         except BaseException:
-            if self.store:
+            if self._private_store_session is not None:
+                self.closing = True
+                process = self.firmware_build.process
+                tasks = (self.worker, self.profile_jobs.worker, self.maintenance)
+                if (
+                    self._physical_busy()
+                    or process.cleanup_pending
+                    or process.owner is not None
+                    or any(process._retained)
+                    or any(
+                        task is not None
+                        and (not task.done() or task.cancelled() or task.exception() is not None)
+                        for task in tasks
+                    )
+                ):
+                    # Keep session and locks reachable until explicit verified shutdown.
+                    raise
+                self._private_store_session.close()
+                self._private_store_session = None
+                self.store = None
+            elif self.store:
                 self.store.close()
                 self.store = None
             self._state_lock.release()
@@ -402,18 +445,50 @@ class Broker:
 
     async def close(self) -> None:
         if self.store is None:
+            if self._private_store_session is not None:
+                process = self.firmware_build.process
+                tasks = (self.worker, self.profile_jobs.worker, self.maintenance)
+                if (
+                    self.private_runtime_session is not None
+                    or self._physical_busy()
+                    or process.cleanup_pending
+                    or process.owner is not None
+                    or any(process._retained)
+                    or any(
+                        task is not None
+                        and (not task.done() or task.cancelled() or task.exception() is not None)
+                        for task in tasks
+                    )
+                ):
+                    raise BrokerError("device_close_unconfirmed")
+                # Explicit retry of partial Store initialization cleanup. Session
+                # itself refuses unknown reader/handle state; never clear its latch.
+                self._private_store_session.close()
+                self._private_store_session = None
+                self._state_lock.release()
+                self._device_lock.release()
             return
         if self._shutdown_identity is None:
-            self._shutdown_identity = (self.private_runtime_session, self.store)
-        adapter, store = self._shutdown_identity
+            self._shutdown_identity = (
+                self.private_runtime_session,
+                self.store,
+                self._private_store_session,
+            )
+        adapter, store, private_session = self._shutdown_identity
 
         def retained_identity() -> None:
-            if self.private_runtime_session is not adapter or self.store is not store:
+            if (
+                self.private_runtime_session is not adapter
+                or self.store is not store
+                or self._private_store_session is not private_session
+            ):
                 raise BrokerError("private_runtime_session_ownership_changed")
 
         retained_identity()
         if adapter is not None:
             adapter.require_store(store)
+            if private_session is not None and adapter.session is not private_session:
+                raise BrokerError("private_runtime_session_ownership_changed")
         self.closing = True
         # Wake operator event streams so they end instead of holding shutdown open.
         self.operator_changes.notify()
@@ -451,6 +526,14 @@ class Broker:
             self._physical_busy()
             or self.firmware_build.process.uncertain
             or self.profile_jobs.uncertain
+            or (
+                private_session is not None
+                and (
+                    self.firmware_build.process.cleanup_pending
+                    or self.firmware_build.process.owner is not None
+                    or any(self.firmware_build.process._retained)
+                )
+            )
         ):
             # An unconfirmed serial close must not advertise a free device or
             # release the broker lock. Only OS process teardown ends this hold.
@@ -469,8 +552,11 @@ class Broker:
         if adapter is not None:
             adapter.require_store(store)
             adapter.close()
+        elif private_session is not None:
+            private_session.close()
         else:
             store.close()
+        self._private_store_session = None
         self.store = None
         self._shutdown_identity = None
         self.app_sessions.jobs.clear()
