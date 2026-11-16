@@ -476,6 +476,34 @@
               "description": "flash|restore",
               "title": "Lkg Receipt"
             },
+            "private_input_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "build; registered private input ID, with owned receipt; no paths",
+              "title": "Private Input Id"
+            },
+            "private_input_receipt": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-f0-9]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "build; owned private input receipt, with registered input ID",
+              "title": "Private Input Receipt"
+            },
             "project_id": {
               "anyOf": [
                 {

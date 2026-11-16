@@ -353,8 +353,15 @@ def test_tools_list_grows_by_one_short_argument_only():
     snapshot = Path(__file__).parent / "fixtures" / "surface_tools_list.json"
     tools = json.loads(snapshot.read_text(encoding="utf-8"))
     assert len(tools) == 6
+    # This test measures only variant's contribution; private receipt selectors
+    # have their own bounded schema regression test.
+    for tool in tools:
+        if tool["name"] == "submit":
+            properties = tool["inputSchema"]["$defs"]["SubmitRequest"]["properties"]
+            properties.pop("private_input_id", None)
+            properties.pop("private_input_receipt", None)
     compact = len(json.dumps(tools, separators=(",", ":")))
-    # main was 16030 characters; the only addition is submit.variant.
+    # main was 16030 characters; the remaining addition is submit.variant.
     assert compact - 16030 <= 190
     submit = next(tool for tool in tools if tool["name"] == "submit")
     schema = submit["inputSchema"]

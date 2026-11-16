@@ -150,6 +150,12 @@ class PrepareRequest(StrictModel):
     )
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
     source_receipt: Digest | None = None
+    private_input_id: Identifier | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    private_input_receipt: Digest | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     variant: BuildVariantName | None = Field(default=None, exclude_if=lambda value: value is None)
     after: str | None = Field(
         default=None,
@@ -164,6 +170,17 @@ class PrepareRequest(StrictModel):
 
     @model_validator(mode="after")
     def flash_references(self) -> "PrepareRequest":
+        if {"private_input_id", "private_input_receipt"} & self.model_fields_set:
+            if (
+                self.private_input_id is None
+                or self.private_input_receipt is None
+                or self.test != TestName.BUILD
+                or self.project_id is None
+                or self.source_receipt is None
+                or self.session is not None
+                or self.after is not None
+            ):
+                raise ValueError("private_input_requires_registered_source_build")
         if (self.test == TestName.APP_SESSION) != (self.app is not None):
             raise ValueError("app_options_required_only_for_app_session")
         if self.after is not None:

@@ -191,6 +191,12 @@ class SubmitRequest(StrictModel):
     project_id: Identifier | None = Field(default=None, description="fetch|build")
     source_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$", description="fetch")
     source_receipt: Digest | None = Field(default=None, description="build")
+    private_input_id: Identifier | None = Field(
+        default=None, description="build; registered private input ID, with owned receipt; no paths"
+    )
+    private_input_receipt: Digest | None = Field(
+        default=None, description="build; owned private input receipt, with registered input ID"
+    )
     variant: BuildVariantName | None = Field(
         default=None, description="build; sdkconfig.variant.<name> in source"
     )
@@ -434,7 +440,7 @@ SUBMIT_RULES: dict[Kind, tuple[set[str], set[str]]] = {
     Kind.FETCH: ({"job_id", "project_id", "source_commit"}, set()),
     Kind.BUILD: (
         {"job_id", "project_id"},
-        {"source_receipt", "variant", "after"},
+        {"source_receipt", "variant", "after", "private_input_id", "private_input_receipt"},
     ),
     Kind.BACKUP: ({"job_id", "session", "device_id"}, set()),
     Kind.FLASH: ({"job_id", "session", "device_id", "build_job_id"}, set(_RECOVERY)),

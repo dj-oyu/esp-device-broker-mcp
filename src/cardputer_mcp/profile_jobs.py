@@ -213,6 +213,14 @@ class ProfileJobs:
                 principal,
                 request.source_receipt,
                 request.variant,
+                **(
+                    {
+                        "private_input_id": request.private_input_id,
+                        "private_input_receipt": request.private_input_receipt,
+                    }
+                    if request.private_input_id is not None
+                    else {}
+                ),
             )
             storage = broker.firmware_build.storage(request.project_id)
         plan = dict(
