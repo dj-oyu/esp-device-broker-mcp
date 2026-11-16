@@ -1,6 +1,7 @@
 import hashlib
 import sqlite3
 import unittest
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -39,10 +40,10 @@ class PrivateInputStoreTests(unittest.TestCase):
     def test_round_trip_restart_and_idempotent_ingest(self):
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "synthetic.db"
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db:
                 store = PrivateInputStore(db)
                 receipt = store.ingest(**self.args, files=self.files)
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db:
                 store = PrivateInputStore(db)
                 self.assertEqual(self.files, store.resolve(**self.args, receipt=receipt))
                 self.assertEqual(receipt, store.ingest(**self.args, files=reversed(self.files)))

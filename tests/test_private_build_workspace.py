@@ -1,4 +1,5 @@
 import hashlib
+import os
 import sqlite3
 from contextlib import closing, contextmanager, nullcontext
 from types import SimpleNamespace
@@ -13,6 +14,9 @@ from cardputer_mcp.private_input_contract import InputFile
 from cardputer_mcp.private_input_registration import PrivateInputRegistration
 from cardputer_mcp.private_input_store import PrivateInputStore, inventory_digest
 from cardputer_mcp.private_workspace_materialize import materialize_workspace
+from cardputer_mcp.private_workspace_windows import (
+    materialize_windows_workspace as native_materialize,
+)
 
 
 @pytest.fixture
@@ -93,8 +97,12 @@ def staging(tmp_path):
                 ),
                 patch(
                     "cardputer_mcp.private_build_workspace.materialize_windows_workspace",
-                    side_effect=lambda plan, container, cancelled: materialize_workspace(
-                        plan, protected_parent=container, cancelled=cancelled
+                    side_effect=lambda plan, container, cancelled: (
+                        native_materialize(plan, container=container, cancelled=cancelled)
+                        if os.name == "nt"
+                        else materialize_workspace(
+                            plan, protected_parent=container, cancelled=cancelled
+                        )
                     ),
                 ),
             ):
