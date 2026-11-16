@@ -19,7 +19,11 @@ def bind_private_build(
     receipt: str,
     source_receipt: str,
     source_commit: str,
+    recipe_sha256: str,
 ) -> dict[str, str]:
+    _hash(recipe_sha256)
+    if recipe_sha256 != registration.recipe_sha256:
+        raise ValueError("private_build_recipe_mismatch")
     _hash(source_receipt)
     _hash(source_commit, 40)
     if source_commit != registration.source_commit:
@@ -63,3 +67,12 @@ def plan_kwargs(plan: dict[str, Any]) -> dict[str, str]:
     _hash(plan["private_input_receipt"])
     _hash(plan["private_binding_sha256"])
     return {key: plan[key] for key in keys[:2]}
+
+
+def require_same_binding(expected: dict[str, Any], actual: dict[str, Any]) -> None:
+    # Validate both complete records, including a present-but-invalid digest.
+    plan_kwargs(expected)
+    plan_kwargs(actual)
+    keys = ("private_input_id", "private_input_receipt", "private_binding_sha256")
+    if any(expected.get(key) != actual.get(key) for key in keys):
+        raise ValueError("private_build_binding_changed")

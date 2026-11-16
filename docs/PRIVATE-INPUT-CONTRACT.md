@@ -87,7 +87,16 @@ Windows protected-root/staging adapter, authorized source-byte composition,
 private artifact provenance, and authenticated MCP/job plumbing. Tests cover only
 generated fixture data and the existing public build path.
 
-Before removing the execution gate, additionally require exact equality of all
-three private binding fields against re-preparation, and verify that the registered
-`recipe_sha256` matches the actual allowed executable build recipe/profile. Merely
-hashing a registered recipe value into identity does not validate what will run.
+The internal runtime now requires exact equality of all three private binding
+fields against re-preparation. For this adapter, registered `recipe_sha256` is the
+ordinary (no private input) `FirmwareBuild.prepare` fingerprint for the exact same
+source receipt and variant. That existing fingerprint binds source bytes, profile
+bytes, registered tools, IDF/target, variant, and relevant execution settings.
+Each private preparation compares that freshly computed recipe with registration,
+then derives a private fingerprint from the public recipe plus owned binding.
+This deliberately requires re-registration/re-ingestion when the recipe changes;
+it does not migrate or weaken an existing registration. Ordinary build identity
+is unchanged. No caller-supplied recipe digest can substitute for the computed one.
+
+Native Windows workspace composition and artifact/job plumbing remain absent;
+the execution gate remains closed even when these identity checks pass.

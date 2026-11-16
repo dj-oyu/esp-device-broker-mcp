@@ -39,18 +39,8 @@ class PrivateBuildTests(unittest.TestCase):
         self.db = sqlite3.connect(":memory:")
         self.addCleanup(self.db.close)
         self.store = PrivateInputStore(self.db)
-        self.receipt = self.store.ingest(
-            registration=self.reg,
-            project_id="p",
-            input_id="fixture",
-            principal="owner",
-            files=private,
-        )
         self.builder = FirmwareBuild(SimpleNamespace(build_projects={"p": self.project}))
         self.builder.private_store_factory = lambda: nullcontext(self.store)
-        self.args = dict(
-            source_receipt="c" * 64, private_input_id="fixture", private_input_receipt=self.receipt
-        )
         # SourceSnapshots owns public receipt verification; the fixture supplies
         # that verified boundary, rather than treating arbitrary bytes as Git.
         self.project_patch = patch.object(
@@ -58,6 +48,19 @@ class PrivateBuildTests(unittest.TestCase):
         )
         self.project_patch.start()
         self.addCleanup(self.project_patch.stop)
+        recipe = self.builder.prepare("p", "owner", source_receipt="c" * 64)["fingerprint"]
+        self.reg = self.reg.model_copy(update={"recipe_sha256": recipe})
+        self.project.private_inputs["fixture"] = self.reg
+        self.receipt = self.store.ingest(
+            registration=self.reg,
+            project_id="p",
+            input_id="fixture",
+            principal="owner",
+            files=private,
+        )
+        self.args = dict(
+            source_receipt="c" * 64, private_input_id="fixture", private_input_receipt=self.receipt
+        )
 
     def test_private_binding_changes_fingerprint_and_no_paths_escape(self):
         public = self.builder.prepare("p", "owner", source_receipt="c" * 64)
@@ -97,8 +100,9 @@ class PrivateBuildTests(unittest.TestCase):
 
     def test_source_receipt_and_registration_bind_identity(self):
         one = self.builder.prepare("p", "owner", **self.args)
-        two = self.builder.prepare("p", "owner", **(self.args | {"source_receipt": "d" * 64}))
-        self.assertNotEqual(one["fingerprint"], two["fingerprint"])
+        self.assertIn("fingerprint", one)
+        with self.assertRaisesRegex(ValueError, "recipe_mismatch"):
+            self.builder.prepare("p", "owner", **(self.args | {"source_receipt": "d" * 64}))
         changed = self.reg.model_copy(update={"recipe_sha256": "e" * 64})
         self.project.private_inputs["fixture"] = changed
         with self.assertRaises(ValueError):
@@ -121,3 +125,28 @@ class PrivateBuildTests(unittest.TestCase):
             plan_kwargs(plan),
             {"private_input_id": "fixture", "private_input_receipt": self.receipt},
         )
+
+    def test_actual_profile_and_policy_recipe_are_rechecked(self):
+        plan = self.builder.prepare("p", "owner", **self.args)
+        changed_project = self.project.model_copy(
+            update={"profile_execution_policy": "RemoteSigned"}
+        )
+        with patch.object(
+            self.builder, "_project", return_value=(changed_project, {"commit": "a" * 40})
+        ):
+            with self.assertRaisesRegex(ValueError, "recipe_mismatch"):
+                self.builder._reprepare(plan, "owner")
+        self.project.trusted_profile.write_text("# changed recipe")
+        with self.assertRaisesRegex(ValueError, "recipe_mismatch"):
+            self.builder._reprepare(plan, "owner")
+
+    def test_all_binding_fields_must_match_repreparation(self):
+        plan = self.builder.prepare("p", "owner", **self.args)
+        self.assertEqual(plan, self.builder._reprepare(plan, "owner"))
+        tampered = plan | {"private_binding_sha256": "f" * 64}
+        with self.assertRaisesRegex(ValueError, "binding_changed"):
+            self.builder._reprepare(tampered, "owner")
+        with self.assertRaises(ValueError):
+            self.builder._reprepare(plan | {"private_input_receipt": "f" * 64}, "owner")
+        with self.assertRaises(ValueError):
+            self.builder._reprepare(plan | {"private_input_id": "other"}, "owner")

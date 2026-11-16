@@ -427,30 +427,6 @@ class FirmwareBuild:
         if variant is not None and source_receipt is None:
             raise ValueError(build_variant.REQUIRES_SOURCE)
         project, provenance = self._project(project_id, principal, source_receipt)
-        private_selection: dict[str, str] = {}
-        if private_input_id is not None or private_input_receipt is not None:
-            if (
-                not project_id
-                or not private_input_id
-                or not private_input_receipt
-                or not source_receipt
-                or not provenance
-            ):
-                raise ValueError("private_build_requires_owned_receipts")
-            registration = getattr(project, "private_inputs", {}).get(private_input_id)
-            if registration is None or self.private_store_factory is None:
-                raise ValueError("private_build_registration_unavailable")
-            with self.private_store_factory() as store:
-                private_selection = private_build_binding.bind_private_build(
-                    store=store,
-                    registration=registration,
-                    project_id=project_id,
-                    input_id=private_input_id,
-                    principal=principal,
-                    receipt=private_input_receipt,
-                    source_receipt=source_receipt,
-                    source_commit=provenance["commit"],
-                )
         # Bound only when named; an absent variant leaves every hash below unchanged.
         selection = build_variant.bind(project.project_dir, variant) if variant is not None else {}
         if hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
@@ -485,7 +461,6 @@ class FirmwareBuild:
                     ),
                     "project_id": project_id,
                     **selection,
-                    **private_selection,
                     **({"source_receipt": source_receipt} if source_receipt is not None else {}),
                     "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
                     "profile": hash_file(project.trusted_profile),
@@ -513,6 +488,38 @@ class FirmwareBuild:
                 sort_keys=True,
             ).encode()
         ).hexdigest()
+        private_selection: dict[str, str] = {}
+        if private_input_id is not None or private_input_receipt is not None:
+            if (
+                not project_id
+                or not private_input_id
+                or not private_input_receipt
+                or not source_receipt
+                or not provenance
+            ):
+                raise ValueError("private_build_requires_owned_receipts")
+            registration = getattr(project, "private_inputs", {}).get(private_input_id)
+            if registration is None or self.private_store_factory is None:
+                raise ValueError("private_build_registration_unavailable")
+            with self.private_store_factory() as store:
+                private_selection = private_build_binding.bind_private_build(
+                    store=store,
+                    registration=registration,
+                    project_id=project_id,
+                    input_id=private_input_id,
+                    principal=principal,
+                    receipt=private_input_receipt,
+                    source_receipt=source_receipt,
+                    source_commit=provenance["commit"],
+                    recipe_sha256=fingerprint,
+                )
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    {"public_recipe_sha256": fingerprint, **private_selection},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
         return dict(
             project_id=project_id,
             **selection,
@@ -542,6 +549,17 @@ class FirmwareBuild:
                 "build",
             ],
         )
+
+    def _reprepare(self, plan: dict[str, Any], principal: str) -> dict[str, Any]:
+        prepared = self.prepare(
+            plan["project_id"],
+            principal,
+            plan.get("source_receipt"),
+            **build_variant.plan_kwargs(plan),
+            **private_build_binding.plan_kwargs(plan),
+        )
+        private_build_binding.require_same_binding(plan, prepared)
+        return prepared
 
     def request_stop(self, job_id: str | None = None) -> bool:
         """Serialize accepted cancellation against the final success commit."""
@@ -670,16 +688,7 @@ class FirmwareBuild:
         if os.name != "nt":
             raise ValueError("external_windows_idf_required")
         principal = plan["build_principal"]
-        if (
-            self.prepare(
-                plan["project_id"],
-                principal,
-                plan.get("source_receipt"),
-                **build_variant.plan_kwargs(plan),
-                **private_build_binding.plan_kwargs(plan),
-            )["fingerprint"]
-            != plan["fingerprint"]
-        ):
+        if self._reprepare(plan, principal)["fingerprint"] != plan["fingerprint"]:
             raise ValueError("build_inputs_changed")
         project, provenance = self._project(
             plan["project_id"], principal, plan.get("source_receipt")
@@ -929,16 +938,7 @@ class FirmwareBuild:
         # Diagnostics can take time. Recheck live project/profile/lock inputs
         # immediately before launching build; a changed tree needs a new plan.
         self._check_cancelled()
-        if (
-            self.prepare(
-                plan["project_id"],
-                principal,
-                plan.get("source_receipt"),
-                **build_variant.plan_kwargs(plan),
-                **private_build_binding.plan_kwargs(plan),
-            )["fingerprint"]
-            != plan["fingerprint"]
-        ):
+        if self._reprepare(plan, principal)["fingerprint"] != plan["fingerprint"]:
             logs.append("error: build inputs changed before launch; prepare a new plan")
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
@@ -991,16 +991,7 @@ class FirmwareBuild:
                     )
                 else:
                     cache_receipt["statistics_available"] = False
-        if (
-            self.prepare(
-                plan["project_id"],
-                principal,
-                plan.get("source_receipt"),
-                **build_variant.plan_kwargs(plan),
-                **private_build_binding.plan_kwargs(plan),
-            )["fingerprint"]
-            != plan["fingerprint"]
-        ):
+        if self._reprepare(plan, principal)["fingerprint"] != plan["fingerprint"]:
             raise ValueError("build_inputs_changed")
         self._check_cancelled()
         description = json.loads((build_dir / "project_description.json").read_text())
@@ -1095,16 +1086,7 @@ class FirmwareBuild:
         principal, root, manifest = self._pending[plan["job_id"]]
         if self.process.active or self.process.uncertain or not live():
             raise ValueError("build_final_commit_not_authorized")
-        if (
-            self.prepare(
-                plan["project_id"],
-                principal,
-                plan.get("source_receipt"),
-                **build_variant.plan_kwargs(plan),
-                **private_build_binding.plan_kwargs(plan),
-            )["fingerprint"]
-            != plan["fingerprint"]
-        ):
+        if self._reprepare(plan, principal)["fingerprint"] != plan["fingerprint"]:
             raise FixedDiagnosticFailure("build_inputs_changed")
         if not live():
             raise ValueError("build_final_commit_not_authorized")
