@@ -58,3 +58,20 @@ establish protected DB ownership, verify child monitoring and cleanup,
 and connect consumer pin/continuation lifecycle. Host fixture success does not
 prove native isolation or a successful firmware build. No real retention, deployment,
 configuration change or private transfer has been performed by these checkpoints.
+
+## Existing state preflight and archive protection
+
+`verified_private_database` is a read-only Windows gate: it pins ancestors and the
+SQLite file identity, requires an explicitly protected current-user/SYSTEM parent,
+and verifies owner/ACL/no-reparse/no-hardlink constraints on DB and present sidecars.
+The metadata handle shares read/write with SQLite but not deletion. Sidecar handles
+are released so trusted same-user SQLite can recycle them under the protected parent.
+The gate must stay held for the complete private operation. It changes no existing
+ACL or setting and has not been installed into production.
+
+Generic archival refuses jobs/plans needed by a private receipt, even when no pin
+remains; it also fails closed on malformed bindings or orphan pins. Private tables
+are never copied into a generic archive. Existing public-only archive behavior is
+unchanged. Private artifact consumers must use the actual caller principal, never
+job-owner impersonation from general read-only UI adapters. A continuation ticket
+alone does not authorize access to private bytes or firmware flashing.
