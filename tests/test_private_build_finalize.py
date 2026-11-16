@@ -120,3 +120,83 @@ def test_reprepare_reentrant_stop_is_seen_before_commit(fixture):
     assert store.job("fixture")["state"] == "running"
     assert store.db.execute("SELECT COUNT(*) FROM private_artifact_receipts").fetchone()[0] == 0
     assert notifications == []
+
+
+def test_firmware_deferred_private_runtime_end_to_end(fixture):
+    from cardputer_mcp.private_build_runtime import PrivateBuildCandidate, PrivateBuildRuntime
+
+    _, store, artifacts, args, notifications = fixture
+    builder = FirmwareBuild(SimpleNamespace(build_projects={}))
+    builder._reprepare = lambda *_: dict(args["plan"])
+
+    def produce(plan, logs):
+        assert plan == args["plan"]
+        logs.append("synthetic private source text must not escape")
+        return PrivateBuildCandidate("e" * 64, args["files"])
+
+    builder.private_runtime = PrivateBuildRuntime(produce, artifacts)
+    result = builder._execute(args["plan"], lambda _: None, defer_publish=True)
+    assert result == "private_build_succeeded_no_flash"
+    assert store.job("fixture")["state"] == "running"
+    receipt = builder.private_runtime.commit(builder, store, args["plan"], args["live"])
+    assert artifacts.resolve(receipt=receipt, principal="owner") == args["files"]
+    assert store.job("fixture")["state"] == "succeeded"
+    assert builder.private_runtime.pending == {}
+    assert notifications == ["commit"]
+    assert builder.request_stop("fixture") is False
+
+
+def test_default_runtime_gate_and_device_path_remain_closed(fixture):
+    from cardputer_mcp.private_build_runtime import PrivateBuildRuntime
+
+    _, _, artifacts, args, _ = fixture
+    builder = FirmwareBuild(SimpleNamespace(build_projects={}))
+    for installed in (False, True):
+        if installed:
+            builder.private_runtime = PrivateBuildRuntime(
+                lambda *_: pytest.fail("must not run"), artifacts
+            )
+        with pytest.raises(ValueError, match="private_build_workspace_unavailable"):
+            builder._execute(args["plan"], lambda _: None, defer_publish=False)
+    builder.private_runtime = None
+    with pytest.raises(ValueError, match="private_build_workspace_unavailable"):
+        builder._execute(args["plan"], lambda _: None, defer_publish=True)
+
+
+def test_private_runtime_cancel_and_discard_never_publish(fixture):
+    from cardputer_mcp.private_build_runtime import PrivateBuildCandidate, PrivateBuildRuntime
+
+    _, store, artifacts, args, notifications = fixture
+    builder = FirmwareBuild(SimpleNamespace(build_projects={}))
+    builder._reprepare = lambda *_: dict(args["plan"])
+    builder.private_runtime = PrivateBuildRuntime(
+        lambda *_: PrivateBuildCandidate("e" * 64, args["files"]), artifacts
+    )
+    builder._execute(args["plan"], lambda _: None, defer_publish=True)
+    assert builder.request_stop("fixture")
+    with pytest.raises(ValueError):
+        builder.private_runtime.commit(builder, store, args["plan"], args["live"])
+    builder.discard_deferred("fixture")
+    assert builder.private_runtime.pending == {}
+    assert store.job("fixture")["state"] == "running"
+    assert notifications == []
+
+
+def test_stop_during_first_reprepare_never_starts_private_producer(fixture):
+    from cardputer_mcp.private_build_runtime import PrivateBuildRuntime
+
+    _, _, artifacts, args, _ = fixture
+    builder = FirmwareBuild(SimpleNamespace(build_projects={}))
+
+    def prepare(*_):
+        assert builder.request_stop("fixture")
+        return dict(args["plan"])
+
+    builder._reprepare = prepare
+    builder.private_runtime = PrivateBuildRuntime(
+        lambda *_: pytest.fail("producer started"), artifacts
+    )
+    with pytest.raises(ValueError):
+        builder._execute(args["plan"], lambda _: None, defer_publish=True)
+    assert not builder.private_runtime.running
+    assert builder.private_runtime.pending == {}

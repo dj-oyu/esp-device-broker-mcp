@@ -36,6 +36,7 @@ from .build_security import BuildSecurityConfigError, interpret_idf601_security
 from .job_logs import attach
 from .manifest_export import export_response
 from .private_build_output import PrivateBuildLogs, no_private_compiler_cache
+from .private_build_runtime import PrivateBuildRuntime
 from .private_input_store import PrivateInputStore
 
 # Frozen: the compiler-cache namespace of ordinary builds hashed these axes as absent.
@@ -347,6 +348,7 @@ class FirmwareBuild:
         self.private_store_factory: (
             Callable[[], AbstractContextManager[PrivateInputStore]] | None
         ) = None
+        self.private_runtime: PrivateBuildRuntime | None = None
         self.artifacts = BuildArtifacts(history)
         self.process = BuildProcess()
         self.logs: dict[str, BuildLogs] = {}
@@ -624,7 +626,9 @@ class FirmwareBuild:
         # Until native workspace staging is installed, never silently compile
         # the public-only source for a prepared private-input plan.
         if private_build_binding.plan_kwargs(plan):
-            raise ValueError("private_build_workspace_unavailable")
+            if self.private_runtime is None or not defer_publish:
+                raise ValueError("private_build_workspace_unavailable")
+            return self.private_runtime.execute(self, plan)
         if self._build_lock is not None:
             raise BuildLocationError("build_output_in_use")
         try:
@@ -1132,6 +1136,8 @@ class FirmwareBuild:
 
     def discard_deferred(self, job_id: str) -> None:
         """Discard only this job's unpublished candidate; never delete source/artifact data."""
+        if self.private_runtime is not None:
+            self.private_runtime.discard(job_id)
         self.manifests.pop(job_id, None)
         self.artifacts.discard(job_id)
         pending = self._pending.pop(job_id, None)

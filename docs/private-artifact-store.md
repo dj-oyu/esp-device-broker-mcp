@@ -57,3 +57,22 @@ authority loss, active children, COMMIT failure and notification failure. This
 adapter is not wired to ProfileJobs, the device job path or the execution gate.
 Protected DB installation, producer output capture, retained workspace lifecycle,
 consumer pin/continuation hookup and native integration remain prerequisites.
+
+## Default-closed runtime wiring
+
+`FirmwareBuild.private_runtime` remains `None` in every production constructor.
+An internal adapter can now route deferred private jobs through a trusted producer
+and bounded in-memory candidate, then ProfileJobs invokes the atomic finalizer
+without a second ledger transition. Ordinary jobs keep the existing path. Device
+(non-deferred) private execution is refused. Cancellation/discard drops pending
+bytes and does not publish. Candidate payloads are excluded from dataclass repr.
+
+The generated producer test exercises the real FirmwareBuild dispatch and Store
+finalization. It is not an ESP-IDF build. No native producer is installed: secure
+source/output directory separation, output capture under held native handles,
+process lifetime and cleanup, protected storage installation and native end-to-end
+validation must precede production installation. The in-process producer is trusted
+code, not remote input or a sandbox for arbitrary build scripts.
+The native producer must recheck cancellation and current authority immediately
+before each child launch, including after callbacks; entry validation is not a
+reusable authorization grant for later subprocesses.

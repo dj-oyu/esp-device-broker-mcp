@@ -18,6 +18,7 @@ from .continuation import TicketError
 from .firmware_build import BuildPreflightFailure, hash_file
 from .logs import Event
 from .models import CancelRequest, ExecuteRequest, Origin, PrepareRequest, TestName
+from .private_build_binding import plan_kwargs as private_plan_kwargs
 from .registration_digest import project_digest, project_digests
 from .source_preflight import SourceReadWorker, settings_identity, source_inputs
 from .source_retention import PLAN_LEASE_SECONDS
@@ -662,6 +663,11 @@ class ProfileJobs:
                     publication[0] = True
                     if source:
                         broker.firmware_source.commit_success(plan, result, live)
+                    elif private_plan_kwargs(plan):
+                        runtime = broker.firmware_build.private_runtime
+                        if runtime is None:
+                            raise ValueError("private_build_workspace_unavailable")
+                        runtime.commit(broker.firmware_build, store, plan, live)
                     else:
                         broker.firmware_build.commit_deferred(plan, live)
                         store.ledger.transition(job_id, "succeeded", result)
