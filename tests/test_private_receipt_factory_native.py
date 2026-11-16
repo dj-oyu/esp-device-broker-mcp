@@ -57,4 +57,3 @@ def test_native_thread_factory_readonly_identity_and_lifetime(tmp_path):
         with pytest.raises(ValueError, match="database_changed"):
             with factory():
                 pytest.fail("replacement identity accepted")
-
