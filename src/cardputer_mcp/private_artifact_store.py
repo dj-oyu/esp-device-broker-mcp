@@ -74,6 +74,7 @@ class PrivateArtifactStore:
         composition_identity: str,
         files: tuple[tuple[str, bytes], ...],
         guard: Callable[[], bool],
+        runtime_bookkeeping: bool = False,
     ) -> str:
         self._idle()
         plan = json.loads(_canonical(plan))
@@ -118,8 +119,20 @@ class PrivateArtifactStore:
                 "INSERT INTO private_artifact_bytes VALUES (?,?,?)",
                 ((receipt, p, b) for p, b in files),
             )
+            if runtime_bookkeeping:
+                # No nested Store/ledger methods: they commit independently.
+                self.db.execute(
+                    "INSERT INTO execution_audit(job_id,plan_hash,principal_id,event) "
+                    "VALUES(?,?,?,?)",
+                    (plan["job_id"], plan_hash, principal, "private_build_committed"),
+                )
+                self.db.execute(
+                    "INSERT INTO private_artifact_pins VALUES (?,?)",
+                    (receipt, "recovery:" + plan["job_id"]),
+                )
             # The runtime live check requires running. Keep the final callback
-            # before the terminal transition; remaining validation/SQL is synchronous, with no external callbacks.
+            # before the terminal transition; remaining validation/SQL is synchronous,
+            # with no external callbacks.
             if guard() is not True:
                 raise ValueError("private_artifact_final_commit_denied")
             self.db.execute(
@@ -160,7 +173,8 @@ class PrivateArtifactStore:
         if count > self.MAX_FILES or total > self.MAX_BYTES:
             raise ValueError("private_artifact_limit")
         files = tuple(
-            self.db.execute(
+            (str(row[0]), bytes(row[1]))
+            for row in self.db.execute(
                 "SELECT path,payload FROM private_artifact_bytes WHERE receipt=? ORDER BY path",
                 (receipt,),
             ).fetchall()

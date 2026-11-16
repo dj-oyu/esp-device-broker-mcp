@@ -40,3 +40,20 @@ Until those and Windows gates pass, runtime execution remains disabled.
 Pruning is logical deletion, not secure erasure: SQLite WAL/freelist pages and
 external backups can retain old bytes. The database and backups must stay private;
 this checkpoint does not change storage encryption, checkpointing or wipe policy.
+
+## Runtime finalization adapter (not installed)
+
+`commit_private_candidate` uses the existing builder cancellation lock, rechecks
+full binding/fingerprint/authority and confirms no active/uncertain child. It uses
+the actual Store connection: job success, private receipt/bytes, fixed audit event
+and a durable recovery pin are one SQL transaction. It does not call the ordinary
+ledger transition (which commits separately). The final live check occurs while
+the row is still running; after COMMIT the builder rejects a late stop. Store
+notifications occur only after successful commit and cannot undo it. The producer
+must call this synchronously on the broker loop after worker termination.
+
+Generated tests exercise the real Store schema, cancellation first, commit first,
+authority loss, active children, COMMIT failure and notification failure. This
+adapter is not wired to ProfileJobs, the device job path or the execution gate.
+Protected DB installation, producer output capture, retained workspace lifecycle,
+consumer pin/continuation hookup and native integration remain prerequisites.
