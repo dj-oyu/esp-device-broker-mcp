@@ -51,3 +51,21 @@ and no importer or MCP method is enabled. Do not register actual private inputs
 until owned durable receipts, no-follow ingestion and private build composition
 are integrated and reviewed. No configuration or credentials are changed by this
 checkpoint. Next: receipt-backed ingestion with synthetic race/interruption tests.
+
+## Receipt store checkpoint
+
+`PrivateInputStore` accepts already-read file bytes from a trusted ingestion
+adapter and commits a complete manifest plus bytes in one SQLite transaction.
+Receipts bind owner, project, input ID and the registration identity; resolution
+rehashes stored bytes. Repeated imports verify existing content, cancellation
+before commit rolls back both tables, and restart resolves committed receipts.
+Transactions use explicit SQL BEGIN/COMMIT/ROLLBACK, including connections with
+Python 3.12 `autocommit=True`; connection context-manager behavior is not assumed.
+The caller supplies a dedicated broker-owned connection with no active transaction.
+This storage component neither authenticates callers nor protects the database
+path; the broker integration must supply those boundaries.
+
+Synthetic tests cover restart, idempotence, owner/registration isolation, forged
+receipts, changed bytes, invalid inventories, cancellation and active transactions.
+The no-follow filesystem reader, platform-specific race tests, MCP route and
+composed build consumer are still missing. No private data has been imported.
