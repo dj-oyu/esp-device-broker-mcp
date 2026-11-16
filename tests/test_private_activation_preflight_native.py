@@ -13,7 +13,11 @@ from cardputer_mcp.firmware_build import FirmwareBuild
 from cardputer_mcp.private_activation_preflight import preflight_private_activation
 from cardputer_mcp.private_input_contract import InputFile
 from cardputer_mcp.private_input_registration import PrivateInputRegistration
-from cardputer_mcp.private_input_store import PrivateInputReader, PrivateInputStore, inventory_digest
+from cardputer_mcp.private_input_store import (
+    PrivateInputReader,
+    PrivateInputStore,
+    inventory_digest,
+)
 from cardputer_mcp.store import Store
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="native Windows required")
@@ -51,12 +55,18 @@ def test_real_reprepare_with_native_state_guard(tmp_path, monkeypatch, tamper):
         reg = reg.model_copy(update={"recipe_sha256": recipe})
         project.private_inputs["fixture"] = reg
         receipt = inputs.ingest(
-            registration=reg, project_id="p", input_id="fixture",
-            principal="owner", files=(("fixture", payload),),
+            registration=reg,
+            project_id="p",
+            input_id="fixture",
+            principal="owner",
+            files=(("fixture", payload),),
         )
         plan = builder.prepare(
-            "p", "owner", source_receipt="c" * 64,
-            private_input_id="fixture", private_input_receipt=receipt,
+            "p",
+            "owner",
+            source_receipt="c" * 64,
+            private_input_id="fixture",
+            private_input_receipt=receipt,
         ) | {"build_principal": "owner", "test": "firmware_build"}
         builder.private_store_factory = lambda: pytest.fail("preflight invoked mutating factory")
         if tamper:
