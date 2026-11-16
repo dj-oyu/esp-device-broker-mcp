@@ -113,7 +113,19 @@ keep the Store and lifetime guard in place for explicit recovery.
 
 A supervisor lease also prevents an outer Store session context from closing the
 DB/pin after the runtime wrapper refuses shutdown. Only confirmed runtime cleanup
-permits lease release and Store closure. The caller must stop the outer ProfileJobs
-queue and join its worker before closing the shared Store; this primitive does not
-perform that production admission/lifecycle integration. A successful synthetic
-shutdown is not permission to restart or replace a live broker.
+permits lease release and Store closure. An explicitly attached Broker adapter uses a two-phase shutdown: ProfileJobs
+closes admission and joins its worker without closing Store; Broker releases the
+adapter only at its final Store-close step, after remaining state writes. The
+default adapter is None and startup does not construct or install one. A successful
+synthetic shutdown is not permission to restart or replace a live broker.
+
+The ProfileJobs drain task is shielded once started, so cancellation of a waiting
+close caller does not cancel its worker or enqueue a second shutdown sentinel on
+retry. Identity changes across awaits and unconfirmed child cleanup refuse release.
+This does not promise autonomous completion of all Broker shutdown phases: a caller
+cancelled before ProfileJobs drain starts still needs a subsequent close attempt;
+the existing Store/guard remains retained in the meantime.
+An explicit close retry may resume a failed drain only after the original
+adapter/Store identity is restored and the recorded failure is the fixed ownership
+mismatch. Sentinel submission is tracked so that this retry cannot enqueue a second
+one. Other drain failures remain blocked; they are not treated as transient errors.

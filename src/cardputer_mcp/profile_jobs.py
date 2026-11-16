@@ -58,6 +58,10 @@ class ProfileJobs:
         self.state_uncertain_reason: str | None = None
         self.state_uncertain_cause: str | None = None
         self.source_reads = SourceReadWorker()
+        self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
+        self._close_identity: tuple[Any, Any] | None = None
+        self._sentinel_enqueued = False
 
     def _uncertain(self, *, allow_owned_cleanup: bool = False) -> bool:
         process = self.broker.firmware_build.process
@@ -85,6 +89,8 @@ class ProfileJobs:
         )
 
     def start(self) -> None:
+        if self._closed:
+            raise BrokerError("broker_closing")
         self.worker = asyncio.create_task(self._work(), name="registered-project-worker")
 
     def _authorized(self, principal: str, origin: str) -> bool:
@@ -124,7 +130,7 @@ class ProfileJobs:
         reauthorize: Callable[[], tuple[str, str]] | None = None,
     ) -> dict[str, Any]:
         broker, store = self.broker, self.broker._store()
-        if broker.closing or not self._authorized(principal, origin):
+        if self._closed or broker.closing or not self._authorized(principal, origin):
             raise BrokerError("principal_not_authorized")
         if self._uncertain():
             raise BrokerError("recovery_review_required")
@@ -153,7 +159,7 @@ class ProfileJobs:
             if reauthorize is not None and reauthorize() != (principal, origin):
                 raise BrokerError("principal_not_authorized") from None
             evidence = _SourcePreflight(store, epoch, settings, identity, {}, {})
-            if broker.closing or not self._source_current(evidence):
+            if self._closed or broker.closing or not self._source_current(evidence):
                 raise BrokerError("profile_or_principal_no_longer_valid") from None
             raise
         if reauthorize is not None and reauthorize() != (principal, origin):
@@ -179,7 +185,7 @@ class ProfileJobs:
         _source: _SourcePreflight | None = None,
     ) -> dict[str, Any]:
         broker, store = self.broker, self.broker._store()
-        if broker.closing or not self._authorized(principal, origin):
+        if self._closed or broker.closing or not self._authorized(principal, origin):
             raise BrokerError("principal_not_authorized")
         # History is diagnostic. Current process/output/cache uncertainty
         # still blocks this independent source/build lane.
@@ -208,19 +214,18 @@ class ProfileJobs:
                 broker.firmware_source.authorize_receipt(
                     request.project_id, request.source_receipt, principal
                 )
+            private_selection: dict[str, Any] = {}
+            if request.private_input_id is not None:
+                private_selection = {
+                    "private_input_id": request.private_input_id,
+                    "private_input_receipt": request.private_input_receipt,
+                }
             details = broker.firmware_build.prepare(
                 request.project_id,
                 principal,
                 request.source_receipt,
                 request.variant,
-                **(
-                    {
-                        "private_input_id": request.private_input_id,
-                        "private_input_receipt": request.private_input_receipt,
-                    }
-                    if request.private_input_id is not None
-                    else {}
-                ),
+                **private_selection,
             )
             storage = broker.firmware_build.storage(request.project_id)
         plan = dict(
@@ -341,6 +346,8 @@ class ProfileJobs:
         self, request: ExecuteRequest, plan: dict[str, Any], principal: str, origin: str
     ) -> dict[str, Any]:
         """Accept the owner's explicit request now; queue it when the parent succeeds."""
+        if self._closed or self.broker.closing:
+            raise BrokerError("broker_closing")
         broker, store = self.broker, self.broker._store()
         if (
             digest_plan(plan) != request.plan_hash
@@ -398,6 +405,8 @@ class ProfileJobs:
         def cancel(reason: str) -> None:
             broker.deferred.finish(job_id, "cancelled", reason)
 
+        if self._closed or broker.closing:
+            return cancel("broker_shutdown")
         parent = store.job(str(row["parent_job_id"]))
         if parent is None:
             return cancel("chain_broken")
@@ -463,6 +472,7 @@ class ProfileJobs:
             return bool(
                 authorized
                 and not broker.closing
+                and not self._closed
                 and broker._state_lock.is_locked
                 and plan["broker_epoch"] == broker.epoch
                 and plan["registration_sha256"] in accepted
@@ -482,6 +492,8 @@ class ProfileJobs:
             return False
 
     def execute(self, request: ExecuteRequest, principal: str, origin: str) -> dict[str, Any]:
+        if self._closed or self.broker.closing:
+            raise BrokerError("broker_closing")
         if not self._authorized(principal, origin):
             raise BrokerError("principal_not_authorized")
         stored = self.broker._store().plan(request.plan_hash)
@@ -613,9 +625,16 @@ class ProfileJobs:
             try:
                 if job_id is None:
                     return
+                if self._closed:
+                    self._check_close_identity()
                 store = broker._store()
                 job = store.job(job_id)
                 if job is None or job["state"] != "queued":
+                    continue
+                if self._closed:
+                    store.ledger.transition(
+                        job_id, "cancelled", "broker_shutdown", expect={"queued"}
+                    )
                     continue
                 plan = store.plan(job["plan_hash"])
                 if plan is None or digest_plan(plan) != job["plan_hash"]:
@@ -771,15 +790,57 @@ class ProfileJobs:
             finally:
                 self.queue.task_done()
 
+    def _check_close_identity(self) -> None:
+        if self._close_identity is None:
+            raise BrokerError("private_runtime_session_ownership_changed")
+        adapter, store = self._close_identity
+        if self.broker.private_runtime_session is not adapter or self.broker._store() is not store:
+            raise BrokerError("private_runtime_session_ownership_changed")
+
     async def close(self) -> None:
+        self._closed = True
+        if self._close_identity is None:
+            self._close_identity = (self.broker.private_runtime_session, self.broker._store())
+        adapter, store = self._close_identity
+        if self.broker.private_runtime_session is not adapter or self.broker._store() is not store:
+            raise BrokerError("private_runtime_session_ownership_changed")
+        if adapter is not None:
+            adapter.require_store(store)
+            adapter.quiesce()
+        if self._close_task is not None and self._close_task.done():
+            # Only an explicit retry after restoration of the exact captured
+            # identity may resume this known pre/post-sentinel fault. Other
+            # failures remain closed; no broad retry or duplicate sentinel.
+            if not self._close_task.cancelled():
+                failure = self._close_task.exception()
+                if type(failure) is BrokerError and str(failure) == (
+                    "private_runtime_session_ownership_changed"
+                ):
+                    self._close_task = None
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_worker())
+        await asyncio.shield(self._close_task)
+        if self.broker.private_runtime_session is not adapter or self.broker._store() is not store:
+            raise BrokerError("private_runtime_session_ownership_changed")
+        if adapter is not None:
+            adapter.verify_joined()
+
+    async def _close_worker(self) -> None:
         await self.source_reads.close()
+        self._check_close_identity()
+        assert self._close_identity is not None
+        _, store = self._close_identity
         if self.active is not None:
-            job = self.broker._store().job(self.active)
+            job = store.job(self.active)
             if job is not None:
-                plan = self.broker._store().plan(job["plan_hash"])
+                plan = store.plan(job["plan_hash"])
                 if plan is not None:
                     self._stop(plan, "broker_shutdown")
         if self.worker is not None:
-            await self.queue.put(None)
+            if not self._sentinel_enqueued:
+                await self.queue.put(None)
+                self._sentinel_enqueued = True
+            self._check_close_identity()
             await asyncio.shield(self.worker)
+            self._check_close_identity()
             self.worker = None

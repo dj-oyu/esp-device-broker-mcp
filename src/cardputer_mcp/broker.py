@@ -69,6 +69,7 @@ from .models import (
 )
 from .offload_io import IOMemo, complete, offload
 from .operator_notifications import OperatorNotifications
+from .private_runtime_session import PrivateRuntimeSession
 from .resource_recheck import uncertainty
 from .source_snapshot import SourceError, SourceSnapshots
 from .store import Store
@@ -272,6 +273,8 @@ class Broker:
         from .profile_jobs import ProfileJobs
 
         self.profile_jobs = ProfileJobs(self)
+        self.private_runtime_session: PrivateRuntimeSession | None = None
+        self._shutdown_identity: tuple[Any, Any] | None = None
         from .firmware_flash import FirmwareFlash
 
         self.firmware_flash = FirmwareFlash(
@@ -400,6 +403,17 @@ class Broker:
     async def close(self) -> None:
         if self.store is None:
             return
+        if self._shutdown_identity is None:
+            self._shutdown_identity = (self.private_runtime_session, self.store)
+        adapter, store = self._shutdown_identity
+
+        def retained_identity() -> None:
+            if self.private_runtime_session is not adapter or self.store is not store:
+                raise BrokerError("private_runtime_session_ownership_changed")
+
+        retained_identity()
+        if adapter is not None:
+            adapter.require_store(store)
         self.closing = True
         # Wake operator event streams so they end instead of holding shutdown open.
         self.operator_changes.notify()
@@ -410,7 +424,9 @@ class Broker:
         self.captures.clear()
         self.device_observations.clear()
         await self.home_recovery.close()
+        retained_identity()
         await self.profile_jobs.close()
+        retained_identity()
         self.firmware_build.request_stop()
         self.firmware_flash.request_stop()
         self._flash_bindings.clear()
@@ -421,6 +437,7 @@ class Broker:
                 await self.maintenance
             except asyncio.CancelledError:
                 pass
+            retained_identity()
             self.maintenance = None
         for request_id in tuple(self.waiters):
             self._end_wait(self.device_requests[request_id], "cancelled", "broker_shutdown")
@@ -429,6 +446,7 @@ class Broker:
             # Never cancel the device task or release its lock during an active workflow.
             await self.queue.put(None)
             await asyncio.shield(self.worker)
+            retained_identity()
         if (
             self._physical_busy()
             or self.firmware_build.process.uncertain
@@ -447,8 +465,14 @@ class Broker:
         self.device_observations.clear()
         self.logs.append(Event.STOPPED)
         self.job_logs.close()
-        self.store.close()
+        retained_identity()
+        if adapter is not None:
+            adapter.require_store(store)
+            adapter.close()
+        else:
+            store.close()
         self.store = None
+        self._shutdown_identity = None
         self.app_sessions.jobs.clear()
         self._state_lock.release()
         self._device_lock.release()

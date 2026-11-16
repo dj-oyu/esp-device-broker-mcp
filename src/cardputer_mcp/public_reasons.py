@@ -156,6 +156,7 @@ BROKER_REASON_CODES: frozenset[str] = frozenset(
         "blocked",
         "broker_already_running",
         "broker_closing",
+        "private_runtime_session_ownership_changed",
         "broker_not_running",
         "build_manifest_resolver_unavailable",
         "build_output_identity_invalid",

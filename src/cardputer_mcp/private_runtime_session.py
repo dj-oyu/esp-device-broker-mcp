@@ -30,6 +30,7 @@ class PrivateRuntimeSession:
         self._closed = False
         self._previous_factory = builder.private_store_factory
         self._factory = session.receipt_factory
+        self._store = session.store
 
     def _thread(self) -> None:
         if threading.get_ident() != self._owner:
@@ -71,26 +72,49 @@ class PrivateRuntimeSession:
             self._installed = True
             return self
 
-    def close(self) -> None:
+    def require_store(self, store: object) -> None:
+        self._thread()
+        if store is not self._store:
+            raise ValueError("private_runtime_session_store_mismatch")
+
+    def _owned(self) -> None:
+        if (
+            not self._installed
+            or self.builder.private_runtime is not self.runtime
+            or self.builder.private_store_factory is not self._factory
+        ):
+            raise ValueError("private_runtime_session_ownership_changed")
+
+    def quiesce(self) -> None:
+        """Stop admission immediately, without closing DB or releasing handles."""
         self._thread()
         with self.builder._lock:
-            if self._closed:
-                return
-            if (
-                not self._installed
-                or self.builder.private_runtime is not self.runtime
-                or self.builder.private_store_factory is not self._factory
-            ):
-                raise ValueError("private_runtime_session_ownership_changed")
+            self._owned()
             self.runtime.stop_accepting()
             self.session.stop_accepting()
             self.builder.request_stop()
+
+    def verify_joined(self) -> None:
+        """After outer worker join, discard outputs but keep the Store usable."""
+        self._thread()
+        with self.builder._lock:
+            self._owned()
+            if self.runtime._accepting:
+                raise ValueError("private_runtime_session_not_quiesced")
             self._joined()
             for job in tuple(self.runtime.pending):
                 self.runtime.discard(job)
             self.runtime.release_after_join()
             if self.runtime._operation is not None or self.runtime._scope_release_failed:
                 raise ValueError("private_runtime_session_cleanup_unconfirmed")
+
+    def close(self) -> None:
+        self._thread()
+        with self.builder._lock:
+            if self._closed:
+                return
+            self.quiesce()
+            self.verify_joined()
             if self._shutdown_hold is not None:
                 self.session.release_supervisor(self._shutdown_hold)
                 self._shutdown_hold = None
