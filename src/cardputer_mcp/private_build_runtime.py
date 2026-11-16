@@ -3,12 +3,14 @@
 import hashlib
 import json
 from collections.abc import Callable
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .private_build_finalize import commit_private_candidate
 from .private_build_output import PrivateBuildLogs
 from .private_input_contract import InputFile, _hash, _inventory
+from .private_state_windows import verified_private_database
 
 if TYPE_CHECKING:
     from .firmware_build import FirmwareBuild
@@ -37,16 +39,80 @@ class PrivateBuildRuntime:
         self,
         produce: Callable[[dict[str, Any], PrivateBuildLogs], PrivateBuildCandidate],
         artifacts: "PrivateArtifactStore",
+        *,
+        operation_guard: Callable[
+            ["Store"], AbstractContextManager[None]
+        ] = verified_private_database,
     ) -> None:
         self.produce = produce
         self.artifacts = artifacts
         self.pending: dict[str, tuple[str, PrivateBuildCandidate]] = {}
         self.running = False
+        self.operation_guard = operation_guard
+        self._scope_release_failed = False
+        self._operation: tuple[FirmwareBuild, Store, str, ExitStack] | None = None
+
+    def begin_operation(
+        self, builder: "FirmwareBuild", store: "Store", plan: dict[str, Any]
+    ) -> None:
+        """Broker-loop entry, before worker handoff; no SQLite use in worker guard."""
+        with builder._lock:
+            if self._operation is not None or self.running or self.pending:
+                raise ValueError("private_build_operation_in_use")
+            if self.artifacts.db is not store.db:
+                raise ValueError("private_build_finalizer_invalid")
+            builder._check_cancelled()
+            if builder.process.active or builder.process.uncertain:
+                raise ValueError("private_build_child_not_joined")
+            payload = _plan(plan)
+            with ExitStack() as entered:
+                entered.enter_context(self.operation_guard(store))
+                if builder.process.active or builder.process.uncertain:
+                    self._operation = (builder, store, payload, entered.pop_all())
+                    builder.output_uncertain = True
+                    raise ValueError("private_build_child_not_joined")
+                builder._check_cancelled()
+                self._operation = (builder, store, payload, entered.pop_all())
+
+    def _require_operation(self, builder: "FirmwareBuild", plan: dict[str, Any]) -> None:
+        if (
+            self._operation is None
+            or self._operation[0] is not builder
+            or self._operation[2] != _plan(plan)
+        ):
+            raise ValueError("private_build_operation_unavailable")
+
+    def _close_operation(self) -> None:
+        if self._operation is None or self._scope_release_failed:
+            return
+        builder, _, _, scope = self._operation
+        with builder._lock:
+            if self.running or builder.process.active or builder.process.uncertain:
+                builder.output_uncertain = True
+                return  # retained until explicit joined recovery
+            try:
+                scope.close()
+            except BaseException:
+                self._scope_release_failed = True
+                builder.output_uncertain = True
+                return  # successful DB commit must never become failure via cleanup
+            self._operation = None
+
+    def release_after_join(self) -> None:
+        """Explicit recovery; does not clear broker uncertainty or producer roots."""
+        if self._scope_release_failed:
+            raise ValueError("private_build_state_release_uncertain")
+        if self._operation is not None:
+            builder = self._operation[0]
+            if self.running or builder.process.active or builder.process.uncertain:
+                raise ValueError("private_build_child_not_joined")
+            self._close_operation()
 
     def execute(self, builder: "FirmwareBuild", plan: dict[str, Any]) -> str:
         payload = _plan(plan)
         snapshot = json.loads(payload)
         with builder._lock:
+            self._require_operation(builder, plan)
             if self.running or self.pending:
                 raise ValueError("private_build_output_in_use")
             self.running = True
@@ -105,6 +171,9 @@ class PrivateBuildRuntime:
         plan: dict[str, Any],
         live: Callable[[], bool],
     ) -> str:
+        self._require_operation(builder, plan)
+        if self._operation is None or self._operation[1] is not store:
+            raise ValueError("private_build_finalizer_invalid")
         payload, candidate = self.pending[plan["job_id"]]
         if payload != _plan(plan):
             raise ValueError("private_build_candidate_changed")
@@ -118,7 +187,10 @@ class PrivateBuildRuntime:
             live=live,
         )
         self.pending.pop(plan["job_id"])
+        self._close_operation()
         return receipt
 
     def discard(self, job_id: str) -> None:
         self.pending.pop(job_id, None)
+        if self._operation is not None and json.loads(self._operation[2])["job_id"] == job_id:
+            self._close_operation()

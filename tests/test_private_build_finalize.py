@@ -2,6 +2,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -134,7 +135,10 @@ def test_firmware_deferred_private_runtime_end_to_end(fixture):
         logs.append("synthetic private source text must not escape")
         return PrivateBuildCandidate("e" * 64, args["files"])
 
-    builder.private_runtime = PrivateBuildRuntime(produce, artifacts)
+    builder.private_runtime = PrivateBuildRuntime(
+        produce, artifacts, operation_guard=lambda _: nullcontext()
+    )
+    builder.private_runtime.begin_operation(builder, store, args["plan"])
     result = builder._execute(args["plan"], lambda _: None, defer_publish=True)
     assert result == "private_build_succeeded_no_flash"
     assert store.job("fixture")["state"] == "running"
@@ -170,8 +174,11 @@ def test_private_runtime_cancel_and_discard_never_publish(fixture):
     builder = FirmwareBuild(SimpleNamespace(build_projects={}))
     builder._reprepare = lambda *_: dict(args["plan"])
     builder.private_runtime = PrivateBuildRuntime(
-        lambda *_: PrivateBuildCandidate("e" * 64, args["files"]), artifacts
+        lambda *_: PrivateBuildCandidate("e" * 64, args["files"]),
+        artifacts,
+        operation_guard=lambda _: nullcontext(),
     )
+    builder.private_runtime.begin_operation(builder, store, args["plan"])
     builder._execute(args["plan"], lambda _: None, defer_publish=True)
     assert builder.request_stop("fixture")
     with pytest.raises(ValueError):
@@ -185,7 +192,7 @@ def test_private_runtime_cancel_and_discard_never_publish(fixture):
 def test_stop_during_first_reprepare_never_starts_private_producer(fixture):
     from cardputer_mcp.private_build_runtime import PrivateBuildRuntime
 
-    _, _, artifacts, args, _ = fixture
+    _, store, artifacts, args, _ = fixture
     builder = FirmwareBuild(SimpleNamespace(build_projects={}))
 
     def prepare(*_):
@@ -194,9 +201,13 @@ def test_stop_during_first_reprepare_never_starts_private_producer(fixture):
 
     builder._reprepare = prepare
     builder.private_runtime = PrivateBuildRuntime(
-        lambda *_: pytest.fail("producer started"), artifacts
+        lambda *_: pytest.fail("producer started"),
+        artifacts,
+        operation_guard=lambda _: nullcontext(),
     )
+    builder.private_runtime.begin_operation(builder, store, args["plan"])
     with pytest.raises(ValueError):
         builder._execute(args["plan"], lambda _: None, defer_publish=True)
+    builder.discard_deferred("fixture")
     assert not builder.private_runtime.running
     assert builder.private_runtime.pending == {}

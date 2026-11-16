@@ -75,3 +75,10 @@ are never copied into a generic archive. Existing public-only archive behavior i
 unchanged. Private artifact consumers must use the actual caller principal, never
 job-owner impersonation from general read-only UI adapters. A continuation ticket
 alone does not authorize access to private bytes or firmware flashing.
+
+The default runtime operation guard now opens on the broker loop before handing
+work to the build thread and remains held through commit/discard. Unopened or
+mismatched builder/plan/Store execution is refused. Running or uncertain children
+retain the guard for explicit joined recovery; guard-release failures latch
+uncertainty without undoing a successful commit. Generated host fixtures inject a
+synthetic guard explicitly; production does not substitute one for native checks.

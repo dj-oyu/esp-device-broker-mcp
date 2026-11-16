@@ -6,6 +6,7 @@ finalization and Store. It does not establish native staging or installation saf
 
 import asyncio
 import threading
+from contextlib import nullcontext
 
 import pytest
 from test_profile_jobs import prepare, register
@@ -53,7 +54,9 @@ async def test_real_profile_worker_private_finalization(
         return PrivateBuildCandidate("e" * 64, (("fixture.bin", b"generated-only"),))
 
     if mode != "default_closed":
-        builder.private_runtime = PrivateBuildRuntime(produce, artifacts)
+        builder.private_runtime = PrivateBuildRuntime(
+            produce, artifacts, operation_guard=lambda _: nullcontext()
+        )
     transitions = []
     original_transition = store.ledger.transition
 
@@ -93,9 +96,12 @@ async def test_real_profile_worker_private_finalization(
         assert artifacts.resolve(receipt=receipt, principal=key.principal_id) == (
             ("fixture.bin", b"generated-only"),
         )
-        assert store.db.execute(
-            "SELECT COUNT(*) FROM execution_audit WHERE event='private_build_committed'"
-        ).fetchone()[0] == 1
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM execution_audit WHERE event='private_build_committed'"
+            ).fetchone()[0]
+            == 1
+        )
         assert store.db.execute("SELECT COUNT(*) FROM private_artifact_pins").fetchone()[0] == 1
         assert not builder.private_runtime.pending
         assert builder.request_stop(plan["job_id"]) is False
@@ -107,9 +113,12 @@ async def test_real_profile_worker_private_finalization(
             "private_artifact_pins",
         ):
             assert store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
-        assert store.db.execute(
-            "SELECT COUNT(*) FROM execution_audit WHERE event='private_build_committed'"
-        ).fetchone()[0] == 0
+        assert (
+            store.db.execute(
+                "SELECT COUNT(*) FROM execution_audit WHERE event='private_build_committed'"
+            ).fetchone()[0]
+            == 0
+        )
         if mode == "default_closed":
             assert not calls
             assert builder.private_runtime is None

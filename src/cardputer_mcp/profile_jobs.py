@@ -653,6 +653,11 @@ class ProfileJobs:
                     else:
                         broker.firmware_build.begin()
                         broker.firmware_build.authority = live
+                        if private_plan_kwargs(plan):
+                            runtime = broker.firmware_build.private_runtime
+                            if runtime is None:
+                                raise ValueError("private_build_workspace_unavailable")
+                            runtime.begin_operation(broker.firmware_build, store, plan)
                         result = await broker.firmware_build.execute(
                             plan, stage, defer_publish=True
                         )
