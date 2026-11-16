@@ -366,6 +366,7 @@ def test_tools_list_grows_by_one_short_argument_only():
 
 def test_registration_digest_inputs_are_unchanged():
     """No allow-flag or other registration field was added for variants."""
+    # Private input registration is excluded from the legacy public digest.
     assert list(BuildProject.model_fields) == [
         "project_dir",
         "trusted_profile",
@@ -375,6 +376,7 @@ def test_registration_digest_inputs_are_unchanged():
         "node_tool",
         "git_tool",
         "source_repository",
+        "private_inputs",
         "expected_idf",
         "target",
     ]

@@ -69,3 +69,25 @@ Synthetic tests cover restart, idempotence, owner/registration isolation, forged
 receipts, changed bytes, invalid inventories, cancellation and active transactions.
 The no-follow filesystem reader, platform-specific race tests, MCP route and
 composed build consumer are still missing. No private data has been imported.
+
+## Firmware preparation binding checkpoint
+
+`FirmwareBuild.prepare` now accepts internal-only private input ID/receipt fields
+and binds revalidated owned receipt bytes, registration identity, exact source
+commit/receipt and principal into the build fingerprint. A broker-installed store
+factory must provide a connection owned by the calling thread; there is no default
+store, upload endpoint or runtime configuration change in this checkpoint. Ordinary
+builds omit all private keys and preserve their existing fingerprint calculation.
+The four execution-time re-prepare sites carry the private receipt selection.
+
+Native workspace installation is still absent. Execution of a private plan fails
+explicitly before any build process instead of silently building only public
+sources. This gate is not a completed private build path. Remaining work is the
+Windows protected-root/staging adapter, authorized source-byte composition,
+private artifact provenance, and authenticated MCP/job plumbing. Tests cover only
+generated fixture data and the existing public build path.
+
+Before removing the execution gate, additionally require exact equality of all
+three private binding fields against re-preparation, and verify that the registered
+`recipe_sha256` matches the actual allowed executable build recipe/profile. Merely
+hashing a registered recipe value into identity does not validate what will run.

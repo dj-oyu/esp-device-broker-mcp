@@ -9,11 +9,12 @@ import shutil
 import stat
 import threading
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from . import build_variant
+from . import build_variant, private_build_binding
 from .build_artifacts import BuildArtifacts, has_legacy_diagnostic, manifest_digest
 from .build_ccache import CONTRACT as CCACHE_CONTRACT
 from .build_ccache import ccache_statistics, configure_ccache, probe_ccache
@@ -34,6 +35,7 @@ from .build_process import BuildProcess
 from .build_security import BuildSecurityConfigError, interpret_idf601_security
 from .job_logs import attach
 from .manifest_export import export_response
+from .private_input_store import PrivateInputStore
 
 # Frozen: the compiler-cache namespace of ordinary builds hashed these axes as absent.
 # Keeping the value keeps existing compiler caches valid after the diagnostic options
@@ -339,6 +341,11 @@ def hash_file(path: Path) -> str:
 class FirmwareBuild:
     def __init__(self, settings: Any, history: Path | None = None) -> None:
         self.settings = settings
+        # Trusted broker adapter only; each use must own a thread-local connection.
+        # No remote upload/path API and no production adapter installed here.
+        self.private_store_factory: (
+            Callable[[], AbstractContextManager[PrivateInputStore]] | None
+        ) = None
         self.artifacts = BuildArtifacts(history)
         self.process = BuildProcess()
         self.logs: dict[str, BuildLogs] = {}
@@ -413,10 +420,37 @@ class FirmwareBuild:
         principal: str,
         source_receipt: str | None = None,
         variant: str | None = None,
+        *,
+        private_input_id: str | None = None,
+        private_input_receipt: str | None = None,
     ) -> dict[str, Any]:
         if variant is not None and source_receipt is None:
             raise ValueError(build_variant.REQUIRES_SOURCE)
         project, provenance = self._project(project_id, principal, source_receipt)
+        private_selection: dict[str, str] = {}
+        if private_input_id is not None or private_input_receipt is not None:
+            if (
+                not project_id
+                or not private_input_id
+                or not private_input_receipt
+                or not source_receipt
+                or not provenance
+            ):
+                raise ValueError("private_build_requires_owned_receipts")
+            registration = getattr(project, "private_inputs", {}).get(private_input_id)
+            if registration is None or self.private_store_factory is None:
+                raise ValueError("private_build_registration_unavailable")
+            with self.private_store_factory() as store:
+                private_selection = private_build_binding.bind_private_build(
+                    store=store,
+                    registration=registration,
+                    project_id=project_id,
+                    input_id=private_input_id,
+                    principal=principal,
+                    receipt=private_input_receipt,
+                    source_receipt=source_receipt,
+                    source_commit=provenance["commit"],
+                )
         # Bound only when named; an absent variant leaves every hash below unchanged.
         selection = build_variant.bind(project.project_dir, variant) if variant is not None else {}
         if hasattr(self.settings, "state_dir") and project.project_dir.resolve().is_relative_to(
@@ -451,6 +485,7 @@ class FirmwareBuild:
                     ),
                     "project_id": project_id,
                     **selection,
+                    **private_selection,
                     **({"source_receipt": source_receipt} if source_receipt is not None else {}),
                     "canonical_project": str(project.project_dir.resolve(strict=True)).casefold(),
                     "profile": hash_file(project.trusted_profile),
@@ -481,6 +516,7 @@ class FirmwareBuild:
         return dict(
             project_id=project_id,
             **selection,
+            **private_selection,
             **(
                 {"source_receipt": source_receipt, "source_provenance": provenance}
                 if provenance
@@ -566,6 +602,10 @@ class FirmwareBuild:
             self._preopened_logs.pop(job_id, None)
 
     def _execute(self, plan: dict[str, Any], stage: Any, defer_publish: bool = False) -> str:
+        # Until native workspace staging is installed, never silently compile
+        # the public-only source for a prepared private-input plan.
+        if private_build_binding.plan_kwargs(plan):
+            raise ValueError("private_build_workspace_unavailable")
         if self._build_lock is not None:
             raise BuildLocationError("build_output_in_use")
         try:
@@ -636,6 +676,7 @@ class FirmwareBuild:
                 principal,
                 plan.get("source_receipt"),
                 **build_variant.plan_kwargs(plan),
+                **private_build_binding.plan_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -894,6 +935,7 @@ class FirmwareBuild:
                 principal,
                 plan.get("source_receipt"),
                 **build_variant.plan_kwargs(plan),
+                **private_build_binding.plan_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -955,6 +997,7 @@ class FirmwareBuild:
                 principal,
                 plan.get("source_receipt"),
                 **build_variant.plan_kwargs(plan),
+                **private_build_binding.plan_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
@@ -1058,6 +1101,7 @@ class FirmwareBuild:
                 principal,
                 plan.get("source_receipt"),
                 **build_variant.plan_kwargs(plan),
+                **private_build_binding.plan_kwargs(plan),
             )["fingerprint"]
             != plan["fingerprint"]
         ):
