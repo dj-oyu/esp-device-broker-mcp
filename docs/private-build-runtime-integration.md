@@ -159,3 +159,20 @@ At final shutdown, a protected Store session is closed even when no runtime adap
 was installed. If both exist, the adapter must reference that same session and
 Store. Captured identities are checked across shutdown awaits to prevent closing a
 replacement database or releasing a different session's protection.
+
+### Explicit runtime factory during startup
+
+`Broker(..., private_runtime_session_factory=...)` optionally constructs a
+`PrivateRuntimeSession` after protected Store recovery and before any broker worker
+starts. It requires the explicit protected Store factory above. The callback receives
+the same builder and opened Store session; a returned adapter must be new, uninstalled,
+and bound to that exact builder/session/Store. Both factory defaults remain `None`.
+No configuration, remote request or preflight summary enables either factory.
+
+An installed adapter is quiesced if startup fails. Known-idle failure closes it and
+its Store once; worker/child/cleanup uncertainty retains the adapter, session and
+locks for explicit shutdown. Ordinary startup without either factory is unchanged.
+Generated tests exercise this startup entry through the real ProfileJobs worker,
+atomic private artifact finalization and shutdown. They stub receipt preparation
+and native protection and use a generated producer: they do not demonstrate actual
+asset ingestion, the native compiler, ESP-IDF build success or a running deployment.

@@ -41,7 +41,7 @@ from .device_failure_outcome import FailureEvidence
 from .device_failure_outcome import classify as classify_failure
 from .device_observation import DeviceObservation
 from .execution_authority import Checkpoint, ExecutionAuthority, Gate
-from .firmware_build import BuildPreflightFailure
+from .firmware_build import BuildPreflightFailure, FirmwareBuild
 from .flash_binding import FlashBinding, prepare_binding, validate_binding
 from .flash_lifecycle import FlashFailure, _bounded_read_diagnostic
 from .flash_manifest import FlashAdmissionError
@@ -227,8 +227,12 @@ class Broker:
         private_store_session_factory: (
             Callable[[Path, Callable[[], None]], PrivateStoreSession] | None
         ) = None,
+        private_runtime_session_factory: (
+            Callable[[FirmwareBuild, PrivateStoreSession], PrivateRuntimeSession] | None
+        ) = None,
     ) -> None:
         # Explicit trusted in-process injection only; no configuration auto-activation.
+        self._private_runtime_session_factory = private_runtime_session_factory
         self._private_store_session_factory = private_store_session_factory
         self._private_store_session: PrivateStoreSession | None = None
         self._private_start_attempted = False
@@ -376,6 +380,11 @@ class Broker:
         return self.store
 
     async def start(self) -> None:
+        if (
+            self._private_runtime_session_factory is not None
+            and self._private_store_session_factory is None
+        ):
+            raise BrokerError("private_runtime_session_ownership_changed")
         if self._private_store_session_factory is not None:
             if self._private_start_attempted:
                 raise BrokerError("broker_already_running")
@@ -409,6 +418,22 @@ class Broker:
             self.store.recover()
             self.tickets.void_stale()
             self.deferred.cancel_stale()
+            if self._private_runtime_session_factory is not None:
+                assert self._private_store_session is not None
+                runtime_candidate = self._private_runtime_session_factory(
+                    self.firmware_build, self._private_store_session
+                )
+                if (
+                    not isinstance(runtime_candidate, PrivateRuntimeSession)
+                    or runtime_candidate._installed
+                    or runtime_candidate._closed
+                    or runtime_candidate.builder is not self.firmware_build
+                    or runtime_candidate.session is not self._private_store_session
+                ):
+                    raise BrokerError("private_runtime_session_ownership_changed")
+                runtime_candidate.require_store(self.store)
+                self.private_runtime_session = runtime_candidate
+                runtime_candidate.__enter__()
             self.logs.append(Event.STARTED)
             self.worker = asyncio.create_task(self._work(), name="single-device-worker")
             self.profile_jobs.start()
@@ -418,6 +443,17 @@ class Broker:
         except BaseException:
             if self._private_store_session is not None:
                 self.closing = True
+                adapter = self.private_runtime_session
+                if adapter is not None:
+                    if adapter._installed:
+                        adapter.quiesce()
+                    elif (
+                        adapter._shutdown_hold is None
+                        and self.firmware_build.private_runtime is None
+                    ):
+                        self.private_runtime_session = None
+                    else:
+                        raise  # Partial ownership cannot be treated as uninstalled.
                 process = self.firmware_build.process
                 tasks = (self.worker, self.profile_jobs.worker, self.maintenance)
                 if (
@@ -433,7 +469,11 @@ class Broker:
                 ):
                     # Keep session and locks reachable until explicit verified shutdown.
                     raise
-                self._private_store_session.close()
+                if self.private_runtime_session is not None:
+                    self.private_runtime_session.close()
+                    self.private_runtime_session = None
+                else:
+                    self._private_store_session.close()
                 self._private_store_session = None
                 self.store = None
             elif self.store:
