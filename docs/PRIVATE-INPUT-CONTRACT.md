@@ -1,7 +1,7 @@
 # Private input composition: development checkpoint
 
 This checkpoint is a pure identity/validation helper, not a working private-input
-feature. It is not connected to MCP, source receipts, configuration or build jobs.
+feature. The identity helper is not connected to MCP, source receipts or build jobs.
 It grants no delivery, execution, publication or flash authority.
 
 The helper binds public source receipt and exact Git commit, private input receipt,
@@ -13,7 +13,8 @@ conservative ASCII subset; broadening it needs Windows collision tests.
 
 Remaining integration work, in order:
 
-1. A locally registered input ID, fixed destination and permitted public commit;
+1. Local registration schema is implemented (see below): input ID, fixed destination
+   and permitted public commit;
    no caller-selected local path, URL or credential. Authorization to introduce
    actual private inputs remains separate from this code change.
 2. No-follow bounded local ingestion into immutable storage, stable file-handle
@@ -32,6 +33,21 @@ combination; a private directory alone cannot ensure confidentiality. Compiler
 output may contain private content. Diagnostics and generated binaries must keep
 the appropriate private audience, with no automatic public artifact upload.
 
-Validation for this checkpoint: stdlib unittest synthetic contract tests only.
+Validation covers synthetic identity and registration tests; no real imports.
 No actual private files, source copies, broker configuration, transfers or hardware
 are used. This does not establish a private-enabled firmware build.
+
+## Local registration checkpoint
+
+`BuildProject.private_inputs` now accepts bounded, locally configured input IDs.
+Each declaration fixes an absolute local root, portable destination, exact public
+commit, inventory hash, recipe hash and file/byte limits. Configuration loading
+performs no input I/O. Private roots and declarations are omitted from normal
+model serialization/repr. The registration identity binds every field and project
+and input IDs; it is not an authorization token.
+
+This is schema support only. Existing build jobs do not consume these declarations
+and no importer or MCP method is enabled. Do not register actual private inputs
+until owned durable receipts, no-follow ingestion and private build composition
+are integrated and reviewed. No configuration or credentials are changed by this
+checkpoint. Next: receipt-backed ingestion with synthetic race/interruption tests.

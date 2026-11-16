@@ -20,6 +20,7 @@ from .flash_models import FlashDevice
 from .legacy_keys import drop_removed_gates
 from .models import Digest
 from .ports import DeviceSelector
+from .private_input_registration import PrivateInputRegistration
 
 
 class SerialSettings(BaseModel):
@@ -240,7 +241,7 @@ class SourceRepository(BaseModel):
 class BuildProject(BaseModel):
     """Trusted local registration, never supplied as an MCP pathname."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
     project_dir: Path
     trusted_profile: Path
     build_root: Path | None = None
@@ -249,8 +250,21 @@ class BuildProject(BaseModel):
     node_tool: RegisteredBuildTool | None = None
     git_tool: RegisteredBuildTool | None = None
     source_repository: SourceRepository | None = None
+    private_inputs: dict[str, PrivateInputRegistration] = Field(
+        default_factory=dict, max_length=16, exclude=True, repr=False
+    )
+
     expected_idf: Literal["6.0.1"] = "6.0.1"
     target: Literal["esp32s3"] = "esp32s3"
+
+    @field_validator("private_inputs")
+    @classmethod
+    def private_input_ids(
+        cls, value: dict[str, PrivateInputRegistration]
+    ) -> dict[str, PrivateInputRegistration]:
+        if any(re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", key) is None for key in value):
+            raise ValueError("invalid_private_input_id")
+        return value
 
     @field_validator("build_root")
     @classmethod
