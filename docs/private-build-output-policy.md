@@ -2,8 +2,8 @@
 
 Compilation does not declassify assets. Object files, firmware, diagnostics,
 compiler caches and CMake outputs can embed original model/source bytes. The
-firmware execution gate remains closed; these policy helpers are not yet wired
-into the executor or MCP job schema.
+firmware execution gate remains closed. Log selection and cache suppression are
+now wired into the executor behind that gate; no MCP private-input job is enabled.
 
 ## Logs
 
@@ -50,3 +50,18 @@ private artifact admission/provenance and cancellation-atomic final publication;
 verify no public cache reuse; then run native generated-data integration tests.
 Windows scratch ownership and cross-user/child-lock evidence remain separate gates.
 No actual private input, runtime configuration or device is changed by this work.
+
+
+## Runtime wiring checkpoint
+
+`FirmwareBuild` selects `PrivateBuildLogs` before attaching the durable tee and
+before running a child. The private cache branch sanitizes the post-profile
+environment, never probes a cache executable, skips `configure_ccache` (which would
+remove disable flags), and returns a disabled policy so statistics are skipped
+and the existing IDF command chooses `--no-ccache`. Ordinary branches are unchanged.
+
+The general `BuildArtifacts` publication/lookup path now refuses private markers,
+including malformed/null ones, and private selection in stored job plans. This is
+a fail-closed boundary, not an implemented private artifact store. Dedicated
+protected storage and cancellation-atomic publication are still required before
+the execution gate can open. Tests exercise branches with generated data only.

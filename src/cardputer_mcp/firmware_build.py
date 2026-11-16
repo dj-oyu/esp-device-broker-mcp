@@ -35,6 +35,7 @@ from .build_process import BuildProcess
 from .build_security import BuildSecurityConfigError, interpret_idf601_security
 from .job_logs import attach
 from .manifest_export import export_response
+from .private_build_output import PrivateBuildLogs, no_private_compiler_cache
 from .private_input_store import PrivateInputStore
 
 # Frozen: the compiler-cache namespace of ordinary builds hashed these axes as absent.
@@ -677,6 +678,25 @@ class FirmwareBuild:
                 raise diagnostic from None
             raise
 
+    def _output_logs(self, plan: dict[str, Any], principal: str) -> BuildLogs:
+        private = bool(private_build_binding.plan_kwargs(plan))
+        log_type = PrivateBuildLogs if private else BuildLogs
+        return log_type(principal, job_id=plan["job_id"], on_change=self.on_logs_change)
+
+    def _cache_for_plan(
+        self,
+        plan: dict[str, Any],
+        env: dict[str, str],
+        run: Any,
+        source: Path,
+    ) -> dict[str, Any]:
+        if private_build_binding.plan_kwargs(plan):
+            filtered = no_private_compiler_cache(env)
+            env.clear()
+            env.update(filtered)
+            return {"contract": CCACHE_CONTRACT, "enabled": False, "reason": "private_inputs"}
+        return probe_ccache(env, run, source)
+
     def _execute_steps(
         self,
         plan: dict[str, Any],
@@ -693,7 +713,7 @@ class FirmwareBuild:
         project, provenance = self._project(
             plan["project_id"], principal, plan.get("source_receipt")
         )
-        logs = BuildLogs(principal, job_id=plan["job_id"], on_change=self.on_logs_change)
+        logs = self._output_logs(plan, principal)
         logs.redactions = tuple(
             value
             for key, value in os.environ.items()
@@ -865,7 +885,7 @@ class FirmwareBuild:
         if "node" not in registered_tools and shutil.which("node.exe", path=env["PATH"]):
             raise FixedDiagnosticFailure("node_requires_explicit_local_registration")
         try:
-            cache_policy = probe_ccache(env, run, project.project_dir)
+            cache_policy = self._cache_for_plan(plan, env, run, project.project_dir)
         except ValueError as failure:
             if str(failure) in {
                 "compiler_cache_setting_invalid",
@@ -909,21 +929,25 @@ class FirmwareBuild:
             self.settings.state_dir, build_root, plan["fingerprint"], environment_fingerprint
         )
         variant = build_variant.identity(plan)
-        cache_receipt = configure_ccache(
-            cache_policy,
-            env,
-            self.settings.state_dir,
-            build_dir,
-            plan["project_id"],
-            principal,
-            environment_fingerprint,
-            CCACHE_NAMESPACE_MODES
-            if variant is None
-            else {
-                **CCACHE_NAMESPACE_MODES,
-                "build_variant": variant[0],
-                "build_variant_sha256": variant[1],
-            },
+        cache_receipt = (
+            dict(cache_policy)
+            if private_build_binding.plan_kwargs(plan)
+            else configure_ccache(
+                cache_policy,
+                env,
+                self.settings.state_dir,
+                build_dir,
+                plan["project_id"],
+                principal,
+                environment_fingerprint,
+                CCACHE_NAMESPACE_MODES
+                if variant is None
+                else {
+                    **CCACHE_NAMESPACE_MODES,
+                    "build_variant": variant[0],
+                    "build_variant_sha256": variant[1],
+                },
+            )
         )
         logs.append("-- Compiler cache: " + cache_receipt["reason"])
         cache_before = (

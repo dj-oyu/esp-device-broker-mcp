@@ -9,6 +9,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from .private_build_output import PRIVATE_MANIFEST_KEYS
+
 # Removed diagnostic build selection; present only in legacy plans and manifests.
 _LEGACY_DIAGNOSTIC_KEYS = (
     "derby_detail_mode",
@@ -68,12 +70,20 @@ class BuildArtifacts:
             or plan.get("build_principal") != principal
             or plan.get("test") != "firmware_build"
             or plan.get("job_id") != job_id
+            or PRIVATE_MANIFEST_KEYS.intersection(plan)
         ):
             raise ValueError("owned_build_artifact_not_available")
         return row[0], plan, row[2]
 
     def publish(self, job_id: str, principal: str, root: Path, manifest: dict[str, Any]) -> None:
-        if not principal or not root.is_dir() or manifest.get("flash_authorized") is not False:
+        # General artifact storage/export is not an authorized private-input sink.
+        # Keep this closed until a dedicated protected private store is installed.
+        if (
+            not principal
+            or not root.is_dir()
+            or manifest.get("flash_authorized") is not False
+            or PRIVATE_MANIFEST_KEYS.intersection(manifest)
+        ):
             raise ValueError("invalid_internal_artifact_receipt")
         with self._lock:
             if self.history is not None:
@@ -150,6 +160,10 @@ class BuildArtifacts:
     def resolve(self, job_id: str, principal: str) -> tuple[Path, dict[str, Any]]:
         with self._lock:
             record = self._records.get(job_id)
-            if record is None or record[0] != principal:
+            if (
+                record is None
+                or record[0] != principal
+                or PRIVATE_MANIFEST_KEYS.intersection(record[2])
+            ):
                 raise ValueError("owned_build_artifact_not_available")
             return record[1], copy.deepcopy(record[2])
