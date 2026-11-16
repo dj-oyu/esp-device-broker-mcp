@@ -759,6 +759,57 @@ class Store:
         self.db.execute("UPDATE device_requests SET reviewed=1 WHERE id=?", (request_id,))
         self.db.commit()
 
+    def _guard_private_archive(self) -> None:
+        """Keep private receipts and their job/plan bindings in the protected DB.
+
+        Uses the already populated temp.archive_keys. Never exports private tables.
+        Even an unpinned receipt still needs its job and plan for owned resolution.
+        """
+        jobs = {
+            row[0] for row in self.db.execute("SELECT key FROM temp.archive_keys WHERE kind='jobs'")
+        }
+        plans = {
+            row[0]
+            for row in self.db.execute("SELECT key FROM temp.archive_keys WHERE kind='plans'")
+        }
+        if not jobs and not plans:
+            return
+        tables = {
+            row[0]
+            for row in self.db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('private_artifact_receipts','private_artifact_pins')"
+            )
+        }
+        if not tables:
+            return
+        denied = "history_archive_private_artifact_retained"
+        if "private_artifact_receipts" not in tables:
+            if self.db.execute("SELECT 1 FROM private_artifact_pins LIMIT 1").fetchone():
+                raise ValueError(denied)
+            return
+        for row in self.db.execute("SELECT job_id,record FROM private_artifact_receipts"):
+            try:
+                record = json.loads(row[1])
+                plan_hash = record["plan_hash"]
+                if not isinstance(plan_hash, str) or record.get("job_id") != row[0]:
+                    raise ValueError(denied)
+            except (TypeError, KeyError, ValueError):
+                raise ValueError(denied) from None
+            if row[0] in jobs or plan_hash in plans:
+                raise ValueError(denied)
+            current = self.db.execute("SELECT plan_hash FROM jobs WHERE id=?", (row[0],)).fetchone()
+            if current is not None and current[0] in plans:
+                raise ValueError(denied)
+        if (
+            "private_artifact_pins" in tables
+            and self.db.execute(
+                "SELECT 1 FROM private_artifact_pins p LEFT JOIN private_artifact_receipts r "
+                "ON p.receipt=r.receipt WHERE r.receipt IS NULL LIMIT 1"
+            ).fetchone()
+        ):
+            raise ValueError(denied)
+
     def archive_rows(
         self,
         destination: Path,
@@ -786,6 +837,7 @@ class Store:
                 ((kind, key) for key in keys),
             )
         self.db.commit()
+        self._guard_private_archive()
         self.db.execute("ATTACH DATABASE ? AS archive", (str(destination),))
         try:
             self.db.execute("PRAGMA archive.journal_mode=DELETE")
@@ -793,6 +845,7 @@ class Store:
             expected: dict[str, int] = {}
             with self.db:
                 self.db.execute("BEGIN IMMEDIATE")
+                self._guard_private_archive()
                 self.db.execute("CREATE TABLE archive.archive_info(key TEXT PRIMARY KEY, value)")
                 self.db.executemany(
                     "INSERT INTO archive.archive_info VALUES(?,?)", sorted(info.items())
@@ -820,6 +873,7 @@ class Store:
             check.close()
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
+            self._guard_private_archive()
             for table, column, kind in ARCHIVE_TABLES:
                 deleted = self.db.execute(
                     f"DELETE FROM main.{table} WHERE {column} IN "
