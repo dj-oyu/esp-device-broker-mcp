@@ -85,3 +85,19 @@ the same file if the path was replaced before capture. Production requires a
 lifetime guard established **before** opening Store (or an equivalent demonstrated
 identity guarantee). This helper is not automatically installed, does not repair
 existing state permissions, and does not establish that live broker prerequisite.
+
+### Protected Store session
+
+`PrivateStoreSession` pins an already protected database before initializing its
+writable Store, and holds that lifetime pin until Store closes. This operation
+writes schema/WAL and is not the read-only preparation diagnostic. Its worker
+receipt factory rejects new leases after closing starts. Active leases keep the
+Store and lifetime pin alive; the owner must join those workers and retry close.
+Uncertain reader cleanup is latched rather than treated as successful release.
+
+This is still an internal, uninstalled session primitive. It does not supervise
+compiler processes: a production owner must retain it across the entire runtime
+and join every child before closing, including children without receipt leases.
+It does not migrate existing live state, alter ACLs, or create a protected database
+from an unprotected one. Production ownership, source registration and actual
+private asset readiness remain separate checks.
