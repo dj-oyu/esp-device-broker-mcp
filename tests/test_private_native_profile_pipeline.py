@@ -71,14 +71,22 @@ async def test_native_ingestion_to_profile_atomic_finalize(registry_service, tmp
     original_prepare = builder.prepare
     monkeypatch.setattr(builder, "prepare", lambda *_a, **_k: {"fingerprint": reg.recipe_sha256})
     receipt = private_registration_ingest.ingest_registered_input(
-        builder, store, project_id="fixture", input_id="fixture",
-        source_receipt="c" * 64, principal=owner.principal_id,
-        manifest=manifest, authorized=lambda: True, cancelled=lambda: False,
+        builder,
+        store,
+        project_id="fixture",
+        input_id="fixture",
+        source_receipt="c" * 64,
+        principal=owner.principal_id,
+        manifest=manifest,
+        authorized=lambda: True,
+        cancelled=lambda: False,
     )
     monkeypatch.setattr(builder, "prepare", original_prepare)
     plan = plan | {
-        "private_input_id": "fixture", "private_input_receipt": receipt,
-        "private_binding_sha256": "b" * 64, "source_receipt": "c" * 64,
+        "private_input_id": "fixture",
+        "private_input_receipt": receipt,
+        "private_binding_sha256": "b" * 64,
+        "source_receipt": "c" * 64,
     }
     digest = digest_plan(plan)
     store.put_plan(digest, plan)
@@ -123,8 +131,11 @@ async def test_native_ingestion_to_profile_atomic_finalize(registry_service, tmp
     assert len(paths) == 2 and all(not path.exists() for path in paths)
     assert not builder.private_runtime.pending
     assert builder.private_runtime._operation is None
-    assert store.db.execute(
-        "SELECT COUNT(*) FROM execution_audit WHERE event='private_build_committed'"
-    ).fetchone()[0] == 1
+    assert (
+        store.db.execute(
+            "SELECT COUNT(*) FROM execution_audit WHERE event='private_build_committed'"
+        ).fetchone()[0]
+        == 1
+    )
     assert store.db.execute("SELECT COUNT(*) FROM private_artifact_pins").fetchone()[0] == 1
     assert not builder.manifests and not builder._pending
