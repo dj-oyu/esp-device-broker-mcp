@@ -12,6 +12,7 @@ from cardputer_mcp.private_input_registration import PrivateInputRegistration
 from cardputer_mcp.private_input_store import PrivateInputStore, inventory_digest
 from cardputer_mcp.private_workspace_materialize import _supported, materialize_workspace
 from cardputer_mcp.private_workspace_plan import WorkspacePlan, prepare_workspace
+from cardputer_mcp.private_workspace_root import private_workspace_root
 
 
 @unittest.skipUnless(_supported(), "requires tested POSIX filesystem primitives")
@@ -123,23 +124,25 @@ class MaterializeTests(unittest.TestCase):
                 ),
             ),
         )
-        with materialize_workspace(plan, protected_parent=self.parent) as stage:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-I",
-                    "-c",
-                    "from pathlib import Path; import hashlib; "
-                    "Path('output.bin').write_bytes(hashlib.sha256(Path('source.txt').read_bytes()+"
-                    "Path('assets/fixture.bin').read_bytes()).digest())",
-                ],
-                cwd=stage,
-                capture_output=True,
-                timeout=10,
-            )
-            self.assertEqual(result.returncode, 0)
-            self.assertEqual(
-                (stage / "output.bin").read_bytes(),
-                hashlib.sha256(b"synthetic sourcesynthetic input").digest(),
-            )
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as container:
+            with private_workspace_root(Path(container)) as root:
+                with materialize_workspace(plan, protected_parent=root) as stage:
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-c",
+                            "from pathlib import Path; import hashlib; "
+                            "Path('output.bin').write_bytes(hashlib.sha256(Path('source.txt').read_bytes()+"
+                            "Path('assets/fixture.bin').read_bytes()).digest())",
+                        ],
+                        cwd=stage,
+                        capture_output=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 0)
+                    self.assertEqual(
+                        (stage / "output.bin").read_bytes(),
+                        hashlib.sha256(b"synthetic sourcesynthetic input").digest(),
+                    )
         self.assertEqual(list(self.parent.iterdir()), [])
