@@ -173,6 +173,35 @@ An installed adapter is quiesced if startup fails. Known-idle failure closes it 
 its Store once; worker/child/cleanup uncertainty retains the adapter, session and
 locks for explicit shutdown. Ordinary startup without either factory is unchanged.
 Generated tests exercise this startup entry through the real ProfileJobs worker,
-atomic private artifact finalization and shutdown. They stub receipt preparation
-and native protection and use a generated producer: they do not demonstrate actual
-asset ingestion, the native compiler, ESP-IDF build success or a running deployment.
+atomic private artifact finalization and shutdown. Portable fixtures stub native
+protection; Windows fixtures use real native protection. Both use synthetic receipt
+preparation and producers: neither demonstrates actual asset ingestion, the native
+compiler, ESP-IDF build success or a running deployment.
+
+### Local startup composition (default off)
+
+Trusted local startup code can use `private_startup_factories(settings,
+PrivateStartup(enabled=True, scratch_container=...))` as keyword arguments to
+`Broker`. The helper returns no overrides by default. It does not start services,
+create input receipts, change permissions or authorize jobs. Pass the constructed
+broker to the existing `create_app(settings, broker=...)` or `create_server`
+entry; their authentication wiring is unchanged.
+
+Enabled mode requires Windows, an existing protected `history.sqlite3` at the
+configured state directory and a separate existing protected scratch container.
+Scratch must not overlap state, registered projects/profiles/output roots,
+source caches (including previous roots) or registered private input roots.
+Path comparison is a configuration check, not a security boundary: native
+no-follow handles and ACL checks still protect state and scratch. Scratch is
+checked before opening Store and again before runtime installation. Factories
+reject changed settings, including private registrations. No CLI, settings-file
+or MCP flag automatically enables this helper.
+
+Composition uses the native default database guards, `NativePrivateProducer`
+with its actual compiler default, and `PrivateArtifactStore`. A successful
+construction is not an actual compile or activation approval. The generated
+Windows startup fixtures test real database guards, worker finalization and
+failed-start pin retention; source/receipt resolution and producer remain
+synthetic. The reported Windows private suite reached 285 passes on its tested
+checkpoint, not a real-input ESP-IDF build. The composition helper needs its own
+same-head native test before production use.
