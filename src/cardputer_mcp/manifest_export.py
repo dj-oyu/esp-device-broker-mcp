@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from .build_artifacts import manifest_digest
+from .private_build_output import reject_private_export
 
 CONTRACT = "broker-build-manifest-export-v1"
 MAX_EXPORT_BYTES = 1024 * 1024
@@ -32,6 +33,7 @@ def canonical_json(value: Any) -> bytes:
 def _validate_public_manifest(manifest: Any) -> None:
     if type(manifest) is not dict or type(manifest.get("schema_version")) is not int:
         raise ValueError(_ERROR)
+    reject_private_export(manifest)
     if manifest["schema_version"] != 1:
         raise ValueError(_ERROR)
     envelope = manifest.get("diagnostic_modeproof")
@@ -67,6 +69,7 @@ def _validate_public_manifest(manifest: Any) -> None:
 
 def public_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     """Preserve the existing projection; never return raw cached paths or secrets."""
+    reject_private_export(manifest)
     result = copy.deepcopy(manifest)
     envelope = result.get("diagnostic_modeproof")
     if isinstance(envelope, dict) and "cmake_cache" in envelope:
