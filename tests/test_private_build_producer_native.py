@@ -3,6 +3,7 @@
 Only receipt/source planning is synthesized. NTFS staging, protected ACL/owner,
 held-handle output reads, hash verification and cleanup remain native.
 """
+
 import hashlib
 import sys
 import threading
@@ -72,13 +73,14 @@ def test_native_capture_failure_cleans(native_fixture, failure):
     def compile_fail(source, output, logs):
         manifest = compile_staged(source, output, logs)
         if failure == "hash":
-            (output / "fixture.bin").write_bytes(b"altered")
+            (output / "fixture.bin").write_bytes(b"X" * len(b"synthetic firmware"))
         else:
             builder.process.stop_requested.set()
         return manifest
 
     producer = module.NativePrivateProducer(builder, container, compile_fail)
-    with pytest.raises(ValueError):
+    expected = "bytes_changed" if failure == "hash" else "cancelled"
+    with pytest.raises(ValueError, match=expected):
         producer(plan, PrivateBuildLogs("owner"))
     assert len(paths) == 2 and all(not p.exists() for p in paths)
 
