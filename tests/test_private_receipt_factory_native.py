@@ -36,9 +36,12 @@ def test_native_thread_factory_readonly_identity_and_lifetime(tmp_path):
                         reader.connection.execute("CREATE TABLE forbidden(x)")
                     with pytest.raises(PermissionError):
                         path.rename(root / "moved.db")
-                    assert reader.connection.execute(
-                        "SELECT COUNT(*) FROM private_input_receipts"
-                    ).fetchone()[0] == 0
+                    assert (
+                        reader.connection.execute(
+                            "SELECT COUNT(*) FROM private_input_receipts"
+                        ).fetchone()[0]
+                        == 0
+                    )
                 with pytest.raises(sqlite3.ProgrammingError, match="closed"):
                     observed[-1].execute("SELECT 1")
 
@@ -54,3 +57,4 @@ def test_native_thread_factory_readonly_identity_and_lifetime(tmp_path):
         with pytest.raises(ValueError, match="database_changed"):
             with factory():
                 pytest.fail("replacement identity accepted")
+
