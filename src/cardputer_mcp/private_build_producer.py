@@ -26,7 +26,8 @@ class NativePrivateProducer:
         self,
         builder: "FirmwareBuild",
         container: Path,
-        compile_staged: Callable[[Path, Path, PrivateBuildLogs], tuple[InputFile, ...]],
+        compile_staged: Callable[[Path, Path, PrivateBuildLogs], tuple[InputFile, ...]]
+        | None = None,
     ) -> None:
         self.builder = builder
         self.container = container
@@ -66,7 +67,11 @@ class NativePrivateProducer:
                 raise ValueError("private_build_child_not_joined")
             if builder.process.stop_requested.is_set():
                 raise ValueError("private_build_cancelled")
-            manifest = self.compile_staged(source.directory, output, logs)
+            manifest = (
+                self.compile_staged(source.directory, output, logs)
+                if self.compile_staged is not None
+                else builder.compile_private_staged(plan, source.directory, output, logs)
+            )
             if builder.process.active or builder.process.uncertain:
                 raise ValueError("private_build_child_not_joined")
             _recheck(builder, plan, principal)

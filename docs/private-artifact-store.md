@@ -1,94 +1,60 @@
-# Private artifact commit checkpoint
+# Private build storage and runtime boundary
 
-`PrivateArtifactStore` is disconnected from runtime startup and firmware execution.
-It writes only a caller-supplied protected SQLite connection. Synthetic tests use
-fresh generated fixture databases, never broker state or actual private assets.
+Production constructors leave `FirmwareBuild.private_runtime = None`. Private
+execution remains refused until the native compiler, protected storage and
+integration checks are installed. Tests use generated data, never actual private
+assets. No download, general export or flash path is added.
 
-A trusted producer supplies the owned immutable plan and the composition digest
-from staging. The store derives the `private_build` provenance tag itself, checks
-that the existing jobs/plans row matches that exact plan and is still running,
-then commits artifact bytes, receipt and job success in one explicit transaction.
-The bounded payload (32 files / 128 MiB) is hashed and read back before final guard.
-False guard, cancellation or SQL/COMMIT failure rolls back the job and artifacts.
-Python 3.12 autocommit and legacy transaction modes are covered. An uncertain
-response is reconciled by `receipt_for_job`, not by blindly publishing again.
+## Data and finalization
 
-The caller must own/serialize cancellation through guard and commit, attest child
-process termination and verify current execution authority. This helper is not an
-authorization service; its guard callback must be a trusted read-only check. Its
-producer must pass the actual staging digest, not caller-controlled metadata.
-No code here opens the firmware execution gate or starts a build.
+`PrivateArtifactStore` uses a caller-supplied protected SQLite connection. It
+checks the exact running job/plan, derives producer provenance, and commits bounded
+artifact bytes (32 files / 128 MiB), receipt and successful job state atomically.
+Resolution rechecks owner, plan binding, receipt and payload hashes. An uncertain
+response is reconciled with `receipt_for_job`, not by replaying publication.
 
-Resolution checks successful job binding, owner, receipt hash and all payload
-hashes. These raw bytes remain private, including firmware and compiler outputs.
-No external download, general export or flash path is added. The ordinary artifact
-store continues to reject private artifacts.
+`commit_private_candidate` uses the builder's cancellation lock. It rechecks
+binding, fingerprint, authority and joined children before committing the receipt,
+bytes, job, fixed audit event and recovery pin in the same transaction. The final
+live check occurs while the row is running; subsequent validation/SQL contains no
+external callbacks. False guards or SQL/COMMIT failures roll back. After COMMIT,
+late stop requests are rejected and notifications cannot undo success.
 
-Retention runs under the same database write transaction as pin inspection.
-Active/recovery references are explicit durable pins and cannot be pruned. There
-is deliberately no automatic unpin API: safe reference release and integration
-with actual job/recovery lifecycle remain required. Unpinned pruning preserves
-job history but removes payload/receipt; a later lookup reports unavailable.
-No retention operation has been run against real data.
+ProfileJobs invokes this finalizer without a second ledger transition. Generated
+integration tests cover real admission, worker, thread handoff and Store, including
+success, cancellation and the default-closed path. Device/non-deferred private
+execution remains refused. Ordinary jobs retain their existing path.
 
-Remaining integration: native protected database/storage ownership; actual
-producer-to-store wiring; broker success/audit/continuation bookkeeping in the
-same finalization transaction; cancellation serialization; pin acquisition before
-use and safe release; resource budgets; native generated-data integration tests.
-Until those and Windows gates pass, runtime execution remains disabled.
+## Source, output and child lifetime
 
-Pruning is logical deletion, not secure erasure: SQLite WAL/freelist pages and
-external backups can retain old bytes. The database and backups must stay private;
-this checkpoint does not change storage encryption, checkpointing or wipe policy.
+`NativePrivateProducer` composes source and output in separate protected Windows
+scratch roots. A trusted compiler must use those roots and the private log sink;
+raw compiler output is withheld and shared compiler caches must remain disabled.
+Only bounded `.bin`/`.elf` files are captured by the handle-relative Windows reader
+with manifest hash verification. Candidate payloads are excluded from repr.
 
-## Runtime finalization adapter (not installed)
+Existing active/uncertain children block new work. Cancellation and authority must
+be rechecked after callbacks and immediately before every child launch. Unconfirmed
+termination retains both roots/handles and latches `output_uncertain`; explicit
+recovery may release them only after confirmed join. Cleanup failure prevents a
+success candidate. This is not a sandbox for hostile code running as the broker.
 
-`commit_private_candidate` uses the existing builder cancellation lock, rechecks
-full binding/fingerprint/authority and confirms no active/uncertain child. It uses
-the actual Store connection: job success, private receipt/bytes, fixed audit event
-and a durable recovery pin are one SQL transaction. It does not call the ordinary
-ledger transition (which commits separately). The final live check occurs while
-the row is still running; after COMMIT the builder rejects a late stop. Store
-notifications occur only after successful commit and cannot undo it. The producer
-must call this synchronously on the broker loop after worker termination.
+## Retention and remaining gates
 
-Generated tests exercise the real Store schema, cancellation first, commit first,
-authority loss, active children, COMMIT failure and notification failure. This
-adapter is not wired to ProfileJobs, the device job path or the execution gate.
-Protected DB installation, producer output capture, retained workspace lifecycle,
-consumer pin/continuation hookup and native integration remain prerequisites.
+Active/recovery references are durable pins checked in the same write transaction
+as pruning. Unpinned pruning preserves job history. There is no automatic unpin API;
+consumer reference acquisition/release and continuation integration remain required.
+Pruning is logical deletion, not secure erasure: WAL, freelist and backups may keep
+old bytes and must remain private.
 
-## Default-closed runtime wiring
+The internal ESP-IDF callback now verifies profile/tool identities, runs each child
+with authority/stop monitoring, disables shared compiler caches, and puts TEMP/TMP,
+SDKCONFIG and build outputs under the private output root. A producer without a
+test compiler callback uses this internal entry point. Production still installs
+neither producer nor runtime adapter. Synthetic child tests are not actual IDF builds.
 
-`FirmwareBuild.private_runtime` remains `None` in every production constructor.
-An internal adapter can now route deferred private jobs through a trusted producer
-and bounded in-memory candidate, then ProfileJobs invokes the atomic finalizer
-without a second ledger transition. Ordinary jobs keep the existing path. Device
-(non-deferred) private execution is refused. Cancellation/discard drops pending
-bytes and does not publish. Candidate payloads are excluded from dataclass repr.
-
-The generated producer test exercises the real FirmwareBuild dispatch and Store
-finalization. It is not an ESP-IDF build. No native producer is installed: secure
-source/output directory separation, output capture under held native handles,
-process lifetime and cleanup, protected storage installation and native end-to-end
-validation must precede production installation. The in-process producer is trusted
-code, not remote input or a sandbox for arbitrary build scripts.
-The native producer must recheck cancellation and current authority immediately
-before each child launch, including after callbacks; entry validation is not a
-reusable authorization grant for later subprocesses.
-
-## Native producer composition (still uninstalled)
-
-`NativePrivateProducer` keeps source composition and output in separate protected
-scratch roots and captures only bounded `.bin`/`.elf` outputs through the Windows
-handle reader with manifest hashes. A trusted compiler callback must use exactly
-those roots and the private log sink. The ESP-IDF callback is not implemented yet.
-Existing active/uncertain children block new workspace creation; cancellation is
-checked again after preparation and immediately before invoking the compiler.
-
-If child termination is unconfirmed, both roots and handles are retained instead
-of deleting underneath the child, and `output_uncertain` is latched. Only explicit
-trusted recovery after confirmed join may release them; this does not clear other
-broker uncertainty latches. Cleanup failure also prevents a success candidate.
-Host tests substitute only generated scratch/reader boundaries. Native integration
-and the actual compiler path remain required before production installation.
+Before production installation: complete native generated compiler integration,
+establish protected DB ownership, verify child monitoring and cleanup,
+and connect consumer pin/continuation lifecycle. Host fixture success does not
+prove native isolation or a successful firmware build. No real retention, deployment,
+configuration change or private transfer has been performed by these checkpoints.

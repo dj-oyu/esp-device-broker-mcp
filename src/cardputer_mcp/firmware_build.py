@@ -37,6 +37,7 @@ from .job_logs import attach
 from .manifest_export import export_response
 from .private_build_output import PrivateBuildLogs, no_private_compiler_cache
 from .private_build_runtime import PrivateBuildRuntime
+from .private_input_contract import InputFile, _inventory
 from .private_input_store import PrivateInputStore
 
 # Frozen: the compiler-cache namespace of ordinary builds hashed these axes as absent.
@@ -700,6 +701,250 @@ class FirmwareBuild:
             env.update(filtered)
             return {"contract": CCACHE_CONTRACT, "enabled": False, "reason": "private_inputs"}
         return probe_ccache(env, run, source)
+
+    def compile_private_staged(
+        self,
+        plan: dict[str, Any],
+        source: Path,
+        output: Path,
+        logs: PrivateBuildLogs,
+    ) -> tuple[InputFile, ...]:
+        """Internal callback for NativePrivateProducer; never claims public output slots.
+
+        Caller owns protected separate roots and retains them until every child is
+        joined. Not installed by default. No ordinary manifest/artifact is produced.
+        """
+        if os.name != "nt":
+            raise ValueError("external_windows_idf_required")
+        if not private_build_binding.plan_kwargs(plan) or type(logs) is not PrivateBuildLogs:
+            raise ValueError("private_build_compiler_invalid")
+        if self._authority_monitor is None:
+            raise ValueError("private_build_authority_monitor_required")
+        source, output = source.resolve(), output.resolve()
+        if source == output or source.is_relative_to(output) or output.is_relative_to(source):
+            raise ValueError("private_workspace_source_overlap")
+        principal = plan["build_principal"]
+
+        def check() -> None:
+            self._check_cancelled()
+            if self.process.active or self.process.uncertain:
+                self.output_uncertain = True
+                raise ValueError("private_build_child_not_joined")
+            fresh = self._reprepare(plan, principal)
+            private_build_binding.require_same_binding(plan, fresh)
+            if fresh["fingerprint"] != plan["fingerprint"]:
+                raise ValueError("build_inputs_changed")
+            if self._authority_monitor is None:
+                raise ValueError("private_build_authority_monitor_required")
+            self._authority_monitor()
+            self._check_cancelled()
+            if self.process.active or self.process.uncertain:
+                self.output_uncertain = True
+                raise ValueError("private_build_child_not_joined")
+
+        check()
+        project, _ = self._project(plan["project_id"], principal, plan.get("source_receipt"))
+        env = {key.upper(): value for key, value in os.environ.items() if key.upper() in OS_ENV}
+        system = Path(env.get("SYSTEMROOT", ""))
+        powershell = system / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        if not system.is_absolute() or not powershell.is_file():
+            raise ValueError("trusted_powershell_missing")
+
+        private_temp = output / "broker-private-temp"
+        private_temp.mkdir(exist_ok=False)
+
+        def run(
+            args: list[str],
+            environment: dict[str, str],
+            cwd: Path,
+            emit: Callable[[str, str], None],
+            timeout: float = 1800,
+        ) -> int:
+            check()
+            # The monitor is required, not optional, for this private entry point.
+            environment = no_private_compiler_cache(environment)
+            environment.update(TEMP=str(private_temp), TMP=str(private_temp))
+            code = self.process.run(
+                args, environment, cwd, emit, timeout=timeout, monitor=self._authority_monitor
+            )
+            check()
+            return code
+
+        profile_lines: list[str] = []
+        output_bytes = 0
+        stderr_seen = False
+
+        def profile_output(line: str, stream: str) -> None:
+            nonlocal output_bytes, stderr_seen
+            output_bytes += len(line.encode("utf-8")) + 1
+            if output_bytes > 131072:
+                self.process.stop_requested.set()
+                return
+            if stream != "stdout":
+                stderr_seen = True
+                return
+            profile_lines.append(line)
+
+        profile_args = [str(powershell), "-NoProfile"]
+        if getattr(project, "profile_execution_policy", "inherit") == "RemoteSigned":
+            profile_args.extend(["-ExecutionPolicy", "RemoteSigned"])
+        profile_args.extend(["-File", str(project.trusted_profile), "-e"])
+        try:
+            code = run(profile_args, env, source, profile_output, timeout=30)
+        except ValueError:
+            if stderr_seen:
+                logs.append("error: trusted profile export rejected or failed")
+                raise ProfileExportFailure() from None
+            raise
+        self._check_cancelled()
+        if code or stderr_seen:
+            logs.append("error: trusted profile export rejected or failed")
+            raise ProfileExportFailure()
+        env.update(parse_profile("\n".join(profile_lines)))
+        profile_lines.clear()
+        idf = Path(env["IDF_PATH"])
+        python = Path(env["IDF_PYTHON_ENV_PATH"]) / "Scripts/python.exe"
+        idf_py = idf / "tools/idf.py"
+        if (
+            not idf.is_absolute()
+            or not python.is_absolute()
+            or not python.is_file()
+            or not idf_py.is_file()
+            or python.is_symlink()
+            or idf_py.is_symlink()
+        ):
+            raise ValueError("external_idf_environment_invalid")
+        env["IDF_TARGET"] = project.target
+        env["IDF_COMPONENT_MANAGER"] = "0"
+        logs.redactions += tuple(
+            str(path) for path in (source, project.trusted_profile, idf, python.parent.parent)
+        )
+        version: list[str] = []
+
+        def version_output(line: str, stream: str) -> None:
+            logs.append(line, stream)
+            if len(version) >= 32:
+                self.process.stop_requested.set()
+            else:
+                version.append(line[:4096])
+
+        if run(
+            [str(python), str(idf_py), "--version"],
+            env,
+            source,
+            version_output,
+            timeout=30,
+        ):
+            raise FixedDiagnosticFailure("idf_version_diagnostic_failed")
+        if not any(re.fullmatch(r"ESP-IDF v6\.0\.1", line.strip()) for line in version):
+            raise FixedDiagnosticFailure("idf_version_mismatch_no_fallback")
+        version.clear()
+        if run([str(python), "--version"], env, source, version_output, timeout=30):
+            raise FixedDiagnosticFailure("external_python_diagnostic_failed")
+        compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
+        if compiler is None:
+            raise FixedDiagnosticFailure("external_toolchain_missing")
+        version.clear()
+        if run([compiler, "--version"], env, source, version_output, timeout=30):
+            logs.append("error: external toolchain diagnostic failed; build not started")
+            raise ToolchainDiagnosticFailure()
+        registered_versions: dict[str, dict[str, str]] = {}
+        registered_tools = self._registered_tools(project)
+        search_directories: list[str] = []
+        for name, tool in registered_tools.items():
+            version.clear()
+            if run(
+                [str(tool.executable), "--version"],
+                env,
+                source,
+                version_output,
+                timeout=30,
+            ):
+                raise FixedDiagnosticFailure("registered_tool_diagnostic_failed")
+            self._check_cancelled()
+            if version != [tool.version]:
+                raise FixedDiagnosticFailure("registered_tool_version_mismatch")
+            search_directories.append(str(tool.executable.parent))
+            registered_versions[name] = dict(version=tool.version, sha256=tool.sha256)
+            logs.append(f"-- Registered {name} version: {tool.version} (SHA-256 verified)")
+        if search_directories:
+            # Never merge SYSTEM_PATH or ambient PATH. Only hash-verified local
+            # registrations supplement the trusted IDF export environment.
+            env["PATH"] = ";".join([*search_directories, env["PATH"]])
+        for name, tool in registered_tools.items():
+            resolved = shutil.which(name + ".exe", path=env["PATH"])
+            if resolved is None or Path(resolved).resolve() != tool.executable.resolve():
+                raise FixedDiagnosticFailure("registered_tool_resolution_ambiguous")
+        resolved_compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
+        if (
+            resolved_compiler is None
+            or Path(resolved_compiler).resolve() != Path(compiler).resolve()
+        ):
+            raise FixedDiagnosticFailure("external_toolchain_resolution_changed")
+        if "node" not in registered_tools and shutil.which("node.exe", path=env["PATH"]):
+            raise FixedDiagnosticFailure("node_requires_explicit_local_registration")
+
+        env = no_private_compiler_cache(env)
+        variant = build_variant.identity(plan)
+        if variant is not None:
+            build_variant.seed(output, build_variant.expected_symbols(source, *variant))
+        check()
+        args = [
+            str(python),
+            str(idf_py),
+            "--no-ccache",
+            "-B",
+            str(output),
+            "-D",
+            "SDKCONFIG=" + str(output / "sdkconfig"),
+            "--no-hints",
+            "build",
+        ]
+        if run(args, env, source, logs.append):
+            raise ValueError("idf_build_failed_needs_review")
+        check()
+        description_path = _checked_build_artifact(output, "project_description.json")
+        if description_path.stat().st_size > 1024 * 1024:
+            raise ValueError("private_artifact_limit")
+        description = json.loads(description_path.read_text())
+        if description.get("target") != project.target:
+            raise ValueError("build_target_mismatch")
+        if variant is not None:
+            build_variant.verify_applied(output, build_variant.expected_symbols(source, *variant))
+        result: list[InputFile] = []
+        total = 0
+        # Roots are protected and all children are joined. Reject reparse entries
+        # before descending; the producer later captures bytes with native handles.
+        entries = 0
+        for directory, directories, filenames in os.walk(output, followlinks=False):
+            entries += len(directories) + len(filenames)
+            if entries > 100_000:
+                raise ValueError("private_artifact_limit")
+            check()
+            for name in directories + filenames:
+                entry = Path(directory) / name
+                info = entry.lstat()
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise ValueError("private_artifact_path_invalid")
+            for name in filenames:
+                if Path(name).suffix not in {".bin", ".elf"}:
+                    continue
+                check()
+                entry = _checked_build_artifact(
+                    output, (Path(directory) / name).relative_to(output).as_posix()
+                )
+                size = entry.stat().st_size
+                total += size
+                if len(result) >= 32 or total > 128 * 1024 * 1024:
+                    raise ValueError("private_artifact_limit")
+                result.append(
+                    InputFile(entry.relative_to(output).as_posix(), size, hash_file(entry))
+                )
+        if not result:
+            raise ValueError("build_artifacts_missing")
+        _inventory(tuple(result))
+        check()
+        return tuple(result)
 
     def _execute_steps(
         self,

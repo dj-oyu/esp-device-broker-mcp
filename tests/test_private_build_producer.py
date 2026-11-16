@@ -155,3 +155,20 @@ def test_stop_accepted_during_recheck_never_starts_compiler(fixture, monkeypatch
     with pytest.raises(ValueError, match="cancelled"):
         producer(plan, PrivateBuildLogs("owner"))
     assert all(not p.exists() for p in paths)
+
+
+def test_default_compiler_callback_uses_same_plan_and_private_roots(fixture):
+    builder, plan, paths, container = fixture
+    seen = []
+
+    def compile(plan_snapshot, source, output, logs):
+        seen.append(plan_snapshot)
+        return compile_fixture(source, output, logs)
+
+    builder.compile_private_staged = compile
+    producer = module.NativePrivateProducer(builder, container)
+    assert producer(plan, PrivateBuildLogs("owner")).files == (
+        ("fixture.bin", b"generated firmware"),
+    )
+    assert seen == [plan]
+    assert all(not path.exists() for path in paths)
