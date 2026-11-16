@@ -42,7 +42,7 @@ class _Scratch(_Native):
         self.security = security
         sid = security.ConvertSidToStringSid(self.sid)
         self.descriptor = security.ConvertStringSecurityDescriptorToSecurityDescriptor(
-            f"D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)", 1
+            f"O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)", 1
         )
         self.a = c.WinDLL("advapi32", use_last_error=True)
         self.a.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
@@ -66,7 +66,7 @@ class _Scratch(_Native):
         self.k.FlushFileBuffers.restype = c.c_int
         self.k.SetFileInformationByHandle.argtypes = [c.c_void_p, c.c_int, c.c_void_p, c.c_ulong]
         self.k.SetFileInformationByHandle.restype = c.c_int
-        self.sddl = f"D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)"
+        self.sddl = f"O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)"
 
     def open_object(self, parent: int, name: str, directory: bool, *, create: bool) -> int:
         # Single validated component only; never resolve caller-provided paths.
@@ -109,7 +109,14 @@ class _Scratch(_Native):
 
     def verify_acl(self, handle: int) -> None:
         s = self.security
-        descriptor = s.GetSecurityInfo(handle, s.SE_FILE_OBJECT, s.DACL_SECURITY_INFORMATION)
+        descriptor = s.GetSecurityInfo(
+            handle,
+            s.SE_FILE_OBJECT,
+            s.DACL_SECURITY_INFORMATION | s.OWNER_SECURITY_INFORMATION,
+        )
+        owner = descriptor.GetSecurityDescriptorOwner()
+        if owner is None or s.ConvertSidToStringSid(owner) != s.ConvertSidToStringSid(self.sid):
+            raise WindowsWorkspaceError("private_workspace_owner_unexpected")
         if not descriptor.GetSecurityDescriptorControl()[0] & s.SE_DACL_PROTECTED:
             raise WindowsWorkspaceError("private_workspace_acl_unprotected")
         acl = descriptor.GetSecurityDescriptorDacl()
@@ -262,4 +269,3 @@ def materialize_windows_workspace(
                 native.remove(root)
             finally:
                 native.close(root)
-
