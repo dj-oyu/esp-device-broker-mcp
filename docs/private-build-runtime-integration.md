@@ -70,3 +70,18 @@ not establish live executable/config provenance, create registrations, install a
 runtime, inspect or modify existing ACLs beyond the protection checks, or prove
 scratch capacity/availability. Execution must repeat its checks under its own
 operation guard; a successful diagnostic cannot be carried across changed state.
+
+### Per-thread receipt readers
+
+`PrivateReceiptFactory` captures a protected database path and native file ID on
+the owner thread, then pins and compares that identity before opening a separate
+`mode=ro` SQLite connection on each consumer thread. It returns only the existing
+receipt reader, closes SQLite before unpinning, and never initializes tables.
+The existing main connection is not passed into workers. Read-only SQL does not
+promise that SQLite never creates or maintains WAL/SHM auxiliary files.
+
+Capture does not prove that a previously opened main SQLite handle still names
+the same file if the path was replaced before capture. Production requires a
+lifetime guard established **before** opening Store (or an equivalent demonstrated
+identity guarantee). This helper is not automatically installed, does not repair
+existing state permissions, and does not establish that live broker prerequisite.

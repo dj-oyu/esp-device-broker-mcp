@@ -5,6 +5,7 @@ The protected parent excludes other users; hostile same-identity code is not cov
 """
 
 import ctypes as c
+import sqlite3
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -40,6 +41,15 @@ class _StateNative(_Scratch):
         self.info(handle.value, False)  # no reparse, no multiple hardlinks
         return handle.value
 
+    def file_identity(self, handle: int) -> tuple[int, bytes]:
+        class FileIdInfo(c.Structure):
+            _fields_ = [("volume", c.c_ulonglong), ("identifier", c.c_ubyte * 16)]
+
+        info = FileIdInfo()
+        if not self.k.GetFileInformationByHandleEx(handle, 18, c.byref(info), c.sizeof(info)):
+            raise ValueError("private_state_identity_unavailable")
+        return info.volume, bytes(info.identifier)
+
     def file_acl(self, handle: int) -> None:
         security = self.security
         descriptor = security.GetSecurityInfo(
@@ -66,20 +76,31 @@ class _StateNative(_Scratch):
             raise ValueError("private_state_acl_incomplete")
 
 
-@contextmanager
-def verified_private_database(store: "Store") -> Iterator[None]:
-    """Pin native ancestors/DB identity and validate DB/sidecar access restrictions.
-
-    SQLite WAL/SHM handles are closed after metadata checks so SQLite can recycle
-    sidecars. The protected parent remains pinned. Same-user SQLite is trusted.
-    No table creation or permission update occurs here; failure closes only the
-    private path, not ordinary broker functionality.
-    """
-    entries = tuple(store.db.execute("PRAGMA database_list"))
+def private_database_path(connection: sqlite3.Connection) -> Path:
+    """Inspect on the connection's owning thread; never initialize a Store."""
+    entries = tuple(connection.execute("PRAGMA database_list"))
     main = [row[2] for row in entries if row[1] == "main"]
     if len(main) != 1 or not main[0] or any(row[1] not in {"main", "temp"} for row in entries):
         raise ValueError("private_state_database_invalid")
-    path = Path(main[0])
+    return Path(main[0])
+
+
+@contextmanager
+def verified_private_database(store: "Store") -> Iterator[None]:
+    """Hold native ancestors/DB and validate ACLs; no schema or permissions changes."""
+    with verified_private_database_path(private_database_path(store.db)):
+        yield
+
+
+@contextmanager
+def verified_private_database_path(path: Path) -> Iterator[tuple[int, bytes]]:
+    """Pin before SQLite connects. File identity remains held through the scope.
+
+    SQLite sidecar metadata handles close after inspection to allow recycling.
+    The protected parent and DB remain pinned; same-identity SQLite is trusted.
+    """
+    if not path.is_absolute():
+        raise ValueError("private_state_path_invalid")
     parts = _root_parts(str(path.parent))
     native = _StateNative()
     with ExitStack() as held:
@@ -89,6 +110,7 @@ def verified_private_database(store: "Store") -> Iterator[None]:
         native.verify_acl(parent)  # explicit protected current-user/SYSTEM parent
         handle = native.state_file(parent, path.name, held)
         native.file_acl(handle)
+        identity = native.file_identity(handle)
         for suffix in ("-wal", "-shm", "-journal"):
             sidecar = path.with_name(path.name + suffix)
             try:
@@ -98,4 +120,4 @@ def verified_private_database(store: "Store") -> Iterator[None]:
             with ExitStack() as sidecar_handles:
                 handle = native.state_file(parent, sidecar.name, sidecar_handles)
                 native.file_acl(handle)
-        yield
+        yield identity

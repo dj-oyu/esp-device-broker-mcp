@@ -33,6 +33,9 @@ def fixture(tmp_path, monkeypatch):
             stack.callback(events.append, ("close", name))
             return 3
 
+        def file_identity(self, handle):
+            return (7, b"generated-file-id")
+
         def file_acl(self, handle):
             events.append(("file_acl", handle))
 
@@ -104,3 +107,21 @@ def test_wrong_owner_or_broad_acl_is_rejected(owner, aces):
     native.sid, native.security = "owner", security
     with pytest.raises(ValueError):
         native.file_acl(1)
+
+
+def test_native_file_identity_queries_volume_and_128bit_id():
+    import ctypes
+
+    native = object.__new__(module._StateNative)
+
+    def information(handle, kind, output, size):
+        assert handle == 17 and kind == 18 and size == 24
+        raw = (123).to_bytes(8, "little") + bytes(range(16))
+        ctypes.memmove(output, raw, len(raw))
+        return True
+
+    native.k = SimpleNamespace(GetFileInformationByHandleEx=information)
+    assert native.file_identity(17) == (123, bytes(range(16)))
+    native.k.GetFileInformationByHandleEx = lambda *_: False
+    with pytest.raises(ValueError, match="identity_unavailable"):
+        native.file_identity(17)
