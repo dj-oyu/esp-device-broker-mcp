@@ -38,7 +38,7 @@ from .manifest_export import export_response
 from .private_build_output import PrivateBuildLogs, no_private_compiler_cache
 from .private_build_runtime import PrivateBuildRuntime
 from .private_input_contract import InputFile, _inventory
-from .private_input_store import PrivateInputReader, PrivateInputStore
+from .private_input_store import PrivateInputReader
 
 # Frozen: the compiler-cache namespace of ordinary builds hashed these axes as absent.
 # Keeping the value keeps existing compiler caches valid after the diagnostic options
@@ -347,7 +347,7 @@ class FirmwareBuild:
         # Trusted broker adapter only; each use must own a thread-local connection.
         # No remote upload/path API and no production adapter installed here.
         self.private_store_factory: (
-            Callable[[], AbstractContextManager[PrivateInputStore]] | None
+            Callable[[], AbstractContextManager[PrivateInputReader]] | None
         ) = None
         self.private_runtime: PrivateBuildRuntime | None = None
         self.artifacts = BuildArtifacts(history)

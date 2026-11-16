@@ -37,6 +37,7 @@ class PrivateStoreSession:
         self._store: Store | None = None
         self._factory: PrivateReceiptFactory | None = None
         self._active = 0
+        self._supervisors: set[object] = set()
         self._accepting = False
         self._opened = False
         self._closed = False
@@ -128,12 +129,37 @@ class PrivateStoreSession:
             with self._lock:
                 self._active -= 1
 
+    def retain_supervisor(self) -> object:
+        """Block direct/outer-context close until a supervisor confirms shutdown."""
+        self._owner_thread()
+        with self._lock:
+            if not self._accepting:
+                raise ValueError("private_store_session_not_available")
+            token = object()
+            self._supervisors.add(token)
+            return token
+
+    def release_supervisor(self, token: object) -> None:
+        self._owner_thread()
+        with self._lock:
+            if token not in self._supervisors:
+                raise ValueError("private_store_session_supervisor_invalid")
+            self._supervisors.remove(token)
+
+    def stop_accepting(self) -> None:
+        """Reject new readers, retaining the Store and all lifetime handles."""
+        self._owner_thread()
+        with self._lock:
+            self._accepting = False
+
     def close(self) -> None:
         self._owner_thread()
         with self._lock:
             self._accepting = False
             if self._cleanup_uncertain:
                 raise ValueError("private_store_session_cleanup_uncertain")
+            if self._supervisors:
+                raise ValueError("private_store_session_supervisor_active")
             if self._active:
                 raise ValueError("private_store_session_readers_active")
             if self._closed:

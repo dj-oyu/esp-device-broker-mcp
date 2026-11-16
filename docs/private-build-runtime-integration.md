@@ -101,3 +101,19 @@ and join every child before closing, including children without receipt leases.
 It does not migrate existing live state, alter ACLs, or create a protected database
 from an unprotected one. Production ownership, source registration and actual
 private asset readiness remain separate checks.
+
+### Explicit runtime ownership and shutdown
+
+`PrivateRuntimeSession` can explicitly attach a runtime and session receipt reader
+to an idle builder. It is not called by production startup. Shutdown irreversibly
+closes private runtime admission, rejects new reader leases, and requests stop.
+It does not kill or wait for children, infer joins from a timeout, or clear any
+uncertainty flags. Active workers, retained process resources and uncertain output
+keep the Store and lifetime guard in place for explicit recovery.
+
+A supervisor lease also prevents an outer Store session context from closing the
+DB/pin after the runtime wrapper refuses shutdown. Only confirmed runtime cleanup
+permits lease release and Store closure. The caller must stop the outer ProfileJobs
+queue and join its worker before closing the shared Store; this primitive does not
+perform that production admission/lifecycle integration. A successful synthetic
+shutdown is not permission to restart or replace a live broker.

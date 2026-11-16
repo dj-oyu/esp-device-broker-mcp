@@ -48,15 +48,25 @@ class PrivateBuildRuntime:
         self.artifacts = artifacts
         self.pending: dict[str, tuple[str, PrivateBuildCandidate]] = {}
         self.running = False
+        self._accepting = True
         self.operation_guard = operation_guard
         self._scope_release_failed = False
         self._operation: tuple[FirmwareBuild, Store, str, ExitStack] | None = None
+
+    def stop_accepting(self) -> None:
+        """Irreversible admission stop; caller serializes on the builder lock."""
+        self._accepting = False
+
+    def _check_accepting(self) -> None:
+        if not self._accepting:
+            raise ValueError("private_build_runtime_stopping")
 
     def begin_operation(
         self, builder: "FirmwareBuild", store: "Store", plan: dict[str, Any]
     ) -> None:
         """Broker-loop entry, before worker handoff; no SQLite use in worker guard."""
         with builder._lock:
+            self._check_accepting()
             if self._operation is not None or self.running or self.pending:
                 raise ValueError("private_build_operation_in_use")
             if self.artifacts.db is not store.db:
@@ -112,6 +122,7 @@ class PrivateBuildRuntime:
         payload = _plan(plan)
         snapshot = json.loads(payload)
         with builder._lock:
+            self._check_accepting()
             self._require_operation(builder, plan)
             if self.running or self.pending:
                 raise ValueError("private_build_output_in_use")
@@ -171,24 +182,26 @@ class PrivateBuildRuntime:
         plan: dict[str, Any],
         live: Callable[[], bool],
     ) -> str:
-        self._require_operation(builder, plan)
-        if self._operation is None or self._operation[1] is not store:
-            raise ValueError("private_build_finalizer_invalid")
-        payload, candidate = self.pending[plan["job_id"]]
-        if payload != _plan(plan):
-            raise ValueError("private_build_candidate_changed")
-        receipt = commit_private_candidate(
-            builder,
-            store,
-            self.artifacts,
-            plan=plan,
-            composition_identity=candidate.composition_identity,
-            files=candidate.files,
-            live=live,
-        )
-        self.pending.pop(plan["job_id"])
-        self._close_operation()
-        return receipt
+        with builder._lock:
+            self._check_accepting()
+            self._require_operation(builder, plan)
+            if self._operation is None or self._operation[1] is not store:
+                raise ValueError("private_build_finalizer_invalid")
+            payload, candidate = self.pending[plan["job_id"]]
+            if payload != _plan(plan):
+                raise ValueError("private_build_candidate_changed")
+            receipt = commit_private_candidate(
+                builder,
+                store,
+                self.artifacts,
+                plan=plan,
+                composition_identity=candidate.composition_identity,
+                files=candidate.files,
+                live=live,
+            )
+            self.pending.pop(plan["job_id"])
+            self._close_operation()
+            return receipt
 
     def discard(self, job_id: str) -> None:
         self.pending.pop(job_id, None)
