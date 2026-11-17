@@ -301,6 +301,7 @@ async def test_serve_opens_after_listen_and_closes_before_listener(tmp_path, cap
             run=run,
             start_process=start_process,
             poll_seconds=0.01,
+            restart_delays=(),
             broker_http=_broker_http(),
         )
     )
@@ -418,6 +419,7 @@ async def test_funnel_opens_and_closes_with_the_process(tmp_path, capsys):
             run=run,
             start_process=start_process,
             poll_seconds=0.01,
+            restart_delays=(),
             broker_http=_broker_http(),
         )
     )
@@ -425,3 +427,134 @@ async def test_funnel_opens_and_closes_with_the_process(tmp_path, capsys):
     process.exit_code = 0
     assert await asyncio.wait_for(task, 5) == 1
     assert events == ["serve_started", "serve_stopped"] and process.closed
+
+
+# Self-healing: the serve/Funnel child ends by itself (a Tailscale update restarts tailscaled) --
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+        self.slept = []
+
+    async def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+        await asyncio.sleep(0)
+
+    def __call__(self):
+        return self.now
+
+    def backoffs(self):
+        return [value for value in self.slept if value >= 1]
+
+
+class _Healing:
+    """A fake Tailscale: ``children`` are the serve/Funnel processes started so far."""
+
+    def __init__(self, prepared, *, funnel=False):
+        self.prepared = prepared
+        self.funnel = funnel
+        self.public_after_restart = False
+        self.children = []
+        self.args = []
+        self.events = []
+        self.capable = json.dumps(
+            {"BackendState": "Running", "Self": {"DNSName": HOST + ".", "CapMap": {"funnel": []}}}
+        )
+
+    def run(self, args):
+        if args[1] == "status":
+            return self.capable if self.funnel else _status()
+        if not any(child.exit_code is None for child in self.children):
+            return "{}"
+        public = self.funnel or (self.public_after_restart and len(self.children) > 1)
+        return _served(self.prepared.webui, public=public)
+
+    def start_process(self, args, env, cwd, *, executables):
+        child = FakeServe(self.events)
+        self.children.append(child)
+        self.args.append(args)
+        return child
+
+
+def _heal_serve(prepared, fake, clock, **kwargs):
+    return webui_launch.serve(
+        prepared,
+        run=fake.run,
+        start_process=fake.start_process,
+        poll_seconds=0.01,
+        broker_http=_broker_http(),
+        sleep=clock.sleep,
+        clock=clock,
+        **kwargs,
+    )
+
+
+async def _out_until(capsys, marker, out=""):
+    for _ in range(1000):
+        out += capsys.readouterr().out
+        if marker in out:
+            return out
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"never saw {marker}: {out}")
+
+
+@pytest.mark.parametrize(
+    "extra,funnel,opened",
+    [("serve = true\n", False, "webui_serve_open"), ("funnel = true\n", True, "webui_funnel_open")],
+)
+async def test_serve_is_started_again_after_it_ends_by_itself(
+    tmp_path, capsys, extra, funnel, opened
+):
+    prepared = webui_launch.prepare(_config(tmp_path, port=_free_port(), extra=extra))
+    fake, clock = _Healing(prepared, funnel=funnel), _Clock()
+    task = asyncio.create_task(_heal_serve(prepared, fake, clock, restart_delays=(5.0, 10.0)))
+    await _out_until(capsys, opened)
+    fake.children[0].exit_code = 0
+    out = await _out_until(capsys, "webui_serve_restarted attempt 1/2")
+    assert "webui_serve_exited exit_code=0; restarting" in out and opened in out
+    assert len(fake.children) == 2 and fake.children[0].closed and clock.backoffs() == [5.0]
+    assert fake.args[0] == fake.args[1] == webui_launch.serve_arguments(prepared.webui)
+    assert fake.events == ["serve_stopped"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert fake.children[1].closed and "webui_stopped" in capsys.readouterr().out
+
+
+async def test_tailnet_only_never_comes_back_public(tmp_path, capsys):
+    prepared = webui_launch.prepare(_config(tmp_path, port=_free_port(), extra="serve = true\n"))
+    fake, clock = _Healing(prepared), _Clock()
+    task = asyncio.create_task(_heal_serve(prepared, fake, clock))
+    await _out_until(capsys, "webui_serve_open")
+    fake.public_after_restart = True
+    fake.children[0].exit_code = 0
+    assert await asyncio.wait_for(task, 10) == 1
+    out = capsys.readouterr().out
+    assert "webui_serve_restart_refused reason=webui_serve_is_public; stopping the web UI" in out
+    # The second child was started, seen public and closed again; no third one.
+    assert len(fake.children) == 2 and all(child.closed for child in fake.children)
+
+
+async def test_gives_up_when_the_exposure_never_comes_back(tmp_path, capsys):
+    prepared = webui_launch.prepare(_config(tmp_path, port=_free_port(), extra="serve = true\n"))
+    fake, clock = _Healing(prepared), _Clock()
+    # Every restarted child ends at once, as when tailscaled is still restarting.
+    original = fake.start_process
+
+    def failing_start(args, env, cwd, *, executables):
+        child = original(args, env, cwd, executables=executables)
+        if len(fake.children) > 1:
+            child.exit_code = 1
+        return child
+
+    fake.start_process = failing_start
+    task = asyncio.create_task(_heal_serve(prepared, fake, clock, restart_delays=(1.0, 2.0)))
+    await _out_until(capsys, "webui_serve_open")
+    fake.children[0].exit_code = 0
+    assert await asyncio.wait_for(task, 10) == 1
+    out = capsys.readouterr().out
+    assert "webui_serve_restart_failed attempt 2/2 reason=webui_serve_exited" in out
+    assert "webui_serve_restart_gave_up attempts=2; stopping the web UI" in out
+    assert len(fake.children) == 3 and all(child.closed for child in fake.children)

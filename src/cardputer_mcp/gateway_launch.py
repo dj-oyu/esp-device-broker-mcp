@@ -5,7 +5,9 @@ file and the Google secret file; check Tailscale (this machine's name, the Funne
 permission, no existing HTTPS 443 serve/Funnel config); listen on 127.0.0.1;
 then start ``tailscale funnel`` in the foreground as an owned Job Object child
 and confirm that Funnel lists our target. Shutdown closes Funnel first, then the
-listener. If the Funnel process exits, the gateway stops too.
+listener. If the Funnel process exits on its own after it was confirmed open (a Tailscale
+update restarts tailscaled), the same command is started again, up to 8 times with growing
+waits, re-running the startup Tailscale checks each time; when that fails the gateway stops.
 
 Nothing here starts or stops the broker, the OpenAI Tunnel or any device work.
 Output is fixed event names; no secrets, tokens or file contents are printed.
@@ -19,8 +21,9 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -39,6 +42,10 @@ from .gateway_store import GatewayStore, GatewayStoreError, default_store_path
 _FUNNEL_ENV_KEYS = ("SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "TEMP", "TMP", "COMSPEC")
 _FUNNEL_CONFIRM_SECONDS = 15.0
 _TAILSCALE_SECONDS = 10.0
+# Tailscale updates replace tailscaled (ending every foreground funnel/serve child) and can leave it
+# unavailable for minutes: wait 5, 10, 20, 40 s, then 60 s, at most 8 times (about 8-9 minutes).
+_RESTART_DELAYS: tuple[float, ...] = (5.0, 10.0, 20.0, 40.0, 60.0, 60.0, 60.0, 60.0)
+_RESTART_STABLE_SECONDS = 300.0
 
 
 class GatewayLaunchError(Exception):
@@ -212,7 +219,186 @@ def lock_path() -> Path:
 
 
 def _event(name: str) -> None:
-    print(name, flush=True)
+    # Local-time stamp in the same shape as the HTTP log lines, so a stop can be placed in time.
+    stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+    print(f"{stamp} {name}", flush=True)
+
+
+# Self-healing of the Tailscale child ----------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Exposure:
+    """What differs between the gateway Funnel and the web UI serve/Funnel child."""
+
+    prefix: str  # event prefix, e.g. "gateway_funnel"
+    noun: str  # "the gateway" / "the web UI"
+    arguments: list[str]
+    cwd: str
+    status_args: list[str]
+    preflight: Callable[[], None]  # the same Tailscale checks as at startup
+    confirmed: Callable[[Any], bool]
+    refuse: Callable[[Any], str | None]  # a fixed code when the exposure is wider than asked
+    open_event: str
+
+
+@dataclass
+class _Child:
+    """The one owned Tailscale child; ``serve``'s ``finally`` closes whatever is here."""
+
+    process: windows_process.OwnedWindowsProcess | None = None
+
+
+@dataclass
+class _Healing:
+    run: Runner
+    start_process: Callable[..., windows_process.OwnedWindowsProcess]
+    environ: Mapping[str, str]
+    poll_seconds: float
+    confirm_seconds: float
+    delays: Sequence[float]
+    stable_seconds: float
+    sleep: Callable[[float], Awaitable[None]]
+    clock: Callable[[], float]
+    attempt: int = 0
+    opened_at: float = 0.0
+
+
+_RETRYABLE = frozenset(
+    {
+        "tailscale_unavailable",
+        "tailscale_query_failed",
+        "tailscale_output_invalid",
+        "tailscale_not_running",
+        "tailscale_executable_missing",
+        # Our previous session can still be listed for a moment; it is never reset here.
+        "tailscale_https_443_already_configured",
+        "tailscale_serve_port_already_configured",
+    }
+)
+
+
+async def _open_exposure(exposure: _Exposure, child: _Child, heal: _Healing) -> None:
+    """Start the child and wait until Tailscale lists exactly what was asked for."""
+    prefix = exposure.prefix
+    try:
+        process = heal.start_process(
+            exposure.arguments,
+            funnel_environment(heal.environ),
+            exposure.cwd,
+            executables=windows_process.TAILSCALE_EXECUTABLES,
+        )
+    except windows_process.WindowsProcessError as error:
+        child.process = error.owned
+        raise GatewayLaunchError(f"{prefix}_start_failed") from None
+    child.process = process
+    deadline = heal.clock() + heal.confirm_seconds
+    while True:
+        if process.poll() is not None:
+            raise GatewayLaunchError(f"{prefix}_exited")
+        config = _json(await asyncio.to_thread(heal.run, exposure.status_args))
+        refused = exposure.refuse(config)
+        if refused is not None:
+            raise GatewayLaunchError(refused)
+        if exposure.confirmed(config):
+            break
+        if heal.clock() > deadline:
+            raise GatewayLaunchError(f"{prefix}_not_confirmed")
+        await heal.sleep(heal.poll_seconds)
+    _event(exposure.open_event)
+
+
+async def _release(child: _Child) -> bool:
+    """Stop and close the current child; False when its end cannot be confirmed."""
+    process = child.process
+    if process is None:
+        return True
+    try:
+        stopped = await asyncio.to_thread(process.stop, 5.0)
+        if stopped:
+            process.close()
+    except windows_process.WindowsProcessError:
+        return False
+    if stopped:
+        child.process = None
+    return stopped
+
+
+async def _restart_exposure(
+    exposure: _Exposure,
+    child: _Child,
+    heal: _Healing,
+    listener: "asyncio.Task[None]",
+) -> bool:
+    """Start the child again after it ended by itself; False means stop the service.
+
+    Only the same command with the same arguments runs again, after the startup checks pass
+    again. Nothing is reset, replaced or taken over. Cancellation (Ctrl+C) is not caught: the
+    waits are plain awaits and ``serve``'s ``finally`` closes the current child.
+    """
+    prefix, noun = exposure.prefix, exposure.noun
+    total = len(heal.delays)
+    assert child.process is not None
+    _event(f"{prefix}_exited exit_code={child.process.poll()}; restarting")
+    while True:
+        # A second child never starts before the previous one is confirmed gone.
+        if not await _release(child):
+            _event(f"{prefix}_restart_refused reason={prefix}_stop_unconfirmed; stopping {noun}")
+            return False
+        heal.attempt += 1
+        if heal.attempt > total:
+            _event(f"{prefix}_restart_gave_up attempts={total}; stopping {noun}")
+            return False
+        attempt = heal.attempt
+        delay = heal.delays[attempt - 1]
+        _event(f"{prefix}_restarting attempt {attempt}/{total} in {delay:g}s")
+        await heal.sleep(delay)
+        if listener.done():
+            return False
+        try:
+            await asyncio.to_thread(exposure.preflight)
+            await _open_exposure(exposure, child, heal)
+        except GatewayLaunchError as error:
+            reason = str(error)
+            retryable = (
+                reason in _RETRYABLE
+                or reason in (f"{prefix}_exited", f"{prefix}_not_confirmed")
+                or (reason == f"{prefix}_start_failed" and child.process is None)
+            )
+            if not retryable:
+                _event(f"{prefix}_restart_refused reason={reason}; stopping {noun}")
+                return False
+            _event(f"{prefix}_restart_failed attempt {attempt}/{total} reason={reason}")
+            continue
+        except windows_process.WindowsProcessError:
+            _event(f"{prefix}_restart_refused reason={prefix}_process_error; stopping {noun}")
+            return False
+        heal.opened_at = heal.clock()
+        _event(f"{prefix}_restarted attempt {attempt}/{total}")
+        return True
+
+
+async def _watch_exposure(
+    exposure: _Exposure,
+    child: _Child,
+    heal: _Healing,
+    listener: "asyncio.Task[None]",
+) -> int:
+    """Hold the service open until the listener ends; 1 when the child could not be kept."""
+    while not listener.done():
+        process = child.process
+        if process is not None and process.poll() is not None:
+            if not heal.delays:
+                _event(f"{exposure.prefix}_exited; stopping {exposure.noun}")
+                return 1
+            if not await _restart_exposure(exposure, child, heal, listener):
+                return 1
+            continue
+        if heal.attempt and heal.clock() - heal.opened_at >= heal.stable_seconds:
+            heal.attempt = 0
+            _event(f"{exposure.prefix}_stable; restart attempts reset")
+        await heal.sleep(heal.poll_seconds)
+    return 0
 
 
 async def serve(
@@ -222,6 +408,10 @@ async def serve(
     start_process: Callable[..., windows_process.OwnedWindowsProcess] = windows_process.start,
     environ: Mapping[str, str] = os.environ,
     poll_seconds: float = 0.5,
+    restart_delays: Sequence[float] = _RESTART_DELAYS,
+    stable_seconds: float = _RESTART_STABLE_SECONDS,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     gateway = prepared.gateway
     if gateway.funnel:
@@ -253,7 +443,7 @@ async def serve(
         )
     )
     listener = asyncio.create_task(_listen(server))
-    funnel: windows_process.OwnedWindowsProcess | None = None
+    child = _Child()
     code = 0
     try:
         while not server.started:
@@ -262,36 +452,35 @@ async def serve(
             await asyncio.sleep(0.05)
         _event(f"gateway_listening 127.0.0.1:{gateway.port}")
         if gateway.funnel:
-            try:
-                funnel = start_process(
-                    funnel_arguments(gateway),
-                    funnel_environment(environ),
-                    str(gateway.tailscale_exe.parent),
-                    executables=windows_process.TAILSCALE_EXECUTABLES,
-                )
-            except windows_process.WindowsProcessError as error:
-                funnel = error.owned
-                raise GatewayLaunchError("gateway_funnel_start_failed") from None
-            deadline = time.monotonic() + _FUNNEL_CONFIRM_SECONDS
-            while True:
-                if funnel.poll() is not None:
-                    raise GatewayLaunchError("gateway_funnel_exited")
-                status = [str(gateway.tailscale_exe), "funnel", "status", "--json"]
-                config = _json(await asyncio.to_thread(run, status))
-                if funnel_confirmed(config, gateway):
-                    break
-                if time.monotonic() > deadline:
-                    raise GatewayLaunchError("gateway_funnel_not_confirmed")
-                await asyncio.sleep(poll_seconds)
-            _event("gateway_funnel_open " + gateway.public_url)
+            exposure = _Exposure(
+                prefix="gateway_funnel",
+                noun="the gateway",
+                arguments=funnel_arguments(gateway),
+                cwd=str(gateway.tailscale_exe.parent),
+                status_args=[str(gateway.tailscale_exe), "funnel", "status", "--json"],
+                preflight=lambda: check_tailscale(gateway, run),
+                confirmed=lambda config: funnel_confirmed(config, gateway),
+                refuse=lambda _config: None,
+                open_event="gateway_funnel_open " + gateway.public_url,
+            )
+            heal = _Healing(
+                run=run,
+                start_process=start_process,
+                environ=environ,
+                poll_seconds=poll_seconds,
+                confirm_seconds=_FUNNEL_CONFIRM_SECONDS,
+                delays=restart_delays,
+                stable_seconds=stable_seconds,
+                sleep=sleep,
+                clock=clock,
+            )
+            await _open_exposure(exposure, child, heal)
+            heal.opened_at = clock()
+            code = await _watch_exposure(exposure, child, heal, listener)
         else:
             _event("gateway_funnel_disabled; listening on loopback only")
-        while not listener.done():
-            if funnel is not None and funnel.poll() is not None:
-                _event("gateway_funnel_exited; stopping the gateway")
-                code = 1
-                break
-            await asyncio.sleep(poll_seconds)
+            while not listener.done():
+                await asyncio.sleep(poll_seconds)
     except GatewayLaunchError as error:
         _event(str(error))
         code = 1
@@ -299,6 +488,7 @@ async def serve(
         _event("gateway_funnel_process_error")
         code = 1
     finally:
+        funnel = child.process
         if funnel is not None:
             # Close the public entry before the listener.
             try:

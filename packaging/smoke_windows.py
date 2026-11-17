@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -12,6 +13,11 @@ import zipfile
 from pathlib import Path
 
 from release_windows import verify_archive
+
+
+def event_text(output: str) -> str:
+    """Launcher events start with a local timestamp; compare only the event itself."""
+    return re.sub(r"(?m)^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} ", "", output)
 
 
 def stop_owned(process: subprocess.Popen) -> None:
@@ -182,7 +188,7 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
             [str(exe), "gateway", "--config", str(config)], cwd=folder, env=env,
             capture_output=True, text=True, timeout=45, check=False,
         )
-        if gateway.returncode != 1 or gateway.stdout != "gateway_config_missing\n":
+        if gateway.returncode != 1 or event_text(gateway.stdout) != "gateway_config_missing\n":
             raise RuntimeError("packaged_gateway_check_failed")
         # Likewise the frozen web UI imports its app and assets, then refuses a
         # TOML without [webui]; it never reads a key, listens or starts Tailscale.
@@ -190,7 +196,7 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
             [str(exe), "webui", "--config", str(config)], cwd=folder, env=env,
             capture_output=True, text=True, timeout=45, check=False,
         )
-        if webui.returncode != 1 or webui.stdout != "webui_config_missing\n":
+        if webui.returncode != 1 or event_text(webui.stdout) != "webui_config_missing\n":
             raise RuntimeError("packaged_webui_check_failed")
         env["LOCALAPPDATA"] = private_state
         env["CARDPUTER_LOCAL_TOKEN"] = secrets.token_hex(32)
