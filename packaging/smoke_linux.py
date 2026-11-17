@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -60,6 +61,11 @@ def refuses(exe: Path, command: str, config: Path, folder: Path, env: dict[str, 
     return result.stdout
 
 
+def event_text(output: str) -> str:
+    """Launcher events start with a local timestamp; compare only the event itself."""
+    return re.sub(r"(?m)^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} ", "", output)
+
+
 def smoke(archive: Path, ref: str, commit: str) -> None:
     manifest = verify_archive(archive, ref, commit)
     with tempfile.TemporaryDirectory(prefix="cardputer-linux-smoke-") as temporary:
@@ -93,9 +99,9 @@ def smoke(archive: Path, ref: str, commit: str) -> None:
         )
         # The frozen gateway and web UI import their stacks, then refuse a TOML
         # without their table; neither listens nor starts Tailscale here.
-        if refuses(exe, "gateway", config, folder, env) != "gateway_config_missing\n":
+        if event_text(refuses(exe, "gateway", config, folder, env)) != "gateway_config_missing\n":
             raise RuntimeError("packaged_gateway_check_failed")
-        if refuses(exe, "webui", config, folder, env) != "webui_config_missing\n":
+        if event_text(refuses(exe, "webui", config, folder, env)) != "webui_config_missing\n":
             raise RuntimeError("packaged_webui_check_failed")
         env["CARDPUTER_LOCAL_TOKEN"] = secrets.token_hex(32)
         env["CARDPUTER_REMOTE_TOKEN"] = secrets.token_hex(32)
