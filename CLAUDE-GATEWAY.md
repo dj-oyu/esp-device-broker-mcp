@@ -251,7 +251,13 @@ gateway の標準エラーには、次のような固定のイベント名だけ
   - クライアント登録には、登録時に発行した client secret がそのまま入ります（MCP SDK が平文で照合するため）。secret だけではトークンを更新できません。このファイルは鍵ファイルと同じように扱ってください。
   - `allowed_google_sub` か `public_url` を変えると、保存した接続は起動時に消え、Claude で接続し直しになります。
   - すべての接続を切りたいときは、gateway を止めてから `gateway-grants.sqlite3` を削除します。
-- Funnel のプロセスが終了すると、gateway も止まります（`gateway_funnel_exited; stopping the gateway`）。
+- Funnel の確認後に Funnel のプロセスが自分で終了したとき（典型例は Tailscale の自動更新による tailscaled の入れ替え）は、同じコマンドを同じ引数で起動し直します。
+  - 起動時と同じ Tailscale の確認（この PC の名前、Funnel の権限、443 に他の設定がないこと）と Funnel の確認を、毎回やり直します。設定ファイルは読み直しません。
+  - 待ち時間は 5・10・20・40 秒、その後は 60 秒で、最大 8 回です（最悪で約 8〜9 分）。起動し直して 300 秒続けて動けば、回数を 0 に戻します。
+  - 起動し直しても確認できないときは、`gateway_funnel_restart_gave_up` を出して gateway を止めます。名前の変更・Funnel の権限の消失・古い Funnel の終了を確認できない場合は、再試行せずに `gateway_funnel_restart_refused` で止めます。
+  - 待ち受けは起動し直している間も 127.0.0.1 で動き続けるので、保存した接続はそのまま使えます。起動時の失敗は再試行しません。
+  - `tailscale funnel reset` など、ほかのコマンドは実行しません。Ctrl+C では起動し直さずに止まります。
+  - 出力の各行の先頭には、ローカル時刻が付きます。
 - 異常終了したあとは、`tailscale funnel status --json` が `{}` に戻っていることを確認してください。
   強制終了で Funnel の設定が必ず消えるかどうかは、まだ確かめていません。
 
@@ -278,6 +284,12 @@ gateway の標準エラーには、次のような固定のイベント名だけ
 | `tailscale_https_443_already_configured` | HTTPS 443 にほかの serve/Funnel 設定があります |
 | `tailscale_unavailable` / `tailscale_query_failed` / `tailscale_output_invalid` | `tailscale` コマンドの実行や出力の読み取りに失敗しました |
 | `gateway_funnel_start_failed` / `gateway_funnel_exited` / `gateway_funnel_not_confirmed` | Funnel を開始できない、すぐに終了した、または 15 秒以内に確認できませんでした |
+| `gateway_funnel_exited exit_code=<n>; restarting` | Funnel が自分で終了したので、起動し直します |
+| `gateway_funnel_restarting attempt N/8 in <秒>s` / `gateway_funnel_restarted attempt N/8` | N 回目の起動し直しの開始と成功 |
+| `gateway_funnel_restart_failed attempt N/8 reason=<コード>` | N 回目の起動し直しに失敗しました（次の回で再試行します） |
+| `gateway_funnel_restart_gave_up attempts=8` | 起動し直しをあきらめて、gateway を止めます |
+| `gateway_funnel_restart_refused reason=<コード>` | 再試行してはいけない理由で、gateway を止めます |
+| `gateway_funnel_stable; restart attempts reset` | 300 秒続けて動いたので、回数を 0 に戻しました |
 
 ログイン時に拒否された場合は、標準エラーに `gateway_login_rejected reason=<理由>` が出ます。
 

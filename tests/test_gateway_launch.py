@@ -285,7 +285,13 @@ async def test_funnel_opens_after_listen_and_closes_before_listener(tmp_path, ca
         return funnel
 
     task = asyncio.create_task(
-        gateway_launch.serve(prepared, run=run, start_process=start_process, poll_seconds=0.01)
+        gateway_launch.serve(
+            prepared,
+            run=run,
+            start_process=start_process,
+            poll_seconds=0.01,
+            restart_delays=(),
+        )
     )
     for _ in range(500):
         if "gateway_funnel_open" in capsys.readouterr().out:
@@ -351,3 +357,227 @@ async def test_port_in_use_fails_without_starting_funnel(tmp_path, capsys):
         code = await gateway_launch.serve(prepared, run=never, start_process=never)
     assert code == 1
     assert "gateway_listen_failed" in capsys.readouterr().out
+
+
+# Self-healing: the Funnel child ends by itself (a Tailscale update restarts tailscaled) -------
+
+
+class _Clock:
+    """Virtual time: waits are recorded, not slept; waits of a second or more can block."""
+
+    def __init__(self, *, block_backoff=False):
+        self.now = 0.0
+        self.slept = []
+        self.block_backoff = block_backoff
+
+    async def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+        if self.block_backoff and seconds >= 1:
+            await asyncio.Event().wait()
+        await asyncio.sleep(0)
+
+    def __call__(self):
+        return self.now
+
+    def backoffs(self):
+        return [value for value in self.slept if value >= 1]
+
+
+class _Healing:
+    """A fake Tailscale: ``children`` are the Funnel processes started so far."""
+
+    def __init__(self, prepared, *, status=None, stop_ok=True):
+        self.prepared = prepared
+        self.children = []
+        self.args = []
+        self.status = status or (lambda: _status())
+        self.stop_ok = stop_ok
+        self.events = []
+
+    def run(self, args):
+        if args[1] == "status":
+            return self.status()
+        if any(child.exit_code is None for child in self.children):
+            return _open_funnel(self.prepared.gateway)
+        return "{}"
+
+    def start_process(self, args, env, cwd, *, executables):
+        child = FakeFunnel(self.events)
+        stop = child.stop
+        child.stop = lambda timeout=5.0: stop(timeout) and self.stop_ok
+        self.children.append(child)
+        self.args.append(args)
+        return child
+
+
+async def _out_until(capsys, marker, out=""):
+    for _ in range(1000):
+        out += capsys.readouterr().out
+        if marker in out:
+            return out
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"never saw {marker}: {out}")
+
+
+def _heal_serve(prepared, fake, clock, **kwargs):
+    return gateway_launch.serve(
+        prepared,
+        run=fake.run,
+        start_process=fake.start_process,
+        poll_seconds=0.01,
+        sleep=clock.sleep,
+        clock=clock,
+        **kwargs,
+    )
+
+
+def _funnel_prepared(tmp_path):
+    return gateway_launch.prepare(
+        _config(tmp_path, gateway_port=_free_port(), extra="funnel = true\n")
+    )
+
+
+async def test_funnel_is_started_again_after_it_ends_by_itself(tmp_path, capsys):
+    prepared = _funnel_prepared(tmp_path)
+    fake, clock = _Healing(prepared), _Clock()
+    task = asyncio.create_task(_heal_serve(prepared, fake, clock, restart_delays=(5.0, 10.0)))
+    out = await _out_until(capsys, "gateway_funnel_open")
+    fake.children[0].exit_code = 0
+    out = await _out_until(capsys, "gateway_funnel_restarted attempt 1/2", out)
+    assert "gateway_funnel_exited exit_code=0; restarting" in out
+    assert "gateway_funnel_restarting attempt 1/2 in 5s" in out
+    assert clock.backoffs() == [5.0] and not task.done()
+    assert len(fake.children) == 2 and fake.children[0].closed
+    # Same command, same arguments; the old child was closed before the new one existed.
+    assert fake.args[0] == fake.args[1] == gateway_launch.funnel_arguments(prepared.gateway)
+    assert fake.events == ["funnel_stopped"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert fake.children[1].closed and "gateway_stopped" in capsys.readouterr().out
+
+
+async def test_restart_waits_grow_and_stop_after_the_last_attempt(tmp_path, capsys):
+    prepared = _funnel_prepared(tmp_path)
+    down = {"value": False}
+
+    def status():
+        if down["value"]:
+            raise gateway_launch.GatewayLaunchError("tailscale_not_running")
+        return _status()
+
+    fake, clock = _Healing(prepared, status=status), _Clock()
+    task = asyncio.create_task(_heal_serve(prepared, fake, clock, restart_delays=(1.0, 2.0, 4.0)))
+    await _out_until(capsys, "gateway_funnel_open")
+    down["value"] = True
+    fake.children[0].exit_code = 0
+    assert await asyncio.wait_for(task, 10) == 1
+    out = capsys.readouterr().out
+    assert clock.backoffs() == [1.0, 2.0, 4.0]
+    assert "gateway_funnel_restart_failed attempt 3/3 reason=tailscale_not_running" in out
+    assert "gateway_funnel_restart_gave_up attempts=3; stopping the gateway" in out
+    assert len(fake.children) == 1  # nothing started while Tailscale was unavailable
+
+
+async def test_a_temporary_failure_is_retried_until_it_works(tmp_path, capsys):
+    prepared = _funnel_prepared(tmp_path)
+    answers = iter(["down", "down", "up"])
+    state = {"armed": False}
+
+    def status():
+        if state["armed"] and next(answers, "up") == "down":
+            raise gateway_launch.GatewayLaunchError("tailscale_query_failed")
+        return _status()
+
+    fake, clock = _Healing(prepared, status=status), _Clock()
+    task = asyncio.create_task(_heal_serve(prepared, fake, clock, restart_delays=(1.0, 2.0, 4.0)))
+    await _out_until(capsys, "gateway_funnel_open")
+    state["armed"] = True
+    fake.children[0].exit_code = 0
+    out = await _out_until(capsys, "gateway_funnel_restarted attempt 3/3")
+    assert out.count("gateway_funnel_restart_failed") == 2 and len(fake.children) == 2
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.parametrize(
+    "status,reason",
+    [
+        (lambda: _status(name="other.tail1234.ts.net."), "gateway_public_url_not_this_machine"),
+        (lambda: _status(caps=("https",)), "tailscale_funnel_not_permitted"),
+    ],
+)
+async def test_changed_identity_or_permission_is_not_retried(tmp_path, capsys, status, reason):
+    prepared = _funnel_prepared(tmp_path)
+    changed = {"value": False}
+
+    def current():
+        return status() if changed["value"] else _status()
+
+    fake, clock = _Healing(prepared, status=current), _Clock()
+    task = asyncio.create_task(_heal_serve(prepared, fake, clock))
+    await _out_until(capsys, "gateway_funnel_open")
+    changed["value"] = True
+    fake.children[0].exit_code = 0
+    assert await asyncio.wait_for(task, 10) == 1
+    out = capsys.readouterr().out
+    assert f"gateway_funnel_restart_refused reason={reason}; stopping the gateway" in out
+    assert len(fake.children) == 1 and clock.backoffs() == [5.0]
+
+
+async def test_an_unconfirmed_old_child_blocks_a_second_one(tmp_path, capsys):
+    prepared = _funnel_prepared(tmp_path)
+    fake, clock = _Healing(prepared, stop_ok=False), _Clock()
+    task = asyncio.create_task(_heal_serve(prepared, fake, clock))
+    await _out_until(capsys, "gateway_funnel_open")
+    fake.children[0].exit_code = 0
+    assert await asyncio.wait_for(task, 10) == 1
+    out = capsys.readouterr().out
+    assert "gateway_funnel_restart_refused reason=gateway_funnel_stop_unconfirmed" in out
+    assert len(fake.children) == 1 and not fake.children[0].closed
+
+
+async def test_cancel_while_waiting_to_restart_stops_cleanly(tmp_path, capsys):
+    prepared = _funnel_prepared(tmp_path)
+    fake, clock = _Healing(prepared), _Clock(block_backoff=True)
+    task = asyncio.create_task(_heal_serve(prepared, fake, clock))
+    await _out_until(capsys, "gateway_funnel_open")
+    fake.children[0].exit_code = 0
+    await _out_until(capsys, "gateway_funnel_restarting attempt 1/")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(fake.children) == 1 and fake.children[0].closed
+    assert "gateway_stopped" in capsys.readouterr().out
+
+
+async def test_stable_running_resets_the_attempt_counter(tmp_path, capsys):
+    prepared = _funnel_prepared(tmp_path)
+    fake, clock = _Healing(prepared), _Clock()
+    task = asyncio.create_task(
+        _heal_serve(prepared, fake, clock, restart_delays=(1.0, 2.0), stable_seconds=1.0)
+    )
+    await _out_until(capsys, "gateway_funnel_open")
+    fake.children[0].exit_code = 0
+    out = await _out_until(capsys, "gateway_funnel_stable; restart attempts reset")
+    fake.children[1].exit_code = 0
+    for _ in range(1000):
+        out += capsys.readouterr().out
+        if out.count("gateway_funnel_restarted attempt 1/2") == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert out.count("gateway_funnel_restarting attempt 1/2") == 2
+    assert "attempt 2/2" not in out
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+def test_event_lines_are_timestamped(capsys):
+    gateway_launch._event("gateway_funnel_open x")
+    line = capsys.readouterr().out.rstrip("\n")
+    stamp, _, name = line.partition(" gateway_funnel_open")
+    assert name == " x" and len(stamp) == len("2026-11-18 02:35:12,345")
+    assert stamp[4] == "-" and stamp[10] == " " and stamp[19] == ","

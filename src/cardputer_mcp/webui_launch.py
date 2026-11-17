@@ -6,7 +6,10 @@ cannot act; check Tailscale (this machine's name, nothing on the serve port);
 listen on 127.0.0.1; then run ``tailscale serve --https=<port>`` (or, only with
 ``mode = "public"``, ``tailscale funnel --https=<port>``) in the foreground as an owned
 Job Object child and confirm that it lists our target and that the port is Funnel
-exactly when Funnel was asked for. Shutdown closes it first, then the listener.
+exactly when Funnel was asked for. Shutdown closes it first, then the listener. If that
+process exits on its own after it was confirmed (a Tailscale update restarts tailscaled), the same
+command is started again, up to 8 times with growing waits, re-running the Tailscale checks and
+the exposure check each time (a tailnet-only mode never comes back public); otherwise the UI stops.
 
 Nothing here starts or stops the broker, the gateway, the OpenAI Tunnel or any
 device work. Output is fixed event names; no secrets, tokens or file contents.
@@ -17,7 +20,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,14 +34,20 @@ from . import client_environment, windows_process
 from .broker_link import canonical_broker_port
 from .config import Settings, WebUISettings, load_settings
 from .gateway_launch import (
+    _RESTART_DELAYS,
+    _RESTART_STABLE_SECONDS,
     GatewayLaunchError,
     Runner,
+    _Child,
     _event,
+    _Exposure,
+    _Healing,
     _json,
     _listen,
+    _open_exposure,
     _Server,
     _walk,
-    funnel_environment,
+    _watch_exposure,
     run_tailscale,
 )
 from .webui import BrokerReader, create_webui_app
@@ -204,6 +213,10 @@ async def serve(
     environ: Mapping[str, str] = os.environ,
     poll_seconds: float = 0.5,
     broker_http: httpx2.AsyncClient | None = None,
+    restart_delays: Sequence[float] = _RESTART_DELAYS,
+    stable_seconds: float = _RESTART_STABLE_SECONDS,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     webui = prepared.webui
     reader = BrokerReader(prepared.broker.url, prepared.broker.token, http=broker_http)
@@ -230,7 +243,7 @@ async def serve(
         )
     )
     listener = asyncio.create_task(_listen(server))
-    process: windows_process.OwnedWindowsProcess | None = None
+    child = _Child()
     code = 0
     try:
         while not server.started:
@@ -239,41 +252,45 @@ async def serve(
             await asyncio.sleep(0.05)
         _event(f"webui_listening 127.0.0.1:{webui.port}")
         if webui.serve or webui.funnel:
-            try:
-                process = start_process(
-                    serve_arguments(webui),
-                    funnel_environment(environ),
-                    str(webui.tailscale_exe.parent),
-                    executables=windows_process.TAILSCALE_EXECUTABLES,
-                )
-            except windows_process.WindowsProcessError as error:
-                process = error.owned
-                raise LaunchError("webui_serve_start_failed") from None
-            deadline = time.monotonic() + _SERVE_CONFIRM_SECONDS
-            status = [str(webui.tailscale_exe), "serve", "status", "--json"]
-            while True:
-                if process.poll() is not None:
-                    raise LaunchError("webui_serve_exited")
-                config = _json(await asyncio.to_thread(run, status))
-                if serve_is_public(config, webui) and not webui.funnel:
-                    raise LaunchError("webui_serve_is_public")
-                if serve_confirmed(config, webui):
-                    break
-                if time.monotonic() > deadline:
-                    raise LaunchError("webui_serve_not_confirmed")
-                await asyncio.sleep(poll_seconds)
             if webui.funnel:
-                _event("webui_funnel_open " + webui.public_url + " (public; Google login required)")
+                open_event = (
+                    "webui_funnel_open " + webui.public_url + " (public; Google login required)"
+                )
             else:
-                _event("webui_serve_open " + webui.public_url + " (tailnet only)")
+                open_event = "webui_serve_open " + webui.public_url + " (tailnet only)"
+            exposure = _Exposure(
+                prefix="webui_serve",
+                noun="the web UI",
+                arguments=serve_arguments(webui),
+                cwd=str(webui.tailscale_exe.parent),
+                status_args=[str(webui.tailscale_exe), "serve", "status", "--json"],
+                preflight=lambda: check_tailscale(webui, run),
+                confirmed=lambda config: serve_confirmed(config, webui),
+                refuse=lambda config: (
+                    "webui_serve_is_public"
+                    if serve_is_public(config, webui) and not webui.funnel
+                    else None
+                ),
+                open_event=open_event,
+            )
+            heal = _Healing(
+                run=run,
+                start_process=start_process,
+                environ=environ,
+                poll_seconds=poll_seconds,
+                confirm_seconds=_SERVE_CONFIRM_SECONDS,
+                delays=restart_delays,
+                stable_seconds=stable_seconds,
+                sleep=sleep,
+                clock=clock,
+            )
+            await _open_exposure(exposure, child, heal)
+            heal.opened_at = clock()
+            code = await _watch_exposure(exposure, child, heal, listener)
         else:
             _event("webui_serve_disabled; listening on loopback only")
-        while not listener.done():
-            if process is not None and process.poll() is not None:
-                _event("webui_serve_exited; stopping the web UI")
-                code = 1
-                break
-            await asyncio.sleep(poll_seconds)
+            while not listener.done():
+                await asyncio.sleep(poll_seconds)
     except LaunchError as error:
         _event(str(error))
         code = 1
@@ -281,6 +298,7 @@ async def serve(
         _event("webui_serve_process_error")
         code = 1
     finally:
+        process = child.process
         if process is not None:
             try:
                 stopped = await asyncio.to_thread(process.stop, 5.0)

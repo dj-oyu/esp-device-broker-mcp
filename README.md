@@ -544,7 +544,9 @@ With `mode = "public"` the gateway first checks Tailscale (machine name, Funnel
 permission, nothing on HTTPS 443), listens on 127.0.0.1, then runs
 `tailscale funnel --yes http://127.0.0.1:<port>` in the foreground as an owned
 child and waits until Funnel lists that target. Stopping the gateway (Ctrl+C)
-closes Funnel first; if Funnel exits, the gateway stops. In Claude, add a custom
+closes Funnel first. If Funnel exits on its own after it was confirmed (for example when a
+Tailscale update restarts tailscaled), the same command is started again after re-running the
+Tailscale checks, up to 8 times with growing waits; if that fails the gateway stops. In Claude, add a custom
 connector with the URL `<public_url>/mcp`.
 
 Unverified so far: a real Google login, a real Claude connection, and that a

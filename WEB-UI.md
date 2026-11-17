@@ -130,6 +130,7 @@ curl.exe -si http://127.0.0.1:8771/api/state -H 'Host: <machine>.<tailnet>.ts.ne
 
 - iPhone・iPad では、Safari の共有メニューから「ホーム画面に追加」できます。
 - Ctrl+C で止めると、serve を先に閉じてから待ち受けを止めます。
+- serve（Funnel）の確認後にそのプロセスが自分で終了したとき（典型例は Tailscale の自動更新）は、同じコマンドを同じ引数で起動し直します。待ち時間は 5・10・20・40 秒、その後は 60 秒で最大 8 回です。起動し直すたびに、起動時と同じ Tailscale の確認と、公開範囲の確認をやり直します。`mode = "tailnet"` で再起動後に Funnel（公開）になっていたら、再試行せずに `webui_serve_restart_refused reason=webui_serve_is_public` で止めます。あきらめたときは `webui_serve_restart_gave_up` を出して止めます。起動し直している間も 127.0.0.1 では待ち受けたままで、broker の鍵は確認し直しません。
 - `mode = "public"` のときは、Funnel として確認できるまで待ちます。`mode = "tailnet"`（serve）のときに設定が Funnel（公開）になっていたら、起動を拒否して閉じます（`webui_serve_is_public`）。
 - Funnel で開くと `webui_funnel_open https://…:8443 (public; Google login required)` が出ます。
 
@@ -152,6 +153,7 @@ curl.exe -si http://127.0.0.1:8771/api/state -H 'Host: <machine>.<tailnet>.ts.ne
 | `tailscale_serve_port_already_configured` | そのポートには、すでに serve か Funnel の設定があります |
 | `webui_public_url_not_this_machine` | `public_url` がこの PC の Tailscale 名と違います |
 | `webui_serve_start_failed` / `webui_serve_exited` / `webui_serve_not_confirmed` | serve を開始できない、すぐに終了した、または 15 秒以内に確認できませんでした |
+| `webui_serve_exited exit_code=<n>; restarting` / `webui_serve_restarting` / `webui_serve_restarted` / `webui_serve_restart_failed` / `webui_serve_restart_gave_up` / `webui_serve_restart_refused` / `webui_serve_stable` | serve が自分で終了したときの起動し直しの経過です。詳しくは上の説明を見てください |
 | `webui_serve_is_public` | `mode = "tailnet"` なのに、serve の設定が Funnel になっていました。閉じて止めます |
 | `tailscale_funnel_not_permitted` | `mode = "public"` ですが、このノードに Funnel の権限がありません |
 
