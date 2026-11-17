@@ -157,11 +157,11 @@ def retention_evidence(
             protect(receipt, "executable_plan")
 
     history = store.db.execute(
-        "SELECT receipt,completed_job,kind,principal FROM firmware_lkg_history LIMIT ?",
+        "SELECT receipt,completed_job,kind,principal,device_id FROM firmware_lkg_history LIMIT ?",
         (REFERENCE_LIMIT + 1,),
     ).fetchall()
     current = store.db.execute(
-        "SELECT receipt,completed_job,kind,principal FROM firmware_lkg LIMIT ?",
+        "SELECT receipt,completed_job,kind,principal,device_id FROM firmware_lkg LIMIT ?",
         (REFERENCE_LIMIT + 1,),
     ).fetchall()
     complete = complete and len(history) <= REFERENCE_LIMIT and len(current) <= REFERENCE_LIMIT
@@ -182,12 +182,37 @@ def retention_evidence(
             original = originals.get(target["receipt"], target)
             flash = plans.get(original["completed_job"], {})
             build = plans.get(flash.get("build_job_id"), {})
+            flash_job = jobs.get(original["completed_job"], {})
+            build_job = jobs.get(flash.get("build_job_id"), {})
+            # Restoring an existing receipt can select it under another
+            # authenticated principal. Require positive evidence of that exact
+            # successful restore; never infer authority from a matching hash.
+            owner = original["principal"]
+            if owner != target["principal"]:
+                selected = jobs.get(target["completed_job"], {})
+                restore = selected.get("plan", {})
+                if (
+                    reason != "current_lkg_evidence"
+                    or selected.get("state") != "succeeded"
+                    or restore.get("test") != "firmware_restore"
+                    or restore.get("recovery_kind") != "artifact_bundle"
+                    or restore.get("lkg_receipt") != target["receipt"]
+                    or restore.get("flash_principal") != target["principal"]
+                    or restore.get("device_id") != target["device_id"]
+                    or flash_job.get("state") != "succeeded"
+                    or build_job.get("state") != "succeeded"
+                    or flash.get("test") != "firmware_flash"
+                    or build.get("test") != "firmware_build"
+                    or flash.get("device_id") != target["device_id"]
+                ):
+                    complete = False
+                    continue
             if (
                 target["kind"] != "artifact_bundle"
+                or original["device_id"] != target["device_id"]
                 or not build
-                or original["principal"] != target["principal"]
-                or flash.get("flash_principal") != target["principal"]
-                or build.get("build_principal") != target["principal"]
+                or flash.get("flash_principal") != owner
+                or build.get("build_principal") != owner
             ):
                 complete = False
                 continue
