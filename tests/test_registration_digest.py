@@ -167,11 +167,55 @@ class SourceDigestTests(unittest.TestCase):
     def test_content_fields_still_change_the_digest(self):
         base = source_digest(source())
         self.assertNotEqual(base, source_digest(source(github_repository="owner/other")))
-        self.assertNotEqual(base, source_digest(source(submodule_repositories=["a/b"])))
-        self.assertNotEqual(
-            source_digest(source(submodule_repositories=["a/b"])),
-            source_digest(source(submodule_repositories=["a/c"])),
+
+    def test_the_advisory_allowlist_does_not_change_new_digests(self):
+        base = source_digest(source())
+        for change in (
+            {"submodule_repositories": ["a/b"]},
+            {"submodule_repositories": ["a/c"], "previous_submodule_repositories": [["a/b"]]},
+        ):
+            with self.subTest(change=sorted(change)):
+                self.assertEqual(base, source_digest(source(**change)))
+                self.assertEqual(
+                    project_digest(project()),
+                    project_digest(project(source_repository=source(**change))),
+                )
+
+    def test_digests_bound_to_an_earlier_allowlist_stay_accepted_when_listed(self):
+        old_list = ["boschsensortec/BMI270_SensorAPI", "lieff/minimp3", "xiph/opus"]
+        bound_source = sha(
+            source(submodule_repositories=old_list).model_dump_json(
+                exclude={"cache_root", "previous_cache_roots", "previous_submodule_repositories"}
+            )
         )
+        old_project = project(source_repository=source(submodule_repositories=old_list))
+        bound_project = sha(
+            old_project.model_dump_json(
+                exclude={
+                    "build_root": True,
+                    "source_repository": {
+                        "cache_root": True,
+                        "previous_cache_roots": True,
+                        "previous_submodule_repositories": True,
+                    },
+                }
+            )
+        )
+        grown = [*old_list, "dj-oyu/quickjs"]
+        # The edit alone orphans what the old list bound...
+        self.assertNotIn(bound_source, source_digests(source(submodule_repositories=grown)))
+        self.assertNotIn(
+            bound_project,
+            project_digests(project(source_repository=source(submodule_repositories=grown))),
+        )
+        # ...until the old list is named as a migration aid, or is still current.
+        migrated = source(submodule_repositories=grown, previous_submodule_repositories=[old_list])
+        for registration in (migrated, source(submodule_repositories=old_list)):
+            self.assertIn(bound_source, source_digests(registration))
+            self.assertIn(bound_source, source_digests(registration, schema_version=2))
+            self.assertIn(bound_project, project_digests(project(source_repository=registration)))
+        # Receipts written from now on carry the allowlist-free digest under any list.
+        self.assertIn(source_digest(migrated), source_digests(source()))
 
     def test_old_style_digests_are_reproduced_exactly(self):
         for submodules in ([], ["a/b"]):
@@ -269,7 +313,6 @@ class BuildAndFlashDigestTests(unittest.TestCase):
             {"project_dir": BASE / "other-project"},
             {"profile_execution_policy": "RemoteSigned"},
             {"source_repository": source(github_repository="owner/other")},
-            {"source_repository": source(submodule_repositories=["a/b"])},
         ):
             with self.subTest(change=sorted(change)):
                 self.assertNotEqual(base, project_digest(project(**change)))

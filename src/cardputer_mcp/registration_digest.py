@@ -31,13 +31,31 @@ from pydantic import BaseModel, ConfigDict
 
 # Location-only fields (never an executable identity or an allow decision).
 SOURCE_LOCATION_FIELDS = {"cache_root", "previous_cache_roots"}
+# The submodule allowlist is advisory (an unregistered Gitlink is fetched and
+# reported), so new digests leave it out: editing it must not orphan receipts.
+# Digests written while it was bound are recomputed from the current list and the
+# operator-listed ``previous_submodule_repositories``; that migration field itself
+# is never hashed.
+SOURCE_ADVISORY_FIELDS = {"submodule_repositories"}
+SOURCE_MIGRATION_FIELDS = {"previous_submodule_repositories"}
+_SOURCE_UNHASHED = SOURCE_LOCATION_FIELDS | SOURCE_MIGRATION_FIELDS
 PROJECT_EXCLUDE: dict[str, Any] = {
     "build_root": True,
-    "source_repository": {name: True for name in SOURCE_LOCATION_FIELDS},
+    "source_repository": {name: True for name in _SOURCE_UNHASHED | SOURCE_ADVISORY_FIELDS},
 }
-# Previous releases hashed everything; only the field added later is dropped to
+# Digests of releases that bound the allowlist: everything but locations.
+_PROJECT_BOUND_EXCLUDE: dict[str, Any] = {
+    "build_root": True,
+    "source_repository": {name: True for name in _SOURCE_UNHASHED},
+}
+# Previous releases hashed everything; only the fields added later are dropped to
 # reproduce their exact JSON.
-_PROJECT_OLD_EXCLUDE: dict[str, Any] = {"source_repository": {"previous_cache_roots": True}}
+_PROJECT_OLD_EXCLUDE: dict[str, Any] = {
+    "source_repository": {
+        "previous_cache_roots": True,
+        **{n: True for n in SOURCE_MIGRATION_FIELDS},
+    }
+}
 FLASH_LOCATION_FIELDS = {"backup_directory"}
 _BOOLS = (True, False)
 
@@ -62,41 +80,72 @@ class _PreLocationSourceRegistration(BaseModel):
 
 
 def source_digest(registration: Any, *, legacy: bool = False) -> str:
-    """Path-independent digest. ``legacy`` keeps the pre-submodule binding shape."""
-    excluded = set(SOURCE_LOCATION_FIELDS)
-    if legacy or not registration.submodule_repositories:
-        excluded.add("submodule_repositories")
-    return _sha(registration.model_dump_json(exclude=excluded))
+    """Path- and allowlist-independent digest.
+
+    ``legacy`` is kept for callers: the pre-submodule shape and the current shape
+    are now the same text.
+    """
+    del legacy
+    return _sha(registration.model_dump_json(exclude=_SOURCE_UNHASHED | SOURCE_ADVISORY_FIELDS))
+
+
+def _allowlists(registration: Any) -> list[list[str]]:
+    """The current allowlist and every listed earlier one, each once, in order."""
+    result: list[list[str]] = []
+    for item in [
+        list(getattr(registration, "submodule_repositories", ())),
+        *(list(old) for old in getattr(registration, "previous_submodule_repositories", ())),
+    ]:
+        if item not in result:
+            result.append(item)
+    return result
 
 
 def source_digests(registration: Any, *, schema_version: int | None = None) -> frozenset[str]:
     """Every digest a receipt/marker may legitimately carry for this registration.
 
-    Schema 2 receipts were always bound with the submodule allowlist; only older
-    (or unspecified) records also accept the pre-submodule shape.
+    Releases before the allowlist became advisory bound it into the digest: those are
+    recomputed with the current list and each ``previous_submodule_repositories``
+    entry. ``schema_version`` is kept for callers.
     """
-    include_legacy_shape = schema_version != 2
+    del schema_version
     roots = [registration.cache_root, *getattr(registration, "previous_cache_roots", ())]
-    result = {source_digest(registration)}  # location-independent; no removed flag in it
-    if include_legacy_shape:
-        result.add(source_digest(registration, legacy=True))
-    for root, acl in product(roots, _BOOLS):  # acl: the removed private_acl_confirmed
-        old = _PreLocationSourceRegistration(
-            github_repository=registration.github_repository,
-            cache_root=root,
-            private_acl_confirmed=acl,
-            submodule_repositories=list(registration.submodule_repositories),
-        )
-        # Old releases dropped an empty submodule list from the hashed JSON.
-        full = set() if registration.submodule_repositories else {"submodule_repositories"}
-        result.add(_sha(old.model_dump_json(exclude=full)))
-        if include_legacy_shape:
+    result = {source_digest(registration)}  # also the pre-submodule shape
+    for allowlist in _allowlists(registration):
+        if allowlist:  # old releases dropped an empty list, i.e. the current shape
+            bound = registration.model_copy(update={"submodule_repositories": allowlist})
+            result.add(_sha(bound.model_dump_json(exclude=_SOURCE_UNHASHED)))
+        for root, acl in product(roots, _BOOLS):  # acl: the removed private_acl_confirmed
+            old = _PreLocationSourceRegistration(
+                github_repository=registration.github_repository,
+                cache_root=root,
+                private_acl_confirmed=acl,
+                submodule_repositories=allowlist,
+            )
+            result.add(
+                _sha(
+                    old.model_dump_json(exclude=set() if allowlist else {"submodule_repositories"})
+                )
+            )
             result.add(_sha(old.model_dump_json(exclude={"submodule_repositories"})))
     return frozenset(result)
 
 
 def project_digest(project: Any) -> str:
     return _sha(project.model_dump_json(exclude=PROJECT_EXCLUDE))
+
+
+def _with_allowlist(project: Any, allowlist: list[str]) -> Any:
+    registration = project.source_repository
+    if registration is None:
+        return project
+    return project.model_copy(
+        update={
+            "source_repository": registration.model_copy(
+                update={"submodule_repositories": allowlist}
+            )
+        }
+    )
 
 
 def _legacy_project_documents(project: Any) -> Iterator[str]:
@@ -116,10 +165,19 @@ def _legacy_project_documents(project: Any) -> Iterator[str]:
 
 
 def project_digests(project: Any) -> frozenset[str]:
-    """Current digest plus the old full-model digests of the current registration."""
-    return frozenset(
-        {project_digest(project), *(_sha(text) for text in _legacy_project_documents(project))}
-    )
+    """Current digest plus the digests earlier releases computed for this registration.
+
+    Those bound the submodule allowlist, so each is recomputed for the current list
+    and every ``previous_submodule_repositories`` entry.
+    """
+    result = {project_digest(project)}
+    registration = getattr(project, "source_repository", None)
+    allowlists = _allowlists(registration) if registration is not None else [[]]
+    for allowlist in allowlists:
+        bound = _with_allowlist(project, allowlist)
+        result.add(_sha(bound.model_dump_json(exclude=_PROJECT_BOUND_EXCLUDE)))
+        result.update(_sha(text) for text in _legacy_project_documents(bound))
+    return frozenset(result)
 
 
 def flash_digest(registration: Any) -> str:

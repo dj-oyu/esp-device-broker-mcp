@@ -278,11 +278,15 @@ version = 'v22.0.0'
 
 Git uses the same fields under git_tool, with git.exe and an exact version string
 such as git version 2.51.0.windows.1. Obtain these receipts through separately
-explicitly requested local diagnostics. Preparation rejects mismatched executable hashes;
-execution uses absolute --version argv, then prepends only registered executable
-parent directories to the profile-exported IDF PATH. It verifies resolution points
-back to the registered executable. Node found on the exported PATH without explicit
-registration is refused; version mismatch or ambiguous resolution prevents build.
+explicitly requested local diagnostics. The registration fixes the path: a tool
+updated in place (new bytes or version at the same path) still builds. Preparation
+puts the hash it finds into the plan fingerprint and adds a `registered_tool_changed`
+notice to the plan; execution logs the `--version` it gets next to the registered one
+and records the observed version and hash in the manifest. Execution uses absolute
+--version argv, then prepends only registered executable parent directories to the
+profile-exported IDF PATH. It verifies resolution points back to the registered
+executable. Node found on the exported PATH without explicit registration is refused,
+and ambiguous resolution prevents build.
 Successful diagnostic versions are recorded in bounded logs and success manifests,
 without private executable paths. Tool receipts are included in the plan fingerprint.
 No arbitrary extra tools/commands/search paths are accepted from MCP.

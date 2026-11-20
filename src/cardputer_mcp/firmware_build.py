@@ -9,6 +9,7 @@ import shutil
 import stat
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -128,6 +129,12 @@ class FixedDiagnosticFailure(BuildPreflightFailure):
             raise ValueError("invalid_build_diagnostic_code")
         self.code = code
         super().__init__(code)
+
+
+@dataclass(frozen=True)
+class RegisteredToolState:
+    tool: Any  # RegisteredBuildTool
+    sha256: str  # hash of the executable now, which may differ from tool.sha256
 
 
 class ProfileExportFailure(BuildPreflightFailure):
@@ -361,6 +368,12 @@ class FirmwareBuild:
 
     @staticmethod
     def _registered_tools(project: Any) -> dict[str, Any]:
+        """Registered node/git, keyed by name, with the SHA-256 they have now.
+
+        The registration fixes the path. A tool updated in place (same path, new
+        bytes) still runs: its current hash goes into the plan fingerprint and the
+        build manifest, and the plan carries a ``registered_tool_changed`` notice.
+        """
         result: dict[str, Any] = {}
         for name in ("node", "git"):
             tool = getattr(project, name + "_tool", None)
@@ -371,15 +384,28 @@ class FirmwareBuild:
                 not executable.is_absolute()
                 or executable.name.casefold() != name + ".exe"
                 or executable.is_symlink()
-                or hash_file(executable) != tool.sha256
+                or not executable.is_file()
             ):
                 raise ValueError("registered_tool_not_verified")
             if name == "node" and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tool.version) is None:
                 raise ValueError("registered_node_version_required")
             if name == "git" and not tool.version.startswith("git version "):
                 raise ValueError("registered_git_version_required")
-            result[name] = tool
+            result[name] = RegisteredToolState(tool, hash_file(executable))
         return result
+
+    @staticmethod
+    def _tool_notices(registered_tools: dict[str, Any]) -> list[dict[str, str]]:
+        return [
+            dict(
+                code="registered_tool_changed",
+                tool=name,
+                registered_sha256=state.tool.sha256,
+                observed_sha256=state.sha256,
+            )
+            for name, state in registered_tools.items()
+            if state.sha256 != state.tool.sha256
+        ]
 
     def _project(
         self, project_id: str | None, principal: str, source_receipt: str | None = None
@@ -468,11 +494,11 @@ class FirmwareBuild:
                     ),
                     "registered_tools": {
                         name: dict(
-                            path=str(tool.executable.resolve(strict=True)).casefold(),
-                            sha256=tool.sha256,
-                            version=tool.version,
+                            path=str(state.tool.executable.resolve(strict=True)).casefold(),
+                            sha256=state.sha256,
+                            version=state.tool.version,
                         )
-                        for name, tool in registered_tools.items()
+                        for name, state in registered_tools.items()
                     },
                 },
                 sort_keys=True,
@@ -487,6 +513,7 @@ class FirmwareBuild:
                 else {}
             ),
             fingerprint=fingerprint,
+            **({"notices": notices} if (notices := self._tool_notices(registered_tools)) else {}),
             expected_idf=project.expected_idf,
             target=project.target,
             profile_execution_policy=getattr(project, "profile_execution_policy", "inherit"),
@@ -782,7 +809,8 @@ class FirmwareBuild:
         registered_versions: dict[str, dict[str, str]] = {}
         registered_tools = self._registered_tools(project)
         search_directories: list[str] = []
-        for name, tool in registered_tools.items():
+        for name, state in registered_tools.items():
+            tool = state.tool
             version.clear()
             if run(
                 [str(tool.executable), "--version"],
@@ -793,18 +821,26 @@ class FirmwareBuild:
             ):
                 raise FixedDiagnosticFailure("registered_tool_diagnostic_failed")
             self._check_cancelled()
-            if version != [tool.version]:
-                raise FixedDiagnosticFailure("registered_tool_version_mismatch")
+            if len(version) != 1:
+                raise FixedDiagnosticFailure("registered_tool_diagnostic_failed")
+            observed = version[0]
             search_directories.append(str(tool.executable.parent))
-            registered_versions[name] = dict(version=tool.version, sha256=tool.sha256)
-            logs.append(f"-- Registered {name} version: {tool.version} (SHA-256 verified)")
+            registered_versions[name] = dict(version=observed, sha256=state.sha256)
+            # Updated in place: the registered path decides what runs, so a newer
+            # version or binary is reported, not refused.
+            drift = [
+                *([f"registered {tool.version}"] if observed != tool.version else []),
+                *(["SHA-256 differs from registration"] if state.sha256 != tool.sha256 else []),
+            ]
+            note = "; ".join(drift) if drift else "matches registration"
+            logs.append(f"-- Registered {name} version: {observed} ({note})")
         if search_directories:
             # Never merge SYSTEM_PATH or ambient PATH. Only hash-verified local
             # registrations supplement the trusted IDF export environment.
             env["PATH"] = ";".join([*search_directories, env["PATH"]])
-        for name, tool in registered_tools.items():
+        for name, state in registered_tools.items():
             resolved = shutil.which(name + ".exe", path=env["PATH"])
-            if resolved is None or Path(resolved).resolve() != tool.executable.resolve():
+            if resolved is None or Path(resolved).resolve() != state.tool.executable.resolve():
                 raise FixedDiagnosticFailure("registered_tool_resolution_ambiguous")
         resolved_compiler = shutil.which("xtensa-esp32s3-elf-gcc.exe", path=env["PATH"])
         if (

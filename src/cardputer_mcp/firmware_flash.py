@@ -19,7 +19,6 @@ from .flash_driver import (
     BootAttempt,
     NativeFlashDriver,
     boot_verification_reason,
-    esptool_fingerprint,
 )
 from .flash_lifecycle import FlashFailure, FlashLifecycle, Operation, OperationPlan
 from .flash_lkg_bundle import (
@@ -354,17 +353,10 @@ class FirmwareFlash:
                 raise FlashFailure("flash_serial_opt_in_required")
             if registration.selector != self.settings.serial.selector:
                 raise FlashFailure("flash_registration_selector_mismatch")
-            from .firmware_build import hash_file
-
-            # Pure hashing; offloaded from the loop when the caller uses offload_io.
-            if (
-                pure_io("hash_file", hash_file, registration.python_tool.executable)
-                != registration.python_tool.sha256
-                or pure_io(
-                    "esptool_fingerprint", esptool_fingerprint, registration.esptool_directory
-                )
-                != registration.esptool_sha256
-            ):
+            # The python/esptool hashes are no longer a gate: the registered paths
+            # decide what runs, and the driver reports bytes that changed in place
+            # (registered_flash_tool_drift). The executables must still exist.
+            if not registration.python_tool.executable.is_file():
                 raise FlashFailure("registered_flash_tools_changed")
         return registration
 

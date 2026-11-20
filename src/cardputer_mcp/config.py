@@ -180,16 +180,31 @@ REMOVED_SOURCE_GATES = {
 }
 
 
+def _repository_list(value: list[str]) -> bool:
+    return len({item.casefold() for item in value}) == len(value) and all(
+        re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", item) is not None
+        and not any(part in (".", "..") for part in item.split("/"))
+        for item in value
+    )
+
+
 class SourceRepository(BaseModel):
     """Locally trusted public GitHub origin and private snapshot root."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
     github_repository: str = Field(pattern=r"^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$")
     cache_root: Path
+    # Advisory: Gitlinks to other GitHub repositories are fetched too and reported
+    # as unregistered. Not part of new digests, so editing it orphans nothing.
     submodule_repositories: list[str] = Field(default_factory=list, max_length=16)
     # Migration aid: earlier cache locations whose old-style digests stay trusted.
-    # Location only; never part of any digest. Keep this field last.
+    # Location only; never part of any digest. Keep the two migration aids last.
     previous_cache_roots: list[Path] = Field(default_factory=list, max_length=8)
+    # Migration aid: earlier submodule_repositories lists, exactly as they were
+    # (order included). Receipts and bindings written while one was current were
+    # hashed with it; listing it keeps them verifiable and retirable. Never part of
+    # any digest.
+    previous_submodule_repositories: list[list[str]] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="before")
     @classmethod
@@ -214,11 +229,14 @@ class SourceRepository(BaseModel):
     @field_validator("submodule_repositories")
     @classmethod
     def submodule_allowlist(cls, value: list[str]) -> list[str]:
-        if len({item.casefold() for item in value}) != len(value) or any(
-            re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", item) is None
-            or any(part in (".", "..") for part in item.split("/"))
-            for item in value
-        ):
+        if not _repository_list(value):
+            raise ValueError("registered_submodule_repository_required")
+        return value
+
+    @field_validator("previous_submodule_repositories")
+    @classmethod
+    def previous_submodule_allowlists(cls, value: list[list[str]]) -> list[list[str]]:
+        if any(len(item) > 16 or not _repository_list(item) for item in value):
             raise ValueError("registered_submodule_repository_required")
         return value
 

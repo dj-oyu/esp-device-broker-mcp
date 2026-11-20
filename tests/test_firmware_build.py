@@ -408,8 +408,13 @@ class FirmwareVerticalTests(unittest.TestCase):
                 node.parent.mkdir()
                 node.write_bytes(b"node")
                 if node_mode != "unregistered":
+                    # "updated_in_place": the registration still names this path, but
+                    # the bytes and version there are newer than what was registered.
+                    registered_sha = (
+                        "0" * 64 if node_mode == "updated_in_place" else module.hash_file(node)
+                    )
                     settings.build_projects["cardputer"].node_tool = SimpleNamespace(
-                        executable=node, sha256=module.hash_file(node), version="v22.0.0"
+                        executable=node, sha256=registered_sha, version="v22.0.0"
                     )
             builder = FirmwareBuild(settings)
             source_receipt = None
@@ -496,7 +501,10 @@ class FirmwareVerticalTests(unittest.TestCase):
                             emit("private native diagnostic", "stderr")
                             return 1
                         if args[0] == str(node):
-                            emit("v21.0.0" if node_mode == "wrong_version" else "v22.0.0", "stdout")
+                            emit(
+                                "v24.1.0" if node_mode == "updated_in_place" else "v22.0.0",
+                                "stdout",
+                            )
                         else:
                             emit(
                                 "ESP-IDF v6.0.1" if args[1] == str(idf_py) else "version", "stdout"
@@ -593,9 +601,8 @@ class FirmwareVerticalTests(unittest.TestCase):
                     self.assertEqual([], list(root.rglob("broker-manifest*.json")))
                     self.assertTrue(any(command[-1] == "build" for command in calls))
                     return
-                if node_mode in ("wrong_version", "ambiguous", "unregistered"):
+                if node_mode in ("ambiguous", "unregistered"):
                     code = {
-                        "wrong_version": "registered_tool_version_mismatch",
                         "ambiguous": "registered_tool_resolution_ambiguous",
                         "unregistered": "node_requires_explicit_local_registration",
                     }[node_mode]
@@ -699,8 +706,22 @@ class FirmwareVerticalTests(unittest.TestCase):
             self.assertEqual(report["manifest"]["flash_layout"]["name"], "flasher_args.json")
             self.assertEqual(report["manifest"]["flash_security"]["name"], "config/sdkconfig.json")
             if node_mode:
+                updated = node_mode == "updated_in_place"
+                node_receipt = report["manifest"]["registered_tool_versions"]["node"]
+                self.assertEqual(node_receipt["version"], "v24.1.0" if updated else "v22.0.0")
+                self.assertEqual(node_receipt["sha256"], module.hash_file(node))
                 self.assertEqual(
-                    report["manifest"]["registered_tool_versions"]["node"]["version"], "v22.0.0"
+                    plan.get("notices"),
+                    [
+                        {
+                            "code": "registered_tool_changed",
+                            "tool": "node",
+                            "registered_sha256": "0" * 64,
+                            "observed_sha256": module.hash_file(node),
+                        }
+                    ]
+                    if updated
+                    else None,
                 )
                 self.assertEqual(build_env["PATH"].split(";")[0], str(node.parent))
                 self.assertNotIn("SYSTEM_PATH", environments[-1])
@@ -738,8 +759,11 @@ class FirmwareVerticalTests(unittest.TestCase):
         self._exercise_build(idf_failed=True)
         self._exercise_build(toolchain_failed=True)
 
-    def test_wrong_registered_node_version_blocks_build(self):
-        for mode in ("wrong_version", "ambiguous", "unregistered"):
+    def test_node_updated_in_place_builds_and_reports_the_drift(self):
+        self._exercise_build(node_mode="updated_in_place")
+
+    def test_ambiguous_or_unregistered_node_blocks_build(self):
+        for mode in ("ambiguous", "unregistered"):
             with self.subTest(node_mode=mode):
                 self._exercise_build(node_mode=mode)
 

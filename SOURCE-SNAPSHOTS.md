@@ -113,7 +113,7 @@ the broker. Redirects are rejected. No caller URL, shell, Git hooks, registered 
 caller-supplied credentials, submodule update or LFS download. The only credential is the
 optional process-environment token described in "GitHub rate limit and API token" below.
 The archive's root must name the exact commit.
-Fixed allowlisted Git submodules are recursively acquired as described in
+Fixed Git submodules on public GitHub are recursively acquired as described in
 SOURCE-SUBMODULES.md. Git blob/tree SHA-1 is reconstructed from extracted bytes/modes and matched to
 that commit's GitHub tree metadata; SHA-256 receipts additionally protect retained
 bytes. This uses trusted HTTPS GitHub commit metadata, not a GPG signature claim.
@@ -191,7 +191,8 @@ or listChanged notification alone does not prove host metadata changed. Host
 Refresh is not callable from this task's tool set; current-conversation refresh
 has not been established. No permissions/authentication/re-registration workaround.
 
-Formal fixed Git submodules are supported with a registered repository allowlist.
+Formal fixed Git submodules are supported; the registered repository allowlist is
+advisory (unregistered repositories are fetched and reported).
 See [SOURCE-SUBMODULES.md](SOURCE-SUBMODULES.md) for the Gitlink contract,
 shared bounds, receipt compatibility and remaining firmware dependencies.
 
@@ -199,13 +200,30 @@ shared bounds, receipt compatibility and remaining firmware dependencies.
 ## Registration binding is content, not location
 
 Plans and receipts are bound to a digest of the approved registration facts that
-decide what executes or which provenance is trusted: the GitHub repository, the
-submodule allowlist, tool identities (path and SHA-256), profiles, allow flags and
-device selectors. Location-only fields are **not** bound, so moving a folder does not
-invalidate durable evidence: `cache_root`, `build_root`, and
-the flash `backup_directory`. Tool or profile changes,
-a different repository, a different submodule allowlist, or a different esptool
-(path or hash) still invalidate bound plans and receipts, and unknown digests fail closed.
+decide what executes or which provenance is trusted: the GitHub repository, tool
+identities (path and registered SHA-256), profiles, allow flags and device selectors.
+Location-only fields are **not** bound, so moving a folder does not invalidate durable
+evidence: `cache_root`, `build_root`, and the flash `backup_directory`. Nor is the
+advisory `submodule_repositories` list, so editing it orphans no receipt. Tool or profile
+registration changes, a different repository, or a different registered esptool (path
+or hash) still invalidate bound plans and receipts, and unknown digests fail closed.
+
+Releases before this one did bind `submodule_repositories`. Receipts and plans they wrote
+still verify while that list is current. After editing it, list each earlier list,
+exactly as it was (order included), so those receipts verify and can be retired again;
+without this, a full evidence store cannot rotate them (`source_cache_evidence_full`):
+
+```toml
+[build_projects.<id>.source_repository]
+submodule_repositories = ['boschsensortec/BMI270_SensorAPI', 'lieff/minimp3', 'xiph/opus', 'dj-oyu/quickjs']
+previous_submodule_repositories = [
+  ['boschsensortec/BMI270_SensorAPI', 'lieff/minimp3', 'xiph/opus'],
+  ['lieff/minimp3'],
+]
+```
+
+`previous_submodule_repositories` is migration metadata like `previous_cache_roots`:
+never part of a digest, not accepted from MCP, at most 8 lists.
 
 New receipts and plans carry the path-independent digest. Receipts written by earlier
 releases carry a digest that included `cache_root` and `private_acl_confirmed` (and, for flash

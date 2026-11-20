@@ -286,9 +286,9 @@ class SourceTests(unittest.TestCase):
         for extra in (
             b"url = https://example.test/module.git\n",
             b"url = ../minimp3.git\n",
-            b"url = https://github.com/unregistered/module.git\n",
             b"url = https://github.com/lieff/minimp3.git\nupdate = !command\n",
-            b"url = https://github.com/lieff/minimp3.git\nbranch = main\n",
+            b"url = https://github.com/lieff/minimp3.git\nunknown = value\n",
+            b"update = none\n",
         ):
             self.submodule_fixture(modules=b'[submodule "m"]\npath = third_party/minimp3\n' + extra)
             with self.assertRaises(SourceError):
@@ -302,6 +302,65 @@ class SourceTests(unittest.TestCase):
         self.submodule_fixture(gitlink="d" * 40)
         with self.assertRaises(SourceError):
             self.fetch()
+
+    def registered_submodules(self, repositories):
+        project = self.settings.build_projects["fixture"]
+        registration = project.source_repository.model_copy(
+            update={"submodule_repositories": repositories}
+        )
+        project = project.model_copy(update={"source_repository": registration})
+        self.settings = self.settings.model_copy(update={"build_projects": {"fixture": project}})
+        self.snapshots.settings = self.settings
+
+    def test_unregistered_repository_and_inert_keys_are_fetched_with_notices(self):
+        self.submodule_fixture(
+            modules=b'[submodule "m"]\npath = third_party/minimp3\n'
+            b"url = https://github.com/lieff/minimp3.git\nbranch = main\nshallow = true\n"
+        )
+        self.registered_submodules([])
+        result = self.fetch()
+        self.assertEqual(result["submodules"][0]["repository"], "lieff/minimp3")
+        self.assertEqual(
+            result["notices"],
+            [
+                {
+                    "code": "submodule_keys_ignored",
+                    "path": "third_party/minimp3",
+                    "keys": "branch,shallow",
+                },
+                {
+                    "code": "submodule_repository_unregistered",
+                    "path": "third_party/minimp3",
+                    "repository": "lieff/minimp3",
+                },
+            ],
+        )
+        source, metadata = self.snapshots.resolve("fixture", result["source_receipt"], "owner")
+        self.assertEqual(
+            (source / "third_party/minimp3/minimp3.h").read_bytes(), b"synthetic upstream header"
+        )
+        self.assertNotIn("notices", metadata)
+
+    def test_update_none_gitlink_is_recorded_but_not_fetched(self):
+        self.submodule_fixture(
+            modules=b'[submodule "m"]\npath = third_party/minimp3\n'
+            b"url = https://github.com/lieff/minimp3.git\nupdate = none\n"
+        )
+        result = self.fetch()
+        self.assertNotIn("submodules", result)
+        self.assertEqual(
+            result["notices"],
+            [
+                {
+                    "code": "submodule_not_fetched_update_none",
+                    "path": "third_party/minimp3",
+                    "repository": "lieff/minimp3",
+                }
+            ],
+        )
+        self.assertFalse(any("lieff/minimp3" in url for url in self.urls))
+        source, _ = self.snapshots.resolve("fixture", result["source_receipt"], "owner")
+        self.assertFalse((source / "third_party/minimp3/minimp3.h").exists())
 
     def test_shared_submodule_limits_and_revocation_publish_nothing(self):
         self.submodule_fixture(nested=True)

@@ -1,6 +1,6 @@
 # Fixed Git submodules in source snapshots
 
-Add the non-secret repository allowlist to the existing project registration:
+Optionally list the GitHub repositories you expect in the project registration:
 
 ```json
 "source_repository": {
@@ -10,15 +10,28 @@ Add the non-secret repository allowlist to the existing project registration:
 }
 ```
 
-The firmware PR uses `third_party/minimp3`, the HTTPS URL
-`https://github.com/lieff/minimp3.git`, and Gitlink commit
-`ea99364f61c14656440e8d77e9c233ccf3124633`. The parent full commit remains the
-only MCP input. The importer reads `.gitmodules` as data, confirms each path
-against the parent's mode-160000 Gitlinks, and fetches only those full commits
-from allowlisted public GitHub repositories. It does not run Git, shell,
-`.gitmodules` update commands, hooks, or branch tracking. Relative/SSH/foreign
-URLs, credentials, redirects, branch/update/extra configuration fields,
-overlapping/case-alias paths, missing/mismatched links and cycles are rejected.
+The list is advisory. The parent full commit remains the only MCP input. The
+importer reads `.gitmodules` as data, confirms each path against the parent's
+mode-160000 Gitlinks, and fetches exactly those full commits from public GitHub. It
+does not run Git, shell, `.gitmodules` update commands, hooks, or branch tracking.
+
+What the fetch result reports in `notices` instead of refusing:
+
+- `submodule_repository_unregistered`: a Gitlink to a GitHub repository outside
+  `submodule_repositories`. It is fetched and verified like any other.
+- `submodule_keys_ignored`: `branch`, `shallow`, `ignore` or `fetchRecurseSubmodules`,
+  which only steer a local `git submodule` and change nothing here.
+- `submodule_not_fetched_update_none`: `update = none`. As in a plain recursive clone,
+  the Gitlink stays in the tree and its directory stays empty.
+
+Still refused (`source_gitmodules_rejected` and related codes): non-GitHub, relative,
+SSH or credentialed URLs, redirects, `update = !command` and other unknown `update`
+values, unknown keys, overlapping/case-alias/unsafe paths, missing/mismatched links
+and cycles. Notices describe one fetch and are not stored in the receipt.
+
+Editing `submodule_repositories` does not orphan existing receipts; see
+"Registration binding is content, not location" in SOURCE-SNAPSHOTS.md for receipts
+written while the list was still bound (`previous_submodule_repositories`).
 
 Each archive's regular blobs and Gitlinks reconstruct its exact Git tree SHA-1.
 Each repository also records its commit, tree, archive SHA-256 and own-file
