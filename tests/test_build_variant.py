@@ -379,7 +379,7 @@ def test_registration_digest_inputs_are_unchanged():
         "target",
     ]
     if os.name == "nt":
-        from cardputer_mcp.registration_digest import project_digest
+        from cardputer_mcp.registration_digest import project_digest, project_digests
 
         base = Path("C:/pinbase1")
         project = BuildProject(
@@ -390,9 +390,15 @@ def test_registration_digest_inputs_are_unchanged():
                 github_repository="owner/repo", cache_root=base / "cache"
             ),
         )
+        # The advisory submodule allowlist left the digest; the value earlier releases
+        # stored (which still hashed it) stays accepted for existing plans.
         assert (
             project_digest(project)
-            == "57a4cd76e061561c6c2d62faf25e4b1c88d0ffacdbfdde43e2de02d179ea3969"
+            == "00f2991aa3f24d640fcb28cefc866f7fb8369fcbb859a4d9d5e9858cb1abab3e"
+        )
+        assert (
+            "57a4cd76e061561c6c2d62faf25e4b1c88d0ffacdbfdde43e2de02d179ea3969"
+            in project_digests(project)
         )
 
 
