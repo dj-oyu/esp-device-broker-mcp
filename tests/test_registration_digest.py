@@ -19,7 +19,6 @@ from cardputer_mcp.registration_digest import (
     project_digest,
     project_digests,
     source_digest,
-    source_digests,
 )
 from cardputer_mcp.source_snapshot import SourceError, SourceSnapshots, registration_digest
 
@@ -168,63 +167,16 @@ class SourceDigestTests(unittest.TestCase):
         base = source_digest(source())
         self.assertNotEqual(base, source_digest(source(github_repository="owner/other")))
 
-    def test_the_advisory_allowlist_does_not_change_new_digests(self):
-        base = source_digest(source())
-        for change in (
-            {"submodule_repositories": ["a/b"]},
-            {"submodule_repositories": ["a/c"], "previous_submodule_repositories": [["a/b"]]},
-        ):
-            with self.subTest(change=sorted(change)):
-                self.assertEqual(base, source_digest(source(**change)))
+    def test_the_advisory_allowlist_changes_no_digest(self):
+        for allowlist in (["a/b"], ["a/c", "a/b"]):
+            with self.subTest(allowlist=allowlist):
+                changed = source(submodule_repositories=allowlist)
+                self.assertEqual(source_digest(source()), source_digest(changed))
                 self.assertEqual(
-                    project_digest(project()),
-                    project_digest(project(source_repository=source(**change))),
+                    project_digest(project()), project_digest(project(source_repository=changed))
                 )
 
-    def test_digests_bound_to_an_earlier_allowlist_stay_accepted_when_listed(self):
-        old_list = ["boschsensortec/BMI270_SensorAPI", "lieff/minimp3", "xiph/opus"]
-        bound_source = sha(
-            source(submodule_repositories=old_list).model_dump_json(
-                exclude={"cache_root", "previous_cache_roots", "previous_submodule_repositories"}
-            )
-        )
-        old_project = project(source_repository=source(submodule_repositories=old_list))
-        bound_project = sha(
-            old_project.model_dump_json(
-                exclude={
-                    "build_root": True,
-                    "source_repository": {
-                        "cache_root": True,
-                        "previous_cache_roots": True,
-                        "previous_submodule_repositories": True,
-                    },
-                }
-            )
-        )
-        grown = [*old_list, "dj-oyu/quickjs"]
-        # The edit alone orphans what the old list bound...
-        self.assertNotIn(bound_source, source_digests(source(submodule_repositories=grown)))
-        self.assertNotIn(
-            bound_project,
-            project_digests(project(source_repository=source(submodule_repositories=grown))),
-        )
-        # ...until the old list is named as a migration aid, or is still current.
-        migrated = source(submodule_repositories=grown, previous_submodule_repositories=[old_list])
-        for registration in (migrated, source(submodule_repositories=old_list)):
-            self.assertIn(bound_source, source_digests(registration))
-            self.assertIn(bound_source, source_digests(registration, schema_version=2))
-            self.assertIn(bound_project, project_digests(project(source_repository=registration)))
-        # Receipts written from now on carry the allowlist-free digest under any list.
-        self.assertIn(source_digest(migrated), source_digests(source()))
-
-    def test_old_style_digests_are_reproduced_exactly(self):
-        for submodules in ([], ["a/b"]):
-            registration = source(submodule_repositories=submodules)
-            # The removed private_acl_confirmed was hashed with either value.
-            for acl in (False, True):
-                expected = sha(old_source_json("owner/repo", BASE / "cache", acl, submodules))
-                self.assertIn(expected, source_digests(registration))
-                self.assertIn(expected, source_digests(registration, schema_version=2))
+    def test_unknown_project_digests_are_not_accepted(self):
         self.assertNotIn(sha("unknown"), project_digests(project()))
 
     def test_old_project_digests_with_the_removed_acl_flag_are_still_accepted(self):
@@ -250,16 +202,10 @@ class SourceDigestTests(unittest.TestCase):
         without_source = project(source_repository=None)
         self.assertIn(sha(without_source.model_dump_json()), project_digests(without_source))
 
-    def test_only_listed_previous_roots_are_trusted(self):
-        old = sha(old_source_json("owner/repo", BASE / "old", False, []))
-        self.assertNotIn(old, source_digests(source()))
-        self.assertNotIn(old, source_digests(source(previous_cache_roots=[BASE / "other"])))
-        self.assertIn(old, source_digests(source(previous_cache_roots=[BASE / "old"])))
-        for roots in ([Path("relative")], [BASE / ".." / "x"], [BASE / "cache"]):
-            with self.assertRaises(ValueError):
-                source(previous_cache_roots=roots)
-        with self.assertRaises(ValueError):
-            source(previous_cache_roots=[BASE / "o", BASE / "o"])
+    def test_previous_cache_roots_is_accepted_and_ignored(self):
+        # The former migration aid is no longer needed; an old config line still loads.
+        self.assertEqual(source(previous_cache_roots=[BASE / "old"]), source())
+        self.assertEqual(source(previous_cache_roots=[Path("relative")]), source())
 
 
 class OldFlashDigestTests(unittest.TestCase):
@@ -337,21 +283,21 @@ class MovedCacheRootTests(CacheFixture, unittest.TestCase):
         self.cache = self.root / "cache"
         self.use_root(self.cache)
 
-    def use_root(self, root, previous=()):
+    def use_root(self, root, allowlist=()):
         registration = SourceRepository(
             github_repository="fixture/project",
             cache_root=root,
-            previous_cache_roots=list(previous),
+            submodule_repositories=list(allowlist),
         )
         self.settings.build_projects["fixture"].source_repository = registration
         self.snapshots = SourceSnapshots(self.settings)
         self.snapshots.retention = self.evidence
 
-    def move_to(self, name, previous=()):
+    def move_to(self, name):
         target = self.root / name
         shutil.move(self.cache, target)
         self.cache = target
-        self.use_root(target, previous)
+        self.use_root(target)
 
     def old_style_fetch(self):
         """Write a receipt bound to the pre-change digest (cache root included)."""
@@ -372,13 +318,15 @@ class MovedCacheRootTests(CacheFixture, unittest.TestCase):
     def registration_for_now(self):
         return self.settings.build_projects["fixture"].source_repository
 
-    def test_old_style_receipt_is_rejected_after_a_move_unless_listed(self):
+    def test_old_style_receipt_survives_a_move_without_any_listing(self):
         result = self.old_style_fetch()
-        old_root = self.cache
         self.move_to("moved-cache")
-        with self.assertRaisesRegex(SourceError, "source_receipt_not_owned"):
-            self.snapshots.resolve("fixture", result["source_receipt"], "owner")
-        self.use_root(self.cache, previous=[old_root])
+        path, _ = self.snapshots.resolve("fixture", result["source_receipt"], "owner")
+        self.assertTrue(path.is_dir())
+
+    def test_receipt_survives_an_allowlist_edit(self):
+        result = self.fetch(1)
+        self.use_root(self.cache, allowlist=["lieff/minimp3", "dj-oyu/quickjs"])
         path, _ = self.snapshots.resolve("fixture", result["source_receipt"], "owner")
         self.assertTrue(path.is_dir())
 

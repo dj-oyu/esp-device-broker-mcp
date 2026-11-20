@@ -222,7 +222,6 @@ class SourceReceiptReaderTests(ReceiptFixture):
     def test_keys_resolve_never_reads_are_not_required_by_it(self) -> None:
         for key in (
             "fetch_job_id",
-            "repository",
             "commit",
             "tree_sha1",
             "archive_sha256",
@@ -312,15 +311,18 @@ class SourceReceiptReaderTests(ReceiptFixture):
             self.listed(name)
         self.assert_unchanged(name, b"{not json")
 
-    def test_wrong_owner_project_and_digest(self) -> None:
+    def test_wrong_owner_project_and_repository(self) -> None:
         self.assertEqual(self.resolve_code(self.receipt, "other"), "source_receipt_not_owned")
-        for update in ({"project_id": "other"}, {"registration_sha256": "0" * 64}):
+        for update in ({"project_id": "other"}, {"repository": "fixture/other"}):
             with self.subTest(update=update):
                 name = self.plant(self.changed(**update))
                 self.assertEqual(self.resolve_code(name), "source_receipt_not_owned")
                 self.assertIsNone(self.listed(name))
-        name = self.plant(self.changed(repository="fixture/other"))
-        self.assertIsNone(self.listed(name))
+
+    def test_registration_digest_does_not_decide_ownership(self) -> None:
+        # Old receipts carry digests that bound the cache location or the advisory
+        # submodule allowlist; neither makes them someone else's.
+        name = self.plant(self.changed(registration_sha256="0" * 64))
         self.assertIsNotNone(self.snapshots.resolve("fixture", name, "owner"))
 
 

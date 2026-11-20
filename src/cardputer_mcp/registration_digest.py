@@ -1,15 +1,17 @@
 """Registration digests bind approved *content*, never where files are stored.
 
 A digest ties a plan or receipt to the locally approved registration facts that
-decide what executes or which provenance is trusted: repositories and submodule
-allowlists, tool identities, profiles, allow flags and device selectors. Output and
+decide what executes or which provenance is trusted: repositories, tool identities,
+profiles, allow flags and device selectors. The submodule allowlist is advisory and
+bound into none of them, so editing it invalidates nothing. Source receipts are owned
+by repository, project and principal, not by a registration digest. Output and
 cache locations (and their private-ACL confirmations) are operator housekeeping:
 moving a folder must not invalidate durable evidence, so they are excluded.
 
-Records written before this change were bound to digests that included those
-locations. They stay verifiable through the old-style recomputation below, which
-only ever uses the registered current path or an operator-listed
-``previous_cache_roots`` entry. Unknown digests still fail closed.
+Source receipts written before either change carried digests that included the
+cache location or the allowlist; they need no recomputation, since a receipt is
+checked by its repository, project and principal. Unknown project/flash digests
+still fail closed.
 
 The removed settings (``allow_flash``/``allow_backup``/``allow_restore``,
 ``unattended_flash.enabled`` and the ``private_*_acl_confirmed`` declarations) no longer
@@ -24,38 +26,23 @@ import hashlib
 import json
 from collections.abc import Iterator
 from itertools import product
-from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
-
 # Location-only fields (never an executable identity or an allow decision).
-SOURCE_LOCATION_FIELDS = {"cache_root", "previous_cache_roots"}
-# The submodule allowlist is advisory (an unregistered Gitlink is fetched and
-# reported), so new digests leave it out: editing it must not orphan receipts.
-# Digests written while it was bound are recomputed from the current list and the
-# operator-listed ``previous_submodule_repositories``; that migration field itself
-# is never hashed.
+SOURCE_LOCATION_FIELDS = {"cache_root"}
 SOURCE_ADVISORY_FIELDS = {"submodule_repositories"}
-SOURCE_MIGRATION_FIELDS = {"previous_submodule_repositories"}
-_SOURCE_UNHASHED = SOURCE_LOCATION_FIELDS | SOURCE_MIGRATION_FIELDS
 PROJECT_EXCLUDE: dict[str, Any] = {
     "build_root": True,
-    "source_repository": {name: True for name in _SOURCE_UNHASHED | SOURCE_ADVISORY_FIELDS},
+    "source_repository": {name: True for name in SOURCE_LOCATION_FIELDS | SOURCE_ADVISORY_FIELDS},
 }
-# Digests of releases that bound the allowlist: everything but locations.
+# What project_digest hashed while the allowlist was still bound.
 _PROJECT_BOUND_EXCLUDE: dict[str, Any] = {
     "build_root": True,
-    "source_repository": {name: True for name in _SOURCE_UNHASHED},
+    "source_repository": {name: True for name in SOURCE_LOCATION_FIELDS},
 }
-# Previous releases hashed everything; only the fields added later are dropped to
-# reproduce their exact JSON.
-_PROJECT_OLD_EXCLUDE: dict[str, Any] = {
-    "source_repository": {
-        "previous_cache_roots": True,
-        **{n: True for n in SOURCE_MIGRATION_FIELDS},
-    }
-}
+# Previous releases hashed everything. The field added later
+# (``previous_cache_roots``) no longer exists, so their exact JSON needs no exclusion.
+_PROJECT_OLD_EXCLUDE: dict[str, Any] = {}
 FLASH_LOCATION_FIELDS = {"backup_directory"}
 _BOOLS = (True, False)
 
@@ -69,83 +56,16 @@ def _compact(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
-class _PreLocationSourceRegistration(BaseModel):
-    """Exact field set/order hashed by releases before location-independent digests."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    github_repository: str
-    cache_root: Path
-    private_acl_confirmed: bool
-    submodule_repositories: list[str]
-
-
 def source_digest(registration: Any, *, legacy: bool = False) -> str:
-    """Path- and allowlist-independent digest.
-
-    ``legacy`` is kept for callers: the pre-submodule shape and the current shape
-    are now the same text.
-    """
+    """Path- and allowlist-independent digest (``legacy`` is kept for callers)."""
     del legacy
-    return _sha(registration.model_dump_json(exclude=_SOURCE_UNHASHED | SOURCE_ADVISORY_FIELDS))
-
-
-def _allowlists(registration: Any) -> list[list[str]]:
-    """The current allowlist and every listed earlier one, each once, in order."""
-    result: list[list[str]] = []
-    for item in [
-        list(getattr(registration, "submodule_repositories", ())),
-        *(list(old) for old in getattr(registration, "previous_submodule_repositories", ())),
-    ]:
-        if item not in result:
-            result.append(item)
-    return result
-
-
-def source_digests(registration: Any, *, schema_version: int | None = None) -> frozenset[str]:
-    """Every digest a receipt/marker may legitimately carry for this registration.
-
-    Releases before the allowlist became advisory bound it into the digest: those are
-    recomputed with the current list and each ``previous_submodule_repositories``
-    entry. ``schema_version`` is kept for callers.
-    """
-    del schema_version
-    roots = [registration.cache_root, *getattr(registration, "previous_cache_roots", ())]
-    result = {source_digest(registration)}  # also the pre-submodule shape
-    for allowlist in _allowlists(registration):
-        if allowlist:  # old releases dropped an empty list, i.e. the current shape
-            bound = registration.model_copy(update={"submodule_repositories": allowlist})
-            result.add(_sha(bound.model_dump_json(exclude=_SOURCE_UNHASHED)))
-        for root, acl in product(roots, _BOOLS):  # acl: the removed private_acl_confirmed
-            old = _PreLocationSourceRegistration(
-                github_repository=registration.github_repository,
-                cache_root=root,
-                private_acl_confirmed=acl,
-                submodule_repositories=allowlist,
-            )
-            result.add(
-                _sha(
-                    old.model_dump_json(exclude=set() if allowlist else {"submodule_repositories"})
-                )
-            )
-            result.add(_sha(old.model_dump_json(exclude={"submodule_repositories"})))
-    return frozenset(result)
+    return _sha(
+        registration.model_dump_json(exclude=SOURCE_LOCATION_FIELDS | SOURCE_ADVISORY_FIELDS)
+    )
 
 
 def project_digest(project: Any) -> str:
     return _sha(project.model_dump_json(exclude=PROJECT_EXCLUDE))
-
-
-def _with_allowlist(project: Any, allowlist: list[str]) -> Any:
-    registration = project.source_repository
-    if registration is None:
-        return project
-    return project.model_copy(
-        update={
-            "source_repository": registration.model_copy(
-                update={"submodule_repositories": allowlist}
-            )
-        }
-    )
 
 
 def _legacy_project_documents(project: Any) -> Iterator[str]:
@@ -165,19 +85,15 @@ def _legacy_project_documents(project: Any) -> Iterator[str]:
 
 
 def project_digests(project: Any) -> frozenset[str]:
-    """Current digest plus the digests earlier releases computed for this registration.
-
-    Those bound the submodule allowlist, so each is recomputed for the current list
-    and every ``previous_submodule_repositories`` entry.
-    """
-    result = {project_digest(project)}
-    registration = getattr(project, "source_repository", None)
-    allowlists = _allowlists(registration) if registration is not None else [[]]
-    for allowlist in allowlists:
-        bound = _with_allowlist(project, allowlist)
-        result.add(_sha(bound.model_dump_json(exclude=_PROJECT_BOUND_EXCLUDE)))
-        result.update(_sha(text) for text in _legacy_project_documents(bound))
-    return frozenset(result)
+    """Current digest plus the digests earlier releases computed for this registration
+    (with the current allowlist, which they still bound)."""
+    return frozenset(
+        {
+            project_digest(project),
+            _sha(project.model_dump_json(exclude=_PROJECT_BOUND_EXCLUDE)),
+            *(_sha(text) for text in _legacy_project_documents(project)),
+        }
+    )
 
 
 def flash_digest(registration: Any) -> str:

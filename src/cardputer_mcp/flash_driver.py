@@ -167,9 +167,13 @@ def registered_flash_tool_drift(registration: Any) -> list[str]:
     at the same place) is reported, not refused. Firmware bytes stay hash-checked.
     """
     drift = []
-    if hash_file(registration.python_tool.executable) != registration.python_tool.sha256:
+    python = registration.python_tool
+    if python.sha256 is not None and hash_file(python.executable) != python.sha256:
         drift.append("python")
-    if esptool_fingerprint(registration.esptool_directory) != registration.esptool_sha256:
+    if (
+        registration.esptool_sha256 is not None
+        and esptool_fingerprint(registration.esptool_directory) != registration.esptool_sha256
+    ):
         drift.append("esptool")
     return drift
 

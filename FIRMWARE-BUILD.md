@@ -266,18 +266,17 @@ new-tool catalog/schema and artifact byte inspection remain independent checks.
 ## Explicit external Node/Git registration
 
 SYSTEM_PATH and ambient PATH are not merged into the child. Optional node_tool
-and git_tool registrations each contain an absolute executable, SHA-256 receipt
-and exact --version output. For example (placeholder path/digest/version):
+and git_tool registrations name an absolute executable; `sha256` and the exact
+`--version` output may be added as notes, and are reported when they no longer match.
+For example (placeholder path):
 
 ```toml
 [build_projects.cardputer.node_tool]
 executable = 'C:\example\node\node.exe'
-sha256 = '0000000000000000000000000000000000000000000000000000000000000000'
-version = 'v22.0.0'
 ```
 
-Git uses the same fields under git_tool, with git.exe and an exact version string
-such as git version 2.51.0.windows.1. Obtain these receipts through separately
+Git uses the same fields under git_tool, with git.exe (a version note looks like
+git version 2.51.0.windows.1). Obtain any such notes through separately
 explicitly requested local diagnostics. The registration fixes the path: a tool
 updated in place (new bytes or version at the same path) still builds. Preparation
 puts the hash it finds into the plan fingerprint and adds a `registered_tool_changed`

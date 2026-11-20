@@ -29,9 +29,8 @@ SSH or credentialed URLs, redirects, `update = !command` and other unknown `upda
 values, unknown keys, overlapping/case-alias/unsafe paths, missing/mismatched links
 and cycles. Notices describe one fetch and are not stored in the receipt.
 
-Editing `submodule_repositories` does not orphan existing receipts; see
-"Registration binding is content, not location" in SOURCE-SNAPSHOTS.md for receipts
-written while the list was still bound (`previous_submodule_repositories`).
+Editing `submodule_repositories` orphans no existing receipt (see "Registration
+binding is content, not location" in SOURCE-SNAPSHOTS.md).
 
 Each archive's regular blobs and Gitlinks reconstruct its exact Git tree SHA-1.
 Each repository also records its commit, tree, archive SHA-256 and own-file

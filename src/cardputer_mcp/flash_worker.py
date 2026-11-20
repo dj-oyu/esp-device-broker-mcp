@@ -9,7 +9,6 @@ import hashlib
 import io
 import json
 import os
-import platform
 import re
 import sys
 import time
@@ -277,8 +276,8 @@ def main() -> None:
         if not path.is_absolute() or path.is_symlink() or path.stat().st_size > 32768:
             raise ValueError
         job = json.loads(path.read_text("utf-8"))
-        if "Python " + platform.python_version() != job["expected_python_version"]:
-            raise ValueError
+        # The registered python.exe path decides the interpreter; its version is a note
+        # (expected_python_version may be null), not a gate.
         import esptool  # type: ignore[import-not-found]  # Registered external SDK only.
         import esptool.cmds  # type: ignore[import-not-found]
 

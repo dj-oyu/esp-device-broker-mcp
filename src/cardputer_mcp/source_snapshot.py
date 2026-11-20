@@ -25,7 +25,7 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from .flash_backup import BackupStore
-from .registration_digest import source_digest, source_digests
+from .registration_digest import source_digest
 from .source_cache_lock import LOCK_NAME, CacheLock
 from .source_receipt_model import ResolvedSourceReceipt, supported_schema
 
@@ -1408,8 +1408,7 @@ class SourceSnapshots:
                 not supported_schema(value["schema_version"])
                 or value["principal"] != principal
                 or value["project_id"] != project_id
-                or value["registration_sha256"]
-                not in source_digests(registration, schema_version=value["schema_version"])
+                or value.get("repository") != registration.github_repository
             ):
                 raise SourceError("source_receipt_not_owned")
             source = root / "source"

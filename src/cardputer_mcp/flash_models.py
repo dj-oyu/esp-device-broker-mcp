@@ -13,8 +13,9 @@ from .ports import DeviceSelector
 class FlashPython(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     executable: Path
-    sha256: Digest
-    version: str = Field(pattern=r"^Python 3\.[0-9]+\.[0-9]+$")
+    # Optional notes, as for build tools: the registered path decides what runs.
+    sha256: Digest | None = None
+    version: str | None = Field(default=None, pattern=r"^Python 3\.[0-9]+\.[0-9]+$")
 
     @field_validator("executable")
     @classmethod
@@ -81,7 +82,7 @@ class FlashDevice(BaseModel):
     project_id: Identifier
     python_tool: FlashPython
     esptool_directory: Path
-    esptool_sha256: Digest
+    esptool_sha256: Digest | None = None  # optional note; see registered_flash_tool_drift
     esptool_version: Literal["5.1.0"] = "5.1.0"
     backup_directory: Path
     original_elf_sha256: Digest | None = None

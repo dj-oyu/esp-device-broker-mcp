@@ -159,12 +159,18 @@ class WebUISettings(BaseModel):
 
 
 class RegisteredBuildTool(BaseModel):
-    """Trusted local executable receipt, not a remotely selectable command."""
+    """A locally registered executable path, not a remotely selectable command.
+
+    The path decides what runs. ``sha256`` and ``version`` are optional notes: when
+    given, a build whose tool differs from them still runs and reports the drift.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     executable: Path
-    sha256: Digest
-    version: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9 ._+()-]+$")
+    sha256: Digest | None = None
+    version: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9 ._+()-]+$"
+    )
 
     @field_validator("executable")
     @classmethod
@@ -180,14 +186,6 @@ REMOVED_SOURCE_GATES = {
 }
 
 
-def _repository_list(value: list[str]) -> bool:
-    return len({item.casefold() for item in value}) == len(value) and all(
-        re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", item) is not None
-        and not any(part in (".", "..") for part in item.split("/"))
-        for item in value
-    )
-
-
 class SourceRepository(BaseModel):
     """Locally trusted public GitHub origin and private snapshot root."""
 
@@ -195,48 +193,27 @@ class SourceRepository(BaseModel):
     github_repository: str = Field(pattern=r"^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$")
     cache_root: Path
     # Advisory: Gitlinks to other GitHub repositories are fetched too and reported
-    # as unregistered. Not part of new digests, so editing it orphans nothing.
+    # as unregistered. Bound into no digest, so editing it orphans nothing.
     submodule_repositories: list[str] = Field(default_factory=list, max_length=16)
-    # Migration aid: earlier cache locations whose old-style digests stay trusted.
-    # Location only; never part of any digest. Keep the two migration aids last.
-    previous_cache_roots: list[Path] = Field(default_factory=list, max_length=8)
-    # Migration aid: earlier submodule_repositories lists, exactly as they were
-    # (order included). Receipts and bindings written while one was current were
-    # hashed with it; listing it keeps them verifiable and retirable. Never part of
-    # any digest.
-    previous_submodule_repositories: list[list[str]] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="before")
     @classmethod
     def removed_attestation(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "previous_cache_roots" in data:
+            # Former migration aid for receipts bound to their cache location.
+            # Receipts are owned by repository/project/principal now, so a moved
+            # cache needs no listing; an existing line is accepted and ignored.
+            data = {k: v for k, v in data.items() if k != "previous_cache_roots"}
         return drop_removed_gates(data, REMOVED_SOURCE_GATES)
-
-    @field_validator("previous_cache_roots")
-    @classmethod
-    def previous_roots(cls, value: list[Path]) -> list[Path]:
-        if len(set(value)) != len(value) or any(
-            not item.is_absolute() or ".." in item.parts for item in value
-        ):
-            raise ValueError("absolute_previous_source_cache_roots_required")
-        return value
-
-    @model_validator(mode="after")
-    def previous_roots_differ(self) -> "SourceRepository":
-        if self.cache_root in self.previous_cache_roots:
-            raise ValueError("previous_source_cache_root_must_differ")
-        return self
 
     @field_validator("submodule_repositories")
     @classmethod
     def submodule_allowlist(cls, value: list[str]) -> list[str]:
-        if not _repository_list(value):
-            raise ValueError("registered_submodule_repository_required")
-        return value
-
-    @field_validator("previous_submodule_repositories")
-    @classmethod
-    def previous_submodule_allowlists(cls, value: list[list[str]]) -> list[list[str]]:
-        if any(len(item) > 16 or not _repository_list(item) for item in value):
+        if len({item.casefold() for item in value}) != len(value) or any(
+            re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", item) is None
+            or any(part in (".", "..") for part in item.split("/"))
+            for item in value
+        ):
             raise ValueError("registered_submodule_repository_required")
         return value
 

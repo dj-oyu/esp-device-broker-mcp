@@ -387,10 +387,14 @@ class FirmwareBuild:
                 or not executable.is_file()
             ):
                 raise ValueError("registered_tool_not_verified")
-            if name == "node" and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tool.version) is None:
-                raise ValueError("registered_node_version_required")
-            if name == "git" and not tool.version.startswith("git version "):
-                raise ValueError("registered_git_version_required")
+            if tool.version is not None:
+                if (
+                    name == "node"
+                    and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tool.version) is None
+                ):
+                    raise ValueError("registered_node_version_required")
+                if name == "git" and not tool.version.startswith("git version "):
+                    raise ValueError("registered_git_version_required")
             result[name] = RegisteredToolState(tool, hash_file(executable))
         return result
 
@@ -404,7 +408,7 @@ class FirmwareBuild:
                 observed_sha256=state.sha256,
             )
             for name, state in registered_tools.items()
-            if state.sha256 != state.tool.sha256
+            if state.tool.sha256 is not None and state.sha256 != state.tool.sha256
         ]
 
     def _project(
@@ -829,10 +833,18 @@ class FirmwareBuild:
             # Updated in place: the registered path decides what runs, so a newer
             # version or binary is reported, not refused.
             drift = [
-                *([f"registered {tool.version}"] if observed != tool.version else []),
-                *(["SHA-256 differs from registration"] if state.sha256 != tool.sha256 else []),
+                *(
+                    [f"registered {tool.version}"]
+                    if tool.version is not None and observed != tool.version
+                    else []
+                ),
+                *(
+                    ["SHA-256 differs from registration"]
+                    if tool.sha256 is not None and state.sha256 != tool.sha256
+                    else []
+                ),
             ]
-            note = "; ".join(drift) if drift else "matches registration"
+            note = "; ".join(drift) if drift else "as registered"
             logs.append(f"-- Registered {name} version: {observed} ({note})")
         if search_directories:
             # Never merge SYSTEM_PATH or ambient PATH. Only hash-verified local
