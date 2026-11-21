@@ -238,6 +238,18 @@ class SourceHistoryRetentionTests(HistoryFixture, unittest.TestCase):
         self.assertFalse(self.payload(old).exists())
         self.assertTrue((self.root / "cache" / old["source_receipt"] / "receipt.json").exists())
 
+    def test_restore_of_another_principals_firmware_keeps_evidence_complete(self):
+        # A restore rewrites only the current row: the restorer becomes its
+        # principal, the history row keeps the original flash by "other".
+        source, receipt, _ = self.publish_generation(1, principal="other")
+        self.store.db.execute(
+            "UPDATE firmware_lkg SET principal='owner', completed_job='restore-1' WHERE receipt=?",
+            (receipt,),
+        )
+        evidence = self.evidence()
+        self.assertTrue(evidence["complete"])
+        self.assertIn("current_lkg_evidence", evidence["protected"][source["source_receipt"]])
+
     def test_prepared_flash_indirectly_protects_historical_build_source(self):
         old, _, _ = self.publish_generation(1)
         self.publish_generation(2)

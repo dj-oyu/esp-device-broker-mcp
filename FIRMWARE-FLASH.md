@@ -4,8 +4,10 @@ Flash registrations are local and separate from the ESP-IDF 6.0.1 build profile.
 A device that is not registered is refused; for a registered device backup, flash and
 restore are all available (there are no per-device `allow_*` switches or ACL
 attestations any more; the old keys are read as described in the README's
-"Upgrading an existing configuration" and a legacy `false` stops startup). Register an external Python executable with its SHA
-and exact version, and a dedicated esptool 5.1.0 package directory with its SHA.
+"Upgrading an existing configuration" and a legacy `false` stops startup). Register an external Python executable and a
+dedicated esptool 5.1.0 package directory by path. Their `sha256`/`version` (and
+`esptool_sha256`) are optional notes: a tool updated in place still runs, and the
+flash log reports the change.
 An existing IDF Python environment need not be downgraded. No SDK is bundled.
 
 MCP `submit` accepts `kind=backup`, `kind=flash`, and

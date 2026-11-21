@@ -12,7 +12,6 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from .registration_digest import source_digests
 from .source_receipt_model import ListedSourceReceipt, supported_schema
 from .source_snapshot import (
     EVIDENCE_BYTES,
@@ -75,7 +74,9 @@ def metadata(
         or value.get("commit") != expected.get("source_commit")
         or value.get("registration_sha256") != expected.get("source_registration_sha256")
         or expected.get("source_repository") != registration.github_repository
-        or value.get("registration_sha256") not in source_digests(registration)
+        # The registration digest once bound the submodule allowlist; it is advisory
+        # now, so ownership is the repository itself (plus project/principal/job).
+        or value.get("repository") != registration.github_repository
     ):
         return None
     try:
@@ -246,7 +247,6 @@ def _pending(
         if (
             value.get("project_id") != plan["project_id"]
             or not isinstance(value.get("principal"), str)
-            or value.get("registration_sha256") not in source_digests(registration)
             or job.get("state") not in {"succeeded", "failed", "cancelled"}
             or job.get("plan", {}).get("source_principal") != value.get("principal")
             or job.get("plan", {}).get("project_id") != plan["project_id"]

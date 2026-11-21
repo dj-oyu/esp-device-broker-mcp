@@ -113,7 +113,7 @@ the broker. Redirects are rejected. No caller URL, shell, Git hooks, registered 
 caller-supplied credentials, submodule update or LFS download. The only credential is the
 optional process-environment token described in "GitHub rate limit and API token" below.
 The archive's root must name the exact commit.
-Fixed allowlisted Git submodules are recursively acquired as described in
+Fixed Git submodules on public GitHub are recursively acquired as described in
 SOURCE-SUBMODULES.md. Git blob/tree SHA-1 is reconstructed from extracted bytes/modes and matched to
 that commit's GitHub tree metadata; SHA-256 receipts additionally protect retained
 bytes. This uses trusted HTTPS GitHub commit metadata, not a GPG signature claim.
@@ -191,40 +191,28 @@ or listChanged notification alone does not prove host metadata changed. Host
 Refresh is not callable from this task's tool set; current-conversation refresh
 has not been established. No permissions/authentication/re-registration workaround.
 
-Formal fixed Git submodules are supported with a registered repository allowlist.
+Formal fixed Git submodules are supported; the registered repository allowlist is
+advisory (unregistered repositories are fetched and reported).
 See [SOURCE-SUBMODULES.md](SOURCE-SUBMODULES.md) for the Gitlink contract,
 shared bounds, receipt compatibility and remaining firmware dependencies.
 
 
 ## Registration binding is content, not location
 
-Plans and receipts are bound to a digest of the approved registration facts that
-decide what executes or which provenance is trusted: the GitHub repository, the
-submodule allowlist, tool identities (path and SHA-256), profiles, allow flags and
-device selectors. Location-only fields are **not** bound, so moving a folder does not
-invalidate durable evidence: `cache_root`, `build_root`, and
-the flash `backup_directory`. Tool or profile changes,
-a different repository, a different submodule allowlist, or a different esptool
-(path or hash) still invalidate bound plans and receipts, and unknown digests fail closed.
+Plans are bound to a digest of the approved registration facts that decide what
+executes: the GitHub repository, tool identities (path and registered SHA-256),
+profiles, allow flags and device selectors. Location-only fields are **not** bound:
+`cache_root`, `build_root`, and the flash `backup_directory`. Nor is the advisory
+`submodule_repositories` list. Tool or profile registration changes, a different
+repository, or a different registered esptool (path or hash) still invalidate bound
+plans, and unknown digests fail closed.
 
-New receipts and plans carry the path-independent digest. Receipts written by earlier
-releases carry a digest that included `cache_root` and `private_acl_confirmed` (and, for flash
-bindings, the former `allow_*` flags and `unattended_flash.enabled`); they stay valid in
-place: the accepted set also holds the digest recomputed for every legacy value of the
-removed booleans. After moving a cache, list the old location(s) in the registration so
-those receipts are recognised again (nothing else is trusted; at most 8 absolute paths):
-
-```toml
-[build_projects.<id>.source_repository]
-cache_root = 'D:
-ew\esp-src'
-previous_cache_roots = ['C:\old\esp-src']
-```
-
-`previous_cache_roots` is operator metadata only: it never changes a digest, is not
-accepted from MCP, and does not move or copy any files. Historical flash plans keep
-verifying through their original full-model digest while the flash registration is
-unchanged; moving the flash `backup_directory` no longer affects new flash plans.
+A source receipt is owned by its repository, project and principal (and its fetch
+job's evidence), not by a registration digest. Moving the cache or editing
+`submodule_repositories` therefore orphans no receipt, whichever release wrote it, and
+nothing has to be listed: an old `previous_cache_roots` line is accepted and ignored.
+Historical flash plans keep verifying through their original full-model digest while
+the flash registration is unchanged.
 
 ## Bounded source lifecycle and resource inventory
 

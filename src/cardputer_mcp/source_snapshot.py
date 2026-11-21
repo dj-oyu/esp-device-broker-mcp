@@ -17,6 +17,7 @@ import urllib.request
 import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
@@ -24,7 +25,7 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from .flash_backup import BackupStore
-from .registration_digest import source_digest, source_digests
+from .registration_digest import source_digest
 from .source_cache_lock import LOCK_NAME, CacheLock
 from .source_receipt_model import ResolvedSourceReceipt, supported_schema
 
@@ -397,27 +398,61 @@ def validate_submodule_provenance(value: Any) -> None:
         seen.add(item["path"].casefold())
 
 
-def submodule_paths(data: bytes, allowed: list[str]) -> dict[str, str]:
+# .gitmodules keys that only steer a local `git submodule` and change nothing the
+# importer does: it never runs Git, follows no branch and always fetches the exact
+# Gitlink commit. They are ignored and reported, not rejected.
+INERT_SUBMODULE_KEYS = frozenset({"branch", "shallow", "ignore", "fetchrecursesubmodules"})
+# `update` values Git itself treats as data. `none` means "do not check out" and is
+# honored: that Gitlink stays an empty directory, as in a plain recursive clone.
+# A `!command` value is still rejected: harmless here, but it runs on any checkout
+# that does `git submodule update`.
+UPDATE_STRATEGIES = frozenset({"checkout", "rebase", "merge", "none"})
+
+
+@dataclass(frozen=True)
+class SubmoduleConfig:
+    repositories: dict[str, str]  # path -> owner/name, every configured Gitlink
+    skipped: frozenset[str]  # paths with update = none, recorded but not fetched
+    notices: tuple[dict[str, str], ...]
+
+
+def submodule_paths(data: bytes, allowed: list[str]) -> SubmoduleConfig:
+    """Parse .gitmodules as data.
+
+    `allowed` (the registration's submodule_repositories) is advisory: a GitHub
+    repository outside it is fetched like any other and reported in a notice. What
+    stays a hard error is what the importer cannot do safely or at all: non-GitHub,
+    relative or credentialed URLs, unsafe or overlapping paths, `update = !cmd`.
+    """
     if len(data) > SUBMODULE_LIMITS["gitmodules_bytes"]:
         raise SourceError("source_gitmodules_limit")
     parser = configparser.ConfigParser(interpolation=None, strict=True)
+    known = {item.casefold() for item in allowed}
     try:
         parser.read_string(data.decode("utf-8"))
         if parser.defaults() or len(parser.sections()) > SUBMODULE_LIMITS["count"]:
             raise ValueError
         result: dict[str, str] = {}
+        skipped: set[str] = set()
+        notices: list[dict[str, str]] = []
         for section in parser.sections():
             if re.fullmatch(r'submodule "[^"\x00-\x1f]{1,128}"', section) is None:
                 raise ValueError
             values = dict(parser[section])
-            if set(values) != {"path", "url"}:
+            if not {"path", "url"} <= set(values):
                 raise ValueError
             path, url = values["path"], values["url"]
             safe_name(path)
+            extra = set(values) - {"path", "url", "update"}
+            if extra - INERT_SUBMODULE_KEYS:
+                raise ValueError
+            update = values.get("update", "checkout")
+            if update not in UPDATE_STRATEGIES:
+                raise ValueError
             match = re.fullmatch(
                 r"https://github\.com/([A-Za-z0-9_-]+/[A-Za-z0-9_.-]+?)(?:\.git)?", url
             )
-            if match is None or match[1] not in allowed:
+            if match is None:
                 raise ValueError
             if any(
                 path.casefold() == other.casefold()
@@ -427,7 +462,24 @@ def submodule_paths(data: bytes, allowed: list[str]) -> dict[str, str]:
             ):
                 raise ValueError
             result[path] = match[1]
-        return result
+            if extra:
+                notices.append(
+                    dict(
+                        code="submodule_keys_ignored",
+                        path=path,
+                        keys=",".join(sorted(extra)),
+                    )
+                )
+            if update == "none":
+                skipped.add(path)
+                notices.append(
+                    dict(code="submodule_not_fetched_update_none", path=path, repository=match[1])
+                )
+            elif match[1].casefold() not in known:
+                notices.append(
+                    dict(code="submodule_repository_unregistered", path=path, repository=match[1])
+                )
+        return SubmoduleConfig(result, frozenset(skipped), tuple(notices))
     except SourceError:
         raise
     except Exception:
@@ -674,6 +726,7 @@ class RepositoryArchives:
         self.tree_entries = 0
         self.budget = {"expanded": 0, "files": 0, "entries": 0}
         self.submodules: list[dict[str, Any]] = []
+        self.notices: list[dict[str, str]] = []
 
     def get(self, url: str, limit: int) -> bytes:
         remaining = LIMITS["download_bytes"] - self.downloaded
@@ -857,14 +910,19 @@ class RepositoryArchives:
         )
         links: dict[str, str] = {}
         configured: dict[str, str] = {}
+        skipped: frozenset[str] = frozenset()
         if ".gitmodules" in own_files or tree_hash(own_files) != metadata["tree"]["sha"]:
             links = self.restore_archive(repository, metadata["tree"]["sha"], root, own_files, path)
         if not path and "CMakeLists.txt" not in own_files:
             raise SourceError("source_idf_project_missing")
         if ".gitmodules" in own_files:
-            configured = submodule_paths(
+            config = submodule_paths(
                 (root / ".gitmodules").read_bytes(), self.registration.submodule_repositories
             )
+            configured, skipped = config.repositories, config.skipped
+            for notice in config.notices:
+                full = path + "/" + notice["path"] if path else notice["path"]
+                self.notices.append({**notice, "path": full})
         if set(configured) != set(links):
             raise SourceError("source_gitmodules_gitlink_mismatch")
         git_files = dict(own_files)
@@ -903,6 +961,8 @@ class RepositoryArchives:
             self.submodules.append(dict(path=path, **evidence))
         files = dict(own_files)
         for name in sorted(links):
+            if name in skipped:
+                continue  # update = none: the Gitlink is in the tree, its files are not
             child_path = path + "/" + name if path else name
             child, _ = self.fetch(
                 configured[name], links[name], root / name, child_path, (*ancestors, identity)
@@ -1134,7 +1194,7 @@ class SourceSnapshots:
             limits=LIMITS,
             stages=["source_download", "source_validate", "source_publish"],
             effects=[
-                "Fetches a registered public GitHub commit and fixed allowlisted Gitlinks "
+                "Fetches a registered public GitHub commit and its fixed GitHub Gitlinks "
                 "into a private snapshot",
                 "No user worktree overwrite, build, USB, flash, credential or SDK installation",
                 "Reuse verified owned sources; automatically reclaim unreferenced payloads "
@@ -1300,6 +1360,9 @@ class SourceSnapshots:
                 pending.rename(target)
             return dict(
                 **({"submodules": value["submodules"]} if archives.submodules else {}),
+                # Advisory findings (unregistered repositories, ignored keys, skipped
+                # Gitlinks). Not in the receipt: they describe this fetch, not the bytes.
+                **({"notices": archives.notices} if archives.notices else {}),
                 source_receipt=receipt,
                 repository=repository,
                 commit=commit,
@@ -1345,8 +1408,7 @@ class SourceSnapshots:
                 not supported_schema(value["schema_version"])
                 or value["principal"] != principal
                 or value["project_id"] != project_id
-                or value["registration_sha256"]
-                not in source_digests(registration, schema_version=value["schema_version"])
+                or value.get("repository") != registration.github_repository
             ):
                 raise SourceError("source_receipt_not_owned")
             source = root / "source"

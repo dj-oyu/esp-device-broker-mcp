@@ -160,6 +160,24 @@ class GuardedObservationPort:
         return result
 
 
+def registered_flash_tool_drift(registration: Any) -> list[str]:
+    """Registered flash tools whose bytes changed at the registered path.
+
+    The registration fixes the paths; an in-place update (a newer esptool or Python
+    at the same place) is reported, not refused. Firmware bytes stay hash-checked.
+    """
+    drift = []
+    python = registration.python_tool
+    if python.sha256 is not None and hash_file(python.executable) != python.sha256:
+        drift.append("python")
+    if (
+        registration.esptool_sha256 is not None
+        and esptool_fingerprint(registration.esptool_directory) != registration.esptool_sha256
+    ):
+        drift.append("esptool")
+    return drift
+
+
 class NativeFlashDriver:
     def __init__(
         self,
@@ -185,6 +203,7 @@ class NativeFlashDriver:
         self.live = live
         self.progress_log: Callable[[str], None] | None = None
         self._observation_backend: Any = None
+        self._tool_drift_reported = False
 
     @property
     def active(self) -> bool:
@@ -222,12 +241,15 @@ class NativeFlashDriver:
         if (
             self.registration.selector != self.backend.config.selector
             or self.registration.python_tool.executable.is_symlink()
-            or hash_file(self.registration.python_tool.executable)
-            != self.registration.python_tool.sha256
-            or esptool_fingerprint(self.registration.esptool_directory)
-            != self.registration.esptool_sha256
         ):
             raise FlashFailure("registered_flash_tools_changed")
+        drift = registered_flash_tool_drift(self.registration)
+        if drift and not self._tool_drift_reported:
+            self._tool_drift_reported = True
+            if self.progress_log is not None:
+                self.progress_log(
+                    "notice: registered flash tools changed in place (" + ", ".join(drift) + ")"
+                )
         return port.port
 
     def _invoke(

@@ -40,6 +40,11 @@ Existing locally registered build/source profiles define the scope for current
 authenticated control principals. Source/build require no additional permission
 record or individual operator approval. The MCP caller cannot register projects,
 expand repository/submodule allowlists, select arbitrary paths or change tools.
+The submodule allowlist is advisory: a Gitlink to another public GitHub repository
+is fetched and reported as `submodule_repository_unregistered` in the fetch result.
+Registered tools are bound by path; bytes updated in place at that path run and are
+reported (`registered_tool_changed`, a flash `notice:` log line), while firmware,
+backup and LKG content stays hash-verified.
 Prepare binds exact inputs/settings and execute deduplicates the durable job.
 Revocation/expiry, cancellation and registration changes are checked during work
 and again at success publication. Connection lifetime grants no execution authority.
