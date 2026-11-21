@@ -182,12 +182,17 @@ def retention_evidence(
             original = originals.get(target["receipt"], target)
             flash = plans.get(original["completed_job"], {})
             build = plans.get(flash.get("build_job_id"), {})
+            # The lineage is the original flash and its build, by whoever made them.
+            # A restore rewrites only the current row (its principal and job) and
+            # keeps the history row, so the current row's principal may be the
+            # restorer's: comparing against it made a legitimate restore of
+            # another principal's firmware read as broken lineage and disabled all
+            # reclamation (source_cache_references_incomplete on every fetch).
             if (
                 target["kind"] != "artifact_bundle"
                 or not build
-                or original["principal"] != target["principal"]
-                or flash.get("flash_principal") != target["principal"]
-                or build.get("build_principal") != target["principal"]
+                or flash.get("flash_principal") != original["principal"]
+                or build.get("build_principal") != original["principal"]
             ):
                 complete = False
                 continue
