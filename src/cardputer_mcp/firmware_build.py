@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import build_variant
+from .authority_timing import AUTHORITY_CHECK_SECONDS
 from .build_artifacts import BuildArtifacts, has_legacy_diagnostic, manifest_digest
 from .build_ccache import CONTRACT as CCACHE_CONTRACT
 from .build_ccache import ccache_statistics, configure_ccache, probe_ccache
@@ -568,7 +569,7 @@ class FirmwareBuild:
         def monitor() -> None:
             pending = asyncio.run_coroutine_threadsafe(authorized(), loop)
             try:
-                valid = pending.result(timeout=5)
+                valid = pending.result(timeout=AUTHORITY_CHECK_SECONDS)
             except TimeoutError:
                 pending.cancel()
                 raise FixedDiagnosticFailure("build_authority_check_timeout") from None

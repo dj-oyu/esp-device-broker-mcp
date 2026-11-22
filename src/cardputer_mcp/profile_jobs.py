@@ -426,6 +426,11 @@ class ProfileJobs:
                 return  # transient: the lane is full; keep waiting
             return cancel(str(exc))
         except SourceError as exc:
+            if exc.code == "source_fetch_busy":
+                # Another client's fetch or source read holds the cache right now.
+                # That is contention, not a broken chain: keep waiting; the next
+                # maintenance tick promotes the build (an explicit cancel still ends it).
+                return
             return cancel(exc.code)
         except ValueError:
             return cancel("chain_broken")
