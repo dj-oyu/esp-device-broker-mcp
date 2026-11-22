@@ -119,9 +119,11 @@ async def test_source_prepare_rejects_changed_authority_registration_or_state_af
 
 
 async def test_cancelled_source_prepare_retains_bounded_worker_and_shutdown_ownership(
-    resident, gated_usage
+    resident, gated_usage, monkeypatch
 ):
     broker, _ = resident
+    # A later client waits behind the retained thread; shorten the bound for the test.
+    monkeypatch.setattr("cardputer_mcp.source_preflight.SOURCE_READ_WAIT_SECONDS", 0.05)
     entered, release, _ = gated_usage
     task = asyncio.create_task(
         broker.profile_jobs.prepare_source(source_request(), "owner", "remote_mcp")

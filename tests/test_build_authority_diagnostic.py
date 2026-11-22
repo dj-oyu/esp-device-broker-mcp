@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from cardputer_mcp import firmware_build
+from cardputer_mcp.authority_timing import AUTHORITY_CHECK_SECONDS
 
 
 async def test_authority_callback_timeout_is_fixed_and_keeps_completed_status(monkeypatch):
@@ -14,7 +15,7 @@ async def test_authority_callback_timeout_is_fixed_and_keeps_completed_status(mo
 
     class Pending:
         def result(self, timeout):
-            assert timeout == 5
+            assert timeout == AUTHORITY_CHECK_SECONDS
             raise TimeoutError("token=synthetic-private-value")
 
         def cancel(self):

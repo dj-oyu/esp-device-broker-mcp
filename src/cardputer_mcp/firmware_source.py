@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from .authority_timing import AUTHORITY_CHECK_SECONDS
 from .build_logs import BuildLogs
 from .job_logs import attach
 from .offload_io import pure_io
@@ -92,7 +93,9 @@ class FirmwareSource:
             return not self.stop.is_set() and live() is True
 
         def valid() -> bool:
-            return asyncio.run_coroutine_threadsafe(check(), loop).result(timeout=5)
+            return asyncio.run_coroutine_threadsafe(check(), loop).result(
+                timeout=AUTHORITY_CHECK_SECONDS
+            )
 
         def append(name: str) -> None:
             logs.append("-- " + name)
